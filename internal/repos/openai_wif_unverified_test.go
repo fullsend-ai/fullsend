@@ -215,7 +215,7 @@ func TestConverge_OpenAIWIFVendoredInstallChecksVendorSource(t *testing.T) {
 	vendoredCfg := func(read func(string) ([]byte, error)) ConvergeConfig {
 		cfg := openAIWIFConvergeCfg("acme/api")
 		vendor := true
-		cfg.VendorOverride = &vendor
+		cfg.Manifest.Defaults.Vendor = &vendor
 		cfg.ReadVendoredWorkflow = read
 		return cfg
 	}
@@ -274,7 +274,7 @@ func TestConverge_OpenAIWIFEstablishedVendoredInstallChecksInstalledWorkflowsWit
 	vendoredCfg := func() ConvergeConfig {
 		cfg := openAIWIFConvergeCfg("acme/api")
 		vendor := true
-		cfg.VendorOverride = &vendor
+		cfg.Manifest.Defaults.Vendor = &vendor
 		cfg.ReadVendoredWorkflow = func(string) ([]byte, error) { return reusableWorkflowFixture(true, false), nil }
 		return cfg
 	}
@@ -321,7 +321,6 @@ func TestConverge_OpenAIWIFEstablishedVendoredInstallChecksInstalledWorkflowsWit
 			full := convergeCfgWithDefaults(newConvergeManifest("acme/api"))
 			cfg.InferenceProject = full.InferenceProject
 			cfg.InferenceProjectNumber = full.InferenceProjectNumber
-			cfg.InferenceRegion = full.InferenceRegion
 			cfg.WIFProvider = full.WIFProvider
 			return cfg
 		}
@@ -375,7 +374,7 @@ func TestConverge_OpenAIWIFEstablishedVendoredInstallDryRunMatchesLiveWithPendin
 	vendoredCfg := func(dryRun bool) ConvergeConfig {
 		cfg := managedWIFConvergeCfg(t, "")
 		vendor := true
-		cfg.VendorOverride = &vendor
+		cfg.Manifest.Defaults.Vendor = &vendor
 		cfg.ReadVendoredWorkflow = func(string) ([]byte, error) { return reusableWorkflowFixture(true, false), nil }
 		cfg.DryRun = dryRun
 		return cfg

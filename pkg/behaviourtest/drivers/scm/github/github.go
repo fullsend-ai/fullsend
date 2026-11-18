@@ -34,6 +34,10 @@ func (d *Driver) AddIssueLabels(ctx context.Context, owner, repo string, number 
 	return d.Client.AddIssueLabels(ctx, owner, repo, number, labels...)
 }
 
+func (d *Driver) EnsureLabel(ctx context.Context, owner, repo, name string) error {
+	return d.Client.EnsureLabel(ctx, owner, repo, name)
+}
+
 func (d *Driver) AddComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
 	return d.Client.CreateIssueComment(ctx, owner, repo, number, body)
 }
@@ -53,6 +57,10 @@ func (d *Driver) CommitFile(ctx context.Context, owner, repo, path, message stri
 
 func (d *Driver) GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error) {
 	return d.Client.GetIssue(ctx, owner, repo, number)
+}
+
+func (d *Driver) ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]forge.Issue, error) {
+	return d.Client.ListOpenIssues(ctx, owner, repo, labels...)
 }
 
 func (d *Driver) GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
@@ -180,6 +188,13 @@ func (d *Driver) ListPullRequestReviews(ctx context.Context, owner, repo string,
 
 func (d *Driver) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
 	return d.Client.ListPullRequestCommits(ctx, owner, repo, number)
+}
+
+var _ scm.PullRequestHeadSHAReader = (*Driver)(nil)
+
+// GetPullRequestHeadSHA returns the change proposal's current head commit SHA.
+func (d *Driver) GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
+	return d.Client.GetPullRequestHeadSHA(ctx, owner, repo, number)
 }
 
 // ParseRepo splits "owner/repo" into owner and repo name.

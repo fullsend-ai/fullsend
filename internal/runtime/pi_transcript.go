@@ -55,7 +55,11 @@ func piSubagentUsageLocalName(agentLabel string) string {
 // the children fullsend-agent.js spawns) are saved as
 // <agentLabel>-sub<seq>-<basename>, and the extension's usage file
 // alongside them.
-func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string) error {
+func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir, progressVerbosity string) error {
+	rep := newTranscriptReport(agentLabel, progressVerbosity)
+	// The quiet count line prints however extraction ends, so a usage file
+	// saved before a failed find is still counted.
+	defer rep.end()
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
@@ -84,12 +88,12 @@ func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string)
 		localPath, createErr := reserveContainedFile(root, outputDir, localName)
 		switch {
 		case createErr != nil:
-			fmt.Fprintf(os.Stderr, "  [%s] Skipping the sub-agent usage file (path rejected): %s: %v\n", agentLabel, localName, createErr)
+			rep.skip("Skipping the sub-agent usage file (path rejected): %s: %v", localName, createErr)
 		default:
 			if dlErr := sandbox.DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
-				fmt.Fprintf(os.Stderr, "  [%s] Failed to copy the sub-agent usage file: %v\n", agentLabel, dlErr)
+				rep.skip("Failed to copy the sub-agent usage file: %v", dlErr)
 			} else {
-				fmt.Fprintf(os.Stderr, "  [%s] Saved sub-agent usage: %s\n", agentLabel, localName)
+				rep.saved("Saved sub-agent usage: %s", localName)
 			}
 		}
 	}
@@ -103,7 +107,7 @@ func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string)
 	}
 	trimmed := strings.TrimSpace(stdout)
 	if trimmed == "" {
-		fmt.Fprintf(os.Stderr, "  [%s] No transcripts found\n", agentLabel)
+		rep.noneFound("No transcripts found")
 		return nil
 	}
 	for _, remotePath := range strings.Split(trimmed, "\n") {
@@ -114,14 +118,14 @@ func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string)
 		localName := piSubagentTranscriptName(agentLabel, remotePath)
 		localPath, createErr := reserveContainedFile(root, outputDir, localName)
 		if createErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, localName, createErr)
+			rep.skip("Skipping (path rejected): %s: %v", localName, createErr)
 			continue
 		}
 		if dlErr := sandbox.DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Failed to copy transcript: %v\n", agentLabel, dlErr)
+			rep.skip("Failed to copy transcript: %v", dlErr)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentLabel, localName)
+		rep.saved("Saved transcript: %s", localName)
 	}
 	return nil
 }

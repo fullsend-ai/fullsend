@@ -321,6 +321,8 @@ func IsGitLabRoleManagedVar(name string) bool {
 	switch name {
 	case forge.SecretForgeToken, forge.VarGitLabRoleRegistry,
 		forge.VarGitLabRoleRotation, forge.VarGitLabPollerGenerations,
+		forge.VarGitLabTriggerAccount, forge.SecretGitLabTriggerAccountToken,
+		forge.VarGitLabDispatchActivation,
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken,
 		forge.SecretGitLabCoderToken:
 		return true
@@ -575,7 +577,7 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 				result.Failed = append(result.Failed, RoleProvisionFailure{
 					Role:   rec.Name,
 					Secret: secret,
-					Reason: "storing administrator-provided credential failed",
+					Reason: failureReason("storing administrator-provided credential failed", err, provided),
 				})
 				continue
 			}
@@ -628,7 +630,7 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			result.Failed = append(result.Failed, RoleProvisionFailure{
 				Role:   rec.Name,
 				Secret: secret,
-				Reason: "project access token creation failed",
+				Reason: failureReason(roleTokenCreationFailureReason(err), err),
 			})
 			continue
 		}
@@ -674,7 +676,7 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 				result.Failed = append(result.Failed, RoleProvisionFailure{
 					Role:   rec.Name,
 					Secret: secret,
-					Reason: "storing role credential failed",
+					Reason: failureReason("storing role credential failed", err, tok.Token),
 				})
 				continue
 			}
@@ -690,7 +692,7 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			result.Failed = append(result.Failed, RoleProvisionFailure{
 				Role:   rec.Name,
 				Secret: secret,
-				Reason: "storing role credential failed",
+				Reason: failureReason("storing role credential failed", err, tok.Token),
 			})
 			continue
 		}
@@ -779,10 +781,17 @@ func extraGitLabRoleUninstallVars(ctx context.Context, client forge.Client, owne
 		}
 		// The Poller generation document records quarantine and retirement
 		// obligations for replacement Poller accounts and triggers.
-		// Deleting it would forget them, so uninstall retains it until an
-		// operator has reconciled those obligations; the live handoff
-		// (#8243) and uninstall cleanup (#8210) may revisit this.
+		// Deleting it here would forget them, so it is not in the generic
+		// variable list. CleanupGitLabRoleIdentityLocked retires it only after
+		// every account it records was cleaned up, and keeps it otherwise.
 		if name == forge.VarGitLabPollerGenerations {
+			return
+		}
+		// The trigger-account ledger records the account, grant, trigger
+		// token and any interrupted bootstrap, and its token sink holds a
+		// live credential. Only the dedicated trigger-account removal, which
+		// proves ownership of each resource first, deletes them.
+		if name == forge.VarGitLabTriggerAccount || name == forge.SecretGitLabTriggerAccountToken {
 			return
 		}
 		if !IsGitLabRoleManagedVar(name) {

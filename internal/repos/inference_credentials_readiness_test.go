@@ -62,7 +62,6 @@ func TestConverge_RejectsGCPInputsWhenNoRepoUsesVertex(t *testing.T) {
 	cfg := openAIConvergeCfg("acme/api")
 	cfg.InferenceProject = "test-inference"
 	cfg.InferenceProjectNumber = "123456789"
-	cfg.InferenceRegion = "us-central1"
 
 	sc := &fakeScaffoldCommit{}
 	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -394,6 +393,7 @@ func TestConverge_GitLabAuthSwitchKeepsObsoleteSecretsWhenScriptLacksContract(t 
 		t.Run(tc.name, func(t *testing.T) {
 			fc := newFakeClientForBatch("acme/api")
 			populateGitLabInstalled(fc, "acme", "api")
+			populateGitLabTypedWrapper(t, fc, "acme", "api")
 			scriptKey := "acme/api/" + gitlabAgentJobScriptPath
 			switch tc.name {
 			case "legacy script":

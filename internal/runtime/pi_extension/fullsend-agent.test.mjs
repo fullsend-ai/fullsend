@@ -15,21 +15,32 @@ import { test } from "node:test";
 
 import defaultExport, {
   AGENT_TOOL_PARAMETERS,
+  CHILD_BIN_ENV,
+  CHILD_NODE_ENV,
   CHILD_SYSTEM_NOTE,
   GATEWAY_CONFIG_FILE,
   GATEWAY_CONFIG_FILE_ENV,
   GATEWAY_LOCAL_CONFIG_FILE,
   MAX_DESCRIPTION_BYTES,
   MAX_STDOUT_LINE_CHARS,
+  MIN_FALLBACK_MS,
   OVERSIZED_PREFIX_CHARS,
   RESULT_MAX_BYTES,
   childArgs,
   childEnv,
+  childLaunch,
+  childFallbacks,
+  childModelNotServed,
+  childSessionDir,
   childTools,
+  extensionTreeHash,
+  consumeLine,
   createAgentTool,
   isAgentEndPrefix,
   isAssistantMessageEndPrefix,
+  isVertexModelUnavailable,
   resolveModel,
+  sanitizeLogLine,
   vertexChildAuthenticated,
   vertexCredentialsUsable,
 } from "./fullsend-agent.js";
@@ -97,11 +108,16 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "fullsend-agent-"));
   const piBin = join(dir, "fake-pi.mjs");
   writeFileSync(piBin, FAKE_PI, { mode: 0o755 });
+  // Children start as the launch pins them (piChildLaunchExport): this node
+  // running the fake pi.
+  process.env[CHILD_BIN_ENV] = piBin;
+  process.env[CHILD_NODE_ENV] = process.execPath;
   const manifest = {
     agentName: "review",
     tools: null,
     hooks: { groups: [], toolNames: {} },
     agent: {
+      mcpResourceTools: JSON.parse(readFileSync(new URL("./mcp-resource-tools.json", import.meta.url))),
       enabled: true,
       piBin,
       sessionsDir: join(dir, "sessions"),
@@ -368,13 +384,14 @@ test("childArgs mirrors the runner's pi command line, extensions in manifest ord
     "-e", "/usr/local/share/pi-extensions/xai-vertex",
     "-e", "/sandbox/pi-config/fullsend-hooks.js",
     "--tools", "read,grep",
+    "--exclude-tools", "mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource",
     "--model", "anthropic-vertex/claude-sonnet-4-6",
     "--thinking", "medium",
     "--append-system-prompt", CHILD_SYSTEM_NOTE,
   ]);
   assert.ok(!args.some((a) => a.startsWith("do it")), "the prompt is never in argv; it goes over stdin");
   const loaded = args.filter((_, i) => i > 0 && args[i - 1] === "-e");
-  assert.ok(!loaded.some((a) => a.includes("fullsend-agent")), "children never get the Agent extension");
+  assert.ok(!loaded.some((a) => a.includes("fullsend-agent")), "equal callable and active selections need no child-only activation guard");
 
   // The parent's APPEND_SYSTEM.md must not reach a child: pi only discovers
   // it when no --append-system-prompt was given.
@@ -382,8 +399,30 @@ test("childArgs mirrors the runner's pi command line, extensions in manifest ord
   assert.match(CHILD_SYSTEM_NOTE, /sub-agent/);
 
   const empty = childArgs(manifest.agent, { seq: 4, modelSpec: "anthropic-vertex/claude-opus-4-6", tools: [] });
-  assert.ok(empty.includes("--no-builtin-tools"), "an empty child tool list means no built-ins, like the runner does for the parent");
-  assert.ok(!empty.includes("--tools"));
+  assert.equal(empty[empty.indexOf("--tools") + 1], "", "empty filters built-in and extension tools");
+  assert.ok(!empty.includes("--no-builtin-tools"));
+});
+
+test("childArgs denies MCP registrations for non-MCP selections only", () => {
+  const { manifest } = fixture();
+  for (const tools of [["codemode"], ["read"], [], ["codemode", "mcp__docs__search"]]) {
+    const args = childArgs(manifest.agent, {seq: 1, modelSpec: "m", tools});
+    const deny = args.indexOf("--exclude-tools");
+    assert.equal(deny >= 0, tools.length > 0 && !tools.some((t) => t.startsWith("mcp__")));
+    if (deny >= 0) assert.equal(args[deny + 1], "mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource");
+    assert.equal(args[args.indexOf("--tools") + 1], tools.join(","));
+  }
+});
+
+test("childArgs preserves selected MCP resources only", () => {
+  const {manifest} = fixture();
+  for (const selected of ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+    const args = childArgs(manifest.agent, {seq: 1, modelSpec: "m", tools: ["codemode", selected]});
+    const excluded = args[args.indexOf("--exclude-tools") + 1].split(",");
+    for (const name of ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+      assert.equal(excluded.includes(name), name !== selected);
+    }
+  }
 });
 
 test("childArgs loads the edit repair only for a child whose tools name edit", () => {
@@ -397,9 +436,8 @@ test("childArgs loads the edit repair only for a child whose tools name edit", (
 
   assert.deepEqual(loaded(["read", "edit"]).slice(-1), [editExt], "after the shared list");
   assert.ok(!loaded(["read", "grep"]).includes(editExt), "--tools filters it anyway; not loading it keeps argv honest");
-  // A persona that declares no tools runs under --no-builtin-tools, where pi
-  // does not filter extension tools: loading the extension there would
-  // hand that child the edit tool its persona withheld.
+  // An empty child selection uses --tools '', which filters extension tools
+  // too. Keep edit-repair unloaded rather than registering an unused tool.
   assert.ok(!loaded([]).includes(editExt));
   assert.ok(!childArgs(manifest.agent, { seq: 2, modelSpec: "m", tools: ["edit"] }).includes(editExt),
     "no manifest entry (parent without edit): nothing to load");
@@ -448,6 +486,24 @@ test("childEnv scrubs the provider credentials the child does not use", () => {
   assert.equal(base.FULLSEND_SUBAGENT_DEPTH, undefined, "the caller's env object is not mutated");
 });
 
+test("childEnv passes the hook settings the launch exported to every child", () => {
+  // The launch re-asserts these after .env (hookEnvExports in
+  // sandbox_hooks_env.go); a child's hook adapter reads them from here.
+  const hookEnv = {
+    TIRITH_FAIL_ON: "high",
+    TIRITH_REQUIRED: "1",
+    FULLSEND_EGRESS_ALLOWLIST: "api.github.com:443",
+    FULLSEND_CANARY_TOKEN: "canary-from-harness",
+    FULLSEND_TOOL_ALLOWLIST: "Bash,Read",
+  };
+  for (const spec of ["anthropic-vertex/claude-opus-4-6", "xai-vertex/xai/grok-4.6", "google-vertex/gemini-3.8-flash", "openai/gpt-5.6-luna"]) {
+    const env = childEnv({ PATH: "/usr/bin", ...hookEnv }, spec);
+    for (const [k, v] of Object.entries(hookEnv)) {
+      assert.equal(env[k], v, `${k} reaches a ${spec} child`);
+    }
+  }
+});
+
 test("run: success returns the child's final text, trimmed, and records usage", async () => {
   const { manifest } = fixture();
   const logs = [];
@@ -480,6 +536,29 @@ test("run: success returns the child's final text, trimmed, and records usage", 
   assert.equal(logs.length, 2);
   assert.match(logs[0], /^\[fullsend-agent\] #1 anthropic-vertex\/claude-sonnet-4-6 start "unit child"$/);
   assert.match(logs[1], /^\[fullsend-agent\] #1 done \d+ms stop$/);
+});
+
+test("sanitizeLogLine strips escapes and control characters and breaks ::", () => {
+  assert.equal(sanitizeLogLine("plain line"), "plain line");
+  assert.equal(sanitizeLogLine("a\x1b[31mred\x1b[0m b"), "ared b");
+  assert.equal(sanitizeLogLine("osc\x1b]0;title\x07 end"), "osc end");
+  assert.equal(sanitizeLogLine("x\n::error::boom"), "x : :error: :boom");
+  assert.equal(sanitizeLogLine(":::"), ": : :", "no :: survives at a replacement seam");
+  assert.ok(!sanitizeLogLine("::::::").includes("::"));
+  assert.equal(sanitizeLogLine("a%0Ab%0dc"), "a b c");
+  assert.equal(sanitizeLogLine("tab\there\x7f\x9fend"), "tab here  end");
+  assert.equal(sanitizeLogLine("über ✓"), "über ✓", "printable non-ASCII is kept");
+});
+
+test("run: values in log lines are sanitized", async () => {
+  const { manifest } = fixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { log: (l) => logs.push(l) });
+  await tool.run({ prompt: "ok", description: "evil\n::error::injected\x1b[2J", model: "sonnet" }, {});
+  assert.match(logs[0], /^\[fullsend-agent\] #1 anthropic-vertex\/claude-sonnet-4-6 start "evil : :error: :injected"$/);
+  for (const l of logs) {
+    assert.ok(!l.includes("::") && !/[\x00-\x1f]/.test(l), JSON.stringify(l));
+  }
 });
 
 test("run: error stopReason → isError with the child's message", async () => {
@@ -593,7 +672,29 @@ test("run: the usage record's description is capped", async () => {
   assert.ok(Buffer.byteLength(JSON.stringify(rec) + "\n") < 4096);
 });
 
-test("run: a manifest rewritten after load stops the next dispatch", async () => {
+test("run: missing or malformed resource permissions return structured rejection without spawning", async () => {
+  for (const resourcePermissions of [undefined, null, "invalid", [null]]) {
+    for (const toolMode of [undefined, "explicit"]) {
+      const { manifest } = fixture();
+      manifest.agent.mcpResourceTools = resourcePermissions;
+      manifest.agent.toolMode = toolMode;
+      const { spawn, children } = fakeSpawn();
+      const tool = createAgentTool(manifest, { ...quiet, spawn });
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const result = await tool.run({ prompt: "probe" }, {});
+        assert.deepEqual(result, {
+          seq: attempt, isError: true,
+          error: "missing MCP resource permissions in child manifest",
+          text: "", stopReason: "rejected", model: "",
+        });
+        assert.equal(children.length, 0);
+        assert.equal(tool.inFlight(), 0, "rejection consumes no semaphore slot");
+      }
+    }
+  }
+});
+
+test("run: tampering with manifest MCP resource permissions stops the next dispatch", async () => {
   const { dir, manifest } = fixture();
   const path = join(dir, "manifest.json");
   writeFileSync(path, JSON.stringify(manifest));
@@ -611,7 +712,7 @@ test("run: a manifest rewritten after load stops the next dispatch", async () =>
   // The manifest names the binary children run, their -e list (the hook
   // adapter among them) and their tool allowlist, and it sits in a dir the
   // agent can write to: the launch guard checked it once, minutes ago.
-  writeFileSync(path, JSON.stringify({ ...manifest, agent: { ...manifest.agent, extensions: [], tools: ["bash"] } }));
+  writeFileSync(path, JSON.stringify({ ...manifest, agent: { ...manifest.agent, mcpResourceTools: [] } }));
   const res = await tool.run({ prompt: "p2" }, {});
   assert.equal(res.isError, true);
   assert.equal(res.error, "manifest changed since load; refusing to dispatch");
@@ -906,7 +1007,34 @@ test("run: at most maxConcurrent children run at once; the rest queue", async ()
   assert.deepEqual(children[0].opts.stdio, ["pipe", "pipe", "pipe"], "stdin is a pipe: it carries the prompt");
   assert.equal(children[0].child.stdinText, "p1", "the prompt is written and the pipe closed");
   assert.equal(children[0].opts.detached, undefined, "children share the parent's process group, so a killed parent takes them with it");
-  assert.equal(children[0].bin, manifest.agent.piBin);
+  assert.equal(children[0].bin, process.execPath, "the child starts through the pinned node");
+  assert.equal(children[0].args[0], manifest.agent.piBin, "running the pinned pi");
+});
+
+test("childLaunch: the pinned node and pi, pi alone without a node, refused otherwise", () => {
+  assert.deepEqual(childLaunch({ [CHILD_BIN_ENV]: "/usr/lib/pi/cli.js", [CHILD_NODE_ENV]: "/usr/bin/node" }), { command: "/usr/bin/node", prefix: ["/usr/lib/pi/cli.js"] });
+  assert.deepEqual(childLaunch({ [CHILD_BIN_ENV]: "/usr/local/bin/pi", [CHILD_NODE_ENV]: "" }), { command: "/usr/local/bin/pi", prefix: [] });
+  assert.deepEqual(childLaunch({ [CHILD_BIN_ENV]: "/usr/local/bin/pi" }), { command: "/usr/local/bin/pi", prefix: [] });
+  for (const [name, env] of Object.entries({
+    "no pi": { [CHILD_NODE_ENV]: "/usr/bin/node" },
+    "empty pi": { [CHILD_BIN_ENV]: "", [CHILD_NODE_ENV]: "/usr/bin/node" },
+    "relative pi": { [CHILD_BIN_ENV]: "pi", [CHILD_NODE_ENV]: "/usr/bin/node" },
+    "relative node": { [CHILD_BIN_ENV]: "/usr/lib/pi/cli.js", [CHILD_NODE_ENV]: "node" },
+    "no env": undefined,
+  })) {
+    assert.equal(childLaunch(env), null, name);
+  }
+});
+
+test("run: no child starts when the launch did not pin pi", async () => {
+  const { manifest } = fixture();
+  const { spawn, children } = fakeSpawn();
+  const env = { ...process.env };
+  delete env[CHILD_BIN_ENV];
+  const tool = createAgentTool(manifest, { spawn, ...quiet, env });
+  const res = await tool.run({ prompt: "p" }, { parentModel: "anthropic-vertex/claude-opus-4-6" });
+  assert.equal(children.length, 0, "nothing is spawned");
+  assert.match(JSON.stringify(res), /FULLSEND_PI_CHILD_BIN and FULLSEND_PI_CHILD_NODE do not name an absolute pi and node/);
 });
 
 test("run: a queued dispatch aborted before it starts never spawns and still settles", async () => {
@@ -1259,7 +1387,99 @@ test("shutdown stops in-flight children, fails their calls and settles the queue
   assert.match(res.error, /shut down|killed/);
 });
 
-function registerWith(manifestPath, env = {}) {
+test("MCP child dispatch intersects concrete tools and rechecks declared extension trees", async () => {
+  const { dir, manifest } = fixture();
+  const ext = join(dir, "docs");
+  mkdirSync(ext);
+  writeFileSync(join(ext, "index.js"), "// docs fixture\n");
+  mkdirSync(join(ext, "data"));
+  const entry = { name: "docs", path: ext, sha256: await extensionTreeHash(ext), args: ["--docs-mode", "offline"] };
+  manifest.agent.declaredExtensions = [entry];
+  manifest.agent.tools = ["mcp__docs__*", "Agent"];
+  manifest.agent.personas = { docs: { tools: ["mcp__docs__search"], prompt: "Search docs" } };
+  const registry = ["mcp__docs__search", "mcp__docs__write", "mcp__other__search", "bash", "Agent"];
+  assert.deepEqual(childTools(manifest.agent, "docs", registry), ["mcp__docs__search"]);
+  manifest.agent.tools = ["mcp__docs__search"];
+  manifest.agent.personas.docs.tools = ["mcp__docs__*"];
+  assert.deepEqual(childTools(manifest.agent, "docs", registry), ["mcp__docs__search"]);
+  manifest.agent.personas.docs.tools = ["bash"];
+  assert.deepEqual(childTools(manifest.agent, "docs", registry), []);
+  const args = childArgs(manifest.agent, { seq: 1, modelSpec: "m", tools: [] });
+  assert.deepEqual(args.slice(args.indexOf(ext) - 1, args.indexOf(ext) + 3), ["-e", ext, "--docs-mode", "offline"]);
+  assert.equal(args[args.indexOf("--tools") + 1], "");
+
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, activeTools: () => registry });
+  const pending = tool.run({ prompt: "search" });
+  for (let i = 0; i < 200 && children.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(children.length, 1);
+  assert.equal(children[0].args[children[0].args.indexOf("--tools") + 1], "mcp__docs__search");
+  children[0].child.finish(okStream("done"));
+  await pending;
+  writeFileSync(join(ext, "index.js"), "// modified\n");
+  const rejected = await tool.run({ prompt: "search" });
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.error, /changed since load/);
+  assert.equal(children.length, 1, "no child runs modified extension code");
+  writeFileSync(join(ext, "index.js"), "// docs fixture\n");
+  mkdirSync(join(ext, "skills"));
+  assert.match((await tool.run({ prompt: "search" })).error, /changed since load/);
+  rmSync(join(ext, "skills"), { recursive: true });
+  symlinkSync(join(ext, "index.js"), join(ext, "link.js"));
+  assert.match((await tool.run({ prompt: "search" })).error, /non-regular entry/);
+  rmSync(ext, { recursive: true });
+  assert.match((await tool.run({ prompt: "search" })).error, /cannot verify extension/);
+  assert.equal(children.length, 1);
+  await tool.shutdown();
+});
+
+test("child permissions preserve default and explicit parent modes", () => {
+  const registry = ["read", "bash", "powershell", "mcp__docs__search", "mcp__docs__write", "Agent", "Task"];
+  const agent = { toolMode: "default", tools: ["read", "bash"], personas: { docs: { tools: ["mcp__docs__search"] } } };
+  const active = registry.filter((t) => t !== "powershell");
+  assert.deepEqual(childTools(agent, "docs", active), ["mcp__docs__search"]);
+  assert.deepEqual(childTools(agent, "Explore", active), ["read"]);
+  assert.deepEqual(childTools(agent, undefined, active),
+    ["read", "bash", "mcp__docs__search", "mcp__docs__write"]);
+  agent.toolMode = "explicit";
+  assert.deepEqual(childTools(agent, "docs", registry), []);
+  agent.toolMode = undefined; // Older manifests stay restrictive.
+  assert.deepEqual(childTools(agent, "docs", registry), []);
+});
+
+test("queued dispatch resamples active tools after obtaining a slot", async () => {
+  const { manifest } = fixture();
+  manifest.agent.toolMode = "default";
+  manifest.agent.maxConcurrent = 1;
+  const { spawn, children } = fakeSpawn();
+  let active = ["mcp__docs__search"];
+  const tool = createAgentTool(manifest, { ...quiet, spawn, activeTools: () => active });
+  const first = tool.run({ prompt: "first" });
+  const second = tool.run({ prompt: "queued" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  assert.equal(children[0].args[children[0].args.indexOf("--tools") + 1], "mcp__docs__search");
+  active = [];
+  children[0].child.finish(okStream("done"));
+  await first;
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 2);
+  assert.equal(children[1].args[children[1].args.indexOf("--tools") + 1], "");
+  children[1].child.finish(okStream("done"));
+  await second;
+  await tool.shutdown();
+});
+
+test("extension tree verification yields to the event loop", async () => {
+  const { dir } = fixture();
+  writeFileSync(join(dir, "index.js"), "// docs\n");
+  let yielded = false;
+  setImmediate(() => { yielded = true; });
+  await extensionTreeHash(dir);
+  assert.equal(yielded, true);
+});
+
+function registerWith(manifestPath, env = {}, activeTools, registeredTools = () => []) {
   const tools = [];
   const events = {};
   const lines = [];
@@ -1270,7 +1490,7 @@ function registerWith(manifestPath, env = {}) {
   delete process.env.FULLSEND_SUBAGENT_DEPTH;
   Object.assign(process.env, env);
   try {
-    defaultExport({ registerTool: (d) => tools.push(d), on: (ev, fn) => { events[ev] = fn; } });
+    defaultExport({ getAllTools: registeredTools, getActiveTools: activeTools ?? (() => JSON.parse(readFileSync(manifestPath)).agent.tools), registerTool: (d) => tools.push(d), on: (ev, fn) => { events[ev] = fn; } });
   } finally {
     console.error = origError;
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
@@ -1289,6 +1509,39 @@ test("default export registers Agent and Task with one handler and a shutdown ho
   assert.deepEqual(tools[0].parameters, AGENT_TOOL_PARAMETERS);
   assert.ok(typeof events.session_shutdown === "function");
   assert.deepEqual(lines, []);
+});
+
+test("production dispatch uses live active tools, never inactive registry entries", async () => {
+  for (const toolMode of ["default", "explicit"]) {
+    const { dir, manifest } = fixture();
+    const path = join(dir, "manifest.json");
+    manifest.agent.toolMode = toolMode;
+    manifest.agent.tools = ["read", "mcp__docs__*", "future_builtin"];
+    manifest.agent.personas = { hidden: { tools: ["mcp__docs__hidden", "future_builtin"] } };
+    writeFileSync(path, JSON.stringify(manifest));
+    // hidden represents a defaultActive:false extension; future_builtin is
+    // registered but inactive. Neither may be activated by a child's --tools.
+    let active = ["mcp__docs__search", "Agent", "Task"];
+    let registry = [];
+    const { tools, events } = registerWith(path, {}, () => active, () => registry);
+    const ctx = { model: { provider: "anthropic-vertex", id: "claude-opus-4-6" } };
+    const selection = async (subagent_type) => {
+      const result = await tools[0].execute("call", { prompt: "ok", subagent_type }, undefined, undefined, ctx);
+      const { argv } = JSON.parse(result.content[0].text);
+      return argv[argv.indexOf("--tools") + 1];
+    };
+    assert.equal(await selection(), "mcp__docs__search");
+    assert.equal(await selection("hidden"), "");
+    // Query the API again for each dispatch, not just when the extension loads.
+    active = [];
+    assert.equal(await selection(), "");
+    registry = [{name: "mcp__docs__search", exposure: "codemode"}, {name: "mcp__docs__hidden", exposure: "direct"}];
+    assert.equal(await selection(), "mcp__docs__search");
+    assert.equal(await selection("hidden"), "");
+    registry = [];
+    assert.equal(await selection(), "");
+    await events.session_shutdown();
+  }
 });
 
 test("default export: missing manifest, disabled block, or a set depth registers nothing and logs once", () => {
@@ -1314,7 +1567,7 @@ test("default export: missing manifest, disabled block, or a set depth registers
   const ok = join(dir, "manifest.json");
   writeFileSync(ok, JSON.stringify(manifest));
   r = registerWith(ok, { FULLSEND_SUBAGENT_DEPTH: "1" });
-  assert.equal(r.tools.length, 0, "a child never registers the tool (recursion is refused)");
+  assert.equal(r.tools.length, 0, "the depth backstop prevents normal-mode Agent registration in a child");
   assert.equal(r.lines.length, 1);
   assert.match(r.lines[0], /depth/i);
 });
@@ -1680,4 +1933,335 @@ test("run: without a pinned gateway config the child gets no config file", async
   assert.equal(children[0].opts.env[GATEWAY_CONFIG_FILE_ENV], process.env[GATEWAY_CONFIG_FILE_ENV], "nothing set or changed");
   children[0].child.finish(okStream("one"));
   await pending;
+});
+
+// --- model fallback for children (#8426) ---
+
+const NOT_SERVED = "Publisher model `projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-5-5` not found.";
+const notServedStream = (msg = NOT_SERVED) => [
+  { type: "agent_start" },
+  { type: "message_end", message: { role: "assistant", content: [], model: "m", provider: "anthropic-vertex", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } }, stopReason: "error", errorMessage: msg } },
+  { type: "agent_end", messages: [] },
+  { type: "agent_settled" },
+];
+
+function fallbackFixture() {
+  const { dir, manifest } = fixture();
+  manifest.agent.models = {
+    default: "anthropic-vertex/claude-opus-5-5",
+    opus: "anthropic-vertex/claude-opus-5-5",
+    sonnet: "anthropic-vertex/claude-sonnet-5-5",
+    haiku: "anthropic-vertex/claude-haiku-5-5",
+  };
+  manifest.agent.modelFallbacks = {
+    opus: ["anthropic-vertex/claude-opus-4-6"],
+    sonnet: ["anthropic-vertex/claude-sonnet-4-6"],
+    haiku: ["anthropic-vertex/claude-haiku-4-5"],
+  };
+  return { dir, manifest };
+}
+
+async function untilChildren(children, n) {
+  for (let i = 0; i < 200 && children.length < n; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, n);
+}
+
+const modelArg = (c) => c.args[c.args.indexOf("--model") + 1];
+
+test("isVertexModelUnavailable matches the two not-served shapes only", () => {
+  assert.equal(isVertexModelUnavailable(NOT_SERVED), true);
+  assert.equal(isVertexModelUnavailable("Access to this model requires data sharing to be enabled for publisher 'anthropic'"), true);
+  assert.equal(isVertexModelUnavailable("403 PERMISSION_DENIED: Permission denied on resource project p"), false);
+  assert.equal(isVertexModelUnavailable("quota exhausted"), false);
+  assert.equal(isVertexModelUnavailable(undefined), false);
+});
+
+test("childFallbacks: aliases, personas and subagents.default; pinned specs and inheritance never", () => {
+  const { manifest } = fallbackFixture();
+  const agent = manifest.agent;
+  assert.deepEqual(childFallbacks(agent, { model: "Sonnet" }), ["anthropic-vertex/claude-sonnet-4-6"]);
+  assert.deepEqual(childFallbacks(agent, { model: "sonnet@default" }), ["anthropic-vertex/claude-sonnet-4-6"]);
+  assert.deepEqual(childFallbacks(agent, { model: "anthropic-vertex/claude-sonnet-5-5" }), [], "a provider/id the caller pinned");
+  assert.deepEqual(childFallbacks(agent, { model: "claude-sonnet-5-5" }), [], "a bare id the caller pinned");
+  assert.deepEqual(childFallbacks(agent, { model: "default" }), []);
+  assert.deepEqual(childFallbacks(agent, {}), [], "inherits the parent's live model");
+  assert.deepEqual(childFallbacks({ ...agent, subagentDefault: "anthropic-vertex/claude-haiku-5-5", subagentDefaultFallbacks: ["anthropic-vertex/claude-haiku-4-5"] }, {}),
+    ["anthropic-vertex/claude-haiku-4-5"]);
+  assert.deepEqual(childFallbacks(agent, { model: "opus" }, { model: "anthropic-vertex/claude-sonnet-5-5", fallbacks: ["anthropic-vertex/claude-sonnet-4-6"] }),
+    ["anthropic-vertex/claude-sonnet-4-6"], "a persona uses its own chain, not the caller's");
+  assert.deepEqual(childFallbacks(agent, { model: "opus" }, { model: "", fallbacks: ["x"] }), [], "an inheriting persona");
+  assert.deepEqual(childFallbacks({}, { model: "sonnet" }), [], "a manifest without the table");
+});
+
+test("childModelNotServed: only a silent not-served error on a clean exit", () => {
+  const state = (over) => ({ stopReason: "error", errorMessage: NOT_SERVED, text: "", usage: { output: 0 }, ended: true, assistantLost: false, activity: false, ...over });
+  assert.equal(childModelNotServed({ exitCode: 0, state: state() }), true);
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ assistantLost: true }) }), false, "an assistant message was lost to the line cap");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ ended: false }) }), false, "the stream did not reach agent_end");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ ended: undefined }) }), false, "the stream did not reach agent_end");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ activity: true }) }), false, "a tool ran or the model thought");
+  assert.equal(childModelNotServed({ exitCode: 0, droppedLines: 1, state: state() }), false, "a line was dropped unread");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ errorMessage: "quota exhausted" }) }), false);
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ usage: { output: 4 } }) }), false, "the model answered");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ text: "partial" }) }), false, "the model answered");
+  assert.equal(childModelNotServed({ exitCode: 1, state: state() }), false);
+  assert.equal(childModelNotServed({ exitCode: 0, timedOut: true, state: state() }), false);
+  assert.equal(childModelNotServed({ exitCode: null, spawnError: "ENOENT", state: state() }), false);
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ stopReason: "stop" }) }), false);
+});
+
+test("run: a child asking for an alias falls back when the project does not serve it", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const logs = [];
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { log: (l) => logs.push(l), spawn });
+  const sessionDir = childSessionDir(manifest.agent, 1, "");
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(join(sessionDir, "abandoned.jsonl"), "{}\n");
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  assert.equal(modelArg(children[0]), "anthropic-vertex/claude-sonnet-5-5");
+  children[0].child.finish(notServedStream());
+  await untilChildren(children, 2);
+  assert.equal(modelArg(children[1]), "anthropic-vertex/claude-sonnet-4-6");
+  assert.equal(existsSync(join(sessionDir, "abandoned.jsonl")), false, "the abandoned attempt's session is removed");
+  children[1].child.finish(okStream("served"));
+  const res = await pending;
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "served");
+  assert.equal(res.model, "anthropic-vertex/claude-sonnet-4-6");
+  assert.ok(logs.some((l) => l.includes("model anthropic-vertex/claude-sonnet-5-5 is not available (not served in this project); falling back to anthropic-vertex/claude-sonnet-4-6")), logs.join("\n"));
+  const usage = readFileSync(manifest.agent.usageFile, "utf8").trim().split("\n");
+  assert.equal(usage.length, 1, "one usage record per dispatch");
+  assert.equal(JSON.parse(usage[0]).model, "anthropic-vertex/claude-sonnet-4-6");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: other errors, pinned models and an exhausted chain do not fall back further", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+
+  const denied = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  children[0].child.finish(notServedStream("403 PERMISSION_DENIED: Permission denied on resource project p"));
+  const deniedRes = await denied;
+  assert.equal(deniedRes.isError, true);
+  assert.match(deniedRes.error, /PERMISSION_DENIED/);
+
+  const pinned = tool.run({ prompt: "p", model: "anthropic-vertex/claude-sonnet-5-5" }, {});
+  await untilChildren(children, 2);
+  children[1].child.finish(notServedStream());
+  assert.equal((await pinned).isError, true);
+
+  const exhausted = tool.run({ prompt: "p", model: "haiku" }, {});
+  await untilChildren(children, 3);
+  children[2].child.finish(notServedStream());
+  await untilChildren(children, 4);
+  children[3].child.finish(notServedStream());
+  const exhaustedRes = await exhausted;
+  assert.equal(exhaustedRes.isError, true);
+  assert.equal(exhaustedRes.model, "anthropic-vertex/claude-haiku-4-5");
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 4, "the chain ends at its last model");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: a persona configured with an alias falls back along its chain", async () => {
+  const { dir, manifest } = fallbackFixture();
+  manifest.agent.personas = { challenger: { model: "anthropic-vertex/claude-opus-5-5", tools: ["read"], fallbacks: ["anthropic-vertex/claude-opus-4-6"] } };
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", subagent_type: "challenger" }, {});
+  await untilChildren(children, 1);
+  children[0].child.finish(notServedStream());
+  await untilChildren(children, 2);
+  assert.equal(modelArg(children[1]), "anthropic-vertex/claude-opus-4-6");
+  assert.ok(children[1].args.includes(childSessionDir(manifest.agent, 1, "challenger")));
+  children[1].child.finish(okStream("ok"));
+  const res = await pending;
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.model, "anthropic-vertex/claude-opus-4-6");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The fallback-chain ids were the alias defaults before #8426, so a child
+// pinned to one by the orchestrator is still served.
+test("resolveModel: the alias fallback-chain ids stay servable", () => {
+  const { dir, manifest } = fallbackFixture();
+  const agent = manifest.agent;
+  for (const spec of ["claude-sonnet-4-6", "Claude-Sonnet-4-6", "claude-sonnet-4-6@default", "anthropic/claude-sonnet-4-6", "anthropic-vertex/claude-sonnet-4-6"]) {
+    assert.equal(resolveModel(agent, spec, ""), "anthropic-vertex/claude-sonnet-4-6", spec);
+  }
+  assert.equal(resolveModel(agent, "claude-opus-4-6", ""), "anthropic-vertex/claude-opus-4-6");
+  assert.equal(resolveModel(agent, "claude-haiku-4-5", ""), "anthropic-vertex/claude-haiku-4-5");
+  assert.equal(resolveModel(agent, "sonnet", ""), "anthropic-vertex/claude-sonnet-5-5", "an alias still resolves to its own default");
+  assert.throws(() => resolveModel(agent, "claude-sonnet-4-20250514", ""), /is not available in this sandbox/);
+  assert.throws(() => resolveModel(agent, "anthropic-vertex/claude-sonnet-4-20250514", ""), /is not a model this run serves/);
+  const { modelFallbacks: _drop, ...noChains } = agent;
+  assert.throws(() => resolveModel(noChains, "claude-sonnet-4-6", ""), /is not available in this sandbox/,
+    "a manifest whose alias was retargeted (no chain) does not serve the old default");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: a child pinned to a fallback-chain id dispatches on its Vertex spec", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", model: "claude-sonnet-4-6" }, {});
+  await untilChildren(children, 1);
+  assert.equal(modelArg(children[0]), "anthropic-vertex/claude-sonnet-4-6");
+  children[0].child.finish(okStream("ok"));
+  const res = await pending;
+  assert.equal(res.isError, false, res.error);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("consumeLine: tool executions, tool results and tool-call or thinking blocks count as activity", () => {
+  const fresh = () => ({ text: "", stopReason: "", errorMessage: "", ended: false, assistantLost: false, activity: false, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } });
+  for (const evt of [
+    { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: {} },
+    { type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result: {}, isError: false },
+    { type: "message_end", message: { role: "toolResult", toolCallId: "c1", content: [] } },
+    { type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash" }], usage: {} } },
+    { type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "hmm" }], usage: {} } },
+  ]) {
+    const s = fresh();
+    consumeLine(s, JSON.stringify(evt));
+    assert.equal(s.activity, true, evt.type + " " + (evt.message?.role ?? ""));
+  }
+  const s = fresh();
+  for (const evt of notServedStream()) consumeLine(s, JSON.stringify(evt));
+  assert.equal(s.activity, false, "a not-served error is no activity");
+  assert.equal(s.ended, true);
+});
+
+test("run: no fallback once the child showed tool activity", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  const [start, ...rest] = notServedStream();
+  children[0].child.finish([start, { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: {} }, ...rest]);
+  const res = await pending;
+  assert.equal(res.isError, true);
+  assert.match(res.error, /Publisher model/);
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "no second model is tried");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: no fallback when the stream did not reach agent_end", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  children[0].child.finish(notServedStream().filter((e) => e.type !== "agent_end"));
+  const res = await pending;
+  assert.equal(res.isError, true);
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "no second model is tried");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: no fallback when an assistant message was dropped, and the dispatch still fails closed", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  const [start, notServedEnd, agentEnd] = notServedStream();
+  const bigAssistant = { type: "message_end", message: finalMessage("stop", "x".repeat(MAX_STDOUT_LINE_CHARS + 10)) };
+  await finishRaw(children[0].child, [jsonLine(start), jsonLine(notServedEnd), jsonLine(bigAssistant), jsonLine(agentEnd)]);
+  const res = await pending;
+  assert.equal(res.isError, true);
+  assert.equal(res.stopReason, "incomplete");
+  assert.match(res.error, /exceeded .* chars and was dropped/);
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "no second model is tried");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The fallback chain shares one dispatch deadline: a fallback gets what is
+// left of it, not a fresh timeout, and none starts with too little left.
+test("run: a fallback gets the time left of the dispatch, not a fresh timeout", async () => {
+  const { dir, manifest } = fallbackFixture();
+  manifest.agent.timeoutSeconds = 3;
+  let clock = 0;
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, now: () => clock, killGraceMs: 50 });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  clock = 3000 - MIN_FALLBACK_MS - 200; // 1.2 s of the 3 s budget left
+  children[0].child.finish(notServedStream());
+  await untilChildren(children, 2);
+  // A fresh 3 s timeout would not have fired yet; the 1.2 s left has.
+  await new Promise((r) => setTimeout(r, 1600));
+  assert.ok(children[1].child.signals.includes("SIGTERM"), "the fallback is stopped at the dispatch deadline");
+  children[1].child.finish([], 143);
+  const res = await pending;
+  assert.equal(res.isError, true);
+  assert.equal(res.stopReason, "timeout");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: no fallback starts with less than the minimum attempt time left", async () => {
+  const { dir, manifest } = fallbackFixture();
+  manifest.agent.timeoutSeconds = 3;
+  let clock = 0;
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, now: () => clock });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  clock = 3000 - MIN_FALLBACK_MS + 1;
+  children[0].child.finish(notServedStream());
+  const res = await pending;
+  assert.equal(res.isError, true);
+  assert.match(res.error, /Publisher model/, "the abandoned attempt is final");
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("callable exposure union retains nested tools but never inactive direct tools", () => {
+  const registry = [
+    {name: "mcp__docs__search", exposure: "codemode"},
+    {name: "list_mcp_resources", exposure: "deferred"},
+    {name: "mcp__docs__hidden", exposure: "direct"},
+    {name: "secret", exposure: "hidden"},
+  ];
+  const agent = {tools: [], personas: {docs: {tools: ["mcp__docs__search", "mcp__docs__hidden"]}}};
+  agent.toolMode = "default";
+  assert.deepEqual(childTools(agent, undefined, ["codemode"], registry),
+    ["codemode", "mcp__docs__search", "list_mcp_resources"]);
+  assert.deepEqual(childTools(agent, "docs", ["codemode"], registry), ["mcp__docs__search"]);
+  assert.deepEqual(childTools(agent, "Explore", ["codemode"], registry), []);
+  agent.toolMode = "explicit";
+  agent.tools = ["list_mcp_*"];
+  assert.deepEqual(childTools(agent, undefined, ["codemode"], registry), ["list_mcp_resources"]);
+  assert.deepEqual(childTools(agent, "docs", ["codemode"], registry), []);
+});
+
+test("run: dispatcher separates active tools from callable registrations", async () => {
+  const {manifest} = fixture();
+  manifest.agent.toolMode = "default";
+  const {spawn, children} = fakeSpawn();
+  const tool = createAgentTool(manifest, {...quiet, spawn,
+    activeTools: () => ["read"],
+    registeredTools: () => [{name: "mcp__docs__nested", exposure: "deferred"}],
+  });
+  const pending = tool.run({prompt: "p"}, {});
+  await untilChildren(children, 1);
+  const args = children[0].args;
+  assert.equal(args[args.indexOf("--tools") + 1], "read,mcp__docs__nested");
+  assert.equal(args[args.indexOf("--fullsend-child-active-tools") + 1], '["read"]');
+  children[0].child.finish(okStream("done"));
+  assert.equal((await pending).isError, false);
+});
+
+test("childArgs fails closed without manifest resource permissions", () => {
+  assert.throws(() => childArgs({}, {seq: 1, modelSpec: "m", tools: ["read"]}),
+    /missing MCP resource permissions/);
 });

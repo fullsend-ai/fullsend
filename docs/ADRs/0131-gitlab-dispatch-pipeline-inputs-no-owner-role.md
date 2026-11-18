@@ -108,6 +108,18 @@ and compatibility details belong in the
 > **Update (#8242):** the CLI activation change has merged and the Poller
 > service-account lifecycle is active. New trigger creation and rotation as the
 > Poller remain deferred.
+>
+> **Update (#8243):** new trigger creation and rotation are now enabled for
+> eligible projects: a fresh Poller service-account generation owns the
+> trigger, so the current Poller is never re-elevated.
+>
+> **Update (#8835):** the live validation the Consequences above require has
+> run. The [#8245](https://github.com/fullsend-ai/fullsend/issues/8245) runs
+> on GitLab.com Free and self-managed EE dispatched agents through the typed
+> scalar inputs, with a Developer-role Poller and `no_one_allowed` verified.
+> The job identity pin admitted those legitimate jobs, but its override cases
+> have not been tested. See
+> [ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status).
 
 ## References
 

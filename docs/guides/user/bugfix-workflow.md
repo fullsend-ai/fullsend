@@ -52,6 +52,14 @@ These labels track where an issue is in the pipeline:
 
 Labels are mutually exclusive where it matters — the pipeline enforces this. You generally don't need to manage labels manually.
 
+On PRs, a separate set of control labels governs the [fix agent](../../agents/fix.md#control-labels). These are not pipeline state — you apply `fullsend-fix` or `fullsend-no-fix` to steer fix runs, and the fix agent applies `needs-human` when it needs you:
+
+| Label | Meaning | What happens next |
+|-------|---------|-------------------|
+| `fullsend-fix` | Opts a PR in to automatic fix runs (manual `/fs-fix` works without it) | Bot-triggered fixes run on review feedback; code-agent PRs are always eligible without it |
+| `fullsend-no-fix` | Stops bot-triggered fix runs; applied by `/fs-fix-stop` | Takes priority over `fullsend-fix`; human `/fs-fix` still works. Remove the label to re-enable |
+| `needs-human` | The fix loop is approaching its iteration cap | A human should give direction, e.g. `/fs-fix <instruction>` or push commits |
+
 ### Slash commands
 
 You can control the pipeline from issue or PR comments:
@@ -101,7 +109,7 @@ The review stage runs N independent review agents in parallel. One is randomly s
 - **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](../../agents/fix.md) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins.
 - **Split or conflicting:** Reviewers disagree, or there are conflicting security assessments. Label `requires-manual-review` is applied. A human must decide.
 
-Every push to a PR in the review stage triggers a new review round. This means `ready-for-merge` is never stale — it always reflects the current PR head.
+Every push that changes the effective diff of a GitHub PR in the review stage triggers a new review round. A GitHub synchronize event whose complete effective diff is unchanged from the previous approved review is skipped; use `/fs-review` to force a review. Reviews run normally when the prior hash or review cannot be verified, the file listing or tree metadata is incomplete/truncated, or a file has no representable patch. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
 
 ## The stages in detail
 
@@ -112,7 +120,7 @@ Every push to a PR in the review stage triggers a new review round. This means `
 The triage agent:
 
 1. **Checks for duplicates.** Searches existing issues by title, body, and metadata. If it finds a match with high confidence, it labels `duplicate`, posts a comment linking the canonical issue, and closes this one.
-2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `create_issues.allow_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
+2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `tracker.<provider>.allowed_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
 3. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `needs-info` and posts a comment explaining what's missing.
 4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 5. **Hands off.** Labels `ready-to-code` with a summary comment.
@@ -142,7 +150,7 @@ The review swarm:
 2. **One coordinator** (randomly selected) collects verdicts and posts a consolidated comment.
 3. **Outcome** is applied as a label (`ready-for-merge` or `requires-manual-review`) or triggers the [fix agent](../../agents/fix.md) (rework).
 
-Re-review happens automatically on every push to the PR. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
+Re-review happens automatically when a push changes the effective GitHub PR diff. Unchanged, complete synchronize diffs are skipped; `/fs-review` forces a fresh review. GitLab synchronized merge requests continue to use the poller’s existing review behavior. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
 
 ### Stage 4: Fix
 
@@ -163,7 +171,21 @@ For details on what the fix agent reads, what it ignores, and how URLs in instru
 
 Once the PR is merged (by human, merge queue, or automation per org governance), the automated pipeline for this issue is complete.
 
-The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131)) runs automatically when a PR is closed (merged or rejected) and can also be triggered on-demand via `/fs-retro` on any issue or PR comment. It analyzes the full workflow graph — triage, code, review, and fix agent interactions plus any human interventions — to identify improvement opportunities. Proposals are filed as GitHub issues in the appropriate repo, and a summary comment is posted on the originating PR/issue linking to all proposals.
+The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131))
+runs automatically when a PR is closed (merged or rejected) by someone with
+write access, and can also be triggered on-demand via `/fs-retro` by a user with
+write access. A merge-queue merge follows the same rule: its event sender must
+have write access.
+The `/fs-retro` command also requires write access, regardless of a lower role
+declared by a custom retro harness.
+It analyzes the full workflow graph — triage, code, review, and fix agent
+interactions plus any human interventions — to identify improvement
+opportunities. Proposals are filed as GitHub issues in the appropriate repo,
+and a summary comment is posted on the originating PR or issue linking to all
+proposals. Other automated merge or close events without a write-authorized
+actor skip automatic retro; a write-authorized user can run `/fs-retro`.
+On GitLab, merged or closed merge requests also start retro only when the
+actor has Developer access.
 
 ## Intervening in the pipeline
 

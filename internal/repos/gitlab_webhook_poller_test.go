@@ -1048,6 +1048,49 @@ func TestReconcileGitLabWebhookSafetyWithTriggerOwner_RestoresElevatedPoller(t *
 	assert.Equal(t, "update", res.Action)
 }
 
+// After a completed cutover the previous Poller is the retiring account: not
+// the runtime identity, but listed for reconciliation. An ordinary reinstall
+// restores it to Developer without selecting it, and contains its credentials
+// when the restoration cannot be verified.
+func TestReconcileGitLabWebhookSafetyWithTriggerOwner_RestoresElevatedRetiringPoller(t *testing.T) {
+	const retiringUID = int64(8008)
+	for _, tc := range []struct {
+		name        string
+		restoreFail bool
+	}{
+		{name: "restored"},
+		{name: "unrestorable", restoreFail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newWebhookFake()
+			ownedBy(c, webhookMaintainerUserID, forge.GitLabAccessLevelMaintainer)
+			po := newPollerOwner(c)
+			_, err := ensureWebhookAsPoller(c, po, false)
+			require.NoError(t, err)
+			po.sets = nil
+			po.contained = nil
+			po.managedIDs = []int64{webhookPollerUserID, retiringUID}
+			c.ProjectMemberAccess[retiringUID] = forge.GitLabAccessLevelMaintainer
+			if tc.restoreFail {
+				po.restoreErrs = 2
+			}
+
+			res, err := ReconcileGitLabWebhookSafetyWithTriggerOwner(context.Background(), c, po, webhookTestOwner, webhookTestRepo, false)
+
+			assert.Equal(t, forge.GitLabAccessLevelDeveloper, c.ProjectMemberAccess[webhookPollerUserID], "the current Poller is untouched")
+			if tc.restoreFail {
+				require.Error(t, err)
+				assert.Equal(t, []int64{retiringUID}, po.contained, "its credentials are contained")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, forge.GitLabAccessLevelDeveloper, c.ProjectMemberAccess[retiringUID])
+			assert.Empty(t, po.contained)
+			assert.Contains(t, strings.Join(res.Details, "\n"), "Restored the GitLab Poller identity (user ID 8008)")
+		})
+	}
+}
+
 // When that restoration cannot be verified, the Poller credential is
 // contained and the managed fast path is removed.
 func TestReconcileGitLabWebhookSafetyWithTriggerOwner_ContainsUnrestorablePoller(t *testing.T) {

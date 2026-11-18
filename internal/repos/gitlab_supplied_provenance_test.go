@@ -31,7 +31,7 @@ func readRoleStates(t *testing.T, fc *forge.FakeClient) map[string]rotationRoleS
 
 func TestRoleCredentialProvenances(t *testing.T) {
 	ctx := context.Background()
-	fc := suppliedProvenanceClient(`{"roles":{` +
+	fc := suppliedProvenanceClient(`{"version":2,"roles":{` +
 		`"poller":{"phase":"idle","incoming_id":5,"excluded_user_ids":[90]},` +
 		`"analyst":{"supplied":true,"supplied_user_id":55,"supplied_token_id":12},` +
 		`"coder":{}}}`)
@@ -52,8 +52,8 @@ func TestRoleCredentialProvenances(t *testing.T) {
 
 	for name, state := range map[string]string{
 		"invalid JSON":              `{`,
-		"negative supplied owner":   `{"roles":{"analyst":{"supplied":true,"supplied_user_id":-1}}}`,
-		"nonpositive excluded user": `{"roles":{"poller":{"excluded_user_ids":[0]}}}`,
+		"negative supplied owner":   `{"version":2,"roles":{"analyst":{"supplied":true,"supplied_user_id":-1}}}`,
+		"nonpositive excluded user": `{"version":2,"roles":{"poller":{"excluded_user_ids":[0]}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := RoleCredentialProvenances(ctx, suppliedProvenanceClient(state), "g", "p")
@@ -66,7 +66,7 @@ func TestRoleCredentialProvenances(t *testing.T) {
 
 func TestRecordSuppliedExclusions(t *testing.T) {
 	ctx := context.Background()
-	fc := suppliedProvenanceClient(`{"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":77,"excluded_user_ids":[90]}}}`)
+	fc := suppliedProvenanceClient(`{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":77,"excluded_user_ids":[90]}}}`)
 
 	require.NoError(t, RecordSuppliedExclusions(ctx, fc, "g", "p", gitlabroles.RolePoller, []int{91, 0, 90}))
 	roles := readRoleStates(t, fc)
@@ -90,7 +90,7 @@ func TestRecordSuppliedExclusions(t *testing.T) {
 
 func TestRecordSuppliedOwners(t *testing.T) {
 	ctx := context.Background()
-	const state = `{"roles":{` +
+	const state = `{"version":2,"roles":{` +
 		`"poller":{"supplied":true,"supplied_distributed":true,"phase":"idle","distributed_at":"2026-01-01T00:00:00Z"},` +
 		`"analyst":{"supplied":true,"supplied_user_id":55},` +
 		`"coder":{"phase":"idle","incoming_id":8}}}`

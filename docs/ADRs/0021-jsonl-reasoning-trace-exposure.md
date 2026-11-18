@@ -19,6 +19,10 @@ Date: 2026-04-15
 
 Accepted
 
+*Amended by [ADR 0161](0161-repo-config-limits-run-artifact-content.md), which
+replaces the per-agent suppression opt-out with a repo-level `artifacts`
+setting in `config.yaml`.*
+
 ## Context
 
 The retro agent needs access to the raw JSONL conversation transcripts that

@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "success": true,
+  "summary": {
+    "errors": 0,
+    "warnings": 1
+  },
+  "diagnostics": [
+    {
+      "code": "github-issue-url-deprecated",
+      "agent": "my-agent",
+      "severity": "warning",
+      "field": "env.runner",
+      "message": "GITHUB_ISSUE_URL is deprecated; use FULLSEND_WORK_ITEM_URL instead (see #6610)"
+    }
+  ]
+}

@@ -84,7 +84,7 @@ func TestOptionsValidateAccepts(t *testing.T) {
 // caller leaves it empty, and that answer is the same as claude's.
 func TestUsesVertex(t *testing.T) {
 	for runtime, want := range map[string]bool{
-		"": true, "claude": true, "pi": true, "dummy": true, "codex": false,
+		"": true, "claude": true, "pi": true, "dummy": true, "codex": false, "opencode": true,
 	} {
 		if got := (Options{Runtime: runtime}).UsesVertex(); got != want {
 			t.Errorf("UsesVertex(%q) = %v, want %v", runtime, got, want)

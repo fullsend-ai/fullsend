@@ -9,7 +9,7 @@ import {
   createExecutionContext,
   waitOnExecutionContext,
 } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "./index";
 
 /** Mock RateLimit that always denies. */
@@ -32,12 +32,19 @@ describe("mint worker bridge smoke", () => {
 
     const body = await resp.text();
     expect(body).toContain("ok");
+    // The Go handler's header must survive the Worker's header mapping.
+    expect(resp.headers.get("strict-transport-security")).toBe(
+      "max-age=31536000",
+    );
   });
 
   it("returns 404 for unknown paths", async () => {
     const resp = await exports.default.fetch("https://worker.test/nonexistent");
     // Go's ServeHTTP routes this; unmatched paths return 404.
     expect(resp.status).toBe(404);
+    expect(resp.headers.get("strict-transport-security")).toBe(
+      "max-age=31536000",
+    );
   });
 
   it("returns 405 for non-POST on /v1/token", async () => {
@@ -65,8 +72,110 @@ describe("mint worker rate limiting", () => {
     const res = await worker.fetch(req, limitedEnv, ctx);
     await waitOnExecutionContext(ctx);
     expect(res.status).toBe(429);
+    // Worker-generated error responses carry HSTS too.
+    expect(res.headers.get("strict-transport-security")).toBe(
+      "max-age=31536000",
+    );
     const body = (await res.json()) as { error?: string };
     expect(body.error).toBe("rate_limited");
+  });
+
+  it("returns 429 rate_limited when MINT_TOKEN_RATE_LIMITER denies POST /v1/bot-role", async () => {
+    const req = new Request("https://worker.test/v1/bot-role", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const limitedEnv: Env = {
+      ...env,
+      MINT_TOKEN_RATE_LIMITER: denyRateLimit,
+    } as Env;
+    const res = await worker.fetch(req, limitedEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("rate_limited");
+  });
+
+  it("rejects an encoded slash in the path instead of skipping the limiter", async () => {
+    const req = new Request("https://worker.test/v1%2Fbot-role", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const limitedEnv: Env = {
+      ...env,
+      MINT_TOKEN_RATE_LIMITER: denyRateLimit,
+    } as Env;
+    const res = await worker.fetch(req, limitedEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(400);
+  });
+
+  it("rate-limits an otherwise-encoded /v1/bot-role path on its decoded form", async () => {
+    const req = new Request("https://worker.test/v1/bot%2Drole", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const limitedEnv: Env = {
+      ...env,
+      MINT_TOKEN_RATE_LIMITER: denyRateLimit,
+    } as Env;
+    const res = await worker.fetch(req, limitedEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(429);
+  });
+
+  it("rejects an invalid percent-escape in the path", async () => {
+    const req = new Request("https://worker.test/v1/token%zz", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(req, env as Env, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(400);
+    expect(res.headers.get("strict-transport-security")).toBe(
+      "max-age=31536000",
+    );
+  });
+
+  it("returns 429 rate_limited when the limiter denies the POST / token alias", async () => {
+    const req = new Request("https://worker.test/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const limitedEnv: Env = {
+      ...env,
+      MINT_TOKEN_RATE_LIMITER: denyRateLimit,
+    } as Env;
+    const res = await worker.fetch(req, limitedEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(429);
+  });
+
+  it("allows POST /v1/bot-role when rate limiter permits", async () => {
+    const req = new Request("https://worker.test/v1/bot-role", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const allowedEnv: Env = {
+      ...env,
+      MINT_TOKEN_RATE_LIMITER: allowRateLimit,
+    } as Env;
+    const res = await worker.fetch(req, allowedEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    // Passes through to the WASM handler (400/401), not 429.
+    expect(res.status).not.toBe(429);
   });
 
   it("allows POST /v1/token when rate limiter permits", async () => {
@@ -161,5 +270,41 @@ describe("mint worker rate limiting", () => {
     // Both keys should contain the client IP.
     expect(keys[0]).toContain("1.2.3.4");
     expect(keys[1]).toContain("1.2.3.4");
+  });
+});
+
+describe("mint worker tracing disabled", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // This test file runs against the WASM built without a stamped traces
+  // endpoint (index.tracing.test.ts covers the stamped build). A leftover
+  // collector secret must not enable export on its own.
+  it("makes no collector request without a stamped endpoint", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      async (input: RequestInfo | URL): Promise<Response> => {
+        urls.push(typeof input === "string" ? input : String(input));
+        return new Response("{}", { status: 200 });
+      },
+    );
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(
+      new Request("https://worker.test/v1/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+      { ...env, MINT_OTLP_HEADERS: "Authorization=Bearer unused" } as Env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    // Rejected by the mint (4xx), never rate-limited or failed.
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    expect(res.status).not.toBe(429);
+    expect(urls).toEqual([]);
   });
 });

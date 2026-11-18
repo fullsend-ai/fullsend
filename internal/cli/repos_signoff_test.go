@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -43,11 +44,9 @@ func signoffInstallOpts(manifestPath string, fc *forge.FakeClient, direct bool) 
 	return &reposInstallConfig{
 		manifest:               manifestPath,
 		concurrency:            4,
-		roles:                  []string{"triage"},
 		direct:                 direct,
 		inferenceProject:       "inf-proj",
 		inferenceProjectNumber: "123456789",
-		inferenceRegion:        "us-central1",
 		testClient:             fc,
 	}
 }
@@ -84,11 +83,20 @@ func requireNoneSignedOff(t *testing.T, fc *forge.FakeClient) {
 	}
 }
 
-func TestReposInstallCmd_SignoffFlag(t *testing.T) {
+func TestReposInstallCmd_SignoffFlagRemoved(t *testing.T) {
 	cmd := newReposInstallCmd()
-	f := cmd.Flags().Lookup("signoff")
-	require.NotNil(t, f, "expected --signoff flag")
-	assert.Equal(t, "false", f.DefValue)
+	assert.Nil(t, cmd.Flags().Lookup("signoff"), "signoff is a repos.yaml setting, not an install flag (#8219)")
+
+	for _, arg := range []string{"--signoff", "--signoff=false"} {
+		cmd := newReposInstallCmd()
+		cmd.SetArgs([]string{arg})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--signoff was removed from repos install")
+		assert.Contains(t, err.Error(), "fullsend repos set defaults.signoff true")
+	}
 }
 
 func TestRunReposInstall_Signoff_ManifestCascade(t *testing.T) {
@@ -125,49 +133,27 @@ func TestRunReposInstall_Signoff_ManifestCascade(t *testing.T) {
 	}
 }
 
-func TestRunReposInstall_Signoff_CLIOverride(t *testing.T) {
+func TestRunReposInstall_Signoff_DisabledDoesNotResolveIdentity(t *testing.T) {
 	tests := []struct {
 		name     string
 		defaults string
 		entry    string
-		signoff  bool
-		want     bool
 	}{
-		{name: "flag true without manifest setting", signoff: true, want: true},
-		{name: "flag true beats repo false", defaults: "true", entry: "false", signoff: true, want: true},
-		{name: "flag false beats defaults true", defaults: "true", signoff: false, want: false},
-		{name: "flag false beats repo true", entry: "true", signoff: false, want: false},
+		{name: "no manifest setting"},
+		{name: "repo false beats defaults true", defaults: "true", entry: "false"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			manifestPath := writeTestManifest(t, signoffManifest(tt.defaults, "", tt.entry))
 			fc := newSignoffInstallClient("acme/api")
-			if !tt.want {
-				// An explicit --signoff=false must not even resolve identity.
-				fc.Errors["GetAuthenticatedUserIdentity"] = errors.New("identity must not be requested")
-			}
+			// Without a resolved signoff the identity is never requested.
+			fc.Errors["GetAuthenticatedUserIdentity"] = errors.New("identity must not be requested")
 
-			opts := signoffInstallOpts(manifestPath, fc, false)
-			opts.signoff = tt.signoff
-			opts.signoffChanged = true
-			err := runReposInstall(context.Background(), opts)
+			err := runReposInstall(context.Background(), signoffInstallOpts(manifestPath, fc, false))
 			require.NoError(t, err)
-			if tt.want {
-				requireAllSignedOff(t, fc)
-			} else {
-				requireNoneSignedOff(t, fc)
-			}
+			requireNoneSignedOff(t, fc)
 		})
 	}
-}
-
-func TestRunReposInstall_Signoff_FlagParsing(t *testing.T) {
-	cmd := newReposInstallCmd()
-	require.NoError(t, cmd.Flags().Parse([]string{"--signoff=false"}))
-	assert.True(t, cmd.Flags().Changed("signoff"))
-	v, err := cmd.Flags().GetBool("signoff")
-	require.NoError(t, err)
-	assert.False(t, v)
 }
 
 func TestRunReposInstall_Signoff_MissingIdentity(t *testing.T) {
@@ -244,7 +230,6 @@ func TestRunReposInstall_Signoff_Upgrade(t *testing.T) {
 			fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte("uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v0.9.0")
 
 			opts := signoffInstallOpts(manifestPath, fc, true)
-			opts.roles = nil
 			require.NoError(t, runReposInstall(context.Background(), opts))
 			if enabled {
 				requireAllSignedOff(t, fc)

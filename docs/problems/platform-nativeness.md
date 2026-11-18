@@ -73,6 +73,11 @@ These problems exist regardless of whether the system is native or external. The
 
 gh-aw shipped an experimental [`merge-pull-request`](https://github.github.com/gh-aw/reference/safe-outputs-pull-requests/) safe-output (introduced via [PR #27193](https://github.com/github/gh-aw/pull/27193), merged 2026-04-20, and refined further in the June 2026 v0.80.4/v0.81.0 releases) that merges a PR once configured policy gates pass — required status checks, review decision, unresolved review-thread state, label/title/branch constraints, and GitHub mergeability — with merges to the repository default branch always refused, and `gh aw compile` emitting an experimental-feature warning on use. Docs state explicit graduation criteria (end-to-end cross-repo test coverage, a full release cycle without schema/behavior changes) before it leaves experimental status. A [GitHub blog post](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/) argues developers will always own the merge button; gh-aw's own product has since partially moved past that editorial position by shipping the mechanism, gated on a prior human review decision rather than autonomous judgment. Fullsend's thesis — that for routine changes with sufficient verification, the merge decision itself (not just the mechanical merge click after a human has already approved) can be automated — remains differentiated, but the gap with gh-aw is narrower than it was.
 
+A [Gemara lab](../spikes/2026-10-24-gemara-auto-merge.md) separated these
+roles explicitly. A policy assessment decided eligibility, a GitHub App writer
+requested the merge, and GitHub's protected merge queue kept check enforcement
+and performed the merge.
+
 ### Intent verification
 
 Checking whether a change is authorized against a structured intent system — not just "is this change correct?" but "is this change one we actually want?" This is absent from every tool in the [landscape](../landscape.md), including gh-aw. A native system could implement it, but gh-aw's architecture does not. See [intent-representation.md](intent-representation.md).
@@ -97,7 +102,17 @@ These are shared concerns where gh-aw's native position provides a structural ad
 
 GitHub Actions has no built-in approval gate for `issue_comment` or `issues.opened` triggers — unlike `pull_request` from public forks, which can require a maintainer's approval before running. Any user who can comment on an issue or open one fires the workflow immediately, full stop. [GitHub Security Lab documented a related class of vulnerability in 2021](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/) that they named "pwn request" — focused specifically on privilege escalation via `pull_request_target` code execution. The underlying issue is broader: an absent trigger-level authorization gate, which extends to `issue_comment` and `issues.opened` as well. There the risk isn't code execution, it's unauthorized cost and abuse exposure — for a workflow that runs paid LLM inference, an attacker doesn't need a security bug, just a repo they can comment on.
 
-Fullsend closes this itself: nearly every dispatch path — slash commands and automatic event triggers alike — is gated on collaborator repository permission before dispatching an agent, via a parameterized `has_repo_permission` check against the collaborator-permission API (observation stages like triage/review require `triage`+, mutation stages like code/fix require `write`+) or, for label-triggered handoffs, the implicit requirement that applying a label itself needs write access ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)). The `issue_comment` needs-info re-triage path was removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — re-triage after providing requested information now requires an explicit `/fs-triage` command. `retro` on PR-close is intentionally left ungated for read-only lifecycle accounting. This was not the default behavior; it had to be built and applied consistently after discovering some dispatch paths were gated and others weren't.
+Fullsend closes this itself: dispatch paths — slash commands and automatic
+event triggers alike — check collaborator repository permission before starting
+an agent. Observation stages such as triage and review require `triage`+, while
+mutation stages such as code, fix, and retro require `write`+ on GitHub and
+Developer access on GitLab, including for completed merge-queue merges ([ADR
+0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+Label-triggered handoffs rely on the permission needed to apply the label. The
+`issue_comment` needs-info re-triage path was removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740)
+— re-triage after providing requested information now requires an explicit
+`/fs-triage` command. A CEL routing failure on PR close skips retro instead of
+falling back to the Bash route.
 
 gh-aw's docs now define [`on.roles`/`on.skip-roles`](https://github.github.com/gh-aw/reference/triggers/) — an actor-authorization allowlist against the triggering user's repository role, defaulting to `[admin, maintainer, write]` — automatically enforced by default for `push`, `issues`, and `pull_request` triggers, closing the gap for `issues.opened`. However, `issue_comment` (the event slash commands and comment-driven automation use — the primary "pwn request" vector this section describes) is not in that default-enforced list; a workflow author must explicitly add `roles:` to gate comment-triggered workflows, or they inherit the same ungated-trigger behavior as any other GitHub Actions workflow.
 

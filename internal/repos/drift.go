@@ -183,14 +183,15 @@ type OrphanVar struct {
 // for the given forge. These are orphan variables — leftover from a
 // previous installation or a removed feature. GitLab retired poll-state
 // variables (gitlabRetiredLegacyVars) are known-retired: they are not
-// reported as orphans so already-installed repos do not warn during the
-// migrate-then-delete transition.
+// reported as orphans, so leftovers on older installations do not warn.
 //
 // The managed set is computed using the FULL superset of possible
 // managed variables — conditional fields (InferenceRegion,
-// ReviewAppClientID) are populated with placeholders so that variables
-// like FULLSEND_GCP_REGION are never flagged as orphans just because
-// the caller doesn't know their expected value.
+// ReviewAppClientID, InferenceServiceAccount) are populated with
+// placeholders so that variables like FULLSEND_GCP_REGION are never flagged
+// as orphans just because the caller doesn't know their expected value. A
+// leftover FULLSEND_GCP_SERVICE_ACCOUNT is reported as obsolete drift
+// instead (see obsoleteInferenceVariables).
 func CheckOrphanVars(ctx context.Context, client forge.Client,
 	owner, repo string, cfg InstallConfig, mintURL string) ([]OrphanVar, error) {
 
@@ -205,6 +206,9 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 	}
 	if maxCfg.AppSet == "" {
 		maxCfg.AppSet = "placeholder"
+	}
+	if maxCfg.InferenceServiceAccount == "" {
+		maxCfg.InferenceServiceAccount = "placeholder"
 	}
 	managed, err := managedVarsForForge(maxCfg, mintURL)
 	if err != nil {
@@ -223,12 +227,26 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 	for _, s := range managedInferenceSecrets() {
 		managedNames[s] = true
 	}
+	// Install records the trace signing key's key ID in this variable on
+	// GitHub (ADR 0154). It is managed but, like FULLSEND_DISPATCH_SECRET,
+	// not required.
+	if cfg.Forge != ForgeGitLab {
+		managedNames[forge.VarTraceSigningKeyID] = true
+	}
 	// FULLSEND_DISPATCH_SECRET is auto-provisioned by install/converge
 	// to sign poll state. It is managed, not an orphan, but is
 	// intentionally not in requiredSecretsForForge — that would mark
 	// existing installs incomplete solely because the secret is new.
 	if cfg.Forge == ForgeGitLab {
 		managedNames[forge.SecretDispatch] = true
+		// The webhook fast path owns its pipeline trigger token and webhook
+		// secret. They are stored as masked CI/CD variables, so the variable
+		// listing returns them, but they are managed, not orphans.
+		managedNames[forge.SecretTriggerToken] = true
+		managedNames[forge.SecretWebhookSecret] = true
+		// Fullsend reserves the trace signing key's name (ADR 0154). The
+		// variable listing returns it, but it is managed, not an orphan.
+		managedNames[forge.SecretTraceSigningKey] = true
 		for _, name := range gitlabRetiredLegacyVars {
 			managedNames[name] = true
 		}

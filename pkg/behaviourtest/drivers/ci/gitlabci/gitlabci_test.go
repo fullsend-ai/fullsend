@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 )
+
+var _ ci.AgentArtifactDownloader = (*Driver)(nil)
 
 // instantAfter returns a timer function that fires immediately, allowing
 // poll-loop tests to run without real wall-clock sleeps.
@@ -164,15 +167,14 @@ func TestDownloadNamedArtifactFromRun_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
-func TestDownloadNamedArtifactFromRun_MapsPortableNameToScaffoldJobName(t *testing.T) {
+func TestDownloadAgentArtifactsFromRun_MapsAgentToScaffoldJobName(t *testing.T) {
 	t.Parallel()
 
 	// Regression (#7957 review): GitLab has no separate named-artifact
 	// concept — ListWorkflowRunArtifacts reports the owning job's name,
 	// and the scaffold's generic agent-stage template names every job
 	// "fullsend <agent> agent" (fullsend-agent.yml), not the portable
-	// "fullsend-<agent>" convention shared callers (e.g. playback.go)
-	// pass in.
+	// artifact name used by GitHub Actions.
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	w, err := zw.Create("agent-result.json")
@@ -189,18 +191,44 @@ func TestDownloadNamedArtifactFromRun_MapsPortableNameToScaffoldJobName(t *testi
 
 	d := newTestDriver(client)
 	dest := t.TempDir()
-	err = d.DownloadNamedArtifactFromRun(context.Background(), "org", "repo", 5, "fullsend-review", dest)
+	err = d.DownloadAgentArtifactsFromRun(context.Background(), "org", "repo", 5, "review", dest)
 	require.NoError(t, err)
 	data, err := os.ReadFile(filepath.Join(dest, "fullsend review agent", "agent-result.json"))
 	require.NoError(t, err)
 	assert.Equal(t, `{"ok":true}`, string(data))
 }
 
-func TestDownloadNamedArtifactAfter_MapsPortableNameToScaffoldJobName(t *testing.T) {
+func TestDownloadNamedArtifactFromRunMatchesPhysicalNameExactly(t *testing.T) {
 	t.Parallel()
 
-	// Regression (#7957 review): same portable-to-job-name translation
-	// as DownloadNamedArtifactFromRun, exercised through the
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("agent-result.json")
+	require.NoError(t, err)
+	_, err = w.Write([]byte(`{"ok":true}`))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+
+	client := forge.NewFakeClient()
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		5: {{ID: 50, Name: "fullsend review agent"}},
+	}
+	client.WorkflowArtifactContents = map[int][]byte{50: buf.Bytes()}
+	d := newTestDriver(client)
+
+	err = d.DownloadNamedArtifactFromRun(context.Background(), "org", "repo", 5, "fullsend-review", t.TempDir())
+	require.ErrorContains(t, err, `artifact "fullsend-review" not found`)
+
+	dest := t.TempDir()
+	require.NoError(t, d.DownloadNamedArtifactFromRun(context.Background(), "org", "repo", 5, "fullsend review agent", dest))
+	assert.FileExists(t, filepath.Join(dest, "fullsend review agent", "agent-result.json"))
+}
+
+func TestDownloadAgentArtifactsAfter_MapsAgentToScaffoldJobName(t *testing.T) {
+	t.Parallel()
+
+	// Regression (#7957 review): same agent-to-job-name translation
+	// as DownloadAgentArtifactsFromRun, exercised through the
 	// repository-level artifact poll instead.
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var buf bytes.Buffer
@@ -221,7 +249,7 @@ func TestDownloadNamedArtifactAfter_MapsPortableNameToScaffoldJobName(t *testing
 
 	d := newTestDriver(client)
 	dest := t.TempDir()
-	err = d.DownloadNamedArtifactAfter(context.Background(), "org", "repo", "fullsend-fix", after, dest)
+	err = d.DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "fix", after, dest)
 	require.NoError(t, err)
 	data, err := os.ReadFile(filepath.Join(dest, "fullsend fix agent", "agent-result.json"))
 	require.NoError(t, err)
@@ -861,17 +889,7 @@ func TestHarnessJobSuffix(t *testing.T) {
 	// "Harness run (<agent>)" matrix naming.
 	assert.Equal(t, "fullsend pr-ping agent", harnessJobSuffix("pr-ping"))
 	assert.Equal(t, "fullsend triage agent", harnessJobSuffix("triage"))
-}
-
-func TestGitlabArtifactJobName(t *testing.T) {
-	t.Parallel()
-
-	// The portable "fullsend-<agent>" convention (shared with the GitHub
-	// driver) maps to the scaffold's job-name convention; anything else
-	// passes through unchanged (#7957 review).
-	assert.Equal(t, "fullsend review agent", gitlabArtifactJobName("fullsend-review"))
-	assert.Equal(t, "fullsend pr-ping agent", gitlabArtifactJobName("fullsend-pr-ping"))
-	assert.Equal(t, "already-a-job-name", gitlabArtifactJobName("already-a-job-name"))
+	assert.Equal(t, "fullsend review agent", harnessJobSuffix("review"))
 }
 
 func TestExtractArtifactZip_RejectsCorruptZip(t *testing.T) {
@@ -1068,6 +1086,48 @@ func TestWaitForWorkflow_PollsUntilDispatch(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, run)
 	assert.Equal(t, 1, run.ID)
+}
+
+// TestWaitForWorkflow_NotDispatchedWrapsSentinel checks that a timeout
+// with no pipeline wraps ci.ErrWorkflowNotDispatched, so steps retry it,
+// keeps its message, and is not a *ci.NotDispatchedError, so the GitHub
+// Actions dispatch diagnostics do not run for it.
+func TestWaitForWorkflow_NotDispatchedWrapsSentinel(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		event string
+		want  string
+	}{
+		"with event":    {event: "issues", want: "pipeline (issues) was not dispatched"},
+		"without event": {event: "", want: "pipeline was not dispatched"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			start := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+			calls := 0
+			d := &Driver{
+				Client:    forge.NewFakeClient(),
+				afterFunc: instantAfter,
+				nowFunc: func() time.Time {
+					calls++
+					if calls <= 2 {
+						return start
+					}
+					return start.Add(dispatchTimeout + time.Minute)
+				},
+			}
+
+			_, err := d.WaitForWorkflow(context.Background(), "org", "repo", "", start, tc.event)
+
+			require.Error(t, err)
+			assert.Equal(t, tc.want, err.Error())
+			assert.ErrorIs(t, err, ci.ErrWorkflowNotDispatched)
+			var nd *ci.NotDispatchedError
+			assert.False(t, errors.As(err, &nd), "the GitLab timeout carries no GitHub Actions details")
+		})
+	}
 }
 
 func TestWaitForHarnessAgent_LookupErrsTracked(t *testing.T) {

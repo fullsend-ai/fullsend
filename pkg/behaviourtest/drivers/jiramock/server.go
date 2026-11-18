@@ -31,10 +31,16 @@ type State struct {
 }
 
 // AddIssue inserts an issue with the given key and labels. A synthetic
-// numeric ID and timestamp are assigned automatically.
+// numeric ID and timestamp are assigned automatically. An issue without
+// labels is served with an empty list, as Jira Cloud was observed serving it
+// (checked 2026-11-01).
 func (s *State) AddIssue(key string, labels []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if labels == nil {
+		labels = []string{}
+	}
 
 	s.nextID++
 	id := strconv.Itoa(s.nextID + 10000)
@@ -61,6 +67,19 @@ func (s *State) AddIssue(key string, labels []string) {
 	}
 }
 
+// SetIssueID replaces the synthetic numeric ID of an issue added with
+// AddIssue, so a test can serve an issue whose ID fullsend cannot map.
+// It reports whether the issue exists.
+func (s *State) SetIssueID(key, id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	issue, ok := s.issues[key]
+	if ok {
+		issue.ID = id
+	}
+	return ok
+}
+
 // AddComment appends a comment to the given issue. The comment is authored
 // by a canned human user (not a bot).
 func (s *State) AddComment(issueKey, body string) {
@@ -71,11 +90,19 @@ func (s *State) AddComment(issueKey, body string) {
 // the given account. Used to test role resolution for actors other than
 // the default canned commenter.
 func (s *State) AddCommentFromActor(issueKey, body, accountID, displayName string) {
+	s.AddCommentFromActorAt(issueKey, body, accountID, displayName, time.Now())
+}
+
+// AddCommentFromActorAt is AddCommentFromActor with an explicit creation
+// time. Tests that run several poll cycles use it to place each comment
+// before the poller's change-detection safety margin and after the
+// previous cycle's checkpoint.
+func (s *State) AddCommentFromActorAt(issueKey, body, accountID, displayName string, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	id := strconv.Itoa(len(s.comments[issueKey]) + 1)
-	now := time.Now().Format("2006-01-02T15:04:05.000-0700")
+	now := at.Format("2006-01-02T15:04:05.000-0700")
 
 	s.comments[issueKey] = append(s.comments[issueKey], jira.Comment{
 		ID:   id,
@@ -116,9 +143,41 @@ func (s *State) SetUserGroups(accountID string, groupIDs ...string) {
 	s.userGroups[accountID] = groupIDs
 }
 
+// Labels returns the issue's current label list.
+func (s *State) Labels(issueKey string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	issue, ok := s.issues[issueKey]
+	if !ok {
+		return nil
+	}
+	return issue.Fields.Labels
+}
+
+// SetIssueLabels replaces an issue's label list without recording a
+// changelog entry. Scenarios that need a large label state (for example the
+// dispatch transport's labels bound) use it to place the labels at issue
+// creation time rather than emitting one label-change event per label.
+func (s *State) SetIssueLabels(issueKey string, labels []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	issue, ok := s.issues[issueKey]
+	if !ok {
+		return
+	}
+	issue.Fields.Labels = labels
+}
+
 // AddLabelChange appends a changelog entry representing a label addition
 // and updates the issue's label list.
 func (s *State) AddLabelChange(issueKey, label string) {
+	s.AddLabelChangeAt(issueKey, label, time.Now())
+}
+
+// AddLabelChangeAt is AddLabelChange with an explicit changelog time.
+func (s *State) AddLabelChangeAt(issueKey, label string, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -133,7 +192,7 @@ func (s *State) AddLabelChange(issueKey, label string) {
 	toLabels := strings.Join(issue.Fields.Labels, " ")
 
 	id := strconv.Itoa(len(s.changelog[issueKey]) + 1)
-	now := time.Now().Format("2006-01-02T15:04:05.000-0700")
+	now := at.Format("2006-01-02T15:04:05.000-0700")
 
 	s.changelog[issueKey] = append(s.changelog[issueKey], jira.ChangelogEntry{
 		ID: id,

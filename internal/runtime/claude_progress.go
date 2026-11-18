@@ -9,7 +9,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -99,10 +98,16 @@ type systemEvent struct {
 	Subtype           string `json:"subtype"`
 	Model             string `json:"model"`
 	ClaudeCodeVersion string `json:"claude_code_version"`
+	SessionID         string `json:"session_id"`
 	Attempt           int    `json:"attempt"`
 	MaxRetries        int    `json:"max_retries"`
 	RetryDelayMs      int    `json:"retry_delay_ms"`
 	Error             string `json:"error"`
+	// OriginalModel, FallbackModel and Trigger are set on a
+	// "model_fallback" event.
+	OriginalModel string `json:"original_model"`
+	FallbackModel string `json:"fallback_model"`
+	Trigger       string `json:"trigger"`
 	// PluginErrors stays raw so a malformed value cannot fail decoding of
 	// the whole init event; decodePluginErrors reads it entry by entry.
 	PluginErrors json.RawMessage `json:"plugin_errors"`
@@ -332,14 +337,31 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				continue
 			}
 			switch se.Subtype {
+			case "task_started", "task_progress", "task_updated", "task_notification":
+				for _, progress := range decodeClaudeTaskProgress(line, se.Subtype) {
+					onEvent(progress)
+				}
+			case "hook_started", "hook_progress", "hook_response", "task_summary",
+				"informational", "notification", "status", "session_state_changed",
+				"permission_denied", "background_tasks_changed":
+				if progress, ok := decodeClaudeStatusProgress(line, se.Subtype); ok {
+					onEvent(progress)
+				}
 			case "init":
 				onEvent(InitEvent{
-					Model:   se.Model,
-					Version: se.ClaudeCodeVersion,
+					Model:     se.Model,
+					Version:   se.ClaudeCodeVersion,
+					SessionID: se.SessionID,
 				})
 				for _, pe := range decodePluginErrors(se.PluginErrors) {
 					onEvent(pe)
 				}
+			case "model_fallback":
+				// Claude Code moved to the next --fallback-model entry
+				// within the session (2.1.296 does so on a Vertex 404 as
+				// "trigger":"last_resort"); the init event still names
+				// the model that failed.
+				onEvent(ModelFallbackEvent{From: se.OriginalModel, To: se.FallbackModel, Trigger: se.Trigger})
 			case "api_retry":
 				onEvent(RetryEvent{
 					Attempt:    se.Attempt,
@@ -347,6 +369,11 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					DelayMs:    se.RetryDelayMs,
 					Error:      se.Error,
 				})
+			}
+
+		case "rate_limit_event":
+			if progress, ok := decodeClaudeRateLimit(line); ok {
+				onEvent(progress)
 			}
 
 		case "stream_event":
@@ -389,17 +416,21 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				case "thinking_delta":
 					onEvent(ThinkingEvent{Text: d.Thinking})
 				case "input_json_delta":
-					if toolInputJSON.Len() < maxToolInputSize {
-						toolInputJSON.WriteString(d.PartialJSON)
+					// Cut the delta that crosses the cap: the input is
+					// incomplete past it either way, and Arguments
+					// carries whatever accumulated.
+					if room := maxToolInputSize - toolInputJSON.Len(); room > 0 {
+						toolInputJSON.WriteString(d.PartialJSON[:min(room, len(d.PartialJSON))])
 					}
 				}
 
 			case "content_block_stop":
 				if currentToolName != "" {
 					onEvent(ToolUseEvent{
-						ID:      currentToolID,
-						Name:    currentToolName,
-						Summary: extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String())),
+						ID:        currentToolID,
+						Name:      currentToolName,
+						Summary:   extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String())),
+						Arguments: toolInputJSON.String(),
 					})
 					currentToolName = ""
 					currentToolID = ""
@@ -517,9 +548,10 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					}
 				case "tool_use":
 					onEvent(ToolUseEvent{
-						ID:      item.ID,
-						Name:    item.Name,
-						Summary: extractSafeContext(item.Name, item.Input),
+						ID:        item.ID,
+						Name:      item.Name,
+						Summary:   extractSafeContext(item.Name, item.Input),
+						Arguments: string(item.Input),
 					})
 				}
 			}
@@ -622,7 +654,9 @@ func toolResultText(raw json.RawMessage) (text string, partial bool) {
 
 // progressParser reads NDJSON from Claude Code's stream-json output and emits
 // progress updates via the printer. It is a thin wrapper around parseClaudeStream
-// that creates an EventRenderer and populates RunMetrics.
+// that creates an EventRenderer and populates RunMetrics. Only tests call it,
+// and it renders at the full progress level; ClaudeRuntime.Run builds its own
+// renderer at RunParams.ProgressVerbosity (ADR 0163).
 func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error {
 	renderer := NewEventRenderer(printer)
 	return parseClaudeStream(r, func(evt AgentEvent) {
@@ -640,6 +674,11 @@ func recordClaudeMetrics(metrics *RunMetrics, evt AgentEvent) {
 		if metrics.Model == "" {
 			metrics.Model = e.Model
 		}
+	case ModelFallbackEvent:
+		if e.To != "" {
+			metrics.Model = e.To
+		}
+		metrics.recordFallback(e.From, claudeCodeFallbackReason(e.Trigger))
 	case TokensEvent:
 		// Capture cumulative token usage from the stream so cancelled
 		// runs (no ResultEvent) retain non-zero telemetry (#6905).
@@ -665,9 +704,6 @@ func recordClaudeMetrics(metrics *RunMetrics, evt AgentEvent) {
 		metrics.ToolCalls.Add(1)
 	}
 }
-
-// progressRedactor scrubs secrets from tool context strings before display.
-var progressRedactor = security.NewSecretRedactor()
 
 // extractSafeContext returns a safe, non-secret string for progress display.
 // The result is run through SecretRedactor to scrub tokens, keys, and

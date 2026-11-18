@@ -1,0 +1,103 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "work_item",
+    "source": {
+      "system": "github",
+      "host": "github.com",
+      "repository": "fullsend-ai/demo",
+      "repository_id": "R_kgDOExample"
+    },
+    "id": "fullsend:entity:v1:github:github.com:work_item:I_kwDOExample53",
+    "source_id": "I_kwDOExample53",
+    "key": "#53",
+    "number": 53,
+    "url": "https://github.com/fullsend-ai/demo/issues/53",
+    "state": "open",
+    "title": "Edit the description",
+    "author": {
+      "id": "U_kgDOBob",
+      "login": "bob",
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": {
+      "$unknown": "not_loaded"
+    },
+    "comments": [
+      {
+        "id": "IC_kwDOExampleTriage2",
+        "created_at": "2026-10-13T11:20:00.000000000Z",
+        "revised_at": "2026-10-13T11:20:00.000000000Z",
+        "actor": {
+          "id": "U_kgDOCarol",
+          "login": "carol",
+          "kind": "human",
+          "role": "triage",
+          "role_verified": true
+        },
+        "text": "/EDIT\nUpdated content.",
+        "command": "/EDIT",
+        "thread_id": null,
+        "is_entity_author": false
+      }
+    ],
+    "label_applications": [],
+    "threads": [],
+    "labels": [],
+    "assignees": [],
+    "reactions": [],
+    "lifecycle": {
+      "closed_at": {
+        "$unknown": "not_loaded"
+      },
+      "closed_by": {
+        "$unknown": "not_loaded"
+      }
+    },
+    "work_item": {
+      "source_status": {
+        "$unknown": "not_loaded"
+      },
+      "issue_type": {
+        "$unknown": "not_loaded"
+      },
+      "state_reason": {
+        "$unknown": "not_loaded"
+      }
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "comments": {
+      "status": "partial",
+      "reason": "pagination_incomplete"
+    },
+    "label_applications": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "threads": {
+      "status": "complete"
+    },
+    "thread_comments": [],
+    "assignees": {
+      "status": "not_loaded"
+    },
+    "reactions": {
+      "status": "not_loaded"
+    },
+    "extension_lists": []
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}

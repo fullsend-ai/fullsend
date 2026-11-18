@@ -19,17 +19,19 @@ type emojiCall struct {
 	Emoji       string
 }
 
-// pipelineCall records a CreatePipeline or CreatePipelineWithInputs
-// invocation. ViaInputs distinguishes which transport dispatch() actually
-// used, since both methods decode into the same flat Variables shape here
-// (see CreatePipelineWithInputs below) so most assertions can stay
-// transport-agnostic.
+// pipelineCall records a CreatePipelineWithInputs (or child-pipeline)
+// invocation, decoded into a flat Variables shape (see
+// CreatePipelineWithInputs below) so most assertions can read dispatch
+// fields by name. ViaInputs confirms the typed-input transport was used.
 type pipelineCall struct {
 	Owner     string
 	Repo      string
 	Ref       string
 	Variables map[string]string
 	ViaInputs bool
+	// JobToken is the CI_JOB_TOKEN a child-pipeline dispatch was
+	// authenticated with; empty for the Poller API route.
+	JobToken string
 }
 
 // typedWrapperFixture returns a minimal two-document GitLab wrapper whose
@@ -72,6 +74,9 @@ type mockClient struct {
 	mrNotes   map[int][]Note // keyed by MR IID
 	mrNoteErr map[int]error
 
+	mrVersions    map[int][]MergeRequestDiffVersion // keyed by MR IID
+	mrVersionsErr map[int]error
+
 	events    []ProjectEvent
 	eventsErr error
 
@@ -95,8 +100,12 @@ type mockClient struct {
 	// dispatch ref rather than the default branch.
 	wrapperContentRefs []string
 	fileContentErr     error
-	branchRefErr       error
-	forceCommitErr     error
+	// fileContentErrAt fails only the poll-state read with the given 1-based
+	// ordinal (counted across non-wrapper reads), for transient-failure tests.
+	fileContentErrAt map[int]error
+	fileContentReads int
+	branchRefErr     error
+	forceCommitErr   error
 	// forceCommitErrSeq is an error queue for CommitFileToBranch / ForceCommitFileToBranch.
 	// Each call shifts the first element; when empty, falls through to forceCommitErr.
 	forceCommitErrSeq []error
@@ -127,6 +136,8 @@ type mockClient struct {
 
 	memberLevel map[int]int   // keyed by userID
 	memberErr   map[int]error // keyed by userID
+	userBot     map[int]bool
+	userBotErr  map[int]error
 
 	projectPaths map[int]string // keyed by project ID
 
@@ -176,9 +187,13 @@ func newMockClient() *mockClient {
 		issueErr:       make(map[int]error),
 		mr:             make(map[int]*MergeRequest),
 		mrErr:          make(map[int]error),
+		mrVersions:     make(map[int][]MergeRequestDiffVersion),
+		mrVersionsErr:  make(map[int]error),
 		wrapperContent: typedWrapperFixture(),
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
+		userBot:        make(map[int]bool),
+		userBotErr:     make(map[int]error),
 		projectPaths:   make(map[int]string),
 		branchGen:      make(map[string]int),
 	}
@@ -243,6 +258,13 @@ func (m *mockClient) ListMergeRequestNotes(_ context.Context, _, _ string, mrIID
 	return m.mrNotes[mrIID], nil
 }
 
+func (m *mockClient) ListMergeRequestDiffVersions(_ context.Context, _, _ string, mrIID int) ([]MergeRequestDiffVersion, error) {
+	if err := m.mrVersionsErr[mrIID]; err != nil {
+		return nil, err
+	}
+	return m.mrVersions[mrIID], nil
+}
+
 func (m *mockClient) ListResourceLabelEvents(_ context.Context, _, _ string, issueIID int) ([]ResourceLabelEvent, error) {
 	m.labelEventCalls++
 	if m.labelEventsFailAfter > 0 && m.labelEventCalls > m.labelEventsFailAfter {
@@ -285,6 +307,7 @@ func (m *mockClient) setBranchState(branch string, s persistedPollState) {
 			FailedKeysFull:     s.FailedKeysFull,
 			PendingLabels:      s.PendingLabels,
 			LegacyMirrors:      s.LegacyMirrors,
+			IssueOpenCutoff:    s.IssueOpenCutoff,
 		}
 	}
 	m.mu.Lock()
@@ -330,7 +353,7 @@ func (m *mockClient) getBranchState(branch string) (persistedPollState, bool) {
 			if err := json.Unmarshal(data, &s); err != nil {
 				return persistedPollState{}, true
 			}
-			return decodeLegacyMirrors(decodePendingLabels(decodeReplayKeys(s))), true
+			return decodeIssueOpenCutoff(decodeLegacyMirrors(decodePendingLabels(decodeReplayKeys(s)))), true
 		}
 	}
 	// Fall back to a seeded-but-not-yet-force-committed document (see
@@ -373,6 +396,10 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 	}
 	if m.fileContentErr != nil {
 		return nil, m.fileContentErr
+	}
+	m.fileContentReads++
+	if err := m.fileContentErrAt[m.fileContentReads]; err != nil {
+		return nil, err
 	}
 	// persistWithCAS pins its read to the SHA a prior GetBranchRef call
 	// returned rather than a branch name; resolve it back to the branch
@@ -537,6 +564,13 @@ func (m *mockClient) GetAuthenticatedUserID(_ context.Context) (int, error) {
 	return 0, m.authErr
 }
 
+func (m *mockClient) GetUserBot(_ context.Context, userID int) (bool, error) {
+	if err := m.userBotErr[userID]; err != nil {
+		return false, err
+	}
+	return m.userBot[userID], nil
+}
+
 func (m *mockClient) CreateNoteAwardEmoji(_ context.Context, _, _, _ string, noteableIID, noteID int, emoji string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -589,32 +623,8 @@ func (m *mockClient) GetProjectPath(_ context.Context, projectID int) (string, e
 	return path, nil
 }
 
-func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
-	if m.onPipeline != nil {
-		m.onPipeline()
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	vars := make(map[string]string, len(variables))
-	for k, v := range variables {
-		vars[k] = v
-	}
-	m.pipelineCalls = append(m.pipelineCalls, pipelineCall{
-		Owner:     owner,
-		Repo:      repo,
-		Ref:       ref,
-		Variables: vars,
-		ViaInputs: false,
-	})
-	if m.pipelineErr != nil && (m.pipelineErrAfter == 0 || len(m.pipelineCalls) > m.pipelineErrAfter) {
-		return 0, "", m.pipelineErr
-	}
-	m.pipelineCounter++
-	return int64(m.pipelineCounter), fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", m.pipelineCounter), nil
-}
-
 // CreatePipelineWithInputs decodes the typed pipeline inputs dispatch()
-// sends back into the same flat Variables shape CreatePipeline recorded,
+// sends back into a flat Variables shape keyed by dispatch field name,
 // reconstructing EVENT_PAYLOAD_B64 by concatenating its fixed
 // event_payload_chunk_NN scalar inputs in order (#7850 injection-vuln
 // fix: chunks are plain data now, not shell statements needing parsing).
@@ -622,6 +632,17 @@ func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, 
 // pipelineCall.Variables unchanged while still exercising the real
 // input-encoding/chunking logic end to end.
 func (m *mockClient) CreatePipelineWithInputs(_ context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	return m.createPipelineWithInputs(owner, repo, ref, "", inputs)
+}
+
+// CreateChildPipelineWithInputs records a CI_JOB_TOKEN child-pipeline
+// dispatch exactly like CreatePipelineWithInputs, plus the job token it
+// was authenticated with, so tests can tell the two routes apart.
+func (m *mockClient) CreateChildPipelineWithInputs(_ context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	return m.createPipelineWithInputs(owner, repo, ref, jobToken, inputs)
+}
+
+func (m *mockClient) createPipelineWithInputs(owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
 	if m.onPipeline != nil {
 		m.onPipeline()
 	}
@@ -678,6 +699,7 @@ func (m *mockClient) CreatePipelineWithInputs(_ context.Context, owner, repo, re
 		Ref:       ref,
 		Variables: vars,
 		ViaInputs: true,
+		JobToken:  jobToken,
 	})
 	if m.pipelineErr != nil && (m.pipelineErrAfter == 0 || len(m.pipelineCalls) > m.pipelineErrAfter) {
 		return 0, "", m.pipelineErr

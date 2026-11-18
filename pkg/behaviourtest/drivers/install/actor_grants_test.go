@@ -57,7 +57,7 @@ func TestVerifyActors_MissingMembership(t *testing.T) {
 	}
 	err := e.verifyActors(context.Background(), "org")
 	require.ErrorContains(t, err, "fstest-write is not a member of org")
-	require.ErrorContains(t, err, "hack/setup-new-e2e-org.sh")
+	require.ErrorContains(t, err, "e2e/org-pool/setup-org.sh")
 	assert.Empty(t, fc.AddedCollaborators)
 }
 
@@ -171,7 +171,7 @@ func (s *stubClientWithOrgAccess) AddCollaborator(_ context.Context, _, _, _, _ 
 	return errors.New("AddCollaborator must not be called")
 }
 
-func TestEnsurer_VerifiesActorsOnRecreatedRepo(t *testing.T) {
+func TestEnsurer_VerifiesActorsOnFreshSlotRepo(t *testing.T) {
 	speedUpValidateRetries(t)
 	sc := &stubClientWithOrgAccess{
 		stubClient: stubClient{installed: true},
@@ -193,7 +193,7 @@ func TestEnsurer_VerifiesActorsOnRecreatedRepo(t *testing.T) {
 	}
 
 	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-03"))
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
+	assert.Zero(t, sc.deleteRepoCalled.Load(), "the slot repo is never deleted by the ensurer")
 	assert.Equal(t, 1, sc.memberCalls)
 	assert.Equal(t, 0, sc.addCalls)
 }

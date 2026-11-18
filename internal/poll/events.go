@@ -1,9 +1,11 @@
 package poll
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -83,6 +85,39 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 
 	var minSkippedAt time.Time
 	for _, issue := range issues {
+		// Issue opens normally dispatch from the webhook fast-path; the
+		// poller recovers one whose delivery was missed (ADR 0125). The
+		// event matches webhookIssueEvents' (created_at time, author
+		// actor), so both share one Key() and a delivered webhook
+		// suppresses this dispatch. Bounding on created_at rather than
+		// updated_at keeps an unrelated edit of an older issue from
+		// re-emitting its open. Emitted before the notes fetch: a notes
+		// failure holds the watermark only to updated_at, which can pass
+		// created_at, so a later cycle would not rediscover the open.
+		// created_at must also follow the persisted installation cutoff, so
+		// an issue that predates installation is never triaged.
+		// A failed dispatch of a recovered open is retried through the
+		// watermark holdback and the failed-key retry count, not a durable
+		// pending handoff (only issue_label failures get one). That relies
+		// on events polls being serialized by the pipeline resource group,
+		// so no other writer persists a later watermark that would drop
+		// created_at out of the next cycle's window; MR events share the
+		// same assumption.
+		if !p.issueOpenCutoff.IsZero() && issue.State == "opened" &&
+			!issue.CreatedAt.IsZero() && issue.CreatedAt.After(since) &&
+			issue.CreatedAt.After(p.issueOpenCutoff) {
+			events = append(events, RoutableEvent{
+				Type:            "issue_event",
+				Action:          "opened",
+				IID:             issue.IID,
+				UpdatedAt:       issue.CreatedAt,
+				NoteAuthorID:    issue.Author.ID,
+				NoteAuthorLogin: issue.Author.Username,
+				IsBot:           issue.Author.Bot,
+				Labels:          issue.Labels,
+			})
+		}
+
 		notes, err := p.client.ListIssueNotes(ctx, owner, repo, issue.IID)
 		if err != nil {
 			log.Printf("list notes for issue %d: %v (skipping issue entirely)", issue.IID, err)
@@ -251,6 +286,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Action:          "opened",
 				IID:             mr.IID,
 				UpdatedAt:       mr.CreatedAt,
+				HeadSHA:         mr.SHA,
 				NoteAuthorID:    mr.Author.ID,
 				NoteAuthorLogin: mr.Author.Username,
 				IsBot:           mr.Author.Bot,
@@ -261,6 +297,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 
@@ -270,6 +307,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Type:            "mr_event",
 				IID:             mr.IID,
 				UpdatedAt:       mr.MergedAt,
+				HeadSHA:         mr.SHA,
 				NoteAuthorID:    mergedBy.ID,
 				NoteAuthorLogin: mergedBy.Username,
 				IsBot:           mergedBy.Bot,
@@ -280,6 +318,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 				MergedByLogin:   mergedBy.Username,
 			})
 		}
@@ -297,15 +336,12 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 		if mr.State == "closed" && mr.MergedAt.IsZero() &&
 			!mr.ClosedAt.IsZero() && mr.ClosedAt.After(since) {
 			// Attribute the close to closed_by only — never fall back to
-			// the MR author. The code agent opens MRs as the bot, so an
-			// author fallback would tag a human's close of a bot-authored
-			// MR as a bot event, and filterBotEvents would drop it and
-			// skip retro — exactly the human-rejects-the-agent's-work case
-			// #7322 promotes to reliable. When closed_by is absent the
-			// actor fields stay empty, so filterBotEvents treats the close
-			// as human (retro runs; retro is read-only, so erring toward
-			// running it is safe) and toNormalizedEvent falls back to the
-			// MR author to resolve the actor. A bot self-close
+			// the MR author. When closed_by is absent the actor fields stay
+			// empty; normalization fails closed and the poll observes the
+			// event without dispatching it or consuming the retry budget. The
+			// MR author is never substituted for the closer. This can skip a
+			// human close when GitLab omits closed_by, including the #7322
+			// human-rejects-agent case. A bot self-close
 			// (closeStaleScaffoldPRs) sets closed_by to the bot and is
 			// still filtered.
 			events = append(events, RoutableEvent{
@@ -313,6 +349,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Action:          "closed",
 				IID:             mr.IID,
 				UpdatedAt:       mr.ClosedAt,
+				HeadSHA:         mr.SHA,
 				NoteAuthorID:    mr.ClosedBy.ID,
 				NoteAuthorLogin: mr.ClosedBy.Username,
 				IsBot:           mr.ClosedBy.Bot,
@@ -323,7 +360,49 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
+		}
+
+		// Push to an open MR (GitHub synchronize, #7681): each push to
+		// the source branch records a new diff version, so the newest
+		// version moving the head past the previous one, created inside
+		// the watermark window, is a new head to review. The event is
+		// keyed on the head SHA, so overlapping windows and later
+		// rediscovery never dispatch the same head twice. Versions record
+		// no pusher, so the actor is the MR author, as for opens.
+		if mr.State == "opened" {
+			versions, err := p.client.ListMergeRequestDiffVersions(ctx, owner, repo, mr.IID)
+			if err != nil {
+				// Hold the watermark at the window start so the push is
+				// rediscovered; the persisted watermark never moves back.
+				log.Printf("list diff versions for MR %d: %v (holding push detection for retry)", mr.IID, err)
+				// The cycle must still fail so a persistent lookup failure
+				// does not look like a healthy poll while re-review is down.
+				p.discoveryErrs = append(p.discoveryErrs, fmt.Errorf("list diff versions for MR %d: %w", mr.IID, err))
+				if minSkippedAt.IsZero() || since.Before(minSkippedAt) {
+					minSkippedAt = since
+				}
+			} else if head, ok := latestHeadPush(versions); ok && head.CreatedAt.After(since) {
+				events = append(events, RoutableEvent{
+					Type:            "mr_event",
+					Action:          "synchronized",
+					IID:             mr.IID,
+					UpdatedAt:       head.CreatedAt,
+					HeadSHA:         head.HeadCommitSHA,
+					NoteAuthorID:    mr.Author.ID,
+					NoteAuthorLogin: mr.Author.Username,
+					IsBot:           mr.Author.Bot,
+					MRSource:        mr.SourceProjectID,
+					MRTarget:        mr.TargetProjectID,
+					Labels:          mr.Labels,
+					SourceBranch:    mr.SourceBranch,
+					TargetBranch:    mr.TargetBranch,
+					MRAuthorID:      mr.Author.ID,
+					MRAuthorLogin:   mr.Author.Username,
+					MRAssigneeIDs:   userIDs(mr.Assignees),
+				})
+			}
 		}
 
 		notes, err := p.client.ListMergeRequestNotes(ctx, owner, repo, mr.IID)
@@ -347,6 +426,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Type:            "mr_note",
 				IID:             mr.IID,
 				UpdatedAt:       note.CreatedAt,
+				HeadSHA:         mr.SHA,
 				NoteBody:        note.Body,
 				NoteID:          note.ID,
 				NoteAuthorID:    note.Author.ID,
@@ -359,6 +439,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 	}
@@ -421,12 +502,43 @@ func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, 
 			re.TargetBranch = mr.TargetBranch
 			re.MRAuthorID = mr.Author.ID
 			re.MRAuthorLogin = mr.Author.Username
+			re.MRAssigneeIDs = userIDs(mr.Assignees)
 			re.Labels = mr.Labels
+			re.HeadSHA = mr.SHA
 		}
 
 		events = append(events, re)
 	}
 	return events, minSkippedAt, nil
+}
+
+// latestHeadPush returns the diff version that introduced the MR's current
+// head, when that head replaced a different one. Versions that keep the
+// head (for example after a target branch change) follow the introducing
+// push, so the run of consecutive versions sharing the newest head is
+// walked back to its first member; its creation time is when the push
+// happened. The first version of the MR is its open, not a push, so a head
+// that has been current since the open is not reported.
+func latestHeadPush(versions []MergeRequestDiffVersion) (MergeRequestDiffVersion, bool) {
+	if len(versions) < 2 {
+		return MergeRequestDiffVersion{}, false
+	}
+	sorted := slices.Clone(versions)
+	slices.SortFunc(sorted, func(a, b MergeRequestDiffVersion) int {
+		return cmp.Compare(b.ID, a.ID)
+	})
+	head := sorted[0].HeadCommitSHA
+	if head == "" {
+		return MergeRequestDiffVersion{}, false
+	}
+	introduced := 0
+	for introduced+1 < len(sorted) && sorted[introduced+1].HeadCommitSHA == head {
+		introduced++
+	}
+	if introduced+1 == len(sorted) {
+		return MergeRequestDiffVersion{}, false
+	}
+	return sorted[introduced], true
 }
 
 // mergedByUser returns the user who merged the MR, preferring the
@@ -444,9 +556,47 @@ func isProjectAccessTokenBot(username string) bool {
 	return strings.HasPrefix(username, "project_") && strings.Contains(username, "_bot_")
 }
 
+// needsIssueOpenBotLookup reports whether event is an issue open whose
+// author's bot status must still be read from the authoritative user record.
+func (p *Poller) needsIssueOpenBotLookup(event RoutableEvent) bool {
+	return event.Type == "issue_event" && event.Action == "opened" && !p.isBotEvent(event)
+}
+
+// enrichIssueOpenBot checks the authoritative user record for one issue open.
+// GitLab's nested issue author omits the bot flag on some instances, and
+// service accounts can have custom usernames that defeat name heuristics.
+// An unavailable or incomplete lookup fails closed so the caller can retry.
+func (p *Poller) enrichIssueOpenBot(ctx context.Context, event *RoutableEvent) error {
+	if !p.needsIssueOpenBotLookup(*event) {
+		return nil
+	}
+	if event.NoteAuthorID == 0 {
+		return fmt.Errorf("issue #%d has no author ID", event.IID)
+	}
+	bot, err := p.client.GetUserBot(ctx, event.NoteAuthorID)
+	if err != nil {
+		return fmt.Errorf("look up issue #%d author %d: %w", event.IID, event.NoteAuthorID, err)
+	}
+	event.IsBot = bot
+	return nil
+}
+
+// enrichIssueOpenBots enriches every issue open in events, failing on the
+// first lookup error. The webhook builder uses it because it fails the whole
+// payload closed; the poller enriches per event inside Run instead, so one
+// failing lookup cannot stop unrelated events.
+func (p *Poller) enrichIssueOpenBots(ctx context.Context, events []RoutableEvent) error {
+	for i := range events {
+		if err := p.enrichIssueOpenBot(ctx, &events[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // isBotEvent uses multiple signals for reliable bot detection: the API
-// Bot field (when available), the configured botUserID, and the
-// project access token username pattern.
+// Bot field (when available), the configured botUserID and
+// analystUserID, and the project access token username pattern.
 func (p *Poller) isBotEvent(event RoutableEvent) bool {
 	if event.IsBot {
 		return true
@@ -454,11 +604,20 @@ func (p *Poller) isBotEvent(event RoutableEvent) bool {
 	if p.botUserID != 0 && event.NoteAuthorID == p.botUserID {
 		return true
 	}
+	if p.isAnalystAuthor(event.NoteAuthorID) {
+		return true
+	}
 	return isProjectAccessTokenBot(event.NoteAuthorLogin)
 }
 
-// filterBotEvents removes bot-authored events, except for the enrolled
-// bot's changes-requested markers which trigger the fix stage.
+// isAnalystAuthor reports whether authorID is the registered Analyst
+// identity. An unknown Analyst ID (0) matches no author.
+func (p *Poller) isAnalystAuthor(authorID int) bool {
+	return p.analystUserID != 0 && authorID == p.analystUserID
+}
+
+// filterBotEvents removes bot-authored events, except for the registered
+// Analyst's changes-requested markers which trigger the fix stage.
 func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 	var filtered []RoutableEvent
 	for _, event := range events {
@@ -466,9 +625,13 @@ func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 			filtered = append(filtered, event)
 			continue
 		}
+		// The review stage posts the marker as the Analyst, which is a
+		// different identity from the Poller in distinct-role
+		// installations. Markers from the Poller itself or any other bot
+		// stay filtered.
 		if event.Type == "mr_note" &&
 			strings.Contains(event.NoteBody, forge.ChangesRequestedMarker) &&
-			event.NoteAuthorID == p.botUserID {
+			p.isAnalystAuthor(event.NoteAuthorID) {
 			filtered = append(filtered, event)
 			continue
 		}
@@ -482,6 +645,14 @@ func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 		// not a bot event, so genuine closed-unmerged MRs still reach
 		// retro.
 		if event.Type == "mr_event" && event.Action == "opened" {
+			filtered = append(filtered, event)
+			continue
+		}
+		// Pushes to a bot-authored MR must re-dispatch review too: the
+		// fix agent pushes to the code agent's MRs, matching GitHub's
+		// synchronize. The fix stage's iteration cap bounds the
+		// review → fix → push loop.
+		if event.Type == "mr_event" && event.Action == "synchronized" {
 			filtered = append(filtered, event)
 			continue
 		}

@@ -1,5 +1,11 @@
 Feature: Fork PR dispatch
 
+  Owns fork pull request CEL matching (is_fork, entity kind, disabled
+  harnesses), the kill switch and synchronize handling for harness
+  dispatch. Every scenario dispatches through the label-added exception.
+  Which actors may trigger a harness on a fork pull request is owned by
+  platform/actor-authorization.feature.
+
   Background:
     Given the enrolled test repository
     And a fork "test-repo-fork" of the enrolled test repository
@@ -88,6 +94,25 @@ Feature: Fork PR dispatch
     When a fork pull request is opened
     And the fork pull request is labeled "ready-for-fork-killswitch"
     Then the harness "fork-pr-killswitch" agent did not run
+
+  Scenario: Fork PR kill switch in config.base.yaml blocks all harnesses
+    Given a custom harness "fork-pr-killswitch-base" with:
+      """
+      agent: agents/triage.md
+      role: triage
+      slug: fullsend-ai-fork-pr-killswitch-base
+      model: opus
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
+      trigger: |
+        event.entity.kind == "change_proposal"
+        && event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-for-fork-killswitch-base"
+      """
+    And the kill switch is active in config.base.yaml
+    When a fork pull request is opened
+    And the fork pull request is labeled "ready-for-fork-killswitch-base"
+    Then the harness "fork-pr-killswitch-base" agent did not run
 
   Scenario: Fork PR sync + label dispatches harness
     Given a custom harness "fork-pr-sync" with:

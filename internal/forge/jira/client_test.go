@@ -131,6 +131,8 @@ func TestValidateBaseURL_RejectsEmbeddedCredentials(t *testing.T) {
 	_, err := New("test-token", WithBaseURL("https://user:secret@jira.example.com"))
 	require.Error(t, err, "a base URL with embedded credentials must be rejected")
 	assert.Contains(t, err.Error(), "must not embed credentials")
+	assert.Contains(t, err.Error(), TokenEnvVar)
+	assert.NotContains(t, err.Error(), "JIRA_USER_EMAIL")
 	assert.NotContains(t, err.Error(), "secret", "the password must be redacted in the error")
 }
 
@@ -194,13 +196,14 @@ func TestSearchIssues_Pagination(t *testing.T) {
 		// unbounded payloads can exceed the client's decode cap and wedge
 		// the whole cycle.
 		assert.Equal(t, searchFields, body.Fields)
+		assert.Contains(t, body.Fields, "issuetype")
 
 		callCount++
 		switch body.NextPageToken {
 		case "":
 			issues := make([]Issue, 50)
 			for i := range issues {
-				issues[i] = Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1)}
+				issues[i] = Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1), Fields: IssueFields{IssueType: &IssueType{ID: "10001", Name: "Bug", Subtask: false}}}
 			}
 			writeJSON(t, w, http.StatusOK, SearchResult{
 				Issues:        issues,
@@ -234,6 +237,7 @@ func TestSearchIssues_Pagination(t *testing.T) {
 	assert.Len(t, issues, 120)
 	assert.Equal(t, 3, callCount)
 	assert.Equal(t, "PROJ-1", issues[0].Key)
+	assert.Equal(t, &IssueType{ID: "10001", Name: "Bug", Subtask: false}, issues[0].Fields.IssueType)
 	assert.Equal(t, "PROJ-120", issues[119].Key)
 }
 
@@ -781,6 +785,61 @@ func TestGetIssue(t *testing.T) {
 	assert.Equal(t, "new", issue.Fields.Status.StatusCategory.Key)
 }
 
+// TestGetIssue_CapturesProjectRef covers ADR 0154: the immutable
+// project database ID (the Jira container identity) must survive issue
+// reads, distinct from the display project key.
+func TestGetIssue_CapturesProjectRef(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	handlerCalled := false
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-42", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id":  "10042",
+			"key": "PROJ-42",
+			"fields": map[string]any{
+				"summary": "Test issue",
+				"project": map[string]any{"id": "10000", "key": "PROJ"},
+			},
+		})
+	})
+
+	issue, err := client.GetIssue(ctx, "PROJ-42")
+	assert.True(t, handlerCalled)
+	require.NoError(t, err)
+	require.NotNil(t, issue.Fields.Project, "project ref must be captured")
+	assert.Equal(t, "10000", issue.Fields.Project.ID, "immutable project database id")
+	assert.Equal(t, "PROJ", issue.Fields.Project.Key, "display project key")
+}
+
+func TestSearchIssues_CapturesProjectRef(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	handlerCalled := false
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		var body searchRequest
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body)) {
+			return
+		}
+		assert.Contains(t, body.Fields, "project", "polling must request immutable container identity")
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"isLast": true,
+			"issues": []any{map[string]any{"id": "10042", "key": "PROJ-42", "fields": map[string]any{
+				"project": map[string]any{"id": "10000", "key": "PROJ"},
+			}}},
+		})
+	})
+	issues, err := client.SearchIssues(context.Background(), "project = PROJ", 0)
+	assert.True(t, handlerCalled)
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	require.NotNil(t, issues[0].Fields.Project)
+	assert.Equal(t, "10000", issues[0].Fields.Project.ID)
+}
+
 func TestGetIssue_IssueTypeAndCustomFields(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)
@@ -1028,6 +1087,7 @@ func TestIsRetryable(t *testing.T) {
 	}{
 		{"429 GET", http.StatusTooManyRequests, http.MethodGet, "/issue/PROJ-1", true},
 		{"429 POST", http.StatusTooManyRequests, http.MethodPost, "/issue", true},
+		{"429 POST search/jql", http.StatusTooManyRequests, http.MethodPost, "/search/jql", true},
 		{"500 GET", http.StatusInternalServerError, http.MethodGet, "/issue/PROJ-1", true},
 		{"503 PUT", http.StatusServiceUnavailable, http.MethodPut, "/issue/PROJ-1", true},
 		{"500 POST", http.StatusInternalServerError, http.MethodPost, "/issue", false},

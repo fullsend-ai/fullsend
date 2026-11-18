@@ -11,7 +11,8 @@ sidebar_position: 2
 >
 > - **GCP project admin**, with IAM admin on the GCP project: enables the APIs and runs
 >   `fullsend inference provision`, which needs `roles/iam.workloadIdentityPoolAdmin` and
->   `roles/resourcemanager.projectIamAdmin`. They hand over the **GCP project ID** and the
+>   `roles/resourcemanager.projectIamAdmin` (plus the optional
+>   `roles/serviceusage.serviceUsageAdmin`, so the command can enable missing APIs). They hand over the **GCP project ID** and the
 >   **WIF provider**.
 > - **Repo admin**: passes those two values to `fullsend github setup`
 >   ([Configuring GitHub](configuring-github.md)).
@@ -41,10 +42,17 @@ GPT models on the pi or codex runtime use OpenAI Workload Identity Federation in
 OpenAI agent run needs no GCP credentials and stores no key on the recommended path; see
 [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md). Initial repository
 setup can omit the GCP project and WIF provider pair. If you cannot enrol an OpenAI WIF
-provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret.
+provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret; on GitHub we
+recommend keeping that key behind an [inference gateway](#inference-gateway) instead.
 
-For **GitLab repos**, inference credentials are configured via `repos install --vertex-project`
-rather than the steps below. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
+For **GitLab repos**, create the GCP project as described below. Then either run
+`fullsend inference provision <group/project> --forge gitlab --gitlab-project-id <id>`
+to create a per-project provider, or have a platform operator create a shared
+`gitlab-oidc` provider and its IAM bindings. Pass the provider to `repos install`
+(`--vertex-project`, plus `--vertex-wif-provider` for a per-project provider) to write
+the CI/CD variables that reference it. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
+If GCP cannot reach your GitLab instance over the public internet, see
+[Private OIDC issuers (uploaded JWKS)](configuring-gitlab.md#private-oidc-issuers-uploaded-jwks).
 
 You may need to create a new GCP project or reuse one. The output of this process is a WIF provider
 URL resembling:
@@ -61,7 +69,8 @@ yourself.
 
 * Download the latest [gcloud](https://docs.cloud.google.com/sdk/docs/install-sdk) CLI and
 authenticate with it.
-* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
+* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI,
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
 
 ## Create a GCP project
 
@@ -76,10 +85,14 @@ gcloud services enable \
   --project="$GCP_PROJECT"
 ```
 
+If you hold `roles/serviceusage.serviceUsageAdmin`, you can skip this step:
+`fullsend inference provision` enables any of these APIs that are missing.
+
 **Note**: enable Anthropic's models Opus and Sonnet as well.
 
 Then give yourself the roles `roles/iam.workloadIdentityPoolAdmin`
-and `roles/resourcemanager.projectIamAdmin`.
+and `roles/resourcemanager.projectIamAdmin`. Optionally also grant
+`roles/serviceusage.serviceUsageAdmin` so `fullsend inference provision` can enable missing APIs.
 
 ## Configure inference in your GCP project
 
@@ -125,8 +138,9 @@ the [operator guide](../infrastructure/inference-gateway-operator.md) for runnin
 
 Head over to [Configuring GitHub](configuring-github.md) to use your WIF provider URL.
 
-For GitLab repositories, skip this provision output and follow
-[Configuring GitLab](configuring-gitlab.md) instead — GitLab inference credentials
-are written by `repos install --vertex-project`, not by this command.
+For GitLab repositories, follow
+[Configuring GitLab](configuring-gitlab.md#inference-setup) instead. Use
+`fullsend inference provision --forge gitlab` or a platform operator's shared provider, and
+`repos install` writes the CI/CD variables that reference it.
 
 To use an inference gateway instead, see [Using an inference gateway](../user/inference-gateway.md).

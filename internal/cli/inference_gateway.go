@@ -91,8 +91,9 @@ func newInferenceGatewayStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status <owner/repo>",
 		Short: "Check inference gateway configuration and authentication",
-		Long: `Prints the resolved inference.gateway block (url, audience, auth mode
-and model list) and the config layer each value comes from (config.yaml
+		Long: `Prints the resolved inference.gateway block (url, audience, auth mode,
+Messages-dialect auth header and model list) and the config layer each
+value comes from (config.yaml
 or config.base.yaml), and flags a partial block. For a complete block
 it also reports the Claude Code route: the ANTHROPIC_BASE_URL a
 gateway/<model> run gets and the header its credential travels in.
@@ -130,11 +131,12 @@ Outside Actions, says so and stops at the config checks.`,
 // gatewayStatusSources is the effective inference.gateway block with the
 // layer each part was resolved from.
 type gatewayStatusSources struct {
-	Block          config.InferenceGatewayConfig
-	URLSource      string
-	AudienceSource string
-	AuthSource     string
-	ModelsSource   string
+	Block                    config.InferenceGatewayConfig
+	URLSource                string
+	AudienceSource           string
+	AuthSource               string
+	MessagesAuthHeaderSource string
+	ModelsSource             string
 }
 
 // resolveGatewayStatusSources loads the layered config exactly as a run
@@ -179,6 +181,7 @@ func resolveGatewayStatusSources(fullsendDir string) (gatewayStatusSources, erro
 	s.URLSource = source(overlay.URL != "", s.Block.URL != "")
 	s.AudienceSource = source(overlay.Audience != "", s.Block.Audience != "")
 	s.AuthSource = source(overlay.Auth != "", s.Block.Auth != "")
+	s.MessagesAuthHeaderSource = source(overlay.MessagesAuthHeader != "", s.Block.MessagesAuthHeader != "")
 	s.ModelsSource = source(overlay.HasModelList(), s.Block.HasModelList())
 	return s, nil
 }
@@ -202,6 +205,11 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 		printStatusField(printer, "auth", g.Auth, sources.AuthSource)
 	} else {
 		printer.StepInfo("auth: " + config.GatewayAuthOIDC + " (default)")
+	}
+	if g.MessagesAuthHeader != "" {
+		printStatusField(printer, "messages_auth_header", g.MessagesAuthHeader, sources.MessagesAuthHeaderSource)
+	} else {
+		printer.StepInfo("messages_auth_header: " + config.GatewayMessagesAuthHeaderAuthorization + " (default)")
 	}
 	switch {
 	case g.ModelsFile != "":
@@ -227,7 +235,7 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 		}
 		return fmt.Errorf("inference.gateway is partially configured: missing %s", strings.Join(missing, ", "))
 	}
-	if err := g.Validate(); err != nil {
+	if err := g.ValidateEffective(); err != nil {
 		printer.StepFail("Invalid inference.gateway block")
 		return err
 	}
@@ -332,14 +340,19 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 
 // printClaudeGatewayRoute reports how a claude runtime run with a
 // gateway/<model> model reaches the gateway for a complete block g: the
-// base URL the runner exports and the header the credential travels in,
-// Authorization: Bearer in both auth modes.
+// base URL the runner exports and the header the credential travels in:
+// Authorization: Bearer in both auth modes, or x-api-key when an api-key
+// block sets messages_auth_header: x-api-key.
 func printClaudeGatewayRoute(printer *ui.Printer, g config.InferenceGatewayConfig) {
 	gu, err := config.ParseGatewayURL(g.URL)
 	if err != nil {
 		return
 	}
 	printer.StepInfo("claude runtime: gateway/<model> runs Claude Code against ANTHROPIC_BASE_URL=" + gu.BaseURL() + " as <model> (the model list is not used)")
+	if g.IsAPIKey() && g.MessagesUseXAPIKey() {
+		printer.StepInfo("claude runtime: credential is an ANTHROPIC_API_KEY placeholder, sent as x-api-key (messages_auth_header: x-api-key; pi anthropic-messages models send x-api-key too, other dialects and codex keep Authorization: Bearer)")
+		return
+	}
 	if g.IsAPIKey() {
 		printer.StepInfo("claude runtime: credential is an ANTHROPIC_AUTH_TOKEN placeholder, sent as Authorization: Bearer")
 		return

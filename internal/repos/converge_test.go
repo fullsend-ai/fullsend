@@ -81,11 +81,9 @@ func convergeCfgWithDefaults(m *Manifest) ConvergeConfig {
 	return ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 }
 
@@ -116,7 +114,6 @@ func TestConverge_AllFresh(t *testing.T) {
 func withoutInferenceInputs(cfg ConvergeConfig) ConvergeConfig {
 	cfg.InferenceProject = ""
 	cfg.InferenceProjectNumber = ""
-	cfg.InferenceRegion = ""
 	cfg.WIFProvider = ""
 	cfg.OpenAIAPIKey = ""
 	return cfg
@@ -136,7 +133,7 @@ func TestConverge_FreshInstallWithoutGCPFailsBeforeWrites(t *testing.T) {
 		t.Fatalf("want one failed repo, got %d", len(failed))
 	}
 	msg := failed[0].Error.Error()
-	for _, want := range []string{"acme/api", InferenceAuthVertexWIF, forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, "--vertex-project", "--vertex-region"} {
+	for _, want := range []string{"acme/api", InferenceAuthVertexWIF, forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, "--vertex-project", "config.inference.project"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q does not mention %q", msg, want)
 		}
@@ -667,22 +664,25 @@ func TestConverge_EmptyRepoFilter(t *testing.T) {
 	}
 }
 
-func TestConverge_IncompleteInferenceFlags(t *testing.T) {
+func TestConverge_UnderivableProjectNumberFailsBeforeWrites(t *testing.T) {
 	m := newConvergeManifest("acme/api")
 	cfg := ConvergeConfig{
 		Manifest:         m,
 		MaxConcurrency:   4,
 		InferenceProject: "test-project",
-		// Missing InferenceProjectNumber and InferenceRegion.
+		// No project number, WIF provider, or resolver to derive one.
 	}
 
 	fc := newFakeClientForBatch("acme/api")
 	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), nil, noopProgress)
 	if err == nil {
-		t.Fatal("expected error for incomplete inference flags")
+		t.Fatal("expected error when the project number cannot be derived")
 	}
-	if !strings.Contains(err.Error(), "incomplete inference flags") {
+	if !strings.Contains(err.Error(), "cannot derive the project number") || !strings.Contains(err.Error(), "--vertex-wif-provider") {
 		t.Errorf("unexpected error: %v", err)
+	}
+	if len(fc.CreatedSecrets) != 0 || len(fc.Variables) != 0 {
+		t.Errorf("expected no writes, got secrets=%v vars=%v", fc.CreatedSecrets, fc.Variables)
 	}
 }
 
@@ -699,7 +699,6 @@ func TestConverge_ExistingSecretsSkipInference(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:       m,
 		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
 		Direct:         true,
 		// No inference flags — should work because secrets already exist.
 	}
@@ -1075,7 +1074,6 @@ func TestConverge_DefaultRoles(t *testing.T) {
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -1169,6 +1167,27 @@ func TestResolveTargetRef(t *testing.T) {
 		if rr.manifestRef != "" {
 			t.Errorf("manifestRef = %q, want empty (not an explicit pin)", rr.manifestRef)
 		}
+		if rr.tag != "" {
+			t.Errorf("tag = %q, want empty (a SHA pin carries no release tag)", rr.tag)
+		}
+	})
+
+	t.Run("SHA pin renders the same runner image under every CLI", func(t *testing.T) {
+		// The same manifest SHA must resolve to the same runner image
+		// whether the running CLI is the release that owns the SHA or a
+		// different one that treats it as an explicit pin.
+		const sha = "abc123def456789012345678901234567890abcd"
+		matching := resolveTargetRef(context.Background(), sha, sha, "v1.0.0", nil)
+		other := resolveTargetRef(context.Background(), sha, "other456", "v2.0.0", nil)
+		got := scaffold.ResolveRunnerImageTag(matching.ref, matching.tag)
+		// The remote renderer resolves from (resolved SHA, manifest ref).
+		want := scaffold.ResolveRunnerImageTag(other.ref, other.manifestRef)
+		if got != want {
+			t.Errorf("matching CLI runner image tag = %q, other CLI = %q; want identical", got, want)
+		}
+		if got != scaffold.RunnerImageDevTag {
+			t.Errorf("SHA pin runner image tag = %q, want %q", got, scaffold.RunnerImageDevTag)
+		}
 	})
 
 	t.Run("semver ref SHA-pinned via resolver", func(t *testing.T) {
@@ -1187,22 +1206,6 @@ func TestResolveTargetRef(t *testing.T) {
 		}
 		if rr.manifestRef != "v2.0.0" {
 			t.Errorf("manifestRef = %q, want %q", rr.manifestRef, "v2.0.0")
-		}
-	})
-}
-
-func TestDefaultRoles(t *testing.T) {
-	t.Run("returns provided roles", func(t *testing.T) {
-		roles := defaultRoles([]string{"triage", "coder"})
-		if len(roles) != 2 || roles[0] != "triage" || roles[1] != "coder" {
-			t.Errorf("unexpected roles: %v", roles)
-		}
-	})
-
-	t.Run("returns defaults when empty", func(t *testing.T) {
-		roles := defaultRoles(nil)
-		if len(roles) == 0 {
-			t.Error("expected non-empty default roles")
 		}
 	})
 }
@@ -1324,7 +1327,6 @@ func TestConverge_InvalidGCPProjectID(t *testing.T) {
 		MaxConcurrency:         4,
 		InferenceProject:       "INVALID_PROJECT!!",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	fc := newFakeClientForBatch("acme/api")
@@ -1349,11 +1351,9 @@ func TestConverge_ExistingSecretsWithRegionVar(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-project",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -1570,6 +1570,49 @@ func TestConverge_DryRunSHAPinnedUpgrade(t *testing.T) {
 
 	if sc.called {
 		t.Error("scaffold commit should not be called in dry-run mode")
+	}
+}
+
+// Installs from before #7902 have one space before "# tag". Converging to the
+// same SHA and tag must not rewrite them or report an upgrade (#8339 review).
+func TestConverge_SameVersionSingleSpaceCommentIsNoop(t *testing.T) {
+	sha := "abc123def456789012345678901234567890abcd"
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dryRun=%v", dryRun), func(t *testing.T) {
+			repoNames := []string{"acme/api"}
+			fc := newFakeClientForBatch(repoNames...)
+			markFullyInstalled(fc, "acme", "api")
+
+			fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflowSHAPinned(sha, "v2.0.0")
+			for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+				fc.FileContents["acme/api/"+tcPath] = makeWorkflowSHAPinned(sha, "v2.0.0")
+			}
+			fc.Refs["fullsend-ai/fullsend/tags/v2.0.0"] = sha
+
+			m := newConvergeManifest(repoNames...)
+			m.GitHub.FullsendRef = "v2.0.0"
+
+			cfg := convergeCfgWithDefaults(m)
+			cfg.DryRun = dryRun
+
+			result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+			if err != nil {
+				t.Fatalf("Converge() error: %v", err)
+			}
+
+			var refActions []ComponentAction
+			for _, cr := range result.Results {
+				for _, a := range cr.Actions {
+					if a.Component == "ref" {
+						refActions = append(refActions, a)
+					}
+				}
+			}
+			// On the real path "none" also means convergeRefFiles returned no files.
+			if len(refActions) != 1 || refActions[0].Action != "none" {
+				t.Errorf("ref actions = %+v, want a single \"none\"", refActions)
+			}
+		})
 	}
 }
 
@@ -1904,7 +1947,6 @@ func TestConverge_InvalidProjectNumber(t *testing.T) {
 		MaxConcurrency:         4,
 		InferenceProject:       "test-project",
 		InferenceProjectNumber: "not-a-number",
-		InferenceRegion:        "us-central1",
 	}
 
 	fc := newFakeClientForBatch("acme/api")
@@ -1917,23 +1959,27 @@ func TestConverge_InvalidProjectNumber(t *testing.T) {
 	}
 }
 
-func TestConverge_InvalidGCPRegion(t *testing.T) {
+func TestConverge_InvalidDeclaredGCPRegionFailsRepoBeforeWrites(t *testing.T) {
 	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "inference:\n  region: INVALID_REGION\n")
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
 		InferenceProject:       "test-project",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "INVALID REGION!!",
 	}
 
 	fc := newFakeClientForBatch("acme/api")
-	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), nil, noopProgress)
-	if err == nil {
-		t.Fatal("expected error for invalid GCP region")
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), nil, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not a valid GCP region") {
-		t.Errorf("unexpected error: %v", err)
+	failed := result.Failed()
+	if len(failed) != 1 || !strings.Contains(failed[0].Error.Error(), "not a valid GCP region") {
+		t.Fatalf("expected the repository to fail with an invalid region, got %+v", result.Results)
+	}
+	if len(fc.Variables) != 0 || len(fc.CreatedSecrets) != 0 {
+		t.Errorf("an invalid declared region must fail before writes; vars=%v secrets=%v", fc.Variables, fc.CreatedSecrets)
 	}
 }
 
@@ -2133,7 +2179,6 @@ func gitlabConvergeCfg(repo string) ConvergeConfig {
 			},
 		},
 		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
 		Direct:         true,
 		OpenAIAPIKey:   testOpenAIAPIKey,
 	}
@@ -2186,11 +2231,9 @@ func TestConverge_GitLabFreshInstallReleaseRefWithoutManifestPin(t *testing.T) {
 			},
 		},
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 		UpstreamRef:            "v9.9.9",
 		UpstreamTag:            "v9.9.9",
 	}
@@ -2235,11 +2278,9 @@ func TestConverge_GitLabOnlyReleaseDefaultRefWithoutGitHubClient(t *testing.T) {
 			},
 		},
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 		UpstreamRef:            "v9.9.9",
 		UpstreamTag:            "v9.9.9",
 	}
@@ -2319,6 +2360,17 @@ func populateGitLabTypedRoot(t testing.TB, fc *forge.FakeClient, owner, repo str
 		t.Fatalf("populateGitLabTypedRoot: mergeGitLabCIWithWrapper: %v", err)
 	}
 	fc.FileContents[owner+"/"+repo+"/.gitlab-ci.yml"] = migrated
+}
+
+// populateGitLabTypedWrapper replaces populateGitLabInstalled's stub
+// wrapper with the typed scaffold stamped at the same ref (v2.5.0) and a
+// matching root. Tests that converge without a fullsend_ref (so content
+// drift never repairs the wrapper) need this: a committed legacy wrapper
+// is no longer supported.
+func populateGitLabTypedWrapper(t testing.TB, fc *forge.FakeClient, owner, repo string) {
+	t.Helper()
+	populateGitLabScaffoldContent(t, fc, owner, repo, "v2.5.0")
+	populateGitLabTypedRoot(t, fc, owner, repo, fc.FileContents[owner+"/"+repo+"/"+fullsendPipelineInclude])
 }
 
 func TestConverge_GitLab_RepairsMissingTrustScript(t *testing.T) {
@@ -2901,7 +2953,9 @@ func TestConverge_GitLab_DoesNotSeedRetiredPollVariables(t *testing.T) {
 	}
 }
 
-func TestConverge_GitLab_MigrateThenDeleteRetiredVars(t *testing.T) {
+// Retired poll-state variables are no longer migrated: converge leaves
+// leftovers in place and the orphan detector still does not flag them.
+func TestConverge_GitLab_LeavesRetiredVarsUntouched(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
 	for _, name := range gitlabRetiredLegacyVars {
@@ -2921,29 +2975,24 @@ func TestConverge_GitLab_MigrateThenDeleteRetiredVars(t *testing.T) {
 		t.Fatalf("unexpected failure: %v", result.Failed()[0].Error)
 	}
 
-	deleted := map[string]bool{}
 	for _, a := range result.Results[0].Actions {
-		if a.Action == "orphan" && strings.HasPrefix(a.Component, "var:FULLSEND_") {
-			name := DriftFieldName(a.Component)
-			for _, retired := range gitlabRetiredLegacyVars {
-				if name == retired {
-					t.Errorf("retired variable %s flagged as orphan", name)
-				}
-			}
+		if !strings.HasPrefix(a.Component, "var:") {
+			continue
 		}
-		if a.Action == "delete" {
-			deleted[DriftFieldName(a.Component)] = true
+		if slices.Contains(gitlabRetiredLegacyVars, DriftFieldName(a.Component)) {
+			t.Errorf("unexpected action for retired variable: %+v", a)
 		}
 	}
 	for _, name := range gitlabRetiredLegacyVars {
-		if !deleted[name] {
-			t.Errorf("expected delete action for %s", name)
-		}
-		if _, ok := fc.VariableValues["acme/api/"+name]; ok {
-			t.Errorf("retired variable %s still present on forge", name)
+		if _, ok := fc.VariableValues["acme/api/"+name]; !ok {
+			t.Errorf("retired variable %s was deleted, want it left untouched", name)
 		}
 	}
-	assertPollStateBranchesSeeded(t, fc, "acme", "api")
+	for _, v := range fc.DeletedVariables {
+		if slices.Contains(gitlabRetiredLegacyVars, v.Name) {
+			t.Errorf("converge deleted retired variable %s", v.Name)
+		}
+	}
 }
 
 func TestConverge_GitLab_RetiredVarsIdempotentOnceGone(t *testing.T) {
@@ -2984,17 +3033,10 @@ func TestConverge_GitLab_RetiredVarsDryRunDoesNotDelete(t *testing.T) {
 		t.Fatalf("Converge() error: %v", err)
 	}
 
-	found := false
 	for _, a := range result.Results[0].Actions {
-		if a.Component == "var:"+forge.VarLastPollAtFast && a.Action == "delete" {
-			found = true
-			if !strings.Contains(a.Detail, "would migrate then delete") {
-				t.Errorf("detail = %q, want dry-run wording", a.Detail)
-			}
+		if a.Component == "var:"+forge.VarLastPollAtFast {
+			t.Errorf("unexpected dry-run action for retired var: %+v", a)
 		}
-	}
-	if !found {
-		t.Error("expected dry-run delete action for retired var")
 	}
 	if fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] == "" {
 		t.Error("dry-run must not delete the retired var")
@@ -3003,7 +3045,9 @@ func TestConverge_GitLab_RetiredVarsDryRunDoesNotDelete(t *testing.T) {
 
 func TestConverge_GitLab_CreatesMissingSchedules(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	// Schedules are only created for a committed typed installation.
+	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+	populateGitLabTypedRoot(t, fc, "acme", "api", fc.FileContents["acme/api/"+fullsendPipelineInclude])
 	// All variables present.
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
@@ -3029,11 +3073,9 @@ func TestConverge_GitLab_CreatesMissingSchedules(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -3108,11 +3150,9 @@ func TestConverge_GitLab_SchedulesAlreadyPresent(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -3605,6 +3645,50 @@ func TestActivatePipelineSchedules_ErrorPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("owner-only update is left to the trigger-account stage", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		fc := e.state.FakeClient
+		raw, exists, err := fc.GetRepoVariable(ctx, trigOwner, trigRepo, forge.VarGitLabTriggerAccount)
+		require.NoError(t, err)
+		require.True(t, exists)
+		ledger, err := decodeGitLabTriggerAccountState(raw)
+		require.NoError(t, err)
+		fc.PipelineSchedules[trigOwner+"/"+trigRepo] = []forge.PipelineSchedule{
+			{ID: 1, OwnerID: int64(ledger.AccountID), Description: "fullsend slash poll", Active: false},
+		}
+		fc.Errors["UpdatePipelineSchedule"] = forge.ErrForbidden
+		actions := activatePipelineSchedules(ctx, fc, trigOwner, trigRepo, trigOwner+"/"+trigRepo,
+			[]string{"schedule:slash-poll"}, noopProgress)
+		if len(actions) != 1 || actions[0].Action != "none" {
+			t.Fatalf("got %+v, want one none action", actions)
+		}
+		if !strings.Contains(actions[0].Detail, "trigger-account stage") {
+			t.Errorf("detail = %q, want trigger-account wording", actions[0].Detail)
+		}
+	})
+
+	for _, tc := range []struct {
+		name    string
+		ownerID int64
+	}{
+		{"human-owned disabled schedule", 999999},
+		{"owner not reported", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			fc := e.state.FakeClient
+			fc.PipelineSchedules[trigOwner+"/"+trigRepo] = []forge.PipelineSchedule{
+				{ID: 1, OwnerID: tc.ownerID, Description: "fullsend slash poll", Active: false},
+			}
+			fc.Errors["UpdatePipelineSchedule"] = forge.ErrForbidden
+			actions := activatePipelineSchedules(ctx, fc, trigOwner, trigRepo, trigOwner+"/"+trigRepo,
+				[]string{"schedule:slash-poll"}, noopProgress)
+			require.Len(t, actions, 1)
+			assert.Equal(t, "error", actions[0].Action)
+			assert.Contains(t, actions[0].Detail, "forbidden")
+		})
+	}
+
 	t.Run("inactive not found on re-list", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		// Probe saw an inactive schedule, but the re-list returns only an active one.
@@ -3620,6 +3704,21 @@ func TestActivatePipelineSchedules_ErrorPaths(t *testing.T) {
 			t.Errorf("detail = %q, want not-found wording", actions[0].Detail)
 		}
 	})
+}
+
+func TestRecordedTriggerScheduleOwner(t *testing.T) {
+	e := readyTriggerDispatchEnv(t)
+	ctx := context.Background()
+	ledger, found := e.ledger(t)
+	require.True(t, found)
+	require.True(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, int64(ledger.AccountID)))
+	assert.False(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, 0))
+	assert.False(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, int64(ledger.AccountID)+100))
+	e.state.Errors["GetRepoVariable"] = fmt.Errorf("unreadable")
+	assert.False(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, int64(ledger.AccountID)))
+	delete(e.state.Errors, "GetRepoVariable")
+	e.state.VariableValues[trigOwner+"/"+trigRepo+"/"+forge.VarGitLabTriggerAccount] = "invalid"
+	assert.False(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, int64(ledger.AccountID)))
 }
 
 func TestConvergeSchedules_UnrecognizedMissing(t *testing.T) {
@@ -3853,18 +3952,15 @@ func TestConverge_GitLab_ReleaseDefaultRefUpgradeIdempotentWithDistinctSHATag(t 
 	}
 }
 
-func TestConverge_GitLab_RemovesObsoleteDispatchFile(t *testing.T) {
+// TestConverge_GitLab_ReportsLeftoverDispatchFileAsOrphan verifies that
+// converge no longer migrates a leftover retired fullsend-dispatch.yml:
+// like any other managed file the current template does not produce, it
+// is reported as an orphan and left in place for uninstall to remove.
+func TestConverge_GitLab_ReportsLeftoverDispatchFileAsOrphan(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
 	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
-	// Simulate a repo enrolled before #7707: the version marker still
-	// lives in the leftover dispatch stub. The pipeline wrapper is
-	// already current (no content drift), so converge must delete the
-	// stub rather than rewrite it.
-	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte(`---
-# fullsend-ref: v2.5.0
-# fullsend-stage: dispatch (removed)
-`)
+	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
 
 	sc := &spyScaffoldCommit{}
 	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -3874,249 +3970,28 @@ func TestConverge_GitLab_RemovesObsoleteDispatchFile(t *testing.T) {
 	if len(result.Failed()) != 0 {
 		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
 	}
-	if len(result.Converged()) != 1 {
-		t.Fatalf("expected 1 converged repo, got %d", len(result.Converged()))
-	}
 
-	var removed bool
+	var orphan bool
 	for _, a := range result.Results[0].Actions {
-		if a.Component == fullsendDispatchInclude && a.Action == "update" &&
-			strings.Contains(a.Detail, "removed obsolete") {
-			removed = true
-		}
-	}
-	if !removed {
-		t.Error("expected obsolete-file removal for leftover fullsend-dispatch.yml")
-		for _, a := range result.Results[0].Actions {
-			t.Logf("  action: %s %s: %s", a.Component, a.Action, a.Detail)
-		}
-	}
-
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	var foundDelete bool
-	for _, f := range sc.files {
-		if f.Path != fullsendDispatchInclude {
+		if a.Component != fullsendDispatchInclude {
 			continue
 		}
-		foundDelete = true
-		if !f.Delete {
-			t.Error("committed fullsend-dispatch.yml must be a delete, not a rewrite")
+		if a.Action == "orphan" {
+			orphan = true
+		} else {
+			t.Errorf("unexpected action for leftover %s: %+v", fullsendDispatchInclude, a)
 		}
 	}
-	if !foundDelete {
-		t.Error("expected fullsend-dispatch.yml deletion in committed files")
-	}
-}
-
-func TestConverge_GitLab_RemovesObsoleteDispatchFile_DryRun(t *testing.T) {
-	fc := newFakeClientForBatch("acme/api")
-	populateGitLabInstalled(fc, "acme", "api")
-	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
-	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
-
-	cfg := gitlabConvergeCfg("acme/api")
-	cfg.DryRun = true
-	sc := &spyScaffoldCommit{}
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-	if len(result.Failed()) != 0 {
-		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
-	}
-
-	var wouldRemove bool
-	for _, a := range result.Results[0].Actions {
-		if a.Component == fullsendDispatchInclude && a.Action == "update" &&
-			strings.Contains(a.Detail, "would remove obsolete") {
-			wouldRemove = true
-		}
-	}
-	if !wouldRemove {
-		t.Error("expected dry-run obsolete-file removal for leftover fullsend-dispatch.yml")
-		for _, a := range result.Results[0].Actions {
-			t.Logf("  action: %s %s: %s", a.Component, a.Action, a.Detail)
-		}
-	}
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	if len(sc.files) != 0 {
-		t.Errorf("dry-run must not commit, got %d files", len(sc.files))
-	}
-}
-
-// TestConverge_GitLab_KeepsDispatchStubWhenPinnedRefWrapperStillIncludesIt
-// simulates a GitLab repo whose fullsend_ref is still pinned to a version
-// predating #7322: the pipeline wrapper legitimately included
-// fullsend-dispatch.yml at that ref. Converge fetches the remote scaffold
-// for the pinned ref (FetchRemoteScaffold), so the freshly rendered
-// expected wrapper content — the same content content-drift repair would
-// commit — still carries the dispatch include. Deleting the leftover
-// fullsend-dispatch.yml stub in the same run would leave that committed
-// wrapper with a dangling local include, which GitLab fails to compile.
-// Converge must leave the stub in place instead of deleting it.
-func TestConverge_GitLab_KeepsDispatchStubWhenPinnedRefWrapperStillIncludesIt(t *testing.T) {
-	const pinnedRef = "v2.5.0"
-
-	// The pipeline wrapper as it existed at the pinned (pre-#7322) ref:
-	// it still pulls in the dispatch job via a local include.
-	oldWrapperTemplate := []byte(`---
-include:
-  - local: '.gitlab/ci/fullsend-dispatch.yml'
-  - local: '.gitlab/ci/fullsend-agent.yml'
-
-stages:
-  - dispatch
-  - agent
-`)
-
-	fc := newFakeClientForBatch("acme/api")
-	populateGitLabInstalled(fc, "acme", "api")
-
-	// Populate the remote scaffold fetch (fullsend-ai/fullsend at the
-	// pinned ref) so FetchRemoteScaffold succeeds instead of falling back
-	// to the current (post-#7707) embedded templates, which would no
-	// longer contain the dispatch include and would mask the bug this
-	// test guards against.
-	for _, sp := range scaffoldGitLabPaths {
-		content := oldWrapperTemplate
-		if sp.outPath != fullsendPipelineInclude {
-			var err error
-			content, err = scaffold.GitLabPerRepoFile(sp.outPath)
-			if err != nil {
-				t.Fatalf("scaffold.GitLabPerRepoFile(%s): %v", sp.outPath, err)
-			}
-		}
-		fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+sp.repoPath+"@"+pinnedRef] = content
-	}
-
-	// The leftover stub from the pre-#7322 install predating #7707.
-	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte(`---
-# fullsend-ref: v2.5.0
-# fullsend-stage: dispatch (removed)
-`)
-
-	cfg := gitlabConvergeCfg("acme/api")
-	cfg.Manifest.GitLab.FullsendRef = pinnedRef
-
-	sc := &spyScaffoldCommit{}
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-	if len(result.Failed()) != 0 {
-		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
-	}
-
-	for _, a := range result.Results[0].Actions {
-		if a.Component == fullsendDispatchInclude && a.Action == "update" &&
-			strings.Contains(a.Detail, "removed obsolete") {
-			t.Errorf("must not delete %s while the pinned ref's wrapper still includes it; action: %+v", fullsendDispatchInclude, a)
-		}
+	if !orphan {
+		t.Errorf("expected leftover %s to be reported as an orphan", fullsendDispatchInclude)
 	}
 
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	for _, f := range sc.files {
-		if f.Path == fullsendDispatchInclude && f.Delete {
-			t.Errorf("committed files must not delete %s while the wrapper still includes it", fullsendDispatchInclude)
+		if f.Path == fullsendDispatchInclude {
+			t.Errorf("converge must not commit %s, got %+v", fullsendDispatchInclude, f)
 		}
-	}
-}
-
-func TestConverge_GitLab_MigratesObsoleteWorkflowRule(t *testing.T) {
-	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
-	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
-	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
-	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
-	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
-		{ID: 1, Description: "fullsend slash poll", Active: true},
-		{ID: 2, Description: "fullsend event poll", Active: true},
-	}
-	// Root .gitlab-ci.yml still carries the obsolete merge_request_event
-	// rule from before #7322 — simulates an already-enrolled repo that
-	// has not been reinstalled.
-	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
-include:
-  - local: '.gitlab/ci/fullsend-pipeline.yml'
-
-workflow:
-  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
-  auto_cancel:
-    on_new_commit: none
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
-    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
-`)
-
-	m := &Manifest{
-		Version:  1,
-		Defaults: testInferenceDefaults(),
-		GitLab: &PlatformConfig{
-			URL:         "https://gitlab.example.com",
-			FullsendRef: "v2.5.0",
-			Repos:       []RepoEntry{{Name: "acme/api"}},
-		},
-	}
-	cfg := ConvergeConfig{
-		Manifest:               m,
-		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
-		Direct:                 true,
-		InferenceProject:       "test-inference",
-		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
-	}
-
-	sc := &spyScaffoldCommit{}
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-	if len(result.Failed()) != 0 {
-		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
-	}
-
-	found := false
-	for _, a := range result.Results[0].Actions {
-		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected a gitlab-ci-rules update action, got %+v", result.Results[0].Actions)
-	}
-
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	var updated []byte
-	for _, f := range sc.files {
-		if f.Path == ".gitlab-ci.yml" {
-			updated = f.Content
-		}
-	}
-	if updated == nil {
-		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
-	}
-	s := string(updated)
-	if strings.Contains(s, "merge_request_event") {
-		t.Errorf("expected obsolete merge_request_event rule to be removed, got:\n%s", s)
-	}
-	if !strings.Contains(s, `$CI_PIPELINE_SOURCE == "schedule"`) {
-		t.Errorf("expected current schedule rule to be preserved, got:\n%s", s)
-	}
-	if !strings.Contains(s, `$CI_PIPELINE_SOURCE == "api"`) {
-		t.Errorf("expected current api rule to be preserved, got:\n%s", s)
 	}
 }
 
@@ -4172,11 +4047,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &spyScaffoldCommit{}
@@ -4272,11 +4145,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 		DryRun:                 true,
 	}
 
@@ -4353,11 +4224,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -4370,104 +4239,6 @@ workflow:
 		if a.Component == "gitlab-ci-rules" {
 			t.Errorf("expected no gitlab-ci-rules action, got %+v", a)
 		}
-	}
-}
-
-func TestConverge_GitLab_MigratesObsoleteDispatchStage(t *testing.T) {
-	// Exercises the generic obsolete-stage migration against the
-	// historical contract; #7771 made "dispatch" current again (see
-	// TestConverge_GitLab_PreservesReinstatedDispatchStage).
-	useHistoricalObsoleteDispatchStage(t)
-	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
-	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
-	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
-	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
-	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
-		{ID: 1, Description: "fullsend slash poll", Active: true},
-		{ID: 2, Description: "fullsend event poll", Active: true},
-	}
-	// Merge-path enrollment: root stages still carry the leftover
-	// dispatch stage from before #7337. No obsolete workflow rule.
-	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
-include:
-  - local: '.gitlab/ci/fullsend-pipeline.yml'
-
-stages:
-  - build
-  - dispatch
-  - poll
-  - agent
-`)
-
-	m := &Manifest{
-		Version:  1,
-		Defaults: testInferenceDefaults(),
-		GitLab: &PlatformConfig{
-			URL:         "https://gitlab.example.com",
-			FullsendRef: "v2.5.0",
-			Repos:       []RepoEntry{{Name: "acme/api"}},
-		},
-	}
-	cfg := ConvergeConfig{
-		Manifest:               m,
-		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
-		Direct:                 true,
-		InferenceProject:       "test-inference",
-		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
-	}
-
-	sc := &spyScaffoldCommit{}
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-	if len(result.Failed()) != 0 {
-		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
-	}
-
-	found := false
-	for _, a := range result.Results[0].Actions {
-		if a.Component == "gitlab-ci-stages" && a.Action == "update" {
-			found = true
-		}
-		if a.Component == "gitlab-ci-rules" {
-			t.Errorf("expected no gitlab-ci-rules action, got %+v", a)
-		}
-	}
-	if !found {
-		t.Errorf("expected a gitlab-ci-stages update action, got %+v", result.Results[0].Actions)
-	}
-
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	var updated []byte
-	for _, f := range sc.files {
-		if f.Path == ".gitlab-ci.yml" {
-			updated = f.Content
-		}
-	}
-	if updated == nil {
-		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
-	}
-	s := string(updated)
-	if strings.Contains(s, "- dispatch") {
-		t.Errorf("expected obsolete dispatch stage to be removed, got:\n%s", s)
-	}
-	if !strings.Contains(s, "- build") {
-		t.Errorf("expected user stage to be preserved, got:\n%s", s)
-	}
-	if !strings.Contains(s, "- poll") || !strings.Contains(s, "- agent") {
-		t.Errorf("expected current fullsend stages to be preserved, got:\n%s", s)
 	}
 }
 
@@ -4519,7 +4290,6 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:       m,
 		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
 		Direct:         true,
 	}
 
@@ -4575,17 +4345,10 @@ workflow:
 }
 
 func TestConverge_GitLab_ReplacementWrapperPermitsMigration(t *testing.T) {
-	useHistoricalObsoleteDispatchStage(t)
-	// Same root .gitlab-ci.yml shape as
-	// TestConverge_GitLab_MigratesObsoleteDispatchStage, but this repo's
-	// on-repo pipeline wrapper (.gitlab/ci/fullsend-pipeline.yml) predates
-	// #7322: it still includes fullsend-dispatch.yml, which defines a job
-	// on the "dispatch" stage. StripObsoleteGitLabStages only sees the
-	// root file and would otherwise approve the strip; convergeGitLabRootCIFiles
-	// must additionally confirm the wrapper it depends on doesn't still
-	// pull in the obsolete dispatch job before applying it.
+	// The on-repo pipeline wrapper predates the typed pipeline-input
+	// contract. Converge must replace it and migrate the root
+	// .gitlab-ci.yml to the typed contract in the same commit.
 	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -4610,18 +4373,15 @@ stages:
   - poll
   - agent
 `)
-	// The on-repo wrapper still includes the pre-#7322 dispatch file.
+	// The on-repo wrapper predates the typed pipeline-input contract.
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-pipeline.yml"] = []byte(`---
+# ref: v2.5.0
 include:
-  - local: '.gitlab/ci/fullsend-dispatch.yml'
-    rules:
-      - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   - local: '.gitlab/ci/fullsend-poll.yml'
     rules:
       - if: $CI_PIPELINE_SOURCE == "schedule"
 
 stages:
-  - dispatch
   - poll
 `)
 
@@ -4637,11 +4397,9 @@ stages:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &spyScaffoldCommit{}
@@ -4658,7 +4416,7 @@ stages:
 	var migratedRoot, upgradedWrapper bool
 	for _, f := range sc.files {
 		if f.Path == ".gitlab-ci.yml" {
-			migratedRoot = strings.Contains(string(f.Content), "inputs.stage") && !strings.Contains(string(f.Content), "- dispatch")
+			migratedRoot = strings.Contains(string(f.Content), "inputs.stage")
 		}
 		if f.Path == fullsendPipelineInclude {
 			upgradedWrapper = gitlabWrapperHasDispatchInputs(f.Content)
@@ -4669,246 +4427,11 @@ stages:
 	}
 }
 
-func TestConverge_GitLab_MigratesObsoleteRuleAndStage(t *testing.T) {
-	useHistoricalObsoleteDispatchStage(t)
-	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
-	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
-	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
-	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
-	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
-		{ID: 1, Description: "fullsend slash poll", Active: true},
-		{ID: 2, Description: "fullsend event poll", Active: true},
-	}
-	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
-include:
-  - local: '.gitlab/ci/fullsend-pipeline.yml'
-
-stages:
-  - dispatch
-  - poll
-  - agent
-
-workflow:
-  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
-  auto_cancel:
-    on_new_commit: none
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
-    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
-`)
-
-	m := &Manifest{
-		Version:  1,
-		Defaults: testInferenceDefaults(),
-		GitLab: &PlatformConfig{
-			URL:         "https://gitlab.example.com",
-			FullsendRef: "v2.5.0",
-			Repos:       []RepoEntry{{Name: "acme/api"}},
-		},
-	}
-	cfg := ConvergeConfig{
-		Manifest:               m,
-		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
-		Direct:                 true,
-		InferenceProject:       "test-inference",
-		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
-	}
-
-	sc := &spyScaffoldCommit{}
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-	if len(result.Failed()) != 0 {
-		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
-	}
-
-	var sawRules, sawStages bool
-	for _, a := range result.Results[0].Actions {
-		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
-			sawRules = true
-		}
-		if a.Component == "gitlab-ci-stages" && a.Action == "update" {
-			sawStages = true
-		}
-	}
-	if !sawRules || !sawStages {
-		t.Errorf("expected both gitlab-ci-rules and gitlab-ci-stages updates, got %+v", result.Results[0].Actions)
-	}
-
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	var updated []byte
-	for _, f := range sc.files {
-		if f.Path == ".gitlab-ci.yml" {
-			updated = f.Content
-		}
-	}
-	if updated == nil {
-		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
-	}
-	s := string(updated)
-	if strings.Contains(s, "merge_request_event") {
-		t.Errorf("expected obsolete merge_request_event rule to be removed, got:\n%s", s)
-	}
-	if strings.Contains(s, "- dispatch") {
-		t.Errorf("expected obsolete dispatch stage to be removed, got:\n%s", s)
-	}
-}
-
-func TestConverge_GitLab_MigratesObsoleteDispatchStage_DryRun(t *testing.T) {
-	useHistoricalObsoleteDispatchStage(t)
-	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
-	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
-	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
-	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
-	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
-		{ID: 1, Description: "fullsend slash poll", Active: true},
-		{ID: 2, Description: "fullsend event poll", Active: true},
-	}
-	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
-include:
-  - local: '.gitlab/ci/fullsend-pipeline.yml'
-
-stages:
-  - dispatch
-  - poll
-  - agent
-`)
-
-	m := &Manifest{
-		Version:  1,
-		Defaults: testInferenceDefaults(),
-		GitLab: &PlatformConfig{
-			URL:         "https://gitlab.example.com",
-			FullsendRef: "v2.5.0",
-			Repos:       []RepoEntry{{Name: "acme/api"}},
-		},
-	}
-	cfg := ConvergeConfig{
-		Manifest:               m,
-		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
-		Direct:                 true,
-		DryRun:                 true,
-		InferenceProject:       "test-inference",
-		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
-	}
-
-	sc := &spyScaffoldCommit{}
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-
-	found := false
-	for _, a := range result.Results[0].Actions {
-		if a.Component == "gitlab-ci-stages" && a.Action == "update" {
-			found = true
-			if !strings.Contains(a.Detail, "would remove") {
-				t.Errorf("expected dry-run detail, got %q", a.Detail)
-			}
-		}
-	}
-	if !found {
-		t.Errorf("expected a gitlab-ci-stages update action in dry-run, got %+v", result.Results[0].Actions)
-	}
-
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	for _, f := range sc.files {
-		if f.Path == ".gitlab-ci.yml" {
-			t.Errorf("dry-run must not commit .gitlab-ci.yml")
-		}
-	}
-}
-
-func TestConverge_GitLab_NoObsoleteDispatchStageNoAction(t *testing.T) {
-	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
-	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
-	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
-	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
-	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
-	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
-		{ID: 1, Description: "fullsend slash poll", Active: true},
-		{ID: 2, Description: "fullsend event poll", Active: true},
-	}
-	// Already migrated — current stages only, no obsolete rule.
-	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
-include:
-  - local: '.gitlab/ci/fullsend-pipeline.yml'
-
-stages:
-  - build
-  - poll
-  - agent
-`)
-
-	m := &Manifest{
-		Version:  1,
-		Defaults: testInferenceDefaults(),
-		GitLab: &PlatformConfig{
-			URL:         "https://gitlab.example.com",
-			FullsendRef: "v2.5.0",
-			Repos:       []RepoEntry{{Name: "acme/api"}},
-		},
-	}
-	cfg := ConvergeConfig{
-		Manifest:               m,
-		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
-		Direct:                 true,
-		InferenceProject:       "test-inference",
-		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
-	}
-
-	sc := &fakeScaffoldCommit{}
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-
-	for _, a := range result.Results[0].Actions {
-		if a.Component == "gitlab-ci-stages" {
-			t.Errorf("expected no gitlab-ci-stages action, got %+v", a)
-		}
-	}
-}
-
 func TestConverge_GitLab_MergePathRepoNotMigrated(t *testing.T) {
 	// A repo enrolled via the merge path has a workflow: block but no
-	// fullsend-generated workflow.name, so fullsend ownership of the
-	// obsolete merge_request_event rule cannot be established. The
-	// migration must leave the rule in place (preserving a possible
-	// user-owned MR gate) rather than strip it.
+	// fullsend-generated workflow.name, so fullsend ownership of the block
+	// cannot be established. Converge must leave its rules — including a
+	// possible user-owned merge_request_event gate — untouched.
 	fc := newFakeClientForBatch("acme/api")
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
@@ -4950,11 +4473,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -4971,9 +4492,9 @@ workflow:
 }
 
 func TestConverge_GitLab_RootCIReadErrorSurfaces(t *testing.T) {
-	// A non-not-found error reading the root .gitlab-ci.yml during the
-	// obsolete-rule migration must surface as a repo failure, not be
-	// silently swallowed.
+	// A non-not-found error reading the root .gitlab-ci.yml during root
+	// CI convergence must surface as a repo failure, not be silently
+	// swallowed.
 	fc := newFakeClientForBatch("acme/api")
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
@@ -5006,11 +4527,9 @@ func TestConverge_GitLab_RootCIReadErrorSurfaces(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -5055,12 +4574,10 @@ func TestConverge_GitLab_MissingSchedules_DryRun(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		DryRun:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -5089,7 +4606,8 @@ func TestConverge_GitLab_MissingSchedules_DryRun(t *testing.T) {
 
 func TestConverge_GitLab_ScheduleCreationError(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+	populateGitLabTypedRoot(t, fc, "acme", "api", fc.FileContents["acme/api/"+fullsendPipelineInclude])
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -5114,11 +4632,9 @@ func TestConverge_GitLab_ScheduleCreationError(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -5137,7 +4653,8 @@ func TestConverge_GitLab_ScheduleCreationError(t *testing.T) {
 
 func TestConverge_GitLab_GetRepoError_ScheduleCreation(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+	populateGitLabTypedRoot(t, fc, "acme", "api", fc.FileContents["acme/api/"+fullsendPipelineInclude])
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -5162,11 +4679,9 @@ func TestConverge_GitLab_GetRepoError_ScheduleCreation(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -5463,10 +4978,13 @@ func TestConverge_StaticVariableValueCheck(t *testing.T) {
 	// Install correct scaffold content.
 	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 
-	// Set GCP_REGION to a wrong value — should be detected as drift.
+	// Set GCP_REGION to a value other than the declared region — should be
+	// detected as drift.
 	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "europe-west1"
 
 	m := newConvergeManifest(repoNames...)
+	m.Defaults.Config = mustManagedConfig(t, "inference:\n  region: us-central1\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = mustDesiredManaged(t, m, "acme", "api")
 	sc := &fakeScaffoldCommit{}
 	cfg := convergeCfgWithDefaults(m)
 
@@ -5618,10 +5136,8 @@ func TestConverge_ExplicitWIFProviderUsedForAllRepos(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:         m,
 		MaxConcurrency:   4,
-		Roles:            []string{"triage"},
 		Direct:           true,
 		InferenceProject: "test-inference",
-		InferenceRegion:  "us-central1",
 		WIFProvider:      explicitWIF,
 	}
 
@@ -5660,10 +5176,8 @@ func TestConverge_ExplicitWIFProviderSkipsCollisionCheck(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:         m,
 		MaxConcurrency:   4,
-		Roles:            []string{"triage"},
 		Direct:           true,
 		InferenceProject: "test-inference",
-		InferenceRegion:  "us-central1",
 		WIFProvider:      explicitWIF,
 		// No InferenceProjectNumber — not needed with explicit WIF provider.
 	}
@@ -5690,10 +5204,8 @@ func TestConverge_ExplicitWIFProviderNoProjectNumberRequired(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:         m,
 		MaxConcurrency:   4,
-		Roles:            []string{"triage"},
 		Direct:           true,
 		InferenceProject: "test-inference",
-		InferenceRegion:  "us-central1",
 		WIFProvider:      "projects/999/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc",
 		// InferenceProjectNumber intentionally empty — should work.
 	}
@@ -5752,18 +5264,24 @@ func TestConverge_WIFProviderRequiresInferenceProject(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:       m,
 		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
 		Direct:         true,
 		WIFProvider:    "projects/999/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc",
 		// InferenceProject intentionally empty — should be rejected.
 	}
 
-	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err == nil {
-		t.Fatal("expected error when WIFProvider is set without InferenceProject")
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "--vertex-project is required when --vertex-wif-provider is set") {
-		t.Errorf("unexpected error message: %v", err)
+	failed := result.Failed()
+	if len(failed) != 1 {
+		t.Fatalf("expected the repository to fail when a WIF provider has no project, got %+v", result.Results)
+	}
+	if !strings.Contains(failed[0].Error.Error(), "requires a GCP project") {
+		t.Errorf("unexpected error message: %v", failed[0].Error)
+	}
+	if sc.called || len(fc.CreatedSecrets) != 0 {
+		t.Errorf("expected no writes, got committed=%v secrets=%v", sc.called, fc.CreatedSecrets)
 	}
 }
 
@@ -5780,11 +5298,9 @@ func TestConverge_InvalidWIFProviderRejectedBeforeWrites(t *testing.T) {
 			cfg := ConvergeConfig{
 				Manifest:         m,
 				MaxConcurrency:   4,
-				Roles:            []string{"triage"},
 				Direct:           true,
 				DryRun:           dryRun,
 				InferenceProject: "test-inference",
-				InferenceRegion:  "us-central1",
 				WIFProvider:      "not-a-wif-provider",
 			}
 
@@ -5801,31 +5317,6 @@ func TestConverge_InvalidWIFProviderRejectedBeforeWrites(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestConverge_VendorOverrideSetsVendorBinary(t *testing.T) {
-	repoNames := []string{"acme/api"}
-	fc := newFakeClientForBatch(repoNames...)
-	m := newConvergeManifest(repoNames...)
-
-	sc := &spyScaffoldCommit{}
-	cfg := convergeCfgWithDefaults(m)
-	v := true
-	cfg.VendorOverride = &v
-
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-
-	installed := result.Installed()
-	if len(installed) != 1 {
-		t.Errorf("expected 1 installed, got %d", len(installed))
-	}
-	if len(result.Failed()) != 0 {
-		t.Errorf("expected 0 failed, got %d", len(result.Failed()))
-	}
-	sc.assertVendoredWorkflow(t)
 }
 
 func TestConverge_ManifestVendorFieldSetsVendorBinary(t *testing.T) {
@@ -5859,23 +5350,22 @@ func TestConverge_ManifestVendorFieldSetsVendorBinary(t *testing.T) {
 	sc.assertVendoredWorkflow(t)
 }
 
-func TestConverge_VendorOverrideFalseDisablesManifestVendor(t *testing.T) {
+func TestConverge_EntryVendorFalseDisablesDefaultsVendor(t *testing.T) {
 	v := true
+	f := false
 	m := &Manifest{
 		Version:  1,
 		Defaults: DefaultsConfig{Vendor: &v, Inference: InferenceSettings{Auth: InferenceAuthVertexWIF}},
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",
-			Repos:       []RepoEntry{{Name: "acme/api"}},
+			Repos:       []RepoEntry{{Name: "acme/api", Vendor: &f}},
 		},
 	}
 
 	fc := newFakeClientForBatch("acme/api")
 	sc := &spyScaffoldCommit{}
 	cfg := convergeCfgWithDefaults(m)
-	f := false
-	cfg.VendorOverride = &f
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -5894,9 +5384,11 @@ func TestConverge_VendorOverrideFalseDisablesManifestVendor(t *testing.T) {
 
 func TestConverge_VendorGitLabFailsBeforeCommit(t *testing.T) {
 	v := true
+	defaults := testInferenceDefaults()
+	defaults.Vendor = &v
 	m := &Manifest{
 		Version:  1,
-		Defaults: testInferenceDefaults(),
+		Defaults: defaults,
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v1.0.0",
@@ -5909,12 +5401,9 @@ func TestConverge_VendorGitLabFailsBeforeCommit(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
-		VendorOverride:         &v,
 	}
 
 	var warnings []string
@@ -6380,16 +5869,15 @@ func TestConverge_PresetFreshInstallWritesBaseAndOverlay(t *testing.T) {
 		t.Fatal("fresh install must still write config.yaml overlay")
 	}
 
-	// convergeCfgWithDefaults sets Roles to the production cobra-default
-	// ([]string{"triage"}) with RolesExplicit false. The overlay must
-	// leave roles unset so the preset's own roles take effect via the
-	// overlay -> base layered accessor chain, instead of the fleet-wide
-	// default roles shadowing them (converge.go's installRoles = nil
-	// branch). Deleting or inverting that branch would still pass with
-	// only a file-existence assertion, so this asserts both the raw
-	// overlay bytes and the effective layered roles.
+	// The manifest declares no roles. The overlay must leave roles unset
+	// so the preset's own roles take effect via the overlay -> base
+	// layered accessor chain, instead of the fleet-wide default roles
+	// shadowing them (converge.go's installRoles = nil branch). Deleting
+	// or inverting that branch would still pass with only a
+	// file-existence assertion, so this asserts both the raw overlay
+	// bytes and the effective layered roles.
 	if strings.Contains(string(overlayYAML), "roles:") {
-		t.Errorf("overlay must not set roles when the preset owns them (RolesExplicit=false): %s", overlayYAML)
+		t.Errorf("overlay must not set roles when the preset owns them and the manifest declares none: %s", overlayYAML)
 	}
 	effective, err := config.ParsePerRepoConfigWriterLayered(overlayYAML, baseYAML)
 	if err != nil {
@@ -6400,15 +5888,10 @@ func TestConverge_PresetFreshInstallWritesBaseAndOverlay(t *testing.T) {
 	}
 }
 
-// TestConverge_PresetFreshInstallExplicitRolesWritesOverlay is the
-// RolesExplicit=true counterpart to
-// TestConverge_PresetFreshInstallWritesBaseAndOverlay: when the caller
-// explicitly passes --roles, converge.go must not take the
-// installRoles = nil branch, so the caller-supplied roles are written
-// into the overlay and take effect over the preset's own roles.
-// The CLI persists an explicit --roles value in config.roles before
-// converging (EnsureManagedConfigDefaults, #8218), so convergence renders
-// roles from the manifest rather than from ConvergeConfig.Roles.
+// TestConverge_PresetFreshInstallManifestRolesWritesOverlay is the
+// counterpart to TestConverge_PresetFreshInstallWritesBaseAndOverlay for
+// roles declared in the manifest: roles in config.roles of repos.yaml are
+// written into the overlay and take effect over the preset's own roles.
 func TestConverge_PresetFreshInstallManifestRolesWritesOverlay(t *testing.T) {
 	presetPath := writePresetFile(t, presetYAMLWithRoles)
 	repoNames := []string{"acme/api"}
@@ -6442,7 +5925,7 @@ func TestConverge_PresetFreshInstallManifestRolesWritesOverlay(t *testing.T) {
 	}
 
 	if !strings.Contains(string(overlayYAML), "roles:") {
-		t.Errorf("overlay must set roles when the caller explicitly passed --roles: %s", overlayYAML)
+		t.Errorf("overlay must set roles declared in the manifest: %s", overlayYAML)
 	}
 	effective, err := config.ParsePerRepoConfigWriterLayered(overlayYAML, baseYAML)
 	if err != nil {

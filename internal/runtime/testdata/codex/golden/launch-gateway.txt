@@ -1,6 +1,12 @@
 cd '/sandbox/workspace/repo' &&
-{ readonly FULLSEND_CODEX_BIN="$(command -v codex)" &&
-case "$FULLSEND_CODEX_BIN" in /*) ;; *) false ;; esac || { echo 'fullsend: codex not found on PATH' >&2; exit 127; }; } &&
+{ readonly FULLSEND_TRUSTED_PATH="$(IFS=:; set -f; s=; for d in $PATH; do case $d in (/*) ;; (*) continue ;; esac; if ! test -O /; then d="$(cd -P "$d" 2>/dev/null &&
+pwd -P)" || continue; case $d in (*:*) continue ;; esac; p=$d; while :; do if test -w "$p" || test -O "$p"; then continue 2; fi; case $p in (/) break ;; esac; p=${p%/*}; p=${p:-/}; done; fi; if test -d "$d"; then printf '%s%s' "$s" "$d"; s=:; fi; done)"; } &&
+{ readonly FULLSEND_READLINK="$(IFS=:; set -f; rl=; for d in $FULLSEND_TRUSTED_PATH; do test -f "$d/readlink" &&
+test -x "$d/readlink" || continue; if test -O /; then rl=$d/readlink; break; fi; if test -h "$d/readlink" || test -w "$d/readlink" || test -O "$d/readlink"; then continue; fi; rl=$d/readlink; break; done; test -n "$rl" || echo 'fullsend: no readlink that is a regular file in a PATH directory the agent cannot write' >&2; printf '%s' "$rl")"; } &&
+{ readonly FULLSEND_CODEX_BIN="$(IFS=:; set -f; test -n "$FULLSEND_READLINK" || exit 1; for d in $FULLSEND_TRUSTED_PATH; do test -x "$d/codex" || continue; r="$(PATH="$FULLSEND_TRUSTED_PATH" "$FULLSEND_READLINK" -f "$d/codex" 2>/dev/null)" || continue; if ! test -O /; then p=$r; while :; do if test -w "$p" || test -O "$p"; then continue 2; fi; case $p in (/) break ;; esac; p=${p%/*}; p=${p:-/}; done; fi; printf '%s' "$r"; break; done)" &&
+case "$FULLSEND_CODEX_BIN" in /*) ;; *) false ;; esac || { echo 'fullsend: codex not found in a PATH directory the agent cannot write' >&2; exit 127; }; } &&
+{ fullsend_shebang=; IFS= read -r fullsend_shebang 2>/dev/null <"$FULLSEND_CODEX_BIN"; case $fullsend_shebang in ('#!/usr/bin/env node') { readonly FULLSEND_CODEX_NODE="$(IFS=:; set -f; test -n "$FULLSEND_READLINK" || exit 1; for d in $FULLSEND_TRUSTED_PATH; do test -x "$d/node" || continue; r="$(PATH="$FULLSEND_TRUSTED_PATH" "$FULLSEND_READLINK" -f "$d/node" 2>/dev/null)" || continue; if ! test -O /; then p=$r; while :; do if test -w "$p" || test -O "$p"; then continue 2; fi; case $p in (/) break ;; esac; p=${p%/*}; p=${p:-/}; done; fi; printf '%s' "$r"; break; done)" &&
+case "$FULLSEND_CODEX_NODE" in /*) ;; *) false ;; esac || { echo 'fullsend: node not found in a PATH directory the agent cannot write' >&2; exit 127; }; } ;; ('#!'*/env|'#!'*/env[[:blank:]]*) echo "fullsend: $FULLSEND_CODEX_BIN starts through env with a first line other than '#!/usr/bin/env node'" >&2; exit 127 ;; (*) readonly FULLSEND_CODEX_NODE= ;; esac; } &&
 readonly FULLSEND_CODEX_PATH="$PATH" &&
 { test -f '/sandbox/codex-config/config.toml' &&
 test -f '/sandbox/codex-config/openai-token.sh' &&
@@ -50,10 +56,246 @@ fullsend_have=$(command -p cat '/sandbox/codex-config/gateway-token' 2>/dev/null
 test "$fullsend_have" = "$fullsend_want" ;; *) command -p false ;; esac; }; then echo 'fullsend: INFERENCE_GATEWAY_API_KEY is an older generation than the credential file holds; leaving the file as it is' >&2; else echo 'fullsend: INFERENCE_GATEWAY_API_KEY is older than the newest generation in the history, but the credential file does not hold that one; not treating the skipped write as done' >&2; command -p false; fi; else { test "$fullsend_last" = "$INFERENCE_GATEWAY_API_KEY" || printf '%s\n' "$INFERENCE_GATEWAY_API_KEY" >> '/sandbox/codex-config/gateway-token.generations'; } &&
 printf '%s' "$INFERENCE_GATEWAY_API_KEY" > '/sandbox/codex-config/gateway-token.fullsend'.$$ &&
 command -p mv -f '/sandbox/codex-config/gateway-token.fullsend'.$$ '/sandbox/codex-config/gateway-token'; fi; } 9>>'/sandbox/codex-config/gateway-token.fullsend-seed.lock' || { command -p rm -f '/sandbox/codex-config/gateway-token.fullsend'.$$ '/sandbox/codex-config/gateway-token.generations'.$$; echo 'fullsend: writing the codex inference gateway token file failed' >&2; exit 1; }; } &&
-. '/sandbox/workspace/.env' &&
+{ readonly FULLSEND_ENV_PYTHON="$(IFS=:; set -f; test -n "$FULLSEND_READLINK" || exit 1; for d in $FULLSEND_TRUSTED_PATH; do test -x "$d/python3" || continue; r="$(PATH="$FULLSEND_TRUSTED_PATH" "$FULLSEND_READLINK" -f "$d/python3" 2>/dev/null)" || continue; if ! test -O /; then p=$r; while :; do if test -w "$p" || test -O "$p"; then continue 2; fi; case $p in (/) break ;; esac; p=${p%/*}; p=${p:-/}; done; fi; printf '%s' "$r"; break; done)" &&
+case "$FULLSEND_ENV_PYTHON" in /*) ;; *) false ;; esac || { echo 'fullsend: python3 not found in a PATH directory the agent cannot write' >&2; exit 127; }; } &&
+FULLSEND_ENV_EXPORTS="$("$FULLSEND_ENV_PYTHON" -I -S -c 'import os, re, stat, sys
+env_file, cap_line, envd_line, restore_line, iter_line, drop_arg = sys.argv[1:7]
+RUNNER_PATH = "FULLSEND_RUNNER_PATH"
+drop = set(drop_arg.split())
+drop_prefixes = tuple(d[:-1] for d in drop if d.endswith("*"))
+envd_dir = os.path.dirname(envd_line.split()[3])
+iter_file = iter_line.split()[3]
+NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+values = dict(os.environ)
+exported = set(os.environ)
+readonly = set()
+order = []
+failed = []
+def warn(path, line, why):
+	sys.stderr.write("fullsend: ignored %r line %d: %s\n" % (path, line, why))
+def taken(name):
+	return name not in drop and not (drop_prefixes and name.startswith(drop_prefixes)) and name not in readonly
+def assign(path, line, name, value):
+	if not taken(name):
+		warn(path, line, "%s is not taken from .env" % name)
+		return
+	if "\0" in value:
+		warn(path, line, "the value of %s contains a NUL byte" % name)
+		return
+	values[name] = value
+	if name not in order:
+		order.append(name)
+def expand(s, i):
+	if s.startswith("{", i):
+		m = NAME.match(s, i + 1)
+		if not m or not s.startswith("}", m.end()):
+			raise ValueError("unsupported parameter expansion")
+		return values.get(m.group(), ""), m.end() + 1
+	m = NAME.match(s, i)
+	if not m:
+		raise ValueError("unsupported use of $")
+	return values.get(m.group(), ""), m.end()
+def value(s, i):
+	out = []
+	start = i
+	while i < len(s):
+		c = s[i]
+		if c in " \t\n":
+			break
+		if c == "~" and (i == start or s[i - 1] == ":"):
+			if i + 1 < len(s) and s[i + 1] not in "/: \t\n":
+				raise ValueError("unsupported ~user")
+			out.append(values.get("HOME", ""))
+			i += 1
+		elif c == "'\''":
+			j = s.find("'\''", i + 1)
+			if j < 0:
+				raise ValueError("unterminated quote")
+			out.append(s[i + 1:j])
+			i = j + 1
+		elif c == "\"":
+			i += 1
+			while True:
+				if i >= len(s):
+					raise ValueError("unterminated quote")
+				c = s[i]
+				if c == "\"":
+					i += 1
+					break
+				if c == "\\" and i + 1 < len(s) and s[i + 1] in "$\"\\\x60\n":
+					if s[i + 1] != "\n":
+						out.append(s[i + 1])
+					i += 2
+				elif c == "$":
+					v, i = expand(s, i + 1)
+					out.append(v)
+				elif c == "\x60":
+					raise ValueError("command substitution")
+				else:
+					out.append(c)
+					i += 1
+		elif c == "$":
+			v, i = expand(s, i + 1)
+			out.append(v)
+		elif c == "\\":
+			if i + 1 >= len(s) or s[i + 1] == "\n":
+				raise ValueError("line continuation")
+			out.append(s[i + 1])
+			i += 2
+		elif c in ";&|<>()\x60":
+			raise ValueError("not a plain assignment")
+		else:
+			out.append(c)
+			i += 1
+	return "".join(out), i
+def end_of_statement(s, i):
+	while i < len(s) and s[i] in " \t":
+		i += 1
+	if i < len(s) and s[i] == "#":
+		i = s.find("\n", i)
+		i = len(s) if i < 0 else i
+	if i < len(s) and s[i] != "\n":
+		raise ValueError("trailing text after the assignment")
+	return i
+def skip_statement(s, i, eol):
+	stack = []
+	while i < len(s):
+		c = s[i]
+		top = stack[-1] if stack else None
+		if top == "'\''":
+			if c == "'\''":
+				stack.pop()
+		elif c == "\\":
+			i += 1
+		elif c == "$" and s.startswith(("{", "("), i + 1):
+			stack.append("}" if s[i + 1] == "{" else ")")
+			i += 1
+		elif top == "\"":
+			if c == "\"":
+				stack.pop()
+		elif c in "'\''\"":
+			stack.append(c)
+		elif c == top:
+			stack.pop()
+		elif top == ")" and c == "(":
+			stack.append(")")
+		elif not stack:
+			if c == "\n":
+				return i
+			if c == "#" and s[i - 1] in " \t;&|()":
+				i = s.find("\n", i)
+				return len(s) if i < 0 else i
+		i += 1
+	return eol if stack else len(s)
+def statement(path, line, s, i, eol):
+	j = i
+	export = False
+	if s.startswith("export", j) and j + 6 < len(s) and s[j + 6] in " \t":
+		export = True
+		j += 6
+		while j < len(s) and s[j] in " \t":
+			j += 1
+	m = NAME.match(s, j)
+	if not m:
+		raise ValueError("not a NAME=value assignment")
+	name = m.group()
+	j = m.end()
+	if j < len(s) and s[j] == "=":
+		v, j = value(s, j + 1)
+		j = end_of_statement(s, j)
+		assign(path, line, name, v)
+		if export and taken(name):
+			exported.add(name)
+		return j
+	if not export:
+		raise ValueError("not a NAME=value assignment")
+	names = s[i:eol].split()[1:]
+	if not all(NAME.fullmatch(n) for n in names):
+		raise ValueError("not a NAME=value assignment")
+	for n in names:
+		if taken(n):
+			exported.add(n)
+			if n in values and n not in order:
+				order.append(n)
+	return eol
+def is_file(p):
+	try:
+		return stat.S_ISREG(os.stat(p).st_mode)
+	except PermissionError as e:
+		failed.append((p, e))
+	except OSError:
+		pass
+	return False
+def read_included(p):
+	e = read_file(p, False)
+	if e is not None:
+		failed.append((p, e))
+def read_file(path, control):
+	try:
+		with open(path, encoding=sys.getfilesystemencoding(), errors="surrogateescape", newline="") as f:
+			s = f.read()
+	except OSError as e:
+		return e
+	i = 0
+	while i < len(s):
+		while i < len(s) and s[i] in " \t\n":
+			i += 1
+		if i >= len(s):
+			break
+		line = s.count("\n", 0, i) + 1
+		eol = s.find("\n", i)
+		eol = len(s) if eol < 0 else eol
+		text = s[i:eol].rstrip(" \t")
+		if text.startswith("#"):
+			pass
+		elif control and text == cap_line:
+			if RUNNER_PATH not in readonly:
+				assign(path, line, RUNNER_PATH, values.get("PATH", ""))
+				readonly.add(RUNNER_PATH)
+		elif control and text == envd_line:
+			try:
+				names = sorted(os.listdir(envd_dir))
+			except (FileNotFoundError, NotADirectoryError):
+				names = []
+			except OSError as e:
+				failed.append((envd_dir, e))
+				names = []
+			for n in names:
+				p = os.path.join(envd_dir, n)
+				if n.endswith(".env") and not n.startswith(".") and is_file(p):
+					read_included(p)
+		elif control and text == restore_line:
+			now = values.get("PATH", "")
+			assign(path, line, "PATH", values.get(RUNNER_PATH, "") + (":" + now if now else ""))
+			exported.add("PATH")
+		elif control and text == iter_line:
+			if is_file(iter_file):
+				read_included(iter_file)
+		else:
+			try:
+				eol = statement(path, line, s, i, eol)
+			except ValueError as e:
+				warn(path, line, str(e))
+				eol = skip_statement(s, i, eol)
+		i = eol
+	return None
+err = read_file(env_file, True)
+if err is not None:
+	failed.insert(0, (env_file, err))
+for path, e in failed:
+	sys.stderr.write("fullsend: cannot read %r: %s\n" % (path, e.strerror))
+if failed:
+	sys.exit(1)
+for n in order:
+	if n in values and "\0" not in values[n]:
+		sys.stdout.buffer.write(os.fsencode("%s%s='\''%s'\''\n" % ("export " if n in exported else "", n, values[n].replace("'\''", "'\''\\'\'''\''"))))
+' '/sandbox/workspace/.env' 'if ( FULLSEND_RUNNER_PATH= ) 2>/dev/null; then FULLSEND_RUNNER_PATH="$PATH"; readonly FULLSEND_RUNNER_PATH; fi' 'for f in /sandbox/workspace/.env.d/*.env; do [ -f "$f" ] &&
+. "$f"; done' 'export PATH="$FULLSEND_RUNNER_PATH${PATH:+:$PATH}"' 'if [ -f /sandbox/workspace/.fullsend/iteration.env ]; then . /sandbox/workspace/.fullsend/iteration.env; fi' 'LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHON* BASH_ENV ENV IFS FULLSEND_ENV_PYTHON FULLSEND_ENV_EXPORTS FULLSEND_TRUSTED_PATH FULLSEND_READLINK FULLSEND_CODEX_BIN FULLSEND_CODEX_NODE FULLSEND_CODEX_PATH')" &&
+eval "$FULLSEND_ENV_EXPORTS" &&
+unset FULLSEND_ENV_EXPORTS &&
 export CODEX_HOME=/sandbox/codex-config &&
 export PATH="$FULLSEND_CODEX_PATH" &&
-export FULLSEND_CODEX_PATH &&
+export FULLSEND_TRUSTED_PATH &&
 export FULLSEND_RUNTIME=codex &&
 unset OPENAI_BASE_URL OPENAI_API_KEY CODEX_API_KEY INFERENCE_GATEWAY_API_KEY NODE_OPTIONS NODE_PATH PYTHONPATH PYTHONHOME PYTHONSTARTUP LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT &&
 unset -f test command grep cut wc sha256sum printf codex &&
@@ -90,8 +332,10 @@ test -f '/sandbox/codex-config/hooks/unicode_posttool.py' &&
 { [ "$(command -p sha256sum '/sandbox/codex-config/config.toml' | command -p cut -d' ' -f1)" = '<sha256>' ] &&
 [ "$(command -p sha256sum '/sandbox/codex-config/hooks.json' | command -p cut -d' ' -f1)" = '<sha256>' ] || { echo 'fullsend: codex config.toml or hooks.json is not the file fullsend wrote; refusing to run (a rewritten config can trust the target repo, which loads its .codex/ layer and its hooks)' >&2; exit 98; }; } &&
 command -p rm -f '/sandbox/codex-config/models_cache.json' &&
+export RUST_LOG='error,opentelemetry_sdk=off,opentelemetry_otlp=off,codex_exec=warn,codex_app_server::in_process=warn' &&
 export FULLSEND_CODEX_HOOK_DIGESTS='canary_posttool.py:<sha256> canary_pretool.py:<sha256> context_suppress_posttool.py:<sha256> hook_io.py:<sha256> posttool_chain.py:<sha256> secret_redact_posttool.py:<sha256> ssrf_pretool.py:<sha256> tirith_check.py:<sha256> unicode_posttool.py:<sha256>' &&
 export FULLSEND_CODEX_SPAWN_DIGESTS='hooks.json:<sha256>' &&
+unset TIRITH_FAIL_ON FULLSEND_CANARY_TOKEN FULLSEND_TOOL_ALLOWLIST &&
 export TIRITH_REQUIRED='1' &&
 export FULLSEND_EGRESS_ALLOWLIST='api.github.com:443' &&
-printf '%s' 'Run the agent task' | "$FULLSEND_CODEX_BIN" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -C '/sandbox/workspace/repo' --model 'vendor/org/model' -c 'model_provider=fullsend-gateway' -c 'approval_policy=never' -c 'sandbox_mode=danger-full-access' -c 'model_providers.fullsend-gateway.base_url="https://gateway.example.com/v1"' -c 'model_providers.fullsend-gateway.auth.command="/sandbox/codex-config/gateway-token.sh"' -c 'model_reasoning_effort=high' -o '/sandbox/codex-config/last-message.txt' -
+printf '%s' 'Run the agent task' | ${FULLSEND_CODEX_NODE:+"$FULLSEND_CODEX_NODE"} "$FULLSEND_CODEX_BIN" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -C '/sandbox/workspace/repo' --model 'vendor/org/model' -c 'model_provider=fullsend-gateway' -c 'approval_policy=never' -c 'sandbox_mode=danger-full-access' -c 'model_providers.fullsend-gateway.base_url="https://gateway.example.com/v1"' -c 'model_providers.fullsend-gateway.auth.command="/sandbox/codex-config/gateway-token.sh"' -c 'model_reasoning_effort=high' -o '/sandbox/codex-config/last-message.txt' -

@@ -250,6 +250,129 @@ func TestListPullRequestReviewThreads(t *testing.T) {
 	assert.Equal(t, normevent.RoleNone, got.Threads[7].ResolvedByRole)
 }
 
+func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
+	client, mux := setupTest(t)
+	note := func(position map[string]any) map[string]any {
+		n := map[string]any{"id": 1, "body": "comment", "resolvable": true, "resolved": false}
+		if position != nil {
+			n["position"] = position
+		}
+		return n
+	}
+	handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": "context-line", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 17, "old_line": 16,
+			})}},
+			{"id": "removed-line", "notes": []map[string]any{note(map[string]any{
+				"new_path": "new.go", "old_path": "old.go", "new_line": nil, "old_line": 7,
+			})}},
+			{"id": "multi-line-new", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 12,
+				"line_range": map[string]any{
+					"start": map[string]any{"type": "new", "new_line": 10},
+					"end":   map[string]any{"type": "new", "new_line": 12},
+				},
+			})}},
+			{"id": "multi-line-mixed", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 6,
+				"line_range": map[string]any{
+					"start": map[string]any{"type": "old", "old_line": 5},
+					"end":   map[string]any{"type": "new", "new_line": 6},
+				},
+			})}},
+			{"id": "single-line-range", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 4, "old_line": 4,
+				"line_range": map[string]any{
+					"start": map[string]any{"type": nil, "old_line": 4, "new_line": 4},
+					"end":   map[string]any{"type": nil, "old_line": 4, "new_line": 4},
+				},
+			})}},
+			{"id": "general", "notes": []map[string]any{note(nil)}},
+		})
+	})
+
+	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	require.Len(t, got.Threads, 6)
+	for _, thread := range got.Threads {
+		assert.Nil(t, thread.IsOutdated, "%s: GitLab does not expose outdated state", thread.ID)
+		assert.Nil(t, thread.OriginalLine, "%s: GitLab does not expose the original position", thread.ID)
+		assert.Nil(t, thread.OriginalStartLine, "%s", thread.ID)
+	}
+
+	contextLine := got.Threads[0]
+	require.NotNil(t, contextLine.Side)
+	assert.Equal(t, forge.DiffSideRight, *contextLine.Side)
+	assert.Equal(t, 17, *contextLine.Line)
+	assert.Equal(t, 16, *contextLine.OldLine, "old_line keeps GitLab's old-file meaning")
+	assert.Equal(t, 17, *contextLine.NewLine, "new_line keeps GitLab's new-file meaning")
+	assert.Nil(t, contextLine.StartSide)
+	assert.Nil(t, contextLine.StartLine)
+
+	removed := got.Threads[1]
+	assert.Equal(t, "old.go", removed.Path)
+	require.NotNil(t, removed.Side)
+	assert.Equal(t, forge.DiffSideLeft, *removed.Side, "a removed-line discussion is on the old side")
+	assert.Equal(t, 7, *removed.Line)
+	assert.Equal(t, 7, *removed.OldLine)
+	assert.Nil(t, removed.NewLine)
+
+	multiNew := got.Threads[2]
+	assert.Equal(t, forge.DiffSideRight, *multiNew.Side)
+	assert.Equal(t, 12, *multiNew.Line)
+	require.NotNil(t, multiNew.StartSide)
+	assert.Equal(t, forge.DiffSideRight, *multiNew.StartSide)
+	assert.Equal(t, 10, *multiNew.StartLine)
+
+	multiMixed := got.Threads[3]
+	assert.Equal(t, forge.DiffSideRight, *multiMixed.Side)
+	assert.Equal(t, 6, *multiMixed.Line)
+	require.NotNil(t, multiMixed.StartSide)
+	assert.Equal(t, forge.DiffSideLeft, *multiMixed.StartSide)
+	assert.Equal(t, 5, *multiMixed.StartLine)
+
+	singleRange := got.Threads[4]
+	assert.Equal(t, 4, *singleRange.Line)
+	assert.Nil(t, singleRange.StartSide, "a range covering one line is not multi-line")
+	assert.Nil(t, singleRange.StartLine)
+
+	general := got.Threads[5]
+	assert.Nil(t, general.Side)
+	assert.Nil(t, general.Line)
+	assert.Nil(t, general.OldLine)
+	assert.Nil(t, general.NewLine)
+	assert.Nil(t, general.StartLine)
+}
+
+func TestGitLabSideLine(t *testing.T) {
+	one, two := 1, 2
+	tests := []struct {
+		name     string
+		lineType string
+		oldLine  *int
+		newLine  *int
+		wantSide *forge.DiffSide
+		wantLine *int
+	}{
+		{name: "context prefers new", oldLine: &one, newLine: &two, wantSide: ptrSide(forge.DiffSideRight), wantLine: &two},
+		{name: "old type", lineType: "old", oldLine: &one, newLine: &two, wantSide: ptrSide(forge.DiffSideLeft), wantLine: &one},
+		{name: "new type", lineType: "new", newLine: &two, wantSide: ptrSide(forge.DiffSideRight), wantLine: &two},
+		{name: "old type without old line falls back", lineType: "old", newLine: &two, wantSide: ptrSide(forge.DiffSideRight), wantLine: &two},
+		{name: "removed line", oldLine: &one, wantSide: ptrSide(forge.DiffSideLeft), wantLine: &one},
+		{name: "no lines"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			side, line := gitlabSideLine(tt.lineType, tt.oldLine, tt.newLine)
+			assert.Equal(t, tt.wantSide, side)
+			assert.Equal(t, tt.wantLine, line)
+		})
+	}
+}
+
+func ptrSide(side forge.DiffSide) *forge.DiffSide { return &side }
+
 func TestListPullRequestReviewThreads_DecodeError(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
@@ -318,6 +441,7 @@ func TestGetIssue_StringLabels(t *testing.T) {
 			"description": "Issue body",
 			"web_url":     "https://gitlab.com/myorg/myrepo/-/issues/5",
 			"labels":      []string{"feature", "docs"},
+			"state":       "opened",
 		})
 	})
 
@@ -327,6 +451,8 @@ func TestGetIssue_StringLabels(t *testing.T) {
 	assert.Equal(t, "Test issue", issue.Title)
 	assert.Equal(t, "Issue body", issue.Body)
 	assert.Equal(t, []string{"feature", "docs"}, issue.Labels)
+	assert.Equal(t, "open", issue.State, "GitLab's \"opened\" is normalized to \"open\"")
+	assert.Empty(t, issue.StateReason)
 }
 
 func TestGetIssue_ObjectLabels(t *testing.T) {
@@ -343,12 +469,14 @@ func TestGetIssue_ObjectLabels(t *testing.T) {
 				{"title": "alpha"},
 				{"title": "beta"},
 			},
+			"state": "closed",
 		})
 	})
 
 	issue, err := client.GetIssue(ctx, "myorg", "myrepo", 7)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"alpha", "beta"}, issue.Labels)
+	assert.Equal(t, "closed", issue.State)
 }
 
 func TestGetIssue_NotFound(t *testing.T) {
@@ -476,6 +604,45 @@ func TestAddIssueLabels_MultipleLabels(t *testing.T) {
 
 	err := client.AddIssueLabels(ctx, "myorg", "myrepo", 5, "bug", "new")
 	require.NoError(t, err)
+}
+
+func TestEnsureLabel(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		assert.Equal(t, map[string]string{"name": "do-it", "color": "#ededed"}, body)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1, "name": "do-it"})
+	})
+
+	require.NoError(t, client.EnsureLabel(ctx, "myorg", "myrepo", "do-it"))
+}
+
+func TestEnsureLabel_AlreadyExists(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{"message": "Label already exists"})
+	})
+
+	require.NoError(t, client.EnsureLabel(ctx, "myorg", "myrepo", "do-it"))
+}
+
+func TestEnsureLabel_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	err := client.EnsureLabel(ctx, "myorg", "myrepo", "do-it")
+	require.ErrorContains(t, err, `create label "do-it"`)
+	require.ErrorIs(t, err, forge.ErrForbidden)
 }
 
 func TestListIssueComments(t *testing.T) {
@@ -937,6 +1104,47 @@ func TestListPullRequestFileDiffs(t *testing.T) {
 	assert.Equal(t, "file.go", diffs[0].Path)
 	assert.Contains(t, diffs[0].Patch, "+new line")
 	assert.Equal(t, "other.go", diffs[1].Path)
+}
+
+func TestListPullRequestFileDiffs_NormalizesStatusAndRenamePath(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/diffs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"new_path": "added.go", "new_file": true, "diff": "@@ -0,0 +1 @@\n+new"},
+			{"old_path": "removed.go", "new_path": "removed.go", "deleted_file": true, "diff": "@@ -1 +0,0 @@\n-old"},
+			{"old_path": "old.go", "new_path": "new.go", "renamed_file": true, "diff": "@@ -1 +1 @@\n-old\n+new"},
+			{"new_path": "modified.go", "diff": "@@ -1 +1 @@\n-old\n+new"},
+		})
+	})
+
+	diffs, err := client.ListPullRequestFileDiffs(ctx, "myorg", "myrepo", 5)
+	require.NoError(t, err)
+	require.Len(t, diffs, 4)
+	assert.Equal(t, "added", diffs[0].Status)
+	assert.Equal(t, "removed", diffs[1].Status)
+	assert.Equal(t, "renamed", diffs[2].Status)
+	assert.Equal(t, "old.go", diffs[2].PreviousPath)
+	assert.Equal(t, "modified", diffs[3].Status)
+	assert.Empty(t, diffs[3].PreviousPath)
+}
+
+func TestListPullRequestFileDiffs_ReturnsAvailableFilesWithPaginationError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/diffs", func(w http.ResponseWriter, r *http.Request) {
+		files := make([]map[string]any, 100)
+		for i := range files {
+			files[i] = map[string]any{"new_path": "file-" + strconv.Itoa(i), "diff": "@@ -1 +1 @@\n-old\n+new"}
+		}
+		writeJSON(t, w, http.StatusOK, files)
+	})
+
+	diffs, err := client.ListPullRequestFileDiffs(ctx, "myorg", "myrepo", 5)
+	require.ErrorIs(t, err, forge.ErrDiffListingTruncated)
+	assert.Len(t, diffs, 10000)
 }
 
 func TestMergeChangeProposal(t *testing.T) {
@@ -2242,7 +2450,7 @@ func TestListRepoVariables_WildcardScopeWinsOverEnvironmentScope(t *testing.T) {
 }
 
 func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN", forge.SecretTraceSigningKey} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -2265,7 +2473,7 @@ func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
 }
 
 func TestUpdateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN", forge.SecretTraceSigningKey} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -2502,6 +2710,37 @@ func TestCreatePipelineSchedule_NoVariables(t *testing.T) {
 	assert.Equal(t, int64(456), id)
 }
 
+func TestCreatePipelineScheduleWithActive_SendsActiveStateInCreateRequest(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var bodies []map[string]any
+	var otherRequests int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		bodies = append(bodies, body)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 789})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules/789", func(http.ResponseWriter, *http.Request) {
+		otherRequests++
+	})
+
+	id, err := client.CreatePipelineScheduleWithActive(ctx, "myorg", "myrepo", "main", "Disabled", "0 0 * * 0", nil, false)
+	require.NoError(t, err)
+	assert.Equal(t, int64(789), id)
+	_, err = client.CreatePipelineScheduleWithActive(ctx, "myorg", "myrepo", "main", "Enabled", "0 0 * * 0", nil, true)
+	require.NoError(t, err)
+	_, err = client.CreatePipelineSchedule(ctx, "myorg", "myrepo", "main", "Default", "0 0 * * 0", nil)
+	require.NoError(t, err)
+
+	require.Len(t, bodies, 3)
+	assert.Equal(t, false, bodies[0]["active"], "a disabled schedule is created disabled")
+	assert.NotContains(t, bodies[1], "active", "an active schedule keeps GitLab's default")
+	assert.NotContains(t, bodies[2], "active", "CreatePipelineSchedule is unchanged")
+	assert.Zero(t, otherRequests, "no separate request edits the schedule")
+}
+
 func TestDeletePipelineSchedule(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -2553,6 +2792,7 @@ func TestListPipelineSchedules(t *testing.T) {
 		writeJSON(t, w, http.StatusOK, []map[string]any{
 			{
 				"id":            int64(1),
+				"owner":         map[string]any{"id": int64(42)},
 				"description":   "Nightly",
 				"ref":           "main",
 				"cron":          "0 0 * * *",
@@ -2575,6 +2815,7 @@ func TestListPipelineSchedules(t *testing.T) {
 	require.Len(t, schedules, 2)
 
 	assert.Equal(t, int64(1), schedules[0].ID)
+	assert.Equal(t, int64(42), schedules[0].OwnerID)
 	assert.Equal(t, "Nightly", schedules[0].Description)
 	assert.Equal(t, "main", schedules[0].Ref)
 	assert.Equal(t, "0 0 * * *", schedules[0].Cron)
@@ -2582,6 +2823,7 @@ func TestListPipelineSchedules(t *testing.T) {
 	assert.True(t, schedules[0].Active)
 
 	assert.Equal(t, int64(2), schedules[1].ID)
+	assert.Zero(t, schedules[1].OwnerID)
 	assert.False(t, schedules[1].Active)
 }
 
@@ -3429,6 +3671,16 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 	})
 }
 
+func TestErrNotSupported_FileMethods(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
+
+	t.Run("UpdateFileIfMatch", func(t *testing.T) {
+		err := client.UpdateFileIfMatch(ctx, "org", "repo", "f", "m", []byte("x"), "")
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+}
+
 func TestErrNotSupported_WorkflowMethods(t *testing.T) {
 	client, _ := setupTest(t)
 	ctx := context.Background()
@@ -3441,6 +3693,26 @@ func TestErrNotSupported_WorkflowMethods(t *testing.T) {
 
 	t.Run("DispatchWorkflow", func(t *testing.T) {
 		err := client.DispatchWorkflow(ctx, "o", "r", "w", "main", nil)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+}
+
+func TestErrNotSupported_E2EGateMethods(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
+
+	t.Run("GetPullRequestAuthorizationContext", func(t *testing.T) {
+		_, err := client.GetPullRequestAuthorizationContext(ctx, "o", "r", 1)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+
+	t.Run("ListIssueLabelEvents", func(t *testing.T) {
+		_, err := client.ListIssueLabelEvents(ctx, "o", "r", 1)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+
+	t.Run("RemoveIssueLabel", func(t *testing.T) {
+		err := client.RemoveIssueLabel(ctx, "o", "r", 1, "ok-to-test")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 }
@@ -3834,6 +4106,47 @@ func TestListWorkflowRunJobs_Error(t *testing.T) {
 	})
 	_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
 	require.Error(t, err)
+	assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+}
+
+// TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel covers the
+// not-found classification adapters attach to a first-page 404, and the
+// later-page 404 that must not carry it: page 1 was already readable and
+// may hold a completed job.
+func TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel(t *testing.T) {
+	t.Run("first page 404 carries the sentinel", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		})
+		_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forge.ErrNotFound)
+		assert.ErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+	})
+	t.Run("later page 404 does not carry it", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Query().Get("page") {
+			case "1":
+				jobs := make([]string, 100)
+				for i := range jobs {
+					jobs[i] = fmt.Sprintf(`{"id":%d,"name":"job-%d","status":"success"}`, i+1, i+1)
+				}
+				w.Header().Set("X-Next-Page", "2")
+				fmt.Fprint(w, "["+strings.Join(jobs, ",")+"]")
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		})
+		jobs, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+		require.Error(t, err)
+		assert.Nil(t, jobs)
+		assert.ErrorIs(t, err, forge.ErrNotFound, "the 404 stays classified as not found")
+		assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage, "a partially readable listing never carries the sentinel")
+		assert.Contains(t, err.Error(), "page 2")
+	})
 }
 
 func TestListWorkflowRunArtifacts_Error(t *testing.T) {
@@ -3933,6 +4246,62 @@ func TestGetWorkflowRunLogs_MultipleJobs(t *testing.T) {
 	assert.Contains(t, logs, "test failure output")
 	assert.Contains(t, logs, "Job 1 (build)")
 	assert.Contains(t, logs, "Job 2 (test)")
+}
+
+// TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote verifies that a skipped
+// job, which has no trace, is left out without a trace request, so its 404
+// does not read as a fetch that failed — the mirror of the GitHub client's
+// test of the same name.
+func TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"failed"},{"id":2,"name":"deploy","status":"skipped"}]`)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("build failure output"))
+	})
+	skippedTraceRequests := 0
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, r *http.Request) {
+		skippedTraceRequests++
+		http.NotFound(w, r)
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "Job 1 (build)")
+	assert.Contains(t, logs, "build failure output")
+	// The literal is the shared forge log-note constant's text
+	// (forge.LogNoteErrorFetchingTrace); the note spelling itself is pinned
+	// by TestLogNoteMarkersAreSharedWithForge in pkg/behaviourtest/steps.
+	assert.NotContains(t, logs, "error fetching trace:")
+	assert.Zero(t, skippedTraceRequests, "a skipped job's trace is never requested")
+}
+
+// TestGetWorkflowRunLogs_AllJobsRan_EveryTraceFetched verifies the other
+// side of the skipped-job skip: a pipeline whose jobs all ran still has
+// every job's trace requested and included, as before.
+func TestGetWorkflowRunLogs_AllJobsRan_EveryTraceFetched(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"test","status":"success"}]`)
+	})
+	traceRequests := map[int]int{}
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		traceRequests[1]++
+		_, _ = w.Write([]byte("build output"))
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, _ *http.Request) {
+		traceRequests[2]++
+		_, _ = w.Write([]byte("test output"))
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "Job 1 (build)")
+	assert.Contains(t, logs, "build output")
+	assert.Contains(t, logs, "Job 2 (test)")
+	assert.Contains(t, logs, "test output")
+	assert.Equal(t, map[int]int{1: 1, 2: 1}, traceRequests, "every job that ran has its trace fetched exactly once")
 }
 
 func TestGetWorkflowRunLogs_TraceError(t *testing.T) {
@@ -4921,6 +5290,110 @@ func TestUpdateRepoSecret_MaskingRequiredNoUnmaskedFallback(t *testing.T) {
 	assert.Equal(t, 1, callCount, "must not retry with masked:false")
 }
 
+// genericValueInvalid is the 400 body some GitLab instances return when a
+// value cannot be masked (e.g. it is shorter than 8 characters), without
+// mentioning masking.
+var genericValueInvalid = map[string]any{"message": map[string]any{"value": []string{"is invalid"}}}
+
+func TestCreateRepoSecret_MaskedFallbackOnGenericValueInvalid(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		if body["masked"] == true {
+			writeJSON(t, w, http.StatusBadRequest, genericValueInvalid)
+			return
+		}
+		assert.Equal(t, "seqe-ai", body["value"])
+		assert.Equal(t, true, body["protected"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"key": forge.SecretGCPProjectID})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretGCPProjectID, "seqe-ai")
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount, "should retry with masked:false after generic value error")
+}
+
+func TestUpdateRepoSecret_MaskedFallbackOnGenericValueInvalid(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{
+			"message": forge.SecretGCPProjectID + " has already been taken",
+		})
+	})
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/"+forge.SecretGCPProjectID, func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		if body["masked"] == true {
+			writeJSON(t, w, http.StatusBadRequest, genericValueInvalid)
+			return
+		}
+		writeJSON(t, w, http.StatusOK, map[string]any{"key": forge.SecretGCPProjectID})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretGCPProjectID, "seqe-ai")
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount, "should retry PUT with masked:false after generic value error")
+}
+
+func TestCreateRepoSecret_MaskingRequiredGenericValueInvalid(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["masked"], "must never send masked:false")
+		writeJSON(t, w, http.StatusBadRequest, genericValueInvalid)
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretOpenAIAPIKey, "short")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be stored unmasked")
+	assert.Equal(t, 1, callCount, "must not retry with masked:false")
+}
+
+func TestMaskingRequired_JiraSecrets(t *testing.T) {
+	assert.True(t, maskingRequired(forge.SecretJiraToken), "the Jira token is a bearer credential")
+	assert.False(t, maskingRequired(forge.SecretJiraEmail), "the Jira account email is not a bearer credential")
+	assert.True(t, maskingRequired(forge.SecretJiraClientSecret), "the Jira OAuth client secret mints bearer credentials")
+	assert.False(t, maskingRequired(forge.SecretJiraClientID), "the Jira OAuth client ID is not a bearer credential")
+}
+
+func TestIsMaskingError(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		msg    string
+		want   bool
+	}{
+		{name: "explicit mask message", status: http.StatusBadRequest, msg: "This variable can not be masked", want: true},
+		{name: "generic value invalid", status: http.StatusBadRequest, msg: "value: [is invalid]", want: true},
+		{name: "value invalid among other fields", status: http.StatusBadRequest, msg: "key: [is too long]; value: [is invalid]", want: true},
+		{name: "key invalid", status: http.StatusBadRequest, msg: "key: [is invalid]", want: false},
+		{name: "plain key is invalid", status: http.StatusBadRequest, msg: "key is invalid", want: false},
+		{name: "value too long", status: http.StatusBadRequest, msg: "value: [is too long]", want: false},
+		{name: "value invalid wrong status", status: http.StatusUnprocessableEntity, msg: "value: [is invalid]", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isMaskingError(&APIError{StatusCode: tt.status, Message: tt.msg}))
+		})
+	}
+}
+
 func TestCreatePipelineSchedule_CleansUpOnVariableFailure(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -5249,14 +5722,98 @@ func TestDeleteBranch_NotFound(t *testing.T) {
 // CreateCrossRepoChangeProposal tests
 // ---------------------------------------------------------------------------
 
-func TestCreateCrossRepoChangeProposal_NotSupported(t *testing.T) {
-	client, _ := setupTest(t)
+func TestCreateCrossRepoChangeProposal(t *testing.T) {
+	client, mux := setupTest(t)
 	ctx := context.Background()
 
-	cp, err := client.CreateCrossRepoChangeProposal(ctx, "base-owner", "base-repo", "head-owner", "head-repo", "title", "body", "feature", "main")
+	// Upstream lives in a nested group; the fork has a different name to
+	// confirm the fork's own repo name (not upstream's) is used.
+	mux.HandleFunc("/api/v4/projects/kernel-qe%2Fsustaining-engineering%2Fseqe", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": 4242, "name": "seqe", "path_with_namespace": "kernel-qe/sustaining-engineering/seqe",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/iwienand%2Fseqe-fork/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		// Bare branch name — never GitHub's "owner:branch" syntax.
+		assert.Equal(t, "fullsend/scaffold-install", body["source_branch"])
+		assert.Equal(t, "master", body["target_branch"])
+		assert.InDelta(t, 4242, body["target_project_id"], 0)
+		assert.Equal(t, "Scaffold", body["title"])
+		assert.Equal(t, "Scaffold body", body["description"])
+		assert.NotContains(t, body, "source_project_id")
+
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"iid":           7,
+			"title":         "Scaffold",
+			"web_url":       "https://gitlab.example.com/kernel-qe/sustaining-engineering/seqe/-/merge_requests/7",
+			"source_branch": "fullsend/scaffold-install",
+			"target_branch": "master",
+		})
+	})
+
+	cp, err := client.CreateCrossRepoChangeProposal(ctx,
+		"kernel-qe/sustaining-engineering", "seqe", "iwienand", "seqe-fork",
+		"Scaffold", "Scaffold body", "fullsend/scaffold-install", "master")
+	require.NoError(t, err)
+	assert.Equal(t, 7, cp.Number)
+	assert.Equal(t, "Scaffold", cp.Title)
+	assert.Equal(t, "https://gitlab.example.com/kernel-qe/sustaining-engineering/seqe/-/merge_requests/7", cp.URL)
+	assert.Equal(t, "fullsend/scaffold-install", cp.Head)
+	assert.Equal(t, "iwienand/seqe-fork", cp.HeadRepo)
+	assert.Equal(t, "master", cp.Base)
+}
+
+func TestCreateCrossRepoChangeProposal_TargetNotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/upstream%2Frepo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Project Not Found"})
+	})
+	mux.HandleFunc("/api/v4/projects/fork%2Frepo/merge_requests", func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("merge request must not be created when the target project lookup fails")
+	})
+
+	cp, err := client.CreateCrossRepoChangeProposal(ctx, "upstream", "repo", "fork", "repo", "t", "b", "feature", "main")
 	require.Error(t, err)
 	assert.Nil(t, cp)
-	assert.ErrorIs(t, err, forge.ErrNotSupported)
+	assert.True(t, forge.IsNotFound(err), "expected ErrNotFound, got: %v", err)
+	assert.Contains(t, err.Error(), "resolve target project")
+}
+
+func TestCreateCrossRepoChangeProposal_MissingTargetID(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/upstream%2Frepo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"name": "repo"})
+	})
+
+	_, err := client.CreateCrossRepoChangeProposal(ctx, "upstream", "repo", "fork", "repo", "t", "b", "feature", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no ID")
+}
+
+func TestCreateCrossRepoChangeProposal_AlreadyExists(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/upstream%2Frepo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"id": 1, "name": "repo"})
+	})
+	mux.HandleFunc("/api/v4/projects/fork%2Frepo/merge_requests", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]any{
+			"message": []string{"Another open merge request already exists for this source branch: !3"},
+		})
+	})
+
+	_, err := client.CreateCrossRepoChangeProposal(ctx, "upstream", "repo", "fork", "repo", "t", "b", "feature", "main")
+	require.Error(t, err)
+	assert.True(t, forge.IsAlreadyExists(err), "expected ErrAlreadyExists, got: %v", err)
 }
 
 func TestGetRepoSecretProtection(t *testing.T) {

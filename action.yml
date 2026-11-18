@@ -1,7 +1,8 @@
 name: Fullsend
 description: >-
   Install fullsend-cli, create ${GITHUB_WORKSPACE}/output, invoke fullsend run with --output-dir
-  pointing at that directory, then upload it with actions/upload-artifact. The run resolves the
+  pointing at that directory, then upload the copy that config.yaml's artifacts setting allows
+  with actions/upload-artifact. The run resolves the
   selected agent's inference provider and prepares GCP credentials only for Vertex.
 
 branding:
@@ -12,6 +13,11 @@ inputs:
   agent:
     description: Agent name passed to fullsend run (e.g. triage, code, review).
     required: true
+  role:
+    description: >-
+      Mint role selected by dispatch. Used to reconcile an interrupted run
+      before fullsend can report its resolved harness role.
+    default: ""
   version:
     description: >-
       Release tag, version or long-form SHA: use latest, v0.0.1, 0.0.1 or a 40-char commit SHA.
@@ -51,7 +57,15 @@ inputs:
     description: >-
       PR head commit SHA, passed explicitly by per-repo (workflow_call)
       callers where GITHUB_EVENT_PATH lacks the dispatched event_payload
-      wrapper. Takes precedence over GITHUB_EVENT_PATH extraction.
+      wrapper. Takes precedence over native pull_request and
+      workflow_dispatch event extraction.
+    default: ""
+  artifact-name:
+    description: >-
+      Optional exact artifact name. When set, it overrides the default
+      fullsend-<agent> name. Callers that run the same agent more than once
+      in a workflow run (for example a matrix) can use it to give each upload
+      a unique name.
     default: ""
   gcp_wif_provider:
     description: Workload Identity Federation provider resource name, used only when the selected agent resolves to Vertex inference.
@@ -59,6 +73,53 @@ inputs:
     default: ""
   gcp_project_id:
     description: GCP project ID, used only when the selected agent resolves to Vertex inference.
+    required: false
+    default: ""
+  runner_secrets:
+    description: >-
+      JSON object of name → value (the FULLSEND_GITHUB_RUNNER_SECRETS secret).
+      fullsend run resolves ${NAME} in the harness's env.runner from it,
+      so the values reach host-side scripts only, never the sandbox.
+      Only the Stage runner secrets step reads it: that step writes it to a
+      mode 0600 file, and Run fullsend receives the file path, never the
+      value (ADR 0136).
+    required: false
+    default: ""
+  jira-token:
+    description: >-
+      Scoped Jira API token for status notifications and Jira-consuming agent
+      runs. The Run fullsend and orphaned-status finalizer steps receive it as
+      FULLSEND_JIRA_TOKEN. Host-side scripts receive it only when a harness
+      declares it in env.runner; sandbox and provider expansion sites deny it.
+      It is separate from runner_secrets and remains in the fullsend run
+      process environment.
+    required: false
+    default: ""
+  jira-email:
+    description: >-
+      Optional Jira account email. When set, it selects bot-user Basic auth;
+      when absent, the token uses service-account Bearer auth. The Run fullsend
+      and orphaned-status finalizer steps receive it only when set. Host-side
+      scripts receive it only when the harness declares it in env.runner.
+    required: false
+    default: ""
+  jira-client-id:
+    description: >-
+      Optional OAuth 2.0 client ID of an Atlassian service account, used with
+      jira-client-secret instead of jira-token. The Run fullsend and
+      orphaned-status finalizer steps receive it as FULLSEND_JIRA_CLIENT_ID only
+      when set. Host-side scripts receive it only when a harness declares it in
+      env.runner; sandbox and provider expansion sites deny it.
+    required: false
+    default: ""
+  jira-client-secret:
+    description: >-
+      Optional OAuth 2.0 client secret of an Atlassian service account, used
+      with jira-client-id instead of jira-token. fullsend exchanges the client
+      credentials for short-lived access tokens. The Run fullsend and
+      orphaned-status finalizer steps receive it as FULLSEND_JIRA_CLIENT_SECRET
+      only when set. Host-side scripts receive it only when a harness declares
+      it in env.runner; sandbox and provider expansion sites deny it.
     required: false
     default: ""
 
@@ -371,11 +432,37 @@ runs:
       shell: bash
       run: fullsend --version
 
+    # A runner that sets OPENSHELL_GATEWAY_ENDPOINT uses an OpenShell gateway
+    # that runs elsewhere. Sandboxes are created on that gateway, so the
+    # runner needs no Podman and no local gateway (#9044). This step reads the
+    # runner process environment: the `env` context in an `if:` holds only
+    # workflow, job and step variables, not the runner's own environment.
+    - name: Detect sandbox host
+      id: sandbox-host
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -n "${OPENSHELL_GATEWAY_ENDPOINT:-}" ]]; then
+          echo "OPENSHELL_GATEWAY_ENDPOINT is set: using the existing OpenShell gateway, skipping local Podman and gateway setup"
+          echo "local=false" >> "${GITHUB_OUTPUT}"
+          if command -v openshell >/dev/null 2>&1; then
+            echo "Using the preinstalled OpenShell CLI"
+            echo "install-openshell=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "install-openshell=true" >> "${GITHUB_OUTPUT}"
+          fi
+        else
+          echo "local=true" >> "${GITHUB_OUTPUT}"
+          echo "install-openshell=true" >> "${GITHUB_OUTPUT}"
+        fi
+
     - name: Install Podman
+      if: steps.sandbox-host.outputs.local == 'true'
       shell: bash
       run: "$GITHUB_ACTION_PATH/.github/scripts/install-podman.sh"
 
     - name: Configure rootless Podman
+      if: steps.sandbox-host.outputs.local == 'true'
       shell: bash
       run: |
         test -f /sys/fs/cgroup/cgroup.controllers || { echo "::error::cgroups v2 required"; exit 1; }
@@ -386,6 +473,7 @@ runs:
         systemctl --user start podman.socket
 
     - name: Configure OpenShell gateway
+      if: steps.sandbox-host.outputs.local == 'true'
       shell: bash
       run: |
         source "$GITHUB_ACTION_PATH/.github/scripts/openshell-version.sh"
@@ -405,13 +493,32 @@ runs:
         health_check_interval_secs = 10
         EOF
 
+    # The upstream installer needs sudo and starts a local gateway service, so
+    # a remote-gateway runner that already has the CLI skips it.
     - name: Install OpenShell CLI
+      if: steps.sandbox-host.outputs.install-openshell == 'true'
       shell: bash
       run: "$GITHUB_ACTION_PATH/.github/scripts/install-openshell.sh"
 
+    # A container runner image can ship jsonschema already, or ship a Python
+    # that pip refuses to modify (an externally managed environment, PEP 668).
+    # Skip the install when the package already imports and its installed
+    # version meets the 4.18.0 floor (Draft 2020-12 support); otherwise fall
+    # back to --break-system-packages when the plain install is refused. The
+    # consumers (fullsend-check-output) call the system python3, so the package
+    # must land in its site-packages rather than in a venv.
     - name: Install validation dependencies
       shell: bash
-      run: pip install --quiet "jsonschema>=4.18.0"
+      run: |
+        set -euo pipefail
+        if python3 -c 'import importlib.metadata as m, re, sys, jsonschema; v = re.match(r"(\d+)\.(\d+)", m.version("jsonschema")); sys.exit(0 if v and (int(v[1]), int(v[2])) >= (4, 18) else 1)' >/dev/null 2>&1; then
+          echo "jsonschema >=4.18.0 is already installed, skipping install"
+          exit 0
+        fi
+        if ! python3 -m pip install --quiet "jsonschema>=4.18.0"; then
+          echo "pip install was refused, retrying with --break-system-packages (externally managed Python)"
+          python3 -m pip install --quiet --break-system-packages "jsonschema>=4.18.0"
+        fi
 
     - name: Set up Go for target repo pre-commit hooks
       if: hashFiles(format('{0}/go.mod', inputs.target-repo)) != ''
@@ -419,6 +526,28 @@ runs:
       with:
         go-version-file: ${{ inputs.target-repo }}/go.mod
         cache: false
+
+    # Stage the runner secrets bundle (ADR 0136) in a file so it never sits
+    # in the environment of fullsend run or any process it starts, where
+    # /proc/<pid>/environ would keep it readable. Only this step's shell
+    # holds the value; it unsets the variable before starting mktemp and
+    # emits only the path. fullsend run deletes the file after reading it.
+    - name: Stage runner secrets
+      id: runner-secrets
+      if: inputs.agent != '__install_only__' && inputs.runner_secrets != ''
+      shell: bash
+      env:
+        FULLSEND_GITHUB_RUNNER_SECRETS: ${{ inputs.runner_secrets }}
+      run: |
+        set -euo pipefail
+        umask 077
+        bundle="${FULLSEND_GITHUB_RUNNER_SECRETS}"
+        unset FULLSEND_GITHUB_RUNNER_SECRETS
+        path="$(mktemp "${RUNNER_TEMP}/fullsend-runner-secrets.XXXXXXXX")"
+        # Emit the path first so the cleanup step finds the file even if
+        # the write below fails.
+        echo "path=${path}" >> "${GITHUB_OUTPUT}"
+        printf '%s' "${bundle}" > "${path}"
 
     - name: Run fullsend
       id: run
@@ -437,8 +566,30 @@ runs:
         PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
         FULLSEND_GCP_WIF_PROVIDER: ${{ inputs.gcp_wif_provider }}
         FULLSEND_GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+        FULLSEND_GITHUB_RUNNER_SECRETS_FILE: ${{ steps.runner-secrets.outputs.path }}
+        FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}
+        FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}
+        FULLSEND_JIRA_CLIENT_ID: ${{ inputs.jira-client-id }}
+        FULLSEND_JIRA_CLIENT_SECRET: ${{ inputs.jira-client-secret }}
       run: |
         set -euo pipefail
+        if [[ -z "${FULLSEND_JIRA_TOKEN}" ]]; then
+          unset FULLSEND_JIRA_TOKEN
+        fi
+        if [[ -n "${FULLSEND_JIRA_EMAIL_INPUT}" ]]; then
+          export FULLSEND_JIRA_EMAIL="${FULLSEND_JIRA_EMAIL_INPUT}"
+        else
+          unset FULLSEND_JIRA_EMAIL
+        fi
+        unset FULLSEND_JIRA_EMAIL_INPUT
+        # OAuth 2.0 client credentials replace the token; an unset pair
+        # leaves token auth (or no Jira credential) in effect.
+        if [[ -z "${FULLSEND_JIRA_CLIENT_ID:-}" ]]; then
+          unset FULLSEND_JIRA_CLIENT_ID
+        fi
+        if [[ -z "${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
+          unset FULLSEND_JIRA_CLIENT_SECRET
+        fi
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         TARGET_REPO="${TARGET_REPO:-${GITHUB_WORKSPACE}/target-repo}"
         mkdir -p "${GITHUB_WORKSPACE}/output"
@@ -460,12 +611,22 @@ runs:
         if [[ -n "${MINT_URL}" ]]; then
           MINT_FLAGS+=(--mint-url "${MINT_URL}")
         fi
-        fullsend run "${AGENT}" \
+        # Replace this shell so Actions cancellation signals reach the CLI.
+        exec fullsend run "${AGENT}" \
           --fullsend-dir "${FULLSEND_DIR}" \
           --output-dir "${GITHUB_WORKSPACE}/output" \
           --target-repo "${TARGET_REPO}" \
           "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}" \
           "${MINT_FLAGS[@]+"${MINT_FLAGS[@]}"}"
+
+    # fullsend run deletes the staged bundle as soon as it reads it; this
+    # removes it when the run never started or stopped before reading it.
+    - name: Remove staged runner secrets
+      if: always() && steps.runner-secrets.outputs.path != ''
+      shell: bash
+      env:
+        STAGED_FILE: ${{ steps.runner-secrets.outputs.path }}
+      run: rm -f -- "${STAGED_FILE}"
 
     # Eval measurements (fail-open): score run-telemetry.jsonl with the agents
     # measurement manifest. Same job as fullsend run; never fails the agent.
@@ -521,12 +682,52 @@ runs:
         # at the top of each runDir.
         fullsend eval-measure "${MEASURE_ARGS[@]}"
 
-    - name: Upload fullsend artifacts
+    # Build the copy of output/ that the upload step publishes (ADR 0161).
+    # artifacts.content and artifacts.by_source in config.yaml pick the
+    # level (all, metadata or none) for this run's source; output/ itself
+    # stays untouched, so the steps above read the full run. Fails closed:
+    # when the level cannot be resolved (including a CLI too old to know
+    # the command) the artifact directory is empty and nothing is uploaded —
+    # the raw output/ is never uploaded in its place.
+    - name: Prepare fullsend artifacts
+      id: prepare-artifacts
       if: always() && inputs.agent != '__install_only__'
+      shell: bash
+      env:
+        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+      run: |
+        set -uo pipefail
+        FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
+        ARTIFACT_DIR="${RUNNER_TEMP}/fullsend-artifact"
+        echo "dir=${ARTIFACT_DIR}" >> "${GITHUB_OUTPUT}"
+        if LEVEL="$(fullsend prepare-artifacts \
+          --output-dir "${GITHUB_WORKSPACE}/output" \
+          --artifact-dir "${ARTIFACT_DIR}" \
+          --fullsend-dir "${FULLSEND_DIR}")"; then
+          echo "Run artifact content level: ${LEVEL}"
+        else
+          LEVEL="unresolved"
+          rm -rf -- "${ARTIFACT_DIR}"
+          mkdir -p -- "${ARTIFACT_DIR}"
+          # Tell apart a missing binary (a failed install), a CLI that
+          # predates the command (cobra exits non-zero for an unknown
+          # subcommand even with --help) and a failed resolution.
+          if ! command -v fullsend >/dev/null 2>&1; then
+            echo "::warning::The fullsend CLI is not installed (check the install step), so no run artifact is uploaded."
+          elif ! fullsend prepare-artifacts --help >/dev/null 2>&1; then
+            echo "::warning::The installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded. Set the version input to at least the fullsend release that ships this action."
+          else
+            echo "::warning::Run artifact level could not be resolved; no run artifact is uploaded"
+          fi
+        fi
+        echo "level=${LEVEL}" >> "${GITHUB_OUTPUT}"
+
+    - name: Upload fullsend artifacts
+      if: always() && inputs.agent != '__install_only__' && contains(fromJSON('["all","metadata"]'), steps.prepare-artifacts.outputs.level)
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: fullsend-${{ inputs.agent }}
-        path: ${{ github.workspace }}/output
+        name: ${{ inputs.artifact-name || format('fullsend-{0}', inputs.agent) }}
+        path: ${{ steps.prepare-artifacts.outputs.dir }}
 
     - name: Finalize orphaned status comment
       # Runs last (after all other always() steps) so job.status reflects
@@ -542,11 +743,30 @@ runs:
         RUN_URL: ${{ inputs.run-url }}
         JOB_STATUS: ${{ job.status }}
         HARNESS_ROLE: ${{ steps.run.outputs.role }}
+        SUPPLIED_ROLE: ${{ inputs.role }}
         WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+        FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}
+        FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}
+        FULLSEND_JIRA_CLIENT_ID: ${{ inputs.jira-client-id }}
+        FULLSEND_JIRA_CLIENT_SECRET: ${{ inputs.jira-client-secret }}
       run: |
         set -euo pipefail
+        if [[ -n "${FULLSEND_JIRA_EMAIL_INPUT}" ]]; then
+          export FULLSEND_JIRA_EMAIL="${FULLSEND_JIRA_EMAIL_INPUT}"
+        else
+          unset FULLSEND_JIRA_EMAIL
+        fi
+        unset FULLSEND_JIRA_EMAIL_INPUT
+        # OAuth 2.0 client credentials replace the token; an unset pair
+        # leaves token auth (or no Jira credential) in effect.
+        if [[ -z "${FULLSEND_JIRA_CLIENT_ID:-}" ]]; then
+          unset FULLSEND_JIRA_CLIENT_ID
+        fi
+        if [[ -z "${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
+          unset FULLSEND_JIRA_CLIENT_SECRET
+        fi
         # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:
@@ -554,14 +774,16 @@ runs:
 
         # Resolve the correct commit SHA. Priority order:
         # 1. Explicit pr-head-sha input (per-repo workflow_call callers)
-        # 2. Extracted from .inputs.event_payload (workflow_dispatch payload)
-        # 3. GITHUB_SHA fallback
+        # 2. Native pull_request.head.sha
+        # 3. Extracted from .inputs.event_payload (workflow_dispatch payload)
+        # 4. GITHUB_SHA fallback, except for cancelled built-in reviews
         COMMIT_SHA=""
         if [[ -n "${PR_HEAD_SHA_INPUT}" ]]; then
           COMMIT_SHA="${PR_HEAD_SHA_INPUT}"
         elif [[ -f "${GITHUB_EVENT_PATH}" ]]; then
+          COMMIT_SHA=$(jq -r '.pull_request.head.sha // empty' "${GITHUB_EVENT_PATH}" 2>/dev/null) || true
           EVENT_PAYLOAD_RAW=$(jq -r '.inputs.event_payload // empty' "${GITHUB_EVENT_PATH}" 2>/dev/null) || true
-          if [[ -n "${EVENT_PAYLOAD_RAW}" ]]; then
+          if [[ -z "${COMMIT_SHA}" && -n "${EVENT_PAYLOAD_RAW}" ]]; then
             HAS_PR=$(printf '%s' "${EVENT_PAYLOAD_RAW}" | jq -r '.pull_request // empty' 2>/dev/null) || true
             if [[ -n "${HAS_PR}" && "${HAS_PR}" != "null" ]]; then
               COMMIT_SHA=$(printf '%s' "${EVENT_PAYLOAD_RAW}" | jq -r '.pull_request.head.sha // empty' 2>/dev/null) || true
@@ -572,12 +794,16 @@ runs:
           fi
         fi
         if [[ -z "${COMMIT_SHA}" ]]; then
-          COMMIT_SHA="${GITHUB_SHA}"
+          if [[ "${AGENT}" == "review" && "${JOB_STATUS}" == "cancelled" ]]; then
+            echo "::warning::PR head SHA unavailable; omitting cancellation review guidance"
+          else
+            COMMIT_SHA="${GITHUB_SHA}"
+          fi
         fi
 
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
-        RESOLVED_ROLE="${HARNESS_ROLE:-${AGENT}}"
+        RESOLVED_ROLE="${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}"
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${RESOLVED_ROLE}")
         RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")
         RECONCILE_FLAGS+=(--job-status "${JOB_STATUS}")
@@ -592,6 +818,13 @@ runs:
         fi
         if [[ "${JOB_STATUS}" == "cancelled" ]]; then
           RECONCILE_FLAGS+=(--reason cancelled)
+        fi
+        # Older released/vendored CLIs predate --review-run. Keep their
+        # reconciliation path working, but retain built-in-review retry
+        # guidance whenever the installed CLI supports it.
+        if [[ "${AGENT}" == "review" ]] \
+          && fullsend reconcile-status --help 2>&1 | grep -F -- '--review-run' >/dev/null; then
+          RECONCILE_FLAGS+=(--review-run)
         fi
         fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {
           echo "::warning::Could not reconcile orphaned status comment"

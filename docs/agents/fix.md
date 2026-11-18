@@ -151,8 +151,12 @@ direct control over what to fix:
 
 The fix agent also triggers automatically when the [review agent](review.md) submits a
 "changes requested" review on a same-repo PR (fork PRs are blocked). On GitHub
-this is the native `pull_request_review` event; on GitLab it is a poller-routed
-MR note that contains `<!-- fullsend:changes-requested -->`.
+this is the native `pull_request_review` event; on GitLab it is an MR note that
+contains `<!-- fullsend:changes-requested -->`, dispatched through the webhook
+fast path with the poller as backstop. Both paths keep the note only when its
+author is the Poller bot user, so with distinct Analyst and Poller identities
+the Analyst-authored note does not dispatch fix automatically; comment `/fs-fix`
+instead.
 
 For **PRs authored by the fullsend code agent** (`fullsend-ai-coder[bot]`), or
 by the configured app-set coder (`${FULLSEND_APP_SET}-coder[bot]`), automatic

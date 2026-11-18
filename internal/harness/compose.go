@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +19,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/pluginformat"
-	"gopkg.in/yaml.v3"
+	"github.com/fullsend-ai/fullsend/internal/skill"
 )
 
 // MaxBaseDepth is the maximum depth of base chain inheritance.
@@ -44,8 +47,30 @@ type ComposeOpts struct {
 	// FetchPolicy controls SSRF protection, offline mode, and size limits.
 	FetchPolicy fetch.FetchPolicy
 
+	// FetchFile, when non-nil, replaces fetch.FetchURL for the single-file
+	// reads of relative companion resources (agent, policy, scripts, ...)
+	// resolved against SourceURL. The allowlist check, cache, lock pins, and
+	// audit log still apply; only the transport differs. It lets a run on a
+	// GitHub host other than github.com read those files through that host's
+	// authenticated API instead of the default github.com-only fetch policy.
+	FetchFile func(ctx context.Context, rawURL string) ([]byte, error)
+
+	// ParseRawURL, when non-nil, replaces forge.ParseRawContentURLOnHost for the
+	// directory resources (skills, plugins, script directories) resolved
+	// against SourceURL, so a run on a GitHub host other than github.com can
+	// describe its own raw-content URLs. The ForgeURLInfo it returns is handed
+	// to TreeFetcher, which must be able to read that host.
+	ParseRawURL func(rawURL string) (*forge.ForgeURLInfo, error)
+
 	// TraceID is a correlation ID for audit log entries.
 	TraceID string
+
+	// GitHubURL is the URL of the GitHub instance the run is configured for
+	// (e.g. "https://ghe.example.com" on GitHub Enterprise Server). Raw-content
+	// URLs served by that host are accepted for directory fetches in addition
+	// to raw.githubusercontent.com URLs (see forge.ParseRawContentURLOnHost).
+	// Empty or github.com means only raw.githubusercontent.com is accepted.
+	GitHubURL string
 
 	// AuditLogPath is the path to the fetch audit log (JSONL).
 	// If empty, audit logging is skipped.
@@ -87,6 +112,23 @@ type ComposeOpts struct {
 	// CEL when expressions as the config variable (ADR 0088).
 	Config map[string]any
 
+	// RunnerSecretNames are the names the run's FULLSEND_GITHUB_RUNNER_SECRETS
+	// object carries (ADR 0136). An overlay that references one of them is
+	// refused unless its when: reads only runtime.forge and config. Nil or
+	// empty disables the check.
+	RunnerSecretNames map[string]bool
+
+	// LockedPins maps a remote URL to the pin that the harness's lock.yaml
+	// entry records for it (#8979). A relative file of a URL base or
+	// URL-sourced harness whose URL is pinned here resolves to the pinned
+	// content instead of the cache URL index entry, and content fetched for
+	// it must match the pin. A single-file fetch with a directory pin is
+	// served from the pinned tree; a script tree fetch with a file pin falls
+	// back to a single-file fetch of the pinned content; skill and plugin
+	// tree fetches ignore a file pin. Keys are URLs exactly as the lock
+	// records them, never cache paths. Nil disables pinning.
+	LockedPins map[string]LockedPin
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -97,11 +139,72 @@ type ComposeOpts struct {
 // Override in tests to keep the nil-TreeFetcher path hermetic (see #7723).
 var defaultTreeFetchFn gitfetch.TreeFetchFunc = gitfetch.FetchTree
 
+// parseRawURL describes a directory resource URL, through opts.ParseRawURL
+// when set, else forge.ParseRawContentURLOnHost with opts.GitHubURL, so raw-content
+// URLs on the configured GitHub host parse without a hook.
+func (opts ComposeOpts) parseRawURL(rawURL string) (*forge.ForgeURLInfo, error) {
+	if opts.ParseRawURL != nil {
+		return opts.ParseRawURL(rawURL)
+	}
+	return forge.ParseRawContentURLOnHost(rawURL, opts.GitHubURL)
+}
+
 func resolveTreeFetcher(opts ComposeOpts) gitfetch.TreeFetchFunc {
 	if opts.TreeFetcher != nil {
 		return opts.TreeFetcher
 	}
 	return defaultTreeFetchFn
+}
+
+// LockedPin is one lock.yaml dependency pin: the content hash and the
+// dependency type the lock recorded ("directory" for a tree hash; "",
+// "file" or any other type for a single-file hash).
+type LockedPin struct {
+	SHA256 string
+	Type   string
+}
+
+// IsDir reports whether p pins a directory tree.
+func (p LockedPin) IsDir() bool { return p.Type == "directory" }
+
+// lockedFilePin returns the single-file hash opts.LockedPins pins for
+// rawURL, or "" when rawURL has no file pin.
+func (opts ComposeOpts) lockedFilePin(rawURL string) (string, bool) {
+	pin := opts.LockedPins[rawURL]
+	if pin.SHA256 == "" || pin.IsDir() {
+		return "", false
+	}
+	return pin.SHA256, true
+}
+
+// lockedDirPin returns the tree hash opts.LockedPins pins for rawURL, or ""
+// when rawURL has no directory pin.
+func (opts ComposeOpts) lockedDirPin(rawURL string) (string, bool) {
+	pin := opts.LockedPins[rawURL]
+	if pin.SHA256 == "" || !pin.IsDir() {
+		return "", false
+	}
+	return pin.SHA256, true
+}
+
+// errLockedSingleFilePin is returned by fetchBaseScriptDirTree when the lock
+// pins the script's single-file hash and the fetched script matches it. The
+// matching file has been cached; the caller serves it via fetchBaseFile.
+var errLockedSingleFilePin = errors.New("lock pins a single-file fetch of this script")
+
+// lockedNotCachedError reports a locked URL whose pinned content is not in
+// the cache while offline mode forbids fetching it.
+func lockedNotCachedError(field, rawURL, hash string) error {
+	return fmt.Errorf("base %s: URL %s is pinned in the lock file with sha256=%s, but that content is not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, rawURL, hash)
+}
+
+// checkLockedHash returns an error when pin is set and differs from got,
+// the hash of the content just fetched for rawURL.
+func checkLockedHash(field, rawURL, pin, got string) error {
+	if pin == "" || pin == got {
+		return nil
+	}
+	return fmt.Errorf("base %s: content fetched from %s has sha256=%s, but the lock file pins sha256=%s (run 'fullsend lock --update' to re-pin)", field, rawURL, got, pin)
 }
 
 // LoadWithBase loads a harness with base composition and conditional
@@ -128,6 +231,17 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	child, err := LoadRaw(path)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// A local harness's relative skill paths are resolved against the
+	// workspace root now, so every merge below compares declared names;
+	// ResolveRelativeTo later finds them absolute. The root comes from the
+	// caller, never from the process working directory. A URL-sourced
+	// harness's skills are fetched instead, below.
+	if opts.SourceURL == "" && opts.WorkspaceRoot != "" {
+		if err := child.resolveSkillSourcesWithin(opts.WorkspaceRoot); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	if child.Base == "" {
@@ -180,6 +294,12 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.validateOverlays(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
+		if err := ValidateOverlayRunnerSecretRefs(child.Overlays, opts.RunnerSecretNames); err != nil {
+			return nil, nil, fmt.Errorf("invalid harness: %w", err)
+		}
+		// Capture forge presence before ResolveForge nils the map so Lint()
+		// can emit the forge deprecation warning; LoadWithOpts does the same.
+		child.hadForgeBeforeResolve = child.Forge != nil
 		if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 			return nil, nil, fmt.Errorf("resolving forge config: %w", err)
 		}
@@ -216,8 +336,33 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		return nil, nil, fmt.Errorf("loading base chain: %w", err)
 	}
 
+	// A URL-sourced child's relative skill paths are resolved before the
+	// merge so mergeSkills reads their declared names: left relative, a child
+	// skills/issue-labels/github is keyed by its basename and cannot replace a
+	// base skill that declares name: issue-labels (#7830). Only the skill list
+	// moves; agent, policy and the rest resolve after the merge as before.
+	// resolveBaseResources rewrites the entries in place.
+	if opts.SourceURL != "" {
+		skillDeps, err := resolveBaseResources(ctx, &Harness{Skills: child.Skills}, opts.SourceURL, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced skills before base composition: %w", err)
+		}
+		deps = append(deps, skillDeps...)
+	}
+
+	// Reject mixed-version composition before the merge runs (design D3,
+	// ADR 0127 Decision 1): the child and its base must declare compatible
+	// effective schema versions (absent = 1). child.Base still names the
+	// base reference for the error label; it is cleared below. A failure
+	// here fails the load, so no merge runs.
+	if err := checkSchemaVersionsCompose(base, child, child.Base); err != nil {
+		return nil, nil, err
+	}
+
 	// Merge base into child (child overrides base)
-	mergeBaseIntoChild(base, child)
+	if err := mergeBaseIntoChild(base, child); err != nil {
+		return nil, nil, fmt.Errorf("merging base harness %s: %w", child.Base, err)
+	}
 
 	// Clear the base field (consumed)
 	child.Base = ""
@@ -282,6 +427,14 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	}
 	if err := child.validateOverlays(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
+	}
+	if err := ValidateOverlayRunnerSecretRefs(child.Overlays, opts.RunnerSecretNames); err != nil {
+		return nil, nil, fmt.Errorf("invalid harness: %w", err)
+	}
+	// mergeBaseIntoChild already propagated the base chain's marker; capture
+	// the child's own forge presence before ResolveForge nils the map.
+	if child.Forge != nil {
+		child.hadForgeBeforeResolve = true
 	}
 	if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 		return nil, nil, fmt.Errorf("resolving forge config: %w", err)
@@ -466,6 +619,13 @@ func loadBaseChain(
 		if err != nil {
 			return nil, nil, fmt.Errorf("loading base harness %s: %w", resolvedBasePath, err)
 		}
+		// Same root as the child's skills: a local base's relative skill
+		// paths resolve against the workspace root after the merge.
+		if opts.WorkspaceRoot != "" {
+			if err := base.resolveSkillSourcesWithin(opts.WorkspaceRoot); err != nil {
+				return nil, nil, fmt.Errorf("base harness %s: %w", resolvedBasePath, err)
+			}
+		}
 
 		baseDir = filepath.Dir(absBasePath)
 	}
@@ -478,10 +638,22 @@ func loadBaseChain(
 		}
 		deps = append(deps, ancestorDeps...)
 
+		// Reject mixed-version composition before the merge runs (design
+		// D3, ADR 0127 Decision 1): this layer and its ancestor must
+		// declare compatible effective schema versions (absent = 1).
+		// base.Base still names the ancestor reference for the error
+		// label; it is cleared below. A failure here fails the whole
+		// chain's load, so no merge runs.
+		if err := checkSchemaVersionsCompose(ancestorBase, base, base.Base); err != nil {
+			return nil, nil, err
+		}
+
 		// Merge ancestor into base. The recursive call already resolved
 		// the ancestor's forge/overlays, so ancestorBase is flat (no
 		// forge or overlay blocks remain).
-		mergeBaseIntoChild(ancestorBase, base)
+		if err := mergeBaseIntoChild(ancestorBase, base); err != nil {
+			return nil, nil, fmt.Errorf("base harness %s: %w", baseRef, err)
+		}
 		base.Base = ""
 	}
 
@@ -511,6 +683,17 @@ func loadBaseChain(
 // used by a child that runs on github only). The non-matching platform's
 // config is simply discarded when the forge map is niled.
 func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
+	// Capture forge presence before the map is niled below so the
+	// deprecation marker survives for Lint(); mergeBaseIntoChild propagates
+	// it up the chain. OR semantics: an ancestor's marker may already be
+	// set via the recursive merge in loadBaseChain.
+	if base.Forge != nil {
+		base.hadForgeBeforeResolve = true
+	}
+	// Likewise record this layer's GITHUB_ISSUE_URL diagnostics while its
+	// forge and overlay blocks are still present (#8742). No-op when an
+	// ancestor merge in loadBaseChain already captured them.
+	base.captureDeprecatedIssueURL()
 	// Validate forge and overlays before resolving. Validation must run
 	// while both are still present so mutual-exclusion checks fire.
 	if base.Forge != nil {
@@ -535,7 +718,9 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// forge map around would violate the mergeBaseIntoChild precondition.
 	if base.Forge != nil && opts.ForgePlatform != "" {
 		if fc, ok := base.Forge[opts.ForgePlatform]; ok && fc != nil {
-			mergeForgeConfig(base, fc)
+			if err := mergeForgeConfig(base, fc); err != nil {
+				return fmt.Errorf("invalid base harness: forge.%s: %w", opts.ForgePlatform, err)
+			}
 		}
 	}
 	base.Forge = nil
@@ -543,6 +728,9 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// Resolve overlays: evaluate CEL conditions and merge matching
 	// entries into top-level fields.
 	if len(base.Overlays) > 0 {
+		if err := ValidateOverlayRunnerSecretRefs(base.Overlays, opts.RunnerSecretNames); err != nil {
+			return fmt.Errorf("invalid base harness: %w", err)
+		}
 		if err := base.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
 			return fmt.Errorf("resolving base overlays: %w", err)
 		}
@@ -638,13 +826,12 @@ func fetchBaseURL(ctx context.Context, rawURL string, allowlist []string, opts C
 	return dep, content, nil
 }
 
-// parseHarnessContent parses harness YAML content without validation.
+// parseHarnessContent parses harness YAML content without validation. It
+// delegates to parseRaw so URL-fetched base layers pass the same
+// schema_version check as every other parse path (ADR 0127 Decision 1);
+// loadBaseChain wraps the returned error with the base reference.
 func parseHarnessContent(content []byte) (*Harness, error) {
-	var h Harness
-	if err := yaml.Unmarshal(content, &h); err != nil {
-		return nil, err
-	}
-	return &h, nil
+	return parseRaw(content)
 }
 
 // matchingAllowedPrefix checks if a URL matches any prefix in the allowlist.
@@ -670,10 +857,31 @@ func matchingAllowedPrefix(rawURL string, allowlist []string) string {
 // and overlay values participate in the merge as top-level fields, not as
 // forge/overlay blocks that would compete with the child's own forge/overlay
 // values during the final ResolveForge/ResolveOverlays (#6798).
-func mergeBaseIntoChild(base, child *Harness) {
+//
+// It returns mergeSkills' error for a map-form child skill that matches
+// more than one pinned-URL base skill.
+func mergeBaseIntoChild(base, child *Harness) error {
 	// Enforce precondition: base must be flat (forge/overlays resolved).
 	if base.Forge != nil || base.Overlays != nil {
 		panic("mergeBaseIntoChild: base.Forge and base.Overlays must be nil (call resolveBaseForgeAndOverlays first)")
+	}
+
+	// Propagate the forge deprecation marker: the base chain's layers had
+	// their forge maps consumed by resolveBaseForgeAndOverlays, so the
+	// marker is the only trace left for Lint().
+	if base.hadForgeBeforeResolve {
+		child.hadForgeBeforeResolve = true
+	}
+
+	// GITHUB_ISSUE_URL diagnostics (#8742): record the child's own before
+	// base fields are merged into its top level, then append the base's
+	// under a "base." prefix. The base was flattened, so its snapshot is
+	// the only trace of its forge variants and overlays, and the prefix
+	// keeps its overlay indices distinct from the child's.
+	child.captureDeprecatedIssueURL()
+	for _, d := range base.lintDeprecatedIssueURL() {
+		d.Field = "base." + d.Field
+		child.issueURLDiags = append(child.issueURLDiags, d)
 	}
 
 	// Scalars: child overrides if non-zero
@@ -692,6 +900,17 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.Slug == "" {
 		child.Slug = base.Slug
 	}
+	// SchemaVersion (ADR 0127): deliberately not inherited. The merged
+	// harness keeps the child's own declaration — an absent child stays
+	// absent, which spells version 1, the same effective version
+	// checkSchemaVersionsCompose (already run at both merge sites,
+	// LoadWithBase and loadBaseChain) required the base to match. ADR 0127
+	// Decision 1 defers cross-version behavior to an explicit compatibility
+	// rule, so an explicit base declaration is never copied onto an absent
+	// child. Forge-path counterpart check (harness-composition invariant):
+	// schema_version is top-level only and not a ForgeConfig field — the
+	// same asymmetry as privilege_levels — so mergeForgeConfig needs no
+	// matching slot.
 	if child.Image == "" {
 		child.Image = base.Image
 	}
@@ -722,13 +941,23 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.SandboxTimeoutSeconds == 0 {
 		child.SandboxTimeoutSeconds = base.SandboxTimeoutSeconds
 	}
+	// ReadonlyRepo inherits like the other scalars, so a base that makes the
+	// checkout read-only keeps it read-only (#7360). It is a pointer so that
+	// a child's explicit false is a value that wins, not an unset field.
+	if child.ReadonlyRepo == nil {
+		child.ReadonlyRepo = base.ReadonlyRepo
+	}
 
-	// Skills: base + child with child-overrides-base-by-basename.
-	// A child skill whose directory basename matches a base skill replaces
-	// the base entry (same as host_files' override-by-dest). This allows
-	// child harnesses to override built-in skills via base: composition.
+	// Skills: base + child with child-overrides-base by skill identity
+	// (declared SKILL.md name, else basename). A child skill whose identity
+	// matches a base skill replaces the base entry. This allows child
+	// harnesses to override built-in skills via base: composition.
 	if base.Skills != nil || child.Skills != nil {
-		child.Skills = mergeSkills(base.Skills, child.Skills)
+		skills, err := mergeSkills(base.Skills, child.Skills)
+		if err != nil {
+			return err
+		}
+		child.Skills = skills
 	}
 	if base.Plugins != nil {
 		merged := make([]PluginSpec, 0, len(base.Plugins)+len(child.Plugins))
@@ -755,6 +984,8 @@ func mergeBaseIntoChild(base, child *Harness) {
 	// NOT merged from base harnesses to prevent privilege escalation: a base
 	// cannot inject arbitrary URL prefixes or enable runtime fetching in the
 	// child. The child must declare its own allowlist and fetch settings.
+	// AllowCIVariableCredential is not merged either, so a base cannot
+	// silence the GitLab CI/CD-variable credential warning.
 	if base.APIServers != nil {
 		merged := make([]APIServer, 0, len(base.APIServers)+len(child.APIServers))
 		merged = append(merged, base.APIServers...)
@@ -810,6 +1041,7 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.Security == nil {
 		child.Security = base.Security
 	}
+	return nil
 }
 
 // isFullsendCachePath reports whether p is a path already inside fullsend's
@@ -1551,8 +1783,10 @@ func validateBaseRelPath(field, val string) error {
 // fetchBaseFile fetches a single file from a URL derived from the base
 // harness's directory and the file's relative path. The file is cached
 // content-addressed and the local cache path is returned. When executable
-// is true, the cached file is chmod'd to 0o755. depType controls the
-// Dependency.Type and audit log FetchType ("script" or "resource").
+// is true, the cached file is chmod'd to 0o755. depType sets the audit log
+// FetchType ("script" or "resource") and the Dependency.Type, except that a
+// file served from a directory pin returns Type "directory" with the tree
+// hash, so the lock keeps the pin it came from.
 func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allowlist []string, opts ComposeOpts, depType string, executable bool) (Dependency, string, error) {
 	fileURL := baseURLDir + relPath
 
@@ -1561,7 +1795,16 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, fileURL)
 	}
 
+	// A locked URL resolves to the content its lock entry pins, never to
+	// whatever the URL index currently points at (#8979).
+	if treePin, ok := opts.lockedDirPin(fileURL); ok {
+		return fetchBaseFileFromPinnedTree(ctx, field, baseURLDir, relPath, allowedBy, allowlist, opts, depType, treePin, executable)
+	}
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, fileURL)
+	lockedHash, locked := opts.lockedFilePin(fileURL)
+	if locked {
+		hash, indexHit = lockedHash, true
+	}
 	if indexHit {
 		content, entry, err := fetch.CacheGet(opts.WorkspaceRoot, hash)
 		if err == nil && content != nil {
@@ -1605,19 +1848,32 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 	}
 
 	if opts.FetchPolicy.Offline {
-		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, fileURL)
+		if locked {
+			return Dependency{}, "", lockedNotCachedError(field, fileURL, lockedHash)
+		}
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, fileURL)
 	}
 
-	content, err := fetch.FetchURL(ctx, fileURL, opts.FetchPolicy)
+	fetchFile := opts.FetchFile
+	if fetchFile == nil {
+		fetchFile = func(ctx context.Context, rawURL string) ([]byte, error) {
+			return fetch.FetchURL(ctx, rawURL, opts.FetchPolicy)
+		}
+	}
+	content, err := fetchFile(ctx, fileURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: fetching %s: %w", field, fileURL, err)
+	}
+
+	hash = fetch.ComputeSHA256(content)
+	if err := checkLockedHash(field, fileURL, lockedHash, hash); err != nil {
+		return Dependency{}, "", err
 	}
 
 	if err := fetch.CachePut(opts.WorkspaceRoot, fileURL, content); err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: caching: %w", field, err)
 	}
 
-	hash = fetch.ComputeSHA256(content)
 	cachePath, err := fetch.CachePath(opts.WorkspaceRoot, hash)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: computing cache path: %w", field, err)
@@ -1659,6 +1915,63 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 	}, contentPath, nil
 }
 
+// fetchBaseFileFromPinnedTree serves relPath from the script directory tree
+// its URL is pinned to. The lock keeps one entry per URL, so a file that is
+// also a directory-fetched script carries the script's tree pin (#8979).
+func fetchBaseFileFromPinnedTree(ctx context.Context, field, baseURLDir, relPath, allowedBy string, allowlist []string, opts ComposeOpts, depType, treeHash string, executable bool) (Dependency, string, error) {
+	fileURL := baseURLDir + relPath
+	dir, name := path.Dir(relPath), path.Base(relPath)
+
+	treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+	cacheHit := err == nil && treePath != ""
+	if !cacheHit {
+		if opts.FetchPolicy.Offline {
+			return Dependency{}, "", lockedNotCachedError(field, fileURL, treeHash)
+		}
+		_, parseErr := opts.parseRawURL(baseURLDir + dir)
+		if dir == "." || parseErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: URL %s is pinned in the lock file to directory sha256=%s, which cannot be fetched from this URL (run 'fullsend lock --update' to re-pin)", field, fileURL, treeHash)
+		}
+		// fetchBaseScriptDirTree verifies the fetched tree against the pin.
+		if _, _, err := fetchBaseScriptDirTree(ctx, field, baseURLDir+dir, fileURL, name, allowedBy, allowlist, opts); err != nil {
+			return Dependency{}, "", err
+		}
+		treePath, entry, err = fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+		if err != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: reading directory sha256=%s for %s from cache: %w", field, treeHash, fileURL, err)
+		}
+		if treePath == "" {
+			return Dependency{}, "", fmt.Errorf("base %s: directory sha256=%s for %s missing from cache after fetch", field, treeHash, fileURL)
+		}
+	}
+	if dir != "." {
+		if treePath, err = fetch.CacheNamedSymlink(treePath, path.Base(dir)); err != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
+		}
+	}
+	contentPath := filepath.Join(treePath, name)
+	if _, err := os.Stat(contentPath); err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: directory sha256=%s pinned for %s has no %s (run 'fullsend lock --update' to re-pin)", field, treeHash, fileURL, name)
+	}
+	if executable {
+		if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: setting executable permission on cached file: %w", field, chErr)
+		}
+	}
+	if aErr := auditBaseFetch(opts, fileURL, treeHash, allowedBy, cacheHit, entry.FetchTime, depType); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+	return Dependency{
+		Field:     field,
+		URL:       fileURL,
+		LocalPath: contentPath,
+		SHA256:    treeHash,
+		FetchedAt: entry.FetchTime,
+		CacheHit:  cacheHit,
+		Type:      "directory",
+	}, contentPath, nil
+}
+
 // fetchBaseScriptOrDir attempts directory-level fetching for a script from a
 // URL base so that companion files (helper scripts, Python tools, etc.) are
 // co-located at the BASH_SOURCE-relative path. When the URL is a
@@ -1678,12 +1991,24 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 		// Check directory cache — first via the directory key, then via the
 		// file URL key (which also maps to the tree hash when directory-fetched).
 		// The second lookup handles offline mode when the scriptdir: key was
-		// evicted but the per-file URL index entry persists.
-		for _, cacheKey := range []string{"scriptdir:" + scriptDirURL, fileURL} {
-			treeHash, indexHit := urlIndexLookup(opts.WorkspaceRoot, cacheKey)
-			if !indexHit {
-				continue
+		// evicted but the per-file URL index entry persists. A script URL
+		// with a directory pin is looked up by that hash only, and one with
+		// a file pin is served by the single-file path (#8979).
+		var treeHashes []string
+		dirPin, dirLocked := opts.lockedDirPin(fileURL)
+		filePin, fileLocked := opts.lockedFilePin(fileURL)
+		switch {
+		case dirLocked:
+			treeHashes = []string{dirPin}
+		case fileLocked:
+		default:
+			for _, cacheKey := range []string{"scriptdir:" + scriptDirURL, fileURL} {
+				if treeHash, indexHit := urlIndexLookup(opts.WorkspaceRoot, cacheKey); indexHit {
+					treeHashes = append(treeHashes, treeHash)
+				}
 			}
+		}
+		for _, treeHash := range treeHashes {
 			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 			if err != nil || treePath == "" {
 				continue
@@ -1717,9 +2042,16 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 			}, contentPath, nil
 		}
 
-		if !opts.FetchPolicy.Offline {
+		// A file pin whose content is cached needs no directory fetch.
+		pinnedFileCached := false
+		if fileLocked {
+			content, _, err := fetch.CacheGet(opts.WorkspaceRoot, filePin)
+			pinnedFileCached = err == nil && content != nil
+		}
+
+		if !opts.FetchPolicy.Offline && !pinnedFileCached {
 			// Probe whether the URL is parseable for directory-level fetching.
-			if _, parseErr := forge.ParseRawContentURL(scriptDirURL); parseErr == nil {
+			if _, parseErr := opts.parseRawURL(scriptDirURL); parseErr == nil {
 				allowedBy := matchingAllowedPrefix(fileURL, allowlist)
 				if allowedBy == "" {
 					return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, fileURL)
@@ -1728,13 +2060,23 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 				if err == nil {
 					return dep, contentPath, nil
 				}
-				if !isTransientFetchError(err) {
+				if dirLocked || (!isTransientFetchError(err) && !errors.Is(err, errLockedSingleFilePin)) {
 					return Dependency{}, "", err
 				}
-				// Transient tree-fetch failure — fall through to single-file fetch.
+				// Transient tree-fetch failure, or the lock pins this script's
+				// single-file hash and that file is now cached — fall through
+				// to single-file fetch.
 			}
 			// ParseRawContentURL failed — not a raw.githubusercontent.com URL.
 			// Fall through to single-file fetch.
+		}
+
+		// The single-file path cannot satisfy a directory pin.
+		if dirLocked {
+			if opts.FetchPolicy.Offline {
+				return Dependency{}, "", lockedNotCachedError(field, fileURL, dirPin)
+			}
+			return Dependency{}, "", fmt.Errorf("base %s: URL %s is pinned in the lock file to directory sha256=%s, which cannot be fetched from this URL (run 'fullsend lock --update' to re-pin)", field, fileURL, dirPin)
 		}
 	}
 
@@ -1755,7 +2097,7 @@ func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFile
 		return Dependency{}, "", fmt.Errorf("base %s: script directory URL %q is not in allowed_remote_resources", field, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(scriptDirURL)
+	forgeInfo, err := opts.parseRawURL(scriptDirURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for script directory fetch: %w", field, err)
 	}
@@ -1777,6 +2119,22 @@ func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFile
 	treeHash, err := fetch.CachePutDir(opts.WorkspaceRoot, scriptFileURL, files, fetch.DirCachePutOpts{FullListing: true})
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: caching script directory %s: %w", field, forgeInfo.Path, err)
+	}
+	dirPin, _ := opts.lockedDirPin(scriptFileURL)
+	if err := checkLockedHash(field, scriptFileURL, dirPin, treeHash); err != nil {
+		return Dependency{}, "", err
+	}
+	// A file pin comes from a lock taken when the script fell back to a
+	// single-file fetch: cache the script for that path when it matches.
+	if filePin, ok := opts.lockedFilePin(scriptFileURL); ok {
+		got := fetch.ComputeSHA256(files[scriptName])
+		if err := checkLockedHash(field, scriptFileURL, filePin, got); err != nil {
+			return Dependency{}, "", err
+		}
+		if pErr := fetch.CachePut(opts.WorkspaceRoot, scriptFileURL, files[scriptName]); pErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: caching: %w", field, pErr)
+		}
+		return Dependency{}, "", errLockedSingleFilePin
 	}
 
 	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
@@ -1832,17 +2190,26 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 		return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, skillFileURL)
 	}
 
-	// Check cache first (keyed by SKILL.md URL for backward compat).
+	// Check cache first (keyed by SKILL.md URL for backward compat). A
+	// locked skill URL resolves to its pinned tree, never to the URL index,
+	// and its pinned tree is served as is (#8979).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, skillFileURL)
+	lockedHash, locked := opts.lockedDirPin(skillFileURL)
+	if locked {
+		indexHit = true
+	}
 	var staleFallback *Dependency
 	var staleFallbackPath string
 	if indexHit {
 		treeHash, ok := urlIndexLookup(opts.WorkspaceRoot, "skill:"+skillFileURL)
+		if locked {
+			treeHash, ok = lockedHash, true
+		}
 		if ok {
 			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 			if err == nil && treePath != "" {
 				// Apply the same symlink renaming as fetchBaseSkillDir so
-				// cache-hit paths return the real skill name, not "tree".
+				// cache-hit paths carry the skill's directory name, not "tree".
 				treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(skillPath))
 				if err != nil {
 					return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
@@ -1856,7 +2223,7 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 					CacheHit:  true,
 					Type:      "directory",
 				}
-				if !entry.FullListing && !opts.FetchPolicy.Offline {
+				if !entry.FullListing && !opts.FetchPolicy.Offline && !locked {
 					staleFallback = &cachedDep
 					staleFallbackPath = treePath
 				} else {
@@ -1874,7 +2241,10 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 		if staleFallback != nil {
 			return *staleFallback, staleFallbackPath, nil
 		}
-		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, skillFileURL)
+		if locked {
+			return Dependency{}, "", lockedNotCachedError(field, skillFileURL, lockedHash)
+		}
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, skillFileURL)
 	}
 
 	dep, dirPath, err := fetchBaseSkillDir(ctx, field, skillDirURL, skillFileURL, skillPath, allowedBy, allowlist, opts)
@@ -1905,7 +2275,7 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 		return Dependency{}, "", fmt.Errorf("base %s: skill directory URL %q is not in allowed_remote_resources", field, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(skillDirURL)
+	forgeInfo, err := opts.parseRawURL(skillDirURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for skill directory fetch: %w", field, err)
 	}
@@ -1928,14 +2298,20 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: caching skill directory: %w", field, err)
 	}
+	pin, _ := opts.lockedDirPin(skillFileURL)
+	if err := checkLockedHash(field, skillFileURL, pin, treeHash); err != nil {
+		return Dependency{}, "", err
+	}
 
 	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: reading cached skill directory: %w", field, err)
 	}
 
-	// Create a symlink named after the skill directory so downstream consumers
-	// (sandbox upload, logging) see the real skill name instead of "tree".
+	// Create a symlink named after the skill directory so logging and the
+	// basename fallback of skill.SandboxName see the directory name instead
+	// of "tree"; the sandbox destination is the declared SKILL.md name when
+	// it is valid.
 	treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(forgeInfo.Path))
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
@@ -2017,7 +2393,13 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 		return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, keyURL)
 	}
 
+	// A locked directory URL resolves to its pinned tree, never to the URL
+	// index, and its pinned tree is served as is (#8979).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, keyURL)
+	lockedHash, locked := opts.lockedDirPin(keyURL)
+	if locked {
+		indexHit = true
+	}
 	indexKey := keyURL
 	if !indexHit {
 		// Indexes written before the plugins key carried pi entries were
@@ -2033,6 +2415,9 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 	var staleFallbackPath string
 	if indexHit {
 		treeHash, ok := urlIndexLookup(opts.WorkspaceRoot, kind.label+":"+indexKey)
+		if locked {
+			treeHash, ok = lockedHash, true
+		}
 		if ok {
 			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 			if err == nil && treePath != "" {
@@ -2049,7 +2434,7 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 					CacheHit:  true,
 					Type:      "directory",
 				}
-				if !entry.FullListing && !opts.FetchPolicy.Offline {
+				if !entry.FullListing && !opts.FetchPolicy.Offline && !locked {
 					staleFallback = &cachedDep
 					staleFallbackPath = treePath
 				} else {
@@ -2070,7 +2455,10 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 		// staleFallback is only set when Offline=false (line above), so it
 		// is always nil here; skip the nil guard and go straight to the
 		// cache-miss error.
-		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, keyURL)
+		if locked {
+			return Dependency{}, "", lockedNotCachedError(field, keyURL, lockedHash)
+		}
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, keyURL)
 	}
 
 	dep, dirPath, err := fetchBaseDirTree(ctx, kind, field, dirURL, keyURL, dirPath, allowedBy, allowlist, opts)
@@ -2096,7 +2484,7 @@ func fetchBaseDirTree(ctx context.Context, kind baseDirKind, field, dirURL, keyU
 		return Dependency{}, "", fmt.Errorf("base %s: %s directory URL %q is not in allowed_remote_resources", field, kind.label, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(dirURL)
+	forgeInfo, err := opts.parseRawURL(dirURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for %s directory fetch: %w", field, kind.label, err)
 	}
@@ -2118,6 +2506,10 @@ func fetchBaseDirTree(ctx context.Context, kind baseDirKind, field, dirURL, keyU
 	treeHash, err := fetch.CachePutDir(opts.WorkspaceRoot, keyURL, files, fetch.DirCachePutOpts{FullListing: true})
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: caching %s directory: %w", field, kind.label, err)
+	}
+	pin, _ := opts.lockedDirPin(keyURL)
+	if err := checkLockedHash(field, keyURL, pin, treeHash); err != nil {
+		return Dependency{}, "", err
 	}
 
 	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
@@ -2270,46 +2662,122 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 }
 
 // mergeSkills concatenates base and child skill entries, with child entries
-// overriding base entries that resolve to the same sandbox directory name
-// (filepath.Base). When both base and child define the same basename, the
-// child's source replaces the base's, and their Overrides maps are merged
-// (child keys win). This mirrors mergeHostFiles' override-by-dest behavior
-// and allows a child harness to replace a built-in skill via base:
-// composition (see #5408).
+// overriding base entries that share a skill identity. Identity is
+// skill.SandboxName: a valid SKILL.md name when the directory is on disk,
+// otherwise filepath.Base. Child-vs-base override by that identity is how a
+// child harness replaces a built-in skill via base: composition (#5408);
+// LoadWithBase resolves relative entries before the merge, so the basename
+// is the key only for a path nothing resolved. Nested forge skills that
+// share a leaf directory (skills/issue-labels/github vs
+// skills/pr-review/github) keep distinct identities, and only a *base*
+// entry is an override target. True destination collisions fail at bootstrap via
+// uploadHarnessSkills (duplicateNameError) rather than silently dropping a
+// skill (#7830). Two child entries with one identity are both kept, whether
+// or not a base entry shares it, so the same bootstrap check rejects them.
+// When a child replaces a base entry whose directory basename differs (i.e.
+// the match came from the declared SKILL.md name), the replacement is
+// logged so it is not silent.
 //
-// Known limitation: if the base slice itself contains two entries with the
-// same basename (e.g., /cache/a/skill-x and /cache/b/skill-x), the second
-// entry silently overwrites the first in baseIndex. In practice this is
-// benign because duplicateDestinationNameError at bootstrap time catches
-// duplicate basenames within a single harness.
-func mergeSkills(base, child []SkillEntry) []SkillEntry {
+// A map-form child entry (one with an overrides map) whose source is an
+// absolute path with no SKILL.md keeps the base entry's resolved source and
+// only adds its overrides: the child overlays files on the base skill
+// rather than replacing it (#6158). Such a child that matches no base key
+// can still match the one pinned-URL base skill of its name. When two or
+// more pinned-URL base skills match that name, mergeSkills returns an error
+// naming them all rather than guessing (#8973); the child must use the full
+// base URL as its map key.
+// mergeForgeConfig shares this function, so the rule holds there too.
+func mergeSkills(base, child []SkillEntry) ([]SkillEntry, error) {
 	baseIndex := make(map[string]int, len(base))
 	result := make([]SkillEntry, 0, len(base)+len(child))
 
-	// Add base entries
 	for _, s := range base {
-		name := filepath.Base(s.Source)
+		name := skill.SandboxName(s.Source)
 		baseIndex[name] = len(result)
 		result = append(result, s)
 	}
 
-	// Add/override with child entries
+	// Child entries override base slots only, never other child entries.
 	for _, s := range child {
-		name := filepath.Base(s.Source)
+		name := skill.SandboxName(s.Source)
+		inherit := s.Overrides != nil && !skillSourcePresent(s.Source)
+		if _, exists := baseIndex[name]; !exists && inherit {
+			switch keys := pinnedURLMatches(baseIndex, result, name); len(keys) {
+			case 0:
+			case 1:
+				name = keys[0]
+			default:
+				sources := make([]string, len(keys))
+				for i, key := range keys {
+					sources[i] = strconv.Quote(result[baseIndex[key]].Source)
+				}
+				return nil, fmt.Errorf("skill %q has no SKILL.md and its name %q matches %d base skills pinned by URL: %s; "+
+					"write the full base URL as the map key instead of the short name",
+					s.Source, name, len(keys), strings.Join(sources, ", "))
+			}
+		}
 		if idx, exists := baseIndex[name]; exists {
-			// Merge overrides: child values win per key
+			source := s.Source
+			if inherit {
+				source = result[idx].Source
+				log.Printf("harness: skill %q has no SKILL.md; applying its file overrides to base skill %q",
+					s.Source, source)
+			} else if filepath.Base(result[idx].Source) != filepath.Base(s.Source) {
+				log.Printf("harness: skill %q (%q) replaces base skill at %q: both declare the skill name %q",
+					s.Source, filepath.Base(s.Source), result[idx].Source, name)
+			}
 			merged := SkillEntry{
-				Source:    s.Source,
+				Source:    source,
 				Overrides: mergeOverrides(result[idx].Overrides, s.Overrides),
 			}
 			result[idx] = merged
+			delete(baseIndex, name)
 		} else {
-			baseIndex[name] = len(result)
 			result = append(result, s)
 		}
 	}
 
-	return result
+	return result, nil
+}
+
+// pinnedURLMatches returns, in base order, the base keys that are pinned
+// URLs whose name, without its #fragment or ?query, is name. It is used
+// only for a map-form child with no skill of its own: one match is
+// inherited, and more than one is an error in mergeSkills.
+func pinnedURLMatches(baseIndex map[string]int, result []SkillEntry, name string) []string {
+	var found []string
+	for key, idx := range baseIndex {
+		src := result[idx].Source
+		if !IsURL(src) {
+			continue
+		}
+		bare := src
+		if i := strings.IndexAny(bare, "?#"); i >= 0 {
+			bare = bare[:i]
+		}
+		if path.Base(strings.TrimRight(bare, "/")) != name {
+			continue
+		}
+		found = append(found, key)
+	}
+	sort.Slice(found, func(i, j int) bool { return baseIndex[found[i]] < baseIndex[found[j]] })
+	return found
+}
+
+// skillSourcePresent reports whether a child skill source can stand on its
+// own. URLs (fetched later) and relative paths (not yet resolved, so not
+// checkable here) count as present; an absolute path must hold a skill
+// marker file.
+func skillSourcePresent(src string) bool {
+	if src == "" || IsURL(src) || !filepath.IsAbs(src) {
+		return true
+	}
+	for _, marker := range skill.MarkerNames {
+		if info, err := os.Stat(filepath.Join(src, marker)); err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeHostFiles concatenates base and child host files, with child entries
@@ -2344,7 +2812,7 @@ func mergeHostFiles(base, child []HostFile) []HostFile {
 // Deprecated: no longer called in production. Since #6798, base forge blocks
 // are resolved by resolveBaseForgeAndOverlays before mergeBaseIntoChild runs.
 // Retained for test coverage only.
-func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConfig {
+func mergeForgeBlocks(base, child map[string]*ForgeConfig) (map[string]*ForgeConfig, error) {
 	if child == nil {
 		child = make(map[string]*ForgeConfig)
 	}
@@ -2352,7 +2820,9 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 	for key, baseFC := range base {
 		if childFC, exists := child[key]; exists && childFC != nil {
 			// Merge per-platform ForgeConfig
-			mergeForgeConfigInto(baseFC, childFC)
+			if err := mergeForgeConfigInto(baseFC, childFC); err != nil {
+				return nil, fmt.Errorf("forge.%s: %w", key, err)
+			}
 		} else if !exists {
 			// Child doesn't have this platform — inherit from base
 			child[key] = baseFC
@@ -2360,7 +2830,7 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 		// If child[key] exists but is nil, child explicitly nulls out this platform
 	}
 
-	return child
+	return child, nil
 }
 
 // mergeForgeConfigInto merges base ForgeConfig fields into child.
@@ -2369,9 +2839,9 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 //
 // Deprecated: no longer called in production. See mergeForgeBlocks deprecation
 // note above.
-func mergeForgeConfigInto(base, child *ForgeConfig) {
+func mergeForgeConfigInto(base, child *ForgeConfig) error {
 	if base == nil {
-		return
+		return nil
 	}
 
 	// Scalars: child overrides if non-empty
@@ -2385,9 +2855,13 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		child.PostScript = base.PostScript
 	}
 
-	// Skills: base + child with child-overrides-base-by-basename
+	// Skills: base + child with child-overrides-base by skill identity
 	if base.Skills != nil || child.Skills != nil {
-		child.Skills = mergeSkills(base.Skills, child.Skills)
+		skills, err := mergeSkills(base.Skills, child.Skills)
+		if err != nil {
+			return err
+		}
+		child.Skills = skills
 	}
 
 	// Providers: base + child (concatenated)
@@ -2436,6 +2910,7 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 
 	// ValidationLoop: field-level merge (child non-zero wins, base fills gaps).
 	child.ValidationLoop = mergeValidationLoop(base.ValidationLoop, child.ValidationLoop)
+	return nil
 }
 
 // FetchAgentHarness fetches a URL-sourced agent harness using the same

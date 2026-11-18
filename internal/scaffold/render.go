@@ -90,7 +90,7 @@ func resolvedRef(opts RenderOptions) string {
 func resolvedRefWithComment(opts RenderOptions) string {
 	ref := resolvedRef(opts)
 	if opts.UpstreamTag != "" && opts.UpstreamTag != ref {
-		return ref + " # " + opts.UpstreamTag
+		return ref + "  # " + opts.UpstreamTag
 	}
 	return ref
 }
@@ -102,7 +102,7 @@ func reusableWorkflowUses(stage string, opts RenderOptions) string {
 	ref := resolvedRef(opts)
 	uses := config.DefaultUpstreamRepo + "/.github/workflows/reusable-" + stage + ".yml@" + ref
 	if opts.UpstreamTag != "" && opts.UpstreamTag != ref {
-		uses += " # " + opts.UpstreamTag
+		uses += "  # " + opts.UpstreamTag
 	}
 	return uses
 }
@@ -114,7 +114,7 @@ func reusableDispatchUses(opts RenderOptions) string {
 	ref := resolvedRef(opts)
 	uses := config.DefaultUpstreamRepo + "/.github/workflows/reusable-dispatch.yml@" + ref
 	if opts.UpstreamTag != "" && opts.UpstreamTag != ref {
-		uses += " # " + opts.UpstreamTag
+		uses += "  # " + opts.UpstreamTag
 	}
 	return uses
 }

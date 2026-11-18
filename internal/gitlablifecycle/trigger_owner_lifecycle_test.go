@@ -56,7 +56,7 @@ func handleRotationState(t *testing.T, mux *http.ServeMux, project, state string
 	})
 }
 
-const managedPollerState = `{"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":77,"distributed_at":"2026-01-01T00:00:00Z"}}}`
+const managedPollerState = `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":77,"distributed_at":"2026-01-01T00:00:00Z"}}}`
 
 func TestGitLabPollerTriggerOwner_ContainPoller(t *testing.T) {
 	ctx := context.Background()
@@ -622,7 +622,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 		t.Run(fmt.Sprintf("rejected poller token (%d) falls back to the admin inventory", status), func(t *testing.T) {
 			var adminTokens []string
 			mux := http.NewServeMux()
-			handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":80,"distributed_at":"2026-01-01T00:00:00Z"}}}`)
+			handleRotationState(t, mux, "g%2Fp", `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":80,"distributed_at":"2026-01-01T00:00:00Z"}}}`)
 			mux.HandleFunc("/api/v4/projects/g%2Fp/variables/"+forge.SecretGitLabPollerToken, func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(t, w, http.StatusOK, map[string]any{"value": "glpat-dead"})
 			})
@@ -746,8 +746,8 @@ func TestGitLabPollerTriggerOwner_SuppliedSameNamedCredentialIsNotManaged(t *tes
 		wantManaged []int64
 		wantUID     int64
 	}{
-		{name: "supplied", state: `{"roles":{"poller":{"phase":"idle","managed_user_id":90,"distributed_at":"2026-01-01T00:00:00Z"}}}`, wantManaged: []int64{90}},
-		{name: "managed", state: `{"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":77,"distributed_at":"2026-01-01T00:00:00Z"}}}`, wantManaged: []int64{77}, wantUID: 77},
+		{name: "supplied", state: `{"version":2,"roles":{"poller":{"phase":"idle","managed_user_id":90,"distributed_at":"2026-01-01T00:00:00Z"}}}`, wantManaged: []int64{90}},
+		{name: "managed", state: `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":77,"distributed_at":"2026-01-01T00:00:00Z"}}}`, wantManaged: []int64{77}, wantUID: 77},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mux := http.NewServeMux()
@@ -787,6 +787,85 @@ func TestGitLabPollerTriggerOwner_SuppliedSameNamedCredentialIsNotManaged(t *tes
 	}
 }
 
+// After a cutover the previous Poller exists only as retiring_user_id in the
+// generation document (abandoned replacements likewise). Install reconciles
+// them through ManagedPollerUserIDs, so an elevated retiring Poller is
+// demoted, but runtime identity selection still follows rotation state alone.
+func TestGitLabPollerTriggerOwner_ManagedPollerUserIDsIncludeGenerationAccounts(t *testing.T) {
+	ctx := context.Background()
+	const rotation = `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":77,"distributed_at":"2026-01-01T00:00:00Z"}}}`
+	for _, tc := range []struct {
+		name       string
+		generation string
+		accounts   []map[string]any
+		want       []int64
+		// recorded is the inventory that keeps deleted recorded accounts (the
+		// trigger-account collision check); it defaults to want.
+		recorded []int64
+	}{
+		{name: "no generation document", want: []int64{77}},
+		{name: "retiring and abandoned accounts", generation: `{"version":1,"current_user_id":77,"retiring_user_id":90,"abandoned_user_ids":[91]}`, accounts: []map[string]any{{"id": 90, "name": "retiring"}, {"id": 91, "name": "abandoned"}}, want: []int64{77, 90, 91}},
+		// Retirement deleted the account but could not clear its record: there
+		// is nothing left to reconcile, and listing it would fail closed on the
+		// deleted account's missing credentials.
+		{name: "recorded accounts the inventory confirms are deleted", generation: `{"version":1,"current_user_id":77,"retiring_user_id":90,"abandoned_user_ids":[91]}`, accounts: []map[string]any{{"id": 91, "name": "abandoned"}}, want: []int64{77, 91}, recorded: []int64{77, 90, 91}},
+		{name: "pending replacement is left to the handoff reconciler", generation: `{"version":1,"current_user_id":77,"pending":{"user_id":95,"phase":"account_recorded"}}`, want: []int64{77}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v4/projects/group%2Fproject/variables/"+forge.SecretGitLabPollerToken, func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.SecretGitLabPollerToken, "value": "glpat-runtime"})
+			})
+			mux.HandleFunc("/api/v4/projects/group%2Fproject/variables/"+forge.VarGitLabRoleRotation, func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.VarGitLabRoleRotation, "value": rotation})
+			})
+			if tc.generation != "" {
+				mux.HandleFunc("/api/v4/projects/group%2Fproject/variables/"+forge.VarGitLabPollerGenerations, func(w http.ResponseWriter, r *http.Request) {
+					writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.VarGitLabPollerGenerations, "value": tc.generation})
+				})
+			}
+			mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, http.StatusOK, map[string]any{"id": 77})
+			})
+			mux.HandleFunc("/api/v4/projects/group%2Fproject/service_accounts", func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, http.StatusOK, append([]map[string]any{{"id": 77, "name": gitlabroles.PollerTokenName}}, tc.accounts...))
+			})
+			mux.HandleFunc("/api/v4/personal_access_tokens/self", func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, http.StatusOK, map[string]any{"id": 5, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 77})
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+			admin, err := gitlab.New("admin-token", gitlab.WithBaseURL(srv.URL))
+			require.NoError(t, err)
+			to := NewTriggerOwner(admin)
+
+			ids, err := to.ManagedPollerUserIDs(ctx, "group", "project")
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, ids)
+
+			wantRecorded := tc.recorded
+			if wantRecorded == nil {
+				wantRecorded = tc.want
+			}
+			recorded, err := to.recordedPollerUserIDs(ctx, "group", "project")
+			require.NoError(t, err)
+			assert.Equal(t, wantRecorded, recorded, "deleted recorded accounts stay in the collision inventory")
+
+			verified, err := to.VerifiedPollerUserIDs(ctx, "group", "project")
+			require.NoError(t, err)
+			wantVerified := make([]int, len(wantRecorded))
+			for i, id := range wantRecorded {
+				wantVerified[i] = int(id)
+			}
+			assert.Equal(t, wantVerified, verified)
+
+			uid, err := to.PollerUserID(ctx, "group", "project")
+			require.NoError(t, err)
+			assert.Equal(t, int64(77), uid, "the runtime identity is the rotation state's managed account only")
+		})
+	}
+}
+
 // A supplied Poller credential that GitLab rejects (expired, revoked, or
 // forbidden) cannot be attributed to its owner. Identification and managed
 // reconciliation fail closed instead of adopting a same-named
@@ -800,7 +879,7 @@ func TestGitLabPollerTriggerOwner_RejectedSuppliedCredentialFailsClosed(t *testi
 				writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.SecretGitLabPollerToken, "value": "glpat-supplied"})
 			})
 			mux.HandleFunc("/api/v4/projects/group%2Fproject/variables/"+forge.VarGitLabRoleRotation, func(w http.ResponseWriter, r *http.Request) {
-				writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.VarGitLabRoleRotation, "value": `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z"}}}`})
+				writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.VarGitLabRoleRotation, "value": `{"version":2,"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z"}}}`})
 			})
 			mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(t, w, status, map[string]any{"message": "rejected"})
@@ -834,7 +913,7 @@ func TestGitLabPollerTriggerOwner_RejectedSuppliedCredentialFailsClosed(t *testi
 func TestGitLabPollerTriggerOwner_SuppliedAttributionNotFoundIsNotAbsence(t *testing.T) {
 	ctx := context.Background()
 	mux := http.NewServeMux()
-	handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","supplied":true,"distributed_at":"2026-01-01T00:00:00Z"}}}`)
+	handleRotationState(t, mux, "g%2Fp", `{"version":2,"roles":{"poller":{"phase":"idle","supplied":true,"distributed_at":"2026-01-01T00:00:00Z"}}}`)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/variables/"+forge.SecretGitLabPollerToken, func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.SecretGitLabPollerToken, "value": "glpat-supplied"})
 	})
@@ -865,7 +944,7 @@ func TestGitLabPollerTriggerOwner_SuppliedAttributionNotFoundIsNotAbsence(t *tes
 func TestGitLabPollerTriggerOwner_RecordedSuppliedOwnerSurvivesRejectedCredential(t *testing.T) {
 	ctx := context.Background()
 	mux := http.NewServeMux()
-	handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","managed_user_id":91,"distributed_at":"2026-01-01T00:00:00Z","supplied_user_id":90}}}`)
+	handleRotationState(t, mux, "g%2Fp", `{"version":2,"roles":{"poller":{"phase":"idle","managed_user_id":91,"distributed_at":"2026-01-01T00:00:00Z","supplied_user_id":90}}}`)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/variables/"+forge.SecretGitLabPollerToken, func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.SecretGitLabPollerToken, "value": "glpat-dead"})
 	})
@@ -895,7 +974,7 @@ func TestGitLabPollerTriggerOwner_RecordedSuppliedOwnerSurvivesRejectedCredentia
 func TestGitLabPollerTriggerOwner_SuppliedExclusionSurvivesManagedRotation(t *testing.T) {
 	ctx := context.Background()
 	mux := http.NewServeMux()
-	handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","incoming_id":7,"managed_user_id":91,"distributed_at":"2026-01-01T00:00:00Z","excluded_user_ids":[90]}}}`)
+	handleRotationState(t, mux, "g%2Fp", `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":7,"managed_user_id":91,"distributed_at":"2026-01-01T00:00:00Z","excluded_user_ids":[90]}}}`)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": gitlabroles.PollerTokenName}, {"id": 91, "name": gitlabroles.PollerTokenName}})
 	})
@@ -913,7 +992,7 @@ func TestGitLabPollerTriggerOwner_SuppliedExclusionSurvivesManagedRotation(t *te
 func TestGitLabPollerTriggerOwner_SuppliedAnalystOwnerIsExcluded(t *testing.T) {
 	ctx := context.Background()
 	mux := http.NewServeMux()
-	handleRotationState(t, mux, "g%2Fp", `{"roles":{"analyst":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z","supplied":true,"supplied_user_id":55},"poller":{"phase":"idle","incoming_id":7}}}`)
+	handleRotationState(t, mux, "g%2Fp", `{"version":2,"roles":{"analyst":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z","supplied":true,"supplied_user_id":55},"poller":{"phase":"idle","incoming_id":7}}}`)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	admin, err := gitlab.New("admin-token", gitlab.WithBaseURL(srv.URL))
@@ -931,7 +1010,7 @@ func TestGitLabPollerTriggerOwner_InvalidSuppliedOwnerFailsClosed(t *testing.T) 
 			called := false
 			mux.HandleFunc("/api/v4/projects/g%2Fp/variables/"+forge.VarGitLabRoleRotation, func(w http.ResponseWriter, r *http.Request) {
 				called = true
-				writeTestJSON(t, w, http.StatusOK, map[string]any{"value": fmt.Sprintf(`{"roles":{%q:{"supplied":true,"supplied_user_id":-1}}}`, role)})
+				writeTestJSON(t, w, http.StatusOK, map[string]any{"value": fmt.Sprintf(`{"version":2,"roles":{%q:{"supplied":true,"supplied_user_id":-1}}}`, role)})
 			})
 			srv := httptest.NewServer(mux)
 			defer srv.Close()
@@ -949,7 +1028,7 @@ func TestGitLabPollerTriggerOwner_InvalidSuppliedOwnerFailsClosed(t *testing.T) 
 // rejected supplied credential does not block reconciliation.
 func TestGitLabPollerTriggerOwner_NoMatchingAccountSkipsAttribution(t *testing.T) {
 	mux := http.NewServeMux()
-	handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z"}}}`)
+	handleRotationState(t, mux, "g%2Fp", `{"version":2,"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z"}}}`)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 12, "name": gitlabroles.CoderTokenName}})
 	})
@@ -989,8 +1068,8 @@ func TestGitLabPollerTriggerOwner_UnknownProvenanceFailsClosed(t *testing.T) {
 // and the same-named account must not then be treated as managed.
 func TestGitLabPollerTriggerOwner_UnknownNonPollerProvenanceFailsClosed(t *testing.T) {
 	for name, state := range map[string]string{
-		"no entry for the role": `{"roles":{"poller":{"phase":"idle","incoming_id":7}}}`,
-		"empty entry":           `{"roles":{"poller":{"phase":"idle","incoming_id":7},"analyst":{}}}`,
+		"no entry for the role": `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":7}}}`,
+		"empty entry":           `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":7},"analyst":{}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			mux := http.NewServeMux()
@@ -1015,7 +1094,7 @@ func TestGitLabPollerTriggerOwner_UnknownNonPollerProvenanceFailsClosed(t *testi
 // does not block management.
 func TestGitLabPollerTriggerOwner_KnownOrUninstalledNonPollerProvenanceProceeds(t *testing.T) {
 	mux := http.NewServeMux()
-	handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","incoming_id":7},"analyst":{"phase":"idle","incoming_id":8}}}`)
+	handleRotationState(t, mux, "g%2Fp", `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":7},"analyst":{"phase":"idle","incoming_id":8}}}`)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/variables/"+forge.SecretGitLabAnalystToken, func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.SecretGitLabAnalystToken, "value": "glpat-x"})
 	})
@@ -1043,12 +1122,12 @@ func TestGitLabPollerTriggerOwner_CurrentSuppliedAccountsExcludeHistoricalOwners
 	}{
 		{
 			name:        "replaced by managed",
-			state:       `{"roles":{"poller":{"phase":"idle","incoming_id":5,"distributed_at":"2026-01-01T00:00:00Z","excluded_user_ids":[90]}}}`,
+			state:       `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"distributed_at":"2026-01-01T00:00:00Z","excluded_user_ids":[90]}}}`,
 			wantExclude: []int{90},
 		},
 		{
 			name:        "supplied replaced by another supplied",
-			state:       `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z","supplied":true,"supplied_user_id":91,"excluded_user_ids":[90,91]}}}`,
+			state:       `{"version":2,"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z","supplied":true,"supplied_user_id":91,"excluded_user_ids":[90,91]}}}`,
 			wantExclude: []int{90, 91},
 			wantCurrent: []int{91},
 		},
@@ -1077,7 +1156,7 @@ func TestGitLabPollerTriggerOwner_CurrentSuppliedAccountsExcludeHistoricalOwners
 // is outside the inventory, so recording its ID would make it look missing.
 func TestGitLabPollerTriggerOwner_SuppliedAttributionReadFailureWithholdsServerText(t *testing.T) {
 	mux := http.NewServeMux()
-	handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z","supplied":true}}}`)
+	handleRotationState(t, mux, "g%2Fp", `{"version":2,"roles":{"poller":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z","supplied":true}}}`)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/variables/"+forge.SecretGitLabPollerToken, func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(t, w, http.StatusBadRequest, map[string]any{"message": "bad value glpat-leaked-admin-secret"})
 	})

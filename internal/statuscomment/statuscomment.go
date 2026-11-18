@@ -94,12 +94,19 @@ type Notifier struct {
 	// PostCompletionWithDetail, this ID is lost and the start reaction is
 	// never cleaned up — there is no equivalent out-of-process reconciler
 	// for reactions. See ReconcileOrphaned's doc comment.
-	startReactionID  int64
-	triggerCommentID string
-	startTime        time.Time
-	now              func() time.Time
-	warnf            func(string, ...any)
-	runInfo          *RunInfo
+	startReactionID      int64
+	triggerCommentID     string
+	startTime            time.Time
+	now                  func() time.Time
+	warnf                func(string, ...any)
+	runInfo              *RunInfo
+	cancellationGuidance string
+}
+
+// SetCancellationGuidance sets optional caller-provided text appended to a
+// cancelled completion comment. Presentation policy belongs to the caller.
+func (n *Notifier) SetCancellationGuidance(guidance string) {
+	n.cancellationGuidance = guidance
 }
 
 // New creates a Notifier. The runID becomes either an invisible HTML marker
@@ -476,7 +483,7 @@ func (n *Notifier) analyzeTimeline(ctx context.Context) (agentPosted, startIsLas
 		if c.Author != botUser {
 			continue
 		}
-		isStatus := strings.Contains(string(c.Body), "fullsend:agent-status:")
+		isStatus := strings.Contains(string(c.Body), statusMarkerOpener)
 		if statusClient, ok := n.client.(tracker.StatusCommentClient); ok {
 			isStatus, err = statusClient.IsStatusComment(ctx, n.project, n.number, c.ID)
 			if err != nil {
@@ -529,6 +536,10 @@ func (n *Notifier) buildCompletionBody(description, status, detail string, compl
 	if footer := BuildRunInfoFooter(n.runInfo); footer != "" {
 		b.WriteString("\n\n")
 		b.WriteString(footer)
+	}
+	if status == "cancelled" && n.cancellationGuidance != "" {
+		b.WriteString("\n\n")
+		b.WriteString(n.cancellationGuidance)
 	}
 	return b.String()
 }
@@ -683,7 +694,7 @@ func buildMarker(runID string) (string, error) {
 	if !validRunID.MatchString(runID) {
 		return "", fmt.Errorf("invalid run ID %q: must match [a-zA-Z0-9_-]+", runID)
 	}
-	return fmt.Sprintf("<!-- fullsend:agent-status:%s -->", runID), nil
+	return statusMarkerOpener + runID + " -->", nil
 }
 
 func mustBuildMarker(runID string) string {
@@ -705,6 +716,12 @@ func statusEmoji(status string) string {
 	default:
 		return "⚠️"
 	}
+}
+
+// ReconcileOptions controls optional reconciliation behavior.
+type ReconcileOptions struct {
+	// CancellationGuidance is appended to a cancelled status comment.
+	CancellationGuidance string
 }
 
 // ReconcileOrphaned finds and finalizes a status comment that was left in
@@ -744,6 +761,8 @@ func statusEmoji(status string) string {
 // agentDescription is used as the heading for a synthesized "Interrupted"
 // comment (e.g. "Code" for the code agent), so operators can tell which
 // agent failed when multiple agents run against the same issue/PR.
+// options.CancellationGuidance is appended to cancelled comments when set;
+// it has no effect on other outcomes.
 //
 // This function is designed to be called from an out-of-process cleanup
 // mechanism (e.g., a GitHub Actions post-job step) that runs even when the
@@ -756,7 +775,7 @@ func statusEmoji(status string) string {
 // hard-killed run can leave a stray 👀 reaction behind indefinitely.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
+func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, options ReconcileOptions) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -790,7 +809,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 		// Still in "Started" state — finalize it.
 		desc, startTimeStr := parseStartBody(string(matched.Body))
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason)
+		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason, options.CancellationGuidance)
 		if err := updateStatusComment(ctx, client, project, number, matched.ID, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("updating orphaned comment: %w", err)
 		}
@@ -827,7 +846,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 
 	if shouldSynthesize {
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason)
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason, options.CancellationGuidance)
 		if _, err := createStatusComment(ctx, client, project, number, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
 		}
@@ -848,7 +867,7 @@ func parseStartBody(body string) (description, startTime string) {
 
 // buildInterruptedBody constructs the comment body for an orphaned status
 // comment that was interrupted by a hard process kill or job cancellation.
-func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason) string {
+func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason, cancellationGuidance string) string {
 	statusLabel, heading := reasonLabel(reason, description)
 
 	var b strings.Builder
@@ -872,6 +891,10 @@ func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string,
 	if len(parts) > 0 {
 		b.WriteString("\n\n")
 		b.WriteString(strings.Join(parts, " · "))
+	}
+	if reason == ReasonCancelled && cancellationGuidance != "" {
+		b.WriteString("\n\n")
+		b.WriteString(cancellationGuidance)
 	}
 	return b.String()
 }

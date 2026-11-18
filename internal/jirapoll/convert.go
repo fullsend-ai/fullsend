@@ -1,10 +1,10 @@
 package jirapoll
 
 import (
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
@@ -13,6 +13,15 @@ import (
 // toNormalizedEvent converts a JiraEvent to a normevent.Event for CEL trigger
 // evaluation, per the jira-poll-adapter.md spec.
 func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
+	// An issue Jira serves without a labels array (null or missing) is in
+	// effect unlabeled: map nil to an empty list so its events stay valid
+	// instead of being skipped permanently. Jira does not guarantee one
+	// response shape across deployments and field configurations, so the
+	// adapter tolerates both.
+	labels := event.Labels
+	if labels == nil {
+		labels = []string{}
+	}
 	ne := normevent.Event{
 		Repo: p.opts.TargetRepo,
 		Source: normevent.Source{
@@ -30,21 +39,51 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 			Kind: normevent.TransitionKind(event.Type),
 		},
 		Actor: normevent.Actor{
-			ID:             actorID(event),
-			Kind:           normevent.ActorKind(p.actorKind(event)),
-			Role:           normevent.ActorRole(p.resolveRole(event)),
-			IsEntityAuthor: isEntityAuthor(event),
+			ID:               actorID(event),
+			Kind:             normevent.ActorKind(p.actorKind(event)),
+			Role:             normevent.ActorRole(p.resolveRole(event)),
+			IsEntityAuthor:   isEntityAuthor(event),
+			IsEntityAssignee: isEntityAssignee(event),
 		},
 		State: normevent.State{
-			Labels: event.Labels,
+			Labels: labels,
 		},
+	}
+
+	if event.IssueType != nil {
+		// Optional metadata must satisfy the schema without preventing an
+		// otherwise valid event from dispatching when Jira omits or corrupts it.
+		idLen := utf8.RuneCountInString(event.IssueType.ID)
+		nameLen := utf8.RuneCountInString(event.IssueType.Name)
+		if idLen >= 1 && idLen <= 255 && nameLen >= 1 && nameLen <= 255 {
+			ne.State.IssueType = &normevent.IssueType{
+				ID:        event.IssueType.ID,
+				Name:      event.IssueType.Name,
+				IsSubtask: event.IssueType.Subtask,
+			}
+		}
 	}
 
 	switch event.Type {
 	case "comment_added":
 		cmd, instruction := extractCommand(event.CommentBody)
+		// A /fs-* command body is carried untruncated only on the
+		// GitLab target, whose dispatch door measures the complete
+		// body and fails closed when it exceeds the transport budget
+		// (the GitLab door measures the raw note body the same way,
+		// dispatch.go). The GitHub target has no fail-closed budget
+		// door: its records travel whole through dispatches.json into
+		// the reusable-poll-jira matrix output, so every body —
+		// command or not — keeps the schema's 4096-code-point adapter
+		// cap there, keeping the transported event inside the schema's
+		// machine-readable comment.body maxLength and the matrix
+		// output bounded as before this bound existed.
+		body := event.CommentBody
+		if cmd == "" || p.opts.TargetForge != TargetForgeGitLab {
+			body = truncate(event.CommentBody, 4096)
+		}
 		ne.Transition.Comment = &normevent.Comment{
-			Body:        truncate(event.CommentBody, 4096),
+			Body:        body,
 			Command:     cmd,
 			Instruction: truncate(instruction, 4096),
 		}
@@ -91,14 +130,15 @@ func mapRawAction(event JiraEvent) string {
 	}
 }
 
-// parseIssueID converts a Jira issue ID string to int. Jira always returns
-// numeric ID strings for issues; a parse failure would mean entity.id is
-// silently written as 0 (schema-invalid), so it's logged rather than
-// swallowed even though it isn't expected to happen in practice.
+// parseIssueID converts a Jira issue ID string to int. Jira issue ids are
+// numeric by design; a non-numeric id still maps to 0 and is skipped (see
+// the Jira guide's troubleshooting row). Any parse error yields 0, including
+// a numeric id out of int range (for which strconv.Atoi returns the max
+// int), and 0 fails validation, so the poller skips the event with a warning.
 func parseIssueID(id string) int {
 	n, err := strconv.Atoi(id)
 	if err != nil {
-		log.Printf("WARNING: unparseable Jira issue id %q, using 0: %v", id, err)
+		return 0
 	}
 	return n
 }
@@ -175,6 +215,18 @@ func isEntityAuthor(event JiraEvent) bool {
 	return aid == userID(event.Reporter)
 }
 
+// isEntityAssignee checks if the actor is the issue's current assignee. It
+// compares the same identifier as actor.id and isEntityAuthor: accountId,
+// or name where accountId is unavailable (Data Center/Server). An
+// unassigned issue (zero-value Assignee) never matches.
+func isEntityAssignee(event JiraEvent) bool {
+	aid := actorID(event)
+	if aid == "" {
+		return false
+	}
+	return aid == userID(event.Assignee)
+}
+
 // extractCommand parses a comment body for a /fs- slash command. It returns
 // the command token and the remaining instruction text. If no slash command
 // is found, both return values are empty strings.
@@ -204,17 +256,28 @@ func extractCommand(body string) (command, instruction string) {
 	return command, instruction
 }
 
-// resolveRole maps the event actor's Jira project role to an ADR 0054 role.
+// resolveRole maps the event actor to an ADR 0054 role from the source
+// roleSourceFor picks: the jira authorization lists (write, triage, or
+// "none"), no resolution ("none", for label-added events the dispatch gate
+// authorizes by Jira's Edit Issues permission), or the Jira project role.
 //
 // roleMembership is loaded once per cycle for a single p.opts.JiraProject.
-// A --jql spanning multiple projects can still surface issues outside that
-// project, so an actor's role is only honored for issues in the configured
-// project; anything else fails closed to "external" rather than leaking a
-// role granted in one project onto an issue in another (see PR #5778 review).
+// The poller query is scoped to that project, but as defensive validation
+// (for example a misconfigured poll.query, or an issue moved between
+// projects) an actor's project role is only honored for issues in the
+// configured project; anything else fails closed to "external" rather than
+// leaking a role granted in one project onto an issue in another (see PR
+// #5778 review).
 func (p *Poller) resolveRole(event JiraEvent) string {
 	aid := actorID(event)
 	if aid == "" {
 		return "external"
+	}
+	switch p.roleSourceFor(event) {
+	case roleNotResolved:
+		return unresolvedRole
+	case roleFromLists:
+		return p.listRole(aid)
 	}
 	if p.opts.JiraProject != "" && issueProjectKey(event.IssueKey) != p.opts.JiraProject {
 		return "external"

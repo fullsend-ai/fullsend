@@ -2,8 +2,11 @@ package repos
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -206,8 +209,9 @@ func TestPreflightManagedConfig_ReportsBothLayersAndAdoptionDetail(t *testing.T)
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("keep_history: true\n# note\n")
 	fc.FileContents["acme/api/"+preset.BasePath] = []byte("version: \"1\"\n")
 
-	err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+	adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
 	require.Error(t, err)
+	assert.Nil(t, adoption, "a repo with a base problem as well stops the run")
 	msg := err.Error()
 	assert.Contains(t, msg, preset.OverlayPath+" exists without the managed-configuration ownership marker")
 	assert.Contains(t, msg, preset.BasePath+" exists but no config_base preset is declared", "both problems are reported together")
@@ -226,27 +230,35 @@ func TestPreflightManagedConfig_MalformedLayers(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(": bad [")
 	fc.FileContents["acme/api/"+preset.BasePath] = []byte(": bad [")
-	err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+	_, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a per-repo configuration", "malformed overlay")
 	assert.Contains(t, err.Error(), "not a valid per-repo configuration", "malformed base")
 
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("version: \"1\"\nroles: 5\n")
-	err = PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+	_, err = PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be parsed", "per-repo shaped overlay that fails to parse")
 
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("version: \"1\"\nroles: [triage]\ndispatch:\n  platform: github\n")
 	delete(fc.FileContents, "acme/api/"+preset.BasePath)
-	err = PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+	_, err = PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a per-repo configuration")
 
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "{}\n")
 	fc.GetFileContentErrors = map[string]error{"acme/api/" + preset.BasePath: os.ErrPermission}
-	err = PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+	_, err = PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading "+preset.BasePath)
+}
+
+// A pipe, as -f <(cmd) gives, cannot take a rewrite.
+func TestManifestReadOnly_Pipe(t *testing.T) {
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+	assert.True(t, ManifestReadOnly(newConvergeManifest("acme/api"), "/dev/fd/"+strconv.Itoa(int(r.Fd()))))
 }
 
 func TestManifestReadOnly_LocalFileWithoutWritePermission(t *testing.T) {
@@ -263,6 +275,30 @@ func TestManifestReadOnly_LocalFileWithoutWritePermission(t *testing.T) {
 	err := writeManifest(path, m)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read-only")
+
+	// Write bits that leave out the owner: only the open for writing tells.
+	require.NoError(t, os.Chmod(path, 0o464))
+	if os.Geteuid() != 0 {
+		assert.True(t, ManifestReadOnly(m, path))
+	}
+}
+
+// A file on a read-only file system (a Docker :ro bind mount or a
+// ConfigMap volume) keeps its write bits, so only the open for writing
+// tells.
+func TestIsWriteDenied(t *testing.T) {
+	for _, tc := range []struct {
+		errno syscall.Errno
+		want  bool
+	}{
+		{syscall.EROFS, true},
+		{syscall.EACCES, true},
+		{syscall.EPERM, true},
+		{syscall.ENOENT, false},
+	} {
+		err := &fs.PathError{Op: "open", Path: "repos.yaml", Err: tc.errno}
+		assert.Equal(t, tc.want, isWriteDenied(err), "%v", err)
+	}
 }
 
 func TestEnsureManagedConfigDefaults_ReadOnlyLocalManifestFailsBeforeWrite(t *testing.T) {
@@ -278,45 +314,6 @@ func TestEnsureManagedConfigDefaults_ReadOnlyLocalManifestFailsBeforeWrite(t *te
 		assert.Contains(t, err.Error(), "- fullsend-ai/fullsend")
 	}
 }
-
-func TestRequireWritableManifestForCarved(t *testing.T) {
-	ctx := context.Background()
-	for _, f := range layerForges {
-		t.Run(f, func(t *testing.T) {
-			m := &Manifest{Version: 1, Defaults: testInferenceDefaults()}
-			platform := m.EnsurePlatform(f)
-			platform.Repos = []RepoEntry{
-				{Name: "acme/*", Config: mustManagedConfig(t, "runtime: pi\n")},
-				{Name: "acme/api", Config: mustManagedConfig(t, "runtime: pi\n"), Vendor: boolPtr(true)},
-			}
-			fc := newFakeClientForBatch("acme/api")
-
-			require.NoError(t, RequireWritableManifestForCarved(ctx, m, filepath.Join(t.TempDir(), "repos.yaml"), []string{"acme/api"}, newTestClientFactory(fc), nil, false),
-				"a writable manifest needs no suggestion")
-			require.NoError(t, RequireWritableManifestForCarved(ctx, m, "https://example.com/repos.yaml", nil, newTestClientFactory(fc), nil, false))
-
-			err := RequireWritableManifestForCarved(ctx, m, "https://example.com/repos.yaml", []string{"acme/api"}, newTestClientFactory(fc), []string{"triage"}, true)
-			require.Error(t, err)
-			msg := err.Error()
-			assert.Contains(t, msg, "read-only")
-			assert.Contains(t, msg, f+".repos")
-			for _, want := range []string{"name: acme/api", "runtime: pi", "vendor: true", "- fullsend-ai/fullsend", "- triage"} {
-				assert.Contains(t, msg, want, "the exact carved entry with other per-entry flags and install defaults")
-			}
-
-			fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "{}\n")
-			err = RequireWritableManifestForCarved(ctx, m, "https://example.com/repos.yaml", []string{"acme/api"}, newTestClientFactory(fc), nil, false)
-			require.Error(t, err)
-			assert.NotContains(t, err.Error(), "fullsend-ai/fullsend", "no install defaults once an overlay exists")
-		})
-	}
-
-	m := newConvergeManifest("acme/api")
-	err := RequireWritableManifestForCarved(ctx, m, "https://example.com/repos.yaml", []string{"acme/api"}, failingFactory{}, nil, false)
-	require.Error(t, err)
-}
-
-func boolPtr(b bool) *bool { return &b }
 
 func TestStatus_BothLayersReportedBeforeInstall(t *testing.T) {
 	ctx := context.Background()

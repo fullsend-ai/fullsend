@@ -95,7 +95,21 @@ func gatewayProfileID(host string) string {
 // host, so two gateways under different prefixes on one host never share a
 // profile id; a bare origin keeps the host-only id.
 func gatewayProfileIDFor(templateID, host, prefix string) string {
-	sum := sha256.Sum256([]byte(strings.ToLower(host) + prefix))
+	return gatewayProfileIDForHeader(templateID, host, prefix, "")
+}
+
+// gatewayProfileIDForHeader is gatewayProfileIDFor for a rendering whose
+// credential binding names header ("" for the template's own binding). A
+// header is hashed with the host and prefix (after a NUL, which neither can
+// hold), so two renderings for one host that bind different headers never
+// share a profile id on one shared OpenShell gateway (ADR 0142); the
+// template's own binding keeps the host-and-prefix id.
+func gatewayProfileIDForHeader(templateID, host, prefix, header string) string {
+	key := strings.ToLower(host) + prefix
+	if header != "" {
+		key += "\x00" + header
+	}
+	sum := sha256.Sum256([]byte(key))
 	return templateID + "-" + hex.EncodeToString(sum[:])[:gatewayProfileIDHashLen]
 }
 
@@ -103,10 +117,24 @@ func gatewayProfileIDFor(templateID, host, prefix string) string {
 // template of its own: Claude Code calls only the Messages API, from its own binary. Both auth modes send
 // the credential as Authorization: Bearer (an apiKeyHelper in the oidc
 // mode, ANTHROPIC_AUTH_TOKEN in the api-key mode), the header ADR 0137 sets
-// for the route, so one rendering serves both. Its id differs from pi's, so
+// for the route, so one rendering serves both. An api-key block with
+// messages_auth_header: x-api-key (ADR 0142) gets the x-api-key rendering
+// instead (gatewayProfile.messagesXAPIKey). Its id differs from pi's, so
 // a pi run and a Claude Code run on one shared OpenShell gateway never
 // import over each other's profile.
 const gatewayClaudeProfileTemplateID = "fullsend-inference-gateway-claude"
+
+// Credential bindings of the Claude Code template: the template's own
+// (Authorization: Bearer) and the plain x-api-key header the rendering
+// substitutes for it when messages_auth_header is x-api-key. OpenShell
+// (checked on v0.1.4) stores this metadata and resolves the static
+// placeholder in whichever header carries it on the profile's endpoints,
+// so the binding documents the header Claude Code sends; the host and path
+// scoping is what keeps the credential on the gateway.
+const (
+	gatewayProfileBearerBinding  = "    auth_style: bearer\n    header_name: authorization\n"
+	gatewayProfileXAPIKeyBinding = "    auth_style: header\n    header_name: x-api-key\n"
+)
 
 // gatewayProfile selects the rendering of the per-host gateway profile.
 type gatewayProfile struct {
@@ -118,6 +146,14 @@ type gatewayProfile struct {
 	prefix string
 	// claude selects the Claude Code template.
 	claude bool
+	// messagesXAPIKey selects the Claude Code template's x-api-key
+	// binding, for an api-key block with messages_auth_header: x-api-key
+	// (ADR 0142). It needs claude: the pi and codex rendering serves every
+	// dialect from one credential, whose binding cannot vary by path, and
+	// OpenShell resolves its placeholder in x-api-key on the Messages path
+	// as well as in Authorization on the others, so that rendering does not
+	// change.
+	messagesXAPIKey bool
 }
 
 // renderGatewayProfile renders the scaffold's inference gateway profile
@@ -145,7 +181,14 @@ func renderGatewayProfileFor(p gatewayProfile) ([]byte, string, error) {
 	if p.claude {
 		templateID = gatewayClaudeProfileTemplateID
 	}
-	id := gatewayProfileIDFor(templateID, h, p.prefix)
+	header := ""
+	if p.messagesXAPIKey {
+		if !p.claude {
+			return nil, "", errors.New("inference gateway: the x-api-key binding applies to the Claude Code profile only")
+		}
+		header = config.GatewayMessagesAuthHeaderXAPIKey
+	}
+	id := gatewayProfileIDForHeader(templateID, h, p.prefix, header)
 	tmpl, err := scaffold.FullsendRepoFile("profiles/" + templateID + ".yaml")
 	if err != nil {
 		return nil, "", fmt.Errorf("provider profile %q is not shipped by this fullsend build: %w", templateID, err)
@@ -159,6 +202,13 @@ func renderGatewayProfileFor(p gatewayProfile) ([]byte, string, error) {
 	// credential binding above all) can escape the configured prefix.
 	if !strings.Contains(s, gatewayProfilePrefixPlaceholder) || strings.Contains(s, "path: /") {
 		return nil, "", fmt.Errorf("embedded provider profile %q is not a valid gateway template (every path must start with %s)", templateID, gatewayProfilePrefixPlaceholder)
+	}
+	if header != "" {
+		// One binding, so the credential can never be bound to both headers.
+		if strings.Count(s, gatewayProfileBearerBinding) != 1 {
+			return nil, "", fmt.Errorf("embedded provider profile %q is not a valid gateway template (one bearer credential binding expected)", templateID)
+		}
+		s = strings.Replace(s, gatewayProfileBearerBinding, gatewayProfileXAPIKeyBinding, 1)
 	}
 	s = strings.Replace(s, idLine, "\nid: "+id+"\n", 1)
 	s = strings.Replace(s, gatewayProfileHostPlaceholder, h, 1)

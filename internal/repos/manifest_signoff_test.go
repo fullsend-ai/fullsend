@@ -120,7 +120,7 @@ gitlab:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := m.SignoffForgesFor(tt.filter)
+			got, err := m.SignoffForgesFor(tt.filter, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -155,7 +155,7 @@ github:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := m.SignoffForgesFor(tt.filter)
+			got, err := m.SignoffForgesFor(tt.filter, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -199,7 +199,7 @@ github:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.m.SignoffForgesFor(tt.filter)
+			got, err := tt.m.SignoffForgesFor(tt.filter, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -248,7 +248,7 @@ github:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := m.SignoffForgesFor(tt.filter)
+			got, err := m.SignoffForgesFor(tt.filter, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -257,7 +257,7 @@ github:
 
 func TestSignoffForgesFor_InvalidPattern(t *testing.T) {
 	m := Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}}}
-	_, err := m.SignoffForgesFor([]string{"acme/[invalid"})
+	_, err := m.SignoffForgesFor([]string{"acme/[invalid"}, nil)
 	require.Error(t, err)
 }
 
@@ -265,7 +265,7 @@ func TestCarveOutGlobEntry_CopiesSignoff(t *testing.T) {
 	signoff := true
 	platform := &PlatformConfig{Repos: []RepoEntry{{Name: "acme/*", Signoff: &signoff}}}
 
-	carved, err := carveOutGlobEntry([]*PlatformConfig{platform}, "acme/api", nil)
+	carved, _, err := carveOutGlobEntry([]*PlatformConfig{platform}, "acme/api", "")
 	require.NoError(t, err)
 	require.NotNil(t, carved)
 	require.NotNil(t, carved.Signoff)
@@ -274,4 +274,43 @@ func TestCarveOutGlobEntry_CopiesSignoff(t *testing.T) {
 	// The carved entry must not alias the glob entry's pointer.
 	*carved.Signoff = false
 	assert.True(t, *platform.Repos[0].Signoff)
+}
+
+// A repository install skips gets no scaffold commit, so it needs no
+// trailer. A glob entry still counts, as it may select other repositories.
+func TestSignoffForgesFor_SkippedRepos(t *testing.T) {
+	const explicit = `
+version: 1
+github:
+  repos:
+    - name: acme/plain
+    - name: acme/signed
+      signoff: true
+`
+	const glob = explicit + `    - name: "other/*"
+      signoff: true
+`
+	tests := []struct {
+		name, input  string
+		filter, skip []string
+		want         []string
+	}{
+		{"unfiltered, the signed repo skipped", explicit, nil, []string{"acme/signed"}, nil},
+		{"the signed repo named and skipped", explicit, []string{"acme/signed"}, []string{"acme/signed"}, nil},
+		{"beside a plain repo", explicit, []string{"acme/plain", "acme/signed"}, []string{"acme/signed"}, nil},
+		{"skip ignores case", explicit, []string{"acme/signed"}, []string{"ACME/Signed"}, nil},
+		{"another signed repo still counts", glob, []string{"acme/signed", "other/repo"}, []string{"acme/signed"}, []string{ForgeGitHub}},
+		{"a signed glob still counts when unfiltered", glob, nil, []string{"acme/signed", "other/repo"}, []string{ForgeGitHub}},
+		{"a glob-covered repo named and skipped", glob, []string{"other/repo"}, []string{"other/repo"}, nil},
+		{"every named repo skipped beside a signed glob", glob, []string{"acme/signed"}, []string{"acme/signed"}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m Manifest
+			require.NoError(t, parseManifestBytes([]byte(tt.input), &m))
+			got, err := m.SignoffForgesFor(tt.filter, tt.skip)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

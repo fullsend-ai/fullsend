@@ -63,12 +63,12 @@ parses fails the re-run rather than being regenerated.
 | `--inference-gateway-model` | | Inference gateway model as `id=api`, where `api` is `openai-responses`, `anthropic-messages` or `openai-completions`. Repeatable; written to `inference.gateway.models`. Mutually exclusive with `--inference-gateway-models-file` |
 | `--inference-gateway-models-file` | | Local [pi-inference-gateway config file](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file) listing the gateway models. Validated with the runner's rules, committed as `.fullsend/inference-gateway.json`, and named in `inference.gateway.models_file` |
 | `--inference-region` | | GCP region for inference; resolved to `global` if unset |
-| `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps. For per-repo setup it is persisted as the `FULLSEND_APP_SET` repository variable; reruns that omit `--app-set` preserve an existing custom value rather than overwriting it with the default. `repos install` accepts the same option and the `app_set` manifest field. |
+| `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps. For per-repo setup it is persisted as the `FULLSEND_APP_SET` repository variable; reruns that omit `--app-set` preserve an existing custom value rather than overwriting it with the default. `repos install` has no `--app-set` flag; manifest-managed repositories declare the `app_set` field in `repos.yaml` instead (see [Migrating to manifest-driven `repos install`](../guides/getting-started/migrating-from-github-setup.md)). |
 | `--agents` | `triage,coder,review,fix,retro,prioritize` | Agent roles to provision |
 | `--direct` | `false` | Push scaffold directly instead of creating a PR |
-| `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour test orgs only — see [runtimes.md](../runtimes.md)) |
-| `--fullsend-ref` | | Per-repo fullsend workflow ref override (conflicts with `--vendor`; per-repo only) |
-| `--config` | | Local file path or HTTPS URL to a vendor preset (committed as `.fullsend/config.base.yaml`; per-repo only). Persistent setup flags override matching preset values in `.fullsend/config.yaml`. Fleet installs declare the same source in `repos.yaml` (`defaults.config_base` / per-repo `config_base`) |
+| `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `codex`, `opencode`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour tests only — see [runtimes.md](../runtimes.md)) |
+| `--fullsend-ref` | | Per-repo fullsend workflow ref override (conflicts with `--vendor`; per-repo only). A ref to an older release needs the CLI from that release: this CLI's shim passes `FULLSEND_GITHUB_RUNNER_SECRETS` ([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)), and GitHub rejects the call when the older reusable workflow does not declare it |
+| `--config` | | Local file path or HTTPS URL to a vendor preset (committed as `.fullsend/config.base.yaml`; per-repo only). Persistent setup flags override matching preset values in `.fullsend/config.yaml`. Setup refuses a preset that contains `trace_context`, because that block belongs to one repository's `repos.yaml` entry. Fleet installs declare the same source in `repos.yaml` (`defaults.config_base` / per-repo `config_base`) |
 | `--config-hash` | | SHA-256 hex digest to validate the preset content (requires `--config`). Same semantics as `repos.yaml` `config_base.sha256` |
 
 **Fetching an HTTPS `--config` preset** rejects URLs containing userinfo (e.g.
@@ -100,7 +100,7 @@ fullsend github set <owner/repo> <key> <value>
 | `FULLSEND_PER_REPO_INSTALL` | Repo variable | Per-repo install marker |
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project for inference |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | WIF provider resource name |
-| `FULLSEND_OPENAI_API_KEY` | Repo secret | Opt-in OpenAI API key used only when the WIF trio is unset. Do not add this via `github setup`; set it only when you cannot enrol OpenAI WIF. |
+| `FULLSEND_OPENAI_API_KEY` | Repo secret | Opt-in OpenAI API key used only when the WIF trio is unset. Do not add this via `github setup`; set it only when you cannot enrol OpenAI WIF. Any workflow in the repository with access to secrets can read it, so prefer keeping the key behind an [inference gateway](../guides/user/inference-gateway.md) where you can run one. |
 | `FULLSEND_INFERENCE_GATEWAY_API_KEY` | Repo secret | Inference gateway API key, read only when `inference.gateway.auth` is `api-key` ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)). A long-lived secret: prefer `auth: oidc` where the gateway can trust forge OIDC. |
 
 ## See also

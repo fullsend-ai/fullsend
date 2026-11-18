@@ -333,6 +333,11 @@ func TestRefreshGatewayProvider_BeforeSandbox(t *testing.T) {
 	assert.NotContains(t, string(data), "sandbox exec", "no re-seed before the sandbox is up")
 
 	// A token that is not a compact JWT is refused before it is stored.
+	// Each refused attempt is retried after gatewayRefreshBackoff; shrink
+	// it so the retries do not sleep for seconds.
+	oldBackoff := gatewayRefreshBackoff
+	gatewayRefreshBackoff = time.Millisecond
+	t.Cleanup(func() { gatewayRefreshBackoff = oldBackoff })
 	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
 		return &actionsoidc.Assertion{Value: "not a jwt\n::error::x", IssuedAt: iat, ExpiresAt: iat.Add(5 * time.Minute)}, nil
 	})
@@ -957,4 +962,111 @@ func TestRunGatewayRefresh_SettleTimeoutKeepsRunDeadline(t *testing.T) {
 	assert.Contains(t, out.String(), "gateway refuses")
 	assert.Equal(t, held, h.state.heldExpiresAt)
 	assert.True(t, h.state.expiresAt.After(held), "the provider's token is the new one")
+}
+
+// countWallClockAssertions stubs the assertion fetch with tokens of the
+// given lifetime issued on the simulated wall clock, as the forge's would
+// be after the host slept, and counts the fetches.
+func countWallClockAssertions(t *testing.T, lifetime time.Duration) *atomic.Int32 {
+	t.Helper()
+	var calls atomic.Int32
+	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
+		calls.Add(1)
+		now := wallNowFn()
+		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: now, ExpiresAt: now.Add(lifetime)}, nil
+	})
+	return &calls
+}
+
+// A host that sleeps past the refresh point (and past the token's exp)
+// refreshes on the first wall-clock check after it wakes, once per
+// deadline: the renewed token's schedule is on the wall clock too, so
+// later watchdog ticks do not refresh again (#8584).
+func TestRunGatewayRefresh_HostSleepRefreshesOncePerDeadline(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	stubOpenshell(t, "exit 0")
+	slept := simulateHostSleep(t, 5*time.Millisecond)
+	calls := countWallClockAssertions(t, 5*time.Minute)
+	// time.Now carries a monotonic reading, as the token startGatewayRoute
+	// records may. A 5 minute token is due for refresh in about 150 s.
+	now := time.Now()
+	h := gatewayProviderHandle{name: "inference-gateway-x", block: config.InferenceGatewayConfig{Audience: "aud"}, sandbox: "fs-x", issuedAt: now, expiresAt: now.Add(5 * time.Minute)}
+	var out syncBuffer
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runGatewayRefresh(ctx, h, ui.New(&out))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int32(0), calls.Load(), "an awake host waits for the scheduled refresh")
+
+	slept.Store(int64(2 * time.Hour))
+	require.Eventually(t, func() bool { return calls.Load() >= 1 }, 5*time.Second, 5*time.Millisecond, "the first wall-clock check after wake refreshes a token the host slept past")
+	require.Eventually(t, func() bool {
+		return strings.Contains(out.String(), "Inference gateway token refreshed for inference-gateway-x")
+	}, 5*time.Second, 5*time.Millisecond, out.String())
+
+	// Many watchdog ticks later the renewed token's refresh point is still
+	// minutes out on the wall clock, so no second refresh happens.
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, int32(1), calls.Load(), "one refresh per deadline, not one per watchdog tick")
+
+	// A second sleep past the renewed token's refresh point refreshes again.
+	slept.Store(int64(4 * time.Hour))
+	require.Eventually(t, func() bool { return calls.Load() >= 2 }, 5*time.Second, 5*time.Millisecond, "sleeping past the renewed deadline refreshes again")
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, int32(2), calls.Load(), "the second deadline also refreshes once")
+	assert.NotContains(t, out.String(), "gave up")
+}
+
+// A host that sleeps through a pending hand-off's backoff wait, past the
+// next refresh point, does not retry the stale hand-off: it rotates at
+// once, which hands off again itself.
+func TestRunGatewayRefresh_HostSleepDuringPendingHandOffRotates(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	stubOpenshell(t, "exit 0")
+	slept := simulateHostSleep(t, 5*time.Millisecond)
+	// The hour-long backoff makes the refresh budget over two hours, so
+	// the tokens are long enough to leave a refresh lead beyond it.
+	calls := countWallClockAssertions(t, 6*time.Hour)
+	oldMin, oldBackoff := gatewayRefreshMinDelay, gatewayRefreshBackoff
+	// Only the wall-clock check can end a backoff wait this long.
+	gatewayRefreshMinDelay, gatewayRefreshBackoff = time.Millisecond, time.Hour
+	t.Cleanup(func() { gatewayRefreshMinDelay, gatewayRefreshBackoff = oldMin, oldBackoff })
+	now := time.Now()
+	h := gatewayProviderHandle{name: "inference-gateway-x", block: config.InferenceGatewayConfig{Audience: "aud"}, sandbox: "fs-x", issuedAt: now, expiresAt: now.Add(8 * time.Hour)}
+	// Refresh due in about 4 h: a hand-off retry waits out the backoff first.
+	h.state = &gatewayRefreshState{issuedAt: now, expiresAt: now.Add(8 * time.Hour), heldExpiresAt: now, placeholder: ph("v111_INFERENCE_GATEWAY_API_KEY"), handOffPending: true}
+	var out syncBuffer
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runGatewayRefresh(ctx, h, ui.New(&out))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int32(0), calls.Load(), "an awake host waits out the hand-off backoff")
+
+	// Past the refresh point, still before the provider token's exp.
+	slept.Store(int64(5 * time.Hour))
+	require.Eventually(t, func() bool {
+		return strings.Contains(out.String(), "Inference gateway token refreshed for inference-gateway-x")
+	}, 5*time.Second, 5*time.Millisecond, out.String())
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int32(1), calls.Load(), "one rotation after the wake")
+	assert.NotContains(t, out.String(), "handed off", "the stale hand-off is not retried")
+	assert.False(t, h.state.handOffPending, "the rotation replaced the pending hand-off")
 }

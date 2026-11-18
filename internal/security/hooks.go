@@ -186,6 +186,30 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 // wiring comes from HookPlan; this function only renders it in Claude Code's
 // settings format.
 func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
+	return GenerateHooksConfigPinned(hooks, "python3", "")
+}
+
+// GenerateHooksConfigPinned is GenerateHooksConfig with the interpreter and
+// the hooks' PATH fixed by the caller. Claude Code runs a hook through the
+// shell it inherits *after* the agent-writable workspace .env is sourced, so a
+// bare `python3`, or a bare `tirith` inside tirith_check.py, resolves through
+// a PATH an earlier iteration controls: a fake that exits 0 skips the check
+// while hooks.json and the scripts stay byte-identical. The runtime therefore
+// resolves an absolute python (and a trusted PATH) at Bootstrap, on a shell
+// the agent has not touched, and renders them here so the hooks.json digest
+// covers both. An empty path leaves PATH as inherited.
+//
+// -E ignores every PYTHON* variable (PYTHONPATH, PYTHONHOME, PYTHONSTARTUP,
+// ...) and -s drops the user site directory. -I is not used: it would also
+// drop the script's own directory from sys.path, and the scripts import
+// hook_io and load the chain's stages from SandboxHooksDir. That directory is
+// covered by the runtime's exhaustive launch guard, so no sitecustomize.py or
+// shadowing module can sit in it.
+func GenerateHooksConfigPinned(hooks SandboxHookConfig, python, path string) ([]byte, error) {
+	prefix := ""
+	if path != "" {
+		prefix = "PATH=" + shellSingleQuote(path) + " "
+	}
 	cfg := hooksConfig{
 		Hooks: make(map[string][]hookMatcher),
 	}
@@ -194,7 +218,11 @@ func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
 		entries := make([]hookEntry, 0, len(g.Scripts))
 		for _, script := range g.Scripts {
 			entries = append(entries, hookEntry{
-				Type: "command", Command: "python3 " + SandboxHooksDir + "/" + script,
+				// -B: the scripts import hook_io and the chain loads its
+				// stages from SandboxHooksDir, so without it Python writes
+				// hooks/__pycache__/ during iteration 1 and the runtime's
+				// exhaustive hooks-directory guard refuses iteration 2.
+				Type: "command", Command: prefix + shellSingleQuote(python) + " -E -s -B " + SandboxHooksDir + "/" + script,
 				Timeout: HookTimeoutSeconds,
 			})
 		}
@@ -207,12 +235,29 @@ func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
 	return json.MarshalIndent(cfg, "", "  ")
 }
 
-// HookFiles returns a map of filename -> content for all enabled hook scripts.
+// TirithRepoPolicyFile is the name the repository's .tirith/policy.yaml is
+// staged under in the hooks directory, next to tirith_check.py. The hook
+// copies it into each call's private directory as a repository policy, which
+// tirith merges into its baseline as tightening only.
+const TirithRepoPolicyFile = "tirith-repo-policy.yaml"
+
+// HookFiles returns a map of filename -> content for all enabled hook scripts,
+// plus the staged repository tirith policy (TirithRepoPolicyFile) when Tirith
+// is enabled and one was set. Every runtime that installs the sandbox hooks
+// uploads exactly this set, but they do not all check it: Claude Code and
+// Codex record a runner-held digest per filename and verify it before every
+// launch, so for them the policy is checked like the scripts beside it, while
+// pi digests its hook adapter and fullsend-manifest.json rather than these
+// shared files. Under pi a staged policy can therefore be emptied or removed
+// between iterations without refusing the next launch.
 func HookFiles(hooks SandboxHookConfig) map[string][]byte {
 	files := make(map[string][]byte)
 
 	if tirithEnabled(hooks) {
 		files["tirith_check.py"] = TirithCheckHook
+		if policy := hooks.TirithRepoPolicy(); len(policy) > 0 {
+			files[TirithRepoPolicyFile] = policy
+		}
 	}
 	if ssrfPreToolEnabled(hooks) {
 		files["ssrf_pretool.py"] = SSRFPreToolHook
@@ -338,4 +383,9 @@ func toolAllowlistPreToolEnabled(hooks SandboxHookConfig) bool {
 		return false
 	}
 	return boolDefault(sh.ToolAllowlistPreTool.Enabled, false)
+}
+
+// shellSingleQuote quotes s as one POSIX sh word.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

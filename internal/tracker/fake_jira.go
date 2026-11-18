@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
@@ -21,6 +23,8 @@ import (
 type FakeJiraClient struct {
 	Issues   map[string]*jira.Issue
 	Comments map[string][]jira.Comment
+	// ProjectIDs supplies immutable project IDs for created issue reads.
+	ProjectIDs map[string]string
 
 	// CommentProperties maps "issueKey/commentID" to a map of
 	// propertyKey -> value, mirroring Jira's per-comment entity
@@ -32,9 +36,18 @@ type FakeJiraClient struct {
 	UpdatedCommentID string
 	UpdatedBody      string
 
+	// CreatedIssues records every CreateIssue input, in call order.
+	// CreateIssueError, when non-nil, is returned by CreateIssue.
+	CreatedIssues    []jira.CreateIssueInput
+	CreateIssueError error
+
 	// PropertyError, when non-nil, is returned by SetCommentProperty
 	// to simulate permission failures.
 	PropertyError error
+
+	// PropertyWrites counts SetCommentProperty calls, including ones
+	// that fail with PropertyError.
+	PropertyWrites int
 
 	// UpdateError, when non-nil, is returned by UpdateComment to
 	// simulate update failures.
@@ -83,6 +96,54 @@ func (f *FakeJiraClient) GetIssue(_ context.Context, issueIDOrKey string) (*jira
 		return nil, fmt.Errorf("get issue %s: %w", issueIDOrKey, forge.ErrNotFound)
 	}
 	return issue, nil
+}
+
+// CreateIssue stores a new issue under the first unused key
+// "<ProjectKey>-<n>" (n counting up from 1), with its description stored
+// as real ADF so GetIssue reads it back the way a live Jira instance would.
+func (f *FakeJiraClient) CreateIssue(_ context.Context, in jira.CreateIssueInput) (*jira.CreatedIssue, error) {
+	if f.CreateIssueError != nil {
+		return nil, f.CreateIssueError
+	}
+	f.CreatedIssues = append(f.CreatedIssues, in)
+	var description any
+	if strings.TrimSpace(in.Description) != "" {
+		adf, err := jira.MarkdownToADF(in.Description)
+		if err != nil {
+			return nil, err
+		}
+		description = adf
+	}
+	if f.Issues == nil {
+		f.Issues = make(map[string]*jira.Issue)
+	}
+	n := 1
+	for f.Issues[fmt.Sprintf("%s-%d", in.ProjectKey, n)] != nil {
+		n++
+	}
+	key := fmt.Sprintf("%s-%d", in.ProjectKey, n)
+	issueType := &jira.IssueType{}
+	isID := in.IssueType != ""
+	for _, r := range in.IssueType {
+		if r < '0' || r > '9' {
+			isID = false
+			break
+		}
+	}
+	if isID {
+		issueType.ID = in.IssueType
+	} else {
+		issueType.Name = in.IssueType
+	}
+	f.Issues[key] = &jira.Issue{
+		ID:  fmt.Sprintf("%d", 10000+len(f.CreatedIssues)),
+		Key: key,
+		Fields: jira.IssueFields{
+			Summary: in.Summary, Description: description, IssueType: issueType,
+			Project: &jira.ProjectRef{ID: f.ProjectIDs[in.ProjectKey], Key: in.ProjectKey},
+		},
+	}
+	return &jira.CreatedIssue{ID: fmt.Sprintf("%d", 10000+len(f.CreatedIssues)), Key: key}, nil
 }
 
 func (f *FakeJiraClient) ListComments(_ context.Context, issueIDOrKey string) ([]jira.Comment, error) {
@@ -164,6 +225,7 @@ func (f *FakeJiraClient) UpdateComment(_ context.Context, issueIDOrKey, commentI
 }
 
 func (f *FakeJiraClient) SetCommentProperty(_ context.Context, issueIDOrKey, commentID, propertyKey string, value any) error {
+	f.PropertyWrites++
 	if f.PropertyError != nil {
 		return f.PropertyError
 	}
@@ -222,4 +284,16 @@ func NewFakeJiraClientWithFake(baseURL string) (*JiraClient, *FakeJiraClient, er
 		return nil, nil, err
 	}
 	return tc, fc, nil
+}
+
+// AddIssueLabel mirrors Jira's additive label operation.
+func (f *FakeJiraClient) AddIssueLabel(ctx context.Context, issueIDOrKey, label string) error {
+	issue, err := f.GetIssue(ctx, issueIDOrKey)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(issue.Fields.Labels, label) {
+		issue.Fields.Labels = append(issue.Fields.Labels, label)
+	}
+	return nil
 }

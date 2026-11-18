@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
 // fallbackHandler routes token requests to the local handler if the role
@@ -87,9 +89,16 @@ func (f *fallbackHandler) proxyToFallback(w http.ResponseWriter, r *http.Request
 	}
 	proxyReq.Header.Set("Authorization", r.Header.Get("Authorization"))
 	proxyReq.Header.Set("Content-Type", "application/json")
+	if tp, ts := mintcore.TraceHeaders(r.Context()); tp != "" {
+		proxyReq.Header.Set("traceparent", tp)
+		if ts != "" {
+			proxyReq.Header.Set("tracestate", ts)
+		}
+	}
 
 	resp, err := f.httpClient.Do(proxyReq)
 	if err != nil {
+		mintcore.RecordSpanError(r.Context(), "fallback_proxy", err)
 		log.Printf("fallback proxy error: %v", err)
 		writeJSONError(w, http.StatusBadGateway, "fallback mint unreachable")
 		return
@@ -99,6 +108,7 @@ func (f *fallbackHandler) proxyToFallback(w http.ResponseWriter, r *http.Request
 	log.Printf("fallback responded: %d", resp.StatusCode)
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		mintcore.RecordSpanError(r.Context(), "fallback_proxy", err)
 		log.Printf("fallback proxy read error: %v", err)
 		writeJSONError(w, http.StatusBadGateway, "failed to read fallback response")
 		return

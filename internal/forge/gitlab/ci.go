@@ -1,7 +1,9 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -169,22 +171,42 @@ func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, va
 	return fmt.Errorf("update repo secret %s: %w", name, err)
 }
 
-// maskingRequired reports whether a secret holds a bearer credential that
-// must never be stored unmasked, so a server-side masking rejection is an
-// error rather than a reason to retry with masked=false.
+// maskingRequired reports whether a secret holds a bearer credential or a
+// signing key that must never be stored unmasked, so a server-side masking
+// rejection is an error rather than a reason to retry with masked=false.
 func maskingRequired(name string) bool {
 	switch name {
-	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret,
-		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
+	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken,
+		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken,
+		forge.SecretJiraToken, forge.SecretJiraClientSecret, forge.SecretTraceSigningKey:
 		return true
 	}
 	// Custom role credentials (gitlabroles.CustomSecretName).
 	return strings.HasPrefix(name, "FULLSEND_GITLAB_ROLE_") && strings.HasSuffix(name, "_TOKEN")
 }
 
+// isMaskingError reports whether a 400 response rejected the variable because
+// its value cannot be masked. Some GitLab instances say so explicitly ("can
+// not be masked"); others return only a generic field validation error,
+// {"message":{"value":["is invalid"]}}, which extractMessage renders as
+// "value: [is invalid]" (e.g. a value shorter than 8 characters). That error
+// is treated as a masking rejection too; if the value is invalid for another
+// reason, the unmasked retry fails and its error is returned. Secrets in
+// maskingRequired are never retried unmasked either way.
 func isMaskingError(err *APIError) bool {
-	return err.StatusCode == http.StatusBadRequest &&
-		strings.Contains(strings.ToLower(err.Message), "mask")
+	if err.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(err.Message)
+	if strings.Contains(msg, "mask") {
+		return true
+	}
+	for part := range strings.SplitSeq(msg, "; ") {
+		if strings.HasPrefix(part, "value: ") && strings.Contains(part, "is invalid") {
+			return true
+		}
+	}
+	return false
 }
 
 func isAlreadyExistsError(err *APIError) bool {
@@ -902,6 +924,14 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 			proj, runID, perPage, page)
 		resp, err := c.get(ctx, path)
 		if err != nil {
+			if page == 1 && forge.IsNotFound(err) {
+				// GitLab has been observed to 404 the first page for
+				// pipelines that have not started; the cause is unverified
+				// (#9124). Report the shape only — absence still depends on
+				// the run status. A later-page 404 is a partially readable
+				// listing and never carries the sentinel.
+				return nil, fmt.Errorf("list pipeline jobs page %d: %w: %w", page, forge.ErrJobsListingNotFoundFirstPage, err)
+			}
 			return nil, fmt.Errorf("list pipeline jobs page %d: %w", page, err)
 		}
 		var jobs []glJob
@@ -1019,33 +1049,54 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 	return result, nil
 }
 
-// GetWorkflowRunLogs concatenates the trace (log output) of all jobs in
-// a pipeline, separated by headers.
+// Trace-size caps for GetWorkflowRunLogs. Package-level vars, not function
+// constants, so tests can lower them through this seam instead of moving
+// ~100 MiB of trace bytes per subtest (docs/contributing/go-code.md,
+// injectable variables).
+var (
+	maxTraceSize     int64 = 10 << 20  // 10 MiB per job
+	maxAggregateSize int64 = 100 << 20 // 100 MiB total across all jobs
+)
+
+// GetWorkflowRunLogs concatenates the trace (log output) of each job in a
+// pipeline that was not skipped, separated by headers; a skipped job never
+// ran, so only its header is written and its trace is not fetched.
 func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error) {
 	jobs, err := c.ListWorkflowRunJobs(ctx, owner, repo, runID)
 	if err != nil {
 		return "", fmt.Errorf("list jobs for logs: %w", err)
 	}
-	const maxTraceSize = 10 << 20      // 10 MiB per job
-	const maxAggregateSize = 100 << 20 // 100 MiB total across all jobs
 
 	var b strings.Builder
 	var totalRead int64
 	for _, j := range jobs {
+		// A skipped job never ran, so it has no trace to fetch: GitLab
+		// answers an empty 200 for a traceless job (lib/api/ci/jobs.rb
+		// serves "body trace || ''" after find_build! and the read
+		// check), so the request would only be wasted — the same skip
+		// the GitHub client carries before its log download.
+		// Checked before the aggregate limit: the limit caps fetched
+		// bytes, not the job listing, so a skipped job's header is
+		// written even once the cap is reached and the snapshot stays
+		// complete for the behaviour reader.
+		if j.Conclusion == "skipped" {
+			fmt.Fprintf(&b, "=== Job %d (%s) [skipped] ===\n", j.ID, j.Name)
+			continue
+		}
 		if totalRead >= maxAggregateSize {
-			fmt.Fprintf(&b, "=== aggregate trace limit (%d bytes) reached, skipping remaining jobs ===\n", maxAggregateSize)
+			fmt.Fprintf(&b, "=== %s (%d bytes) reached, skipping remaining jobs ===\n", forge.LogNoteAggregateTraceLimit, maxAggregateSize)
 			break
 		}
 		tracePath := fmt.Sprintf("/projects/%s/jobs/%d/trace",
 			projectPath(owner, repo), j.ID)
 		resp, err := c.do(ctx, http.MethodGet, tracePath, nil)
 		if err != nil {
-			fmt.Fprintf(&b, "=== Job %d (%s): error fetching trace: %v ===\n", j.ID, j.Name, err)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %v ===\n", j.ID, j.Name, forge.LogNoteErrorFetchingTrace, err)
 			continue
 		}
 		if err := checkStatus(resp, http.StatusOK); err != nil {
 			resp.Body.Close()
-			fmt.Fprintf(&b, "=== Job %d (%s): error fetching trace: %v ===\n", j.ID, j.Name, err)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %v ===\n", j.ID, j.Name, forge.LogNoteErrorFetchingTrace, err)
 			continue
 		}
 		remaining := maxAggregateSize - totalRead
@@ -1055,7 +1106,7 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, remaining+1))
 		resp.Body.Close()
 		if readErr != nil {
-			fmt.Fprintf(&b, "=== Job %d (%s): error reading trace: %v ===\n", j.ID, j.Name, readErr)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %v ===\n", j.ID, j.Name, forge.LogNoteErrorReadingTrace, readErr)
 			continue
 		}
 		truncated := int64(len(data)) > remaining
@@ -1065,7 +1116,7 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 		totalRead += int64(len(data))
 		fmt.Fprintf(&b, "=== Job %d (%s) ===\n%s\n", j.ID, j.Name, string(data))
 		if truncated {
-			fmt.Fprintf(&b, "=== Job %d (%s): trace truncated at %d bytes ===\n", j.ID, j.Name, remaining)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %d bytes ===\n", j.ID, j.Name, forge.LogNoteTraceTruncated, remaining)
 		}
 	}
 	return b.String(), nil
@@ -1155,6 +1206,63 @@ func (c *LiveClient) CreatePipelineWithInputs(ctx context.Context, owner, repo, 
 	return &forge.Pipeline{ID: result.ID, WebURL: result.WebURL}, nil
 }
 
+// TriggerPipelineWithJobToken creates a downstream pipeline on ref through
+// the pipeline trigger API, authenticated by the running job's CI_JOB_TOKEN
+// and parameterized by typed pipeline inputs (#8438). GitLab records such a
+// pipeline with source "pipeline" and attributes it to the user who owns
+// the calling job, so the protected-branch admission of the new pipeline is
+// that user's, not the client's PAT owner's. The client's PRIVATE-TOKEN is
+// deliberately not sent: the job token alone authenticates the request,
+// and sending both would make the creating identity ambiguous.
+//
+// The job token travels in the JSON body, never in the URL, so it cannot
+// appear in a logged request path. The request is sent exactly once: a
+// retry after an ambiguous outcome could start a duplicate agent pipeline.
+func (c *LiveClient) TriggerPipelineWithJobToken(ctx context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (*forge.Pipeline, error) {
+	if jobToken == "" {
+		return nil, fmt.Errorf("trigger pipeline with job token: CI job token is empty")
+	}
+	in := inputs
+	if in == nil {
+		in = map[string]forge.PipelineInputValue{}
+	}
+	bodyData, err := json.Marshal(map[string]any{
+		"token":  jobToken,
+		"ref":    ref,
+		"inputs": in,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("trigger pipeline with job token: marshal request body: %w", err)
+	}
+	path := fmt.Sprintf("/projects/%s/trigger/pipeline", projectPath(owner, repo))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL(path), bytes.NewReader(bodyData))
+	if err != nil {
+		return nil, fmt.Errorf("trigger pipeline with job token: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// The body carries the job token and is replayable, so a 307/308 would
+	// forward it (and the ref and signed inputs) to wherever the response
+	// points, cross-origin or over cleartext. Never follow redirects on this
+	// request: the redirect response is returned and rejected below.
+	noRedirect := *c.http
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("trigger pipeline with job token: http POST %s: %w", path, err)
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated); err != nil {
+		return nil, fmt.Errorf("trigger pipeline with job token: %w", err)
+	}
+	var result struct {
+		ID     int64  `json:"id"`
+		WebURL string `json:"web_url"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode triggered pipeline response: %w", err)
+	}
+	return &forge.Pipeline{ID: result.ID, WebURL: result.WebURL}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline schedules (GitLab-native)
 // ---------------------------------------------------------------------------
@@ -1162,12 +1270,25 @@ func (c *LiveClient) CreatePipelineWithInputs(ctx context.Context, owner, repo, 
 // CreatePipelineSchedule creates a pipeline schedule and attaches variables.
 // Returns the schedule ID.
 func (c *LiveClient) CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error) {
+	return c.CreatePipelineScheduleWithActive(ctx, owner, repo, ref, description, cron, variables, true)
+}
+
+// CreatePipelineScheduleWithActive creates a pipeline schedule and attaches
+// variables. GitLab creates a schedule active unless the request says
+// otherwise, so an inactive schedule sends active=false in the create
+// request itself: a separate disable afterwards leaves a window in which the
+// schedule is active and can fire. The attribute is omitted for an active
+// schedule, keeping that request unchanged.
+func (c *LiveClient) CreatePipelineScheduleWithActive(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string, active bool) (int64, error) {
 	path := fmt.Sprintf("/projects/%s/pipeline_schedules", projectPath(owner, repo))
-	body := map[string]string{
+	body := map[string]any{
 		"ref":           ref,
 		"description":   description,
 		"cron":          cron,
 		"cron_timezone": "UTC",
+	}
+	if !active {
+		body["active"] = false
 	}
 	resp, err := c.post(ctx, path, body)
 	if err != nil {
@@ -1207,7 +1328,10 @@ func (c *LiveClient) GetPipelineSchedule(ctx context.Context, owner, repo string
 		return nil, fmt.Errorf("get pipeline schedule: %w", err)
 	}
 	var result struct {
-		ID           int64  `json:"id"`
+		ID    int64 `json:"id"`
+		Owner *struct {
+			ID int64 `json:"id"`
+		} `json:"owner"`
 		Description  string `json:"description"`
 		Ref          string `json:"ref"`
 		Cron         string `json:"cron"`
@@ -1222,19 +1346,19 @@ func (c *LiveClient) GetPipelineSchedule(ctx context.Context, owner, repo string
 		return nil, fmt.Errorf("decode pipeline schedule: %w", err)
 	}
 	if result.Variables == nil {
-		return nil, fmt.Errorf("pipeline schedule response omitted variable details; cannot verify migration")
+		return nil, fmt.Errorf("pipeline schedule response omitted variable details; cannot verify schedule variables")
 	}
 	schedule := &forge.PipelineSchedule{ID: result.ID, Description: result.Description, Ref: result.Ref, Cron: result.Cron, CronTimezone: result.CronTimezone, Active: result.Active, Variables: make(map[string]string)}
+	if result.Owner != nil {
+		if result.Owner.ID <= 0 {
+			return nil, fmt.Errorf("pipeline schedule response has invalid owner ID")
+		}
+		schedule.OwnerID = result.Owner.ID
+	}
 	for _, variable := range result.Variables {
 		schedule.Variables[variable.Key] = variable.Value
 	}
 	return schedule, nil
-}
-
-// DeletePipelineScheduleVariable removes one schedule-level variable override.
-func (c *LiveClient) DeletePipelineScheduleVariable(ctx context.Context, owner, repo string, scheduleID int64, key string) error {
-	path := fmt.Sprintf("/projects/%s/pipeline_schedules/%d/variables/%s", projectPath(owner, repo), scheduleID, url.PathEscape(key))
-	return c.delete_(ctx, path)
 }
 
 // DeletePipelineSchedule deletes a pipeline schedule.
@@ -1268,7 +1392,10 @@ func (c *LiveClient) ListPipelineSchedules(ctx context.Context, owner, repo stri
 		}
 
 		var schedules []struct {
-			ID           int64  `json:"id"`
+			ID    int64 `json:"id"`
+			Owner *struct {
+				ID int64 `json:"id"`
+			} `json:"owner"`
 			Description  string `json:"description"`
 			Ref          string `json:"ref"`
 			Cron         string `json:"cron"`
@@ -1280,8 +1407,16 @@ func (c *LiveClient) ListPipelineSchedules(ctx context.Context, owner, repo stri
 		}
 
 		for _, s := range schedules {
+			if s.ID <= 0 || (s.Owner != nil && s.Owner.ID <= 0) {
+				return nil, fmt.Errorf("list pipeline schedules page %d: invalid schedule or owner ID", page)
+			}
+			var ownerID int64
+			if s.Owner != nil {
+				ownerID = s.Owner.ID
+			}
 			result = append(result, forge.PipelineSchedule{
 				ID:           s.ID,
+				OwnerID:      ownerID,
 				Description:  s.Description,
 				Ref:          s.Ref,
 				Cron:         s.Cron,
@@ -1435,6 +1570,7 @@ type gitlabProtectedAccess struct {
 	AccessLevel int  `json:"access_level"`
 	UserID      *int `json:"user_id"`
 	GroupID     *int `json:"group_id"`
+	DeployKeyID *int `json:"deploy_key_id"`
 }
 
 func convertProtectedAccess(levels []gitlabProtectedAccess) []forge.ProtectedBranchAccess {
@@ -1446,6 +1582,9 @@ func convertProtectedAccess(levels []gitlabProtectedAccess) []forge.ProtectedBra
 		}
 		if l.GroupID != nil {
 			a.GroupID = *l.GroupID
+		}
+		if l.DeployKeyID != nil {
+			a.DeployKeyID = *l.DeployKeyID
 		}
 		out = append(out, a)
 	}

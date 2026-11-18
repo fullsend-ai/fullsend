@@ -5,6 +5,8 @@ package forge
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // Git's blob hash algorithm, not used for security
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,31 @@ const PerRepoGuardVar = "FULLSEND_PER_REPO_INSTALL"
 // silently diverge.
 const ChangesRequestedMarker = "<!-- fullsend:changes-requested -->"
 
+// Log-note markers the forge clients embed in the text returned by
+// GetWorkflowRunLogs (the behaviour-test ci.Driver exposes the same
+// call as GetRunLogs), in band and without an error, when a single job's log (or
+// the whole aggregate) could not be fetched in full. The GitHub and
+// GitLab clients write these prefixes and pkg/behaviourtest/steps
+// matches them (partialLogNotes) to tell a fetch failure or size cap
+// from a complete snapshot, so the markers live in this package — the
+// one both the writers and the reader import — to keep them from
+// drifting apart: a renamed marker is a compile error, not a silent
+// misdiagnosis of a run's logs.
+const (
+	// GitHub job-log notes.
+	LogNoteFailedToFetchLogs = "[failed to fetch logs:" // a job's logs could not be fetched
+	LogNoteLogsUnavailable   = "[logs unavailable:"     // the log endpoint answered non-200
+	LogNoteFailedToReadLogs  = "[failed to read logs:"  // the fetched body could not be read
+	LogNoteJobListTruncated  = "[job list truncated:"   // only one page of jobs was read
+	LogNoteLogTruncated      = "[log truncated:"        // a job log was cut at the byte cap
+
+	// GitLab trace notes.
+	LogNoteErrorFetchingTrace  = "error fetching trace:" // a job's trace could not be fetched
+	LogNoteErrorReadingTrace   = "error reading trace:"  // the fetched trace could not be read
+	LogNoteAggregateTraceLimit = "aggregate trace limit" // the aggregate byte cap was reached
+	LogNoteTraceTruncated      = "trace truncated at"    // a trace was cut at the remaining budget
+)
+
 // Repo management variable and secret names.
 //
 // These constants cover every FULLSEND_* name used by repos install,
@@ -45,6 +72,12 @@ const (
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
 	VarAppSet         = "FULLSEND_APP_SET"
 
+	// VarGCPServiceAccount is the GitLab CI/CD variable naming the
+	// service account the agent job impersonates for Vertex inference
+	// (config.inference.service_account). Written only when configured;
+	// unset keeps direct federated identity.
+	VarGCPServiceAccount = "FULLSEND_GCP_SERVICE_ACCOUNT"
+
 	// User-managed OpenAI Workload Identity identifier variables.
 	VarOpenAIAudience           = "FULLSEND_OPENAI_AUDIENCE"
 	VarOpenAIIdentityProviderID = "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"
@@ -52,7 +85,8 @@ const (
 
 	// Retired GitLab poller state variables. Superseded by HMAC-signed
 	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.
-	// Install no longer seeds them; converge migrate-then-deletes them.
+	// Install and converge neither seed nor migrate them; uninstall
+	// deletes any leftovers.
 	VarLastPollAtFast     = "FULLSEND_LAST_POLL_AT_FAST"
 	VarLastPollAtFull     = "FULLSEND_LAST_POLL_AT_FULL"
 	VarLabelState         = "FULLSEND_LABEL_STATE"
@@ -119,6 +153,40 @@ const (
 	// masked CI/CD variable (GitLab) the runner reads under this name.
 	// Setup does not write it; the repository admin sets it.
 	SecretInferenceGatewayAPIKey = "FULLSEND_INFERENCE_GATEWAY_API_KEY"
+	// SecretGitHubRunnerSecrets carries runner secrets to host-side scripts on
+	// GitHub (ADR 0136): a JSON object of name → value that the shim forwards
+	// and the composite action stages for the run step. It is optional; setup
+	// does not write it, and an admin sets it as a repository or organization
+	// secret.
+	SecretGitHubRunnerSecrets = "FULLSEND_GITHUB_RUNNER_SECRETS"
+
+	// Jira credentials (#9076). `fullsend repos install` writes them on
+	// GitHub and GitLab from --jira-token and --jira-email for
+	// repositories whose effective tracker.jira.poll.enabled is true. An
+	// omitted flag preserves the existing secret. Disabling polling does
+	// not delete them, since other Jira consumers may still need them.
+	// The token is a bearer credential and is never stored unmasked; the
+	// account email is optional.
+	SecretJiraToken = "FULLSEND_JIRA_TOKEN"
+	SecretJiraEmail = "FULLSEND_JIRA_EMAIL"
+	// Jira OAuth 2.0 client credentials of an Atlassian service account
+	// (#9176), written by `fullsend repos install` from --jira-client-id
+	// and --jira-client-secret instead of the token. The client secret is
+	// never stored unmasked.
+	SecretJiraClientID     = "FULLSEND_JIRA_CLIENT_ID"
+	SecretJiraClientSecret = "FULLSEND_JIRA_CLIENT_SECRET"
+
+	// SecretTraceSigningKey is the trace-context signing key (ADR 0154).
+	// config.TraceSigningKeySecret is the same literal.
+	SecretTraceSigningKey = "FULLSEND_TRACE_SIGNING_KEY"
+	// VarTraceSigningKeyID is the repository variable in which repos install
+	// records which key SecretTraceSigningKey holds, because a secret cannot
+	// be read back: the key ID (tracecontext.FormatKeyID) of the seed install
+	// last confirmed writing (ADR 0154). Install deletes it before a seed
+	// write and sets it after, so it never names a key whose seed the secret
+	// no longer holds, apart from overlapping installs. It holds no key
+	// material. Install writes it on GitHub only.
+	VarTraceSigningKeyID = "FULLSEND_TRACE_SIGNING_KEY_ID"
 
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
@@ -131,6 +199,27 @@ const (
 	VarPollJobURL     = "FULLSEND_POLL_JOB_URL"
 	VarPollMode       = "FULLSEND_POLL_MODE"
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
+
+	// VarGitLabDispatchRoute is the job-local selector the GitLab poll and
+	// dispatcher job scripts export for `fullsend poll` (#8438). It is never
+	// a CI/CD variable: the scripts derive it from the pinned pipeline's
+	// creator. "child-pipeline" starts agent pipelines with CI_JOB_TOKEN
+	// through the pipeline trigger API (source "pipeline"); unset or "api"
+	// keeps the Poller credential and the pipelines API (source "api").
+	VarGitLabDispatchRoute = "FULLSEND_GITLAB_DISPATCH_ROUTE"
+	// GitLabDispatchRouteChildPipeline is the VarGitLabDispatchRoute value
+	// that selects the CI_JOB_TOKEN child-pipeline dispatch route.
+	GitLabDispatchRouteChildPipeline = "child-pipeline"
+	// GitLabDispatchRouteAPI is the VarGitLabDispatchRoute value that keeps
+	// the Poller-credential pipelines API dispatch route.
+	GitLabDispatchRouteAPI = "api"
+	// VarGitLabAnalystUserID is the job-local numeric GitLab user ID of the
+	// registered Analyst identity, which the GitLab poll and dispatcher job
+	// scripts resolve with the Analyst credential before blanking it and
+	// export for `fullsend poll` (#8807). It is never a CI/CD variable.
+	// Unset means unknown: no changes-requested marker reaches the fix
+	// stage.
+	VarGitLabAnalystUserID = "FULLSEND_GITLAB_ANALYST_USER_ID"
 
 	// VarGitLabRoleRegistry is the administrator-controlled GitLab role
 	// registry (JSON policy and credential *references*, never raw
@@ -149,6 +238,34 @@ const (
 	// account IDs and the pending generation's handoff phase). It never
 	// stores token values. Not yet written by any command. See #8210.
 	VarGitLabPollerGenerations = "FULLSEND_GITLAB_POLLER_GENERATIONS"
+
+	// VarGitLabTriggerAccount is the protected, unmasked ledger for the
+	// trigger-only GitLab service account (account, bootstrap PAT,
+	// deploy-key and branch-grant, and pipeline trigger token IDs, plus
+	// the lifecycle phase). It never stores token values or private keys.
+	// Written by repos install and removed by repos uninstall only after
+	// every resource it records is gone; see #8437 and #8438.
+	VarGitLabTriggerAccount = "FULLSEND_GITLAB_TRIGGER_ACCOUNT"
+
+	// VarGitLabDispatchActivation is the protected, unmasked activation record
+	// for the trigger-account dispatch route (#8438). It is a separate variable
+	// rather than a ledger field because every released decoder of
+	// FULLSEND_GITLAB_TRIGGER_ACCOUNT rejects unknown fields before it reads the
+	// ledger version, so a new ledger field would make an older CLI fail on an
+	// activated project. The record binds to the exact ledger generation (nonce
+	// and resource IDs) it was written for, so any lifecycle change, including
+	// one made by an older CLI that does not know this variable, leaves it
+	// stale and the scaffold falls back to the Poller route. It never stores
+	// token values.
+	VarGitLabDispatchActivation = "FULLSEND_GITLAB_DISPATCH_ACTIVATION"
+
+	// SecretGitLabTriggerAccountToken is the pipeline trigger token owned by
+	// the trigger-only service account. It is stored as a masked, protected
+	// CI/CD variable. While the dispatch route of #8438 is activated, the
+	// managed webhook embeds it in its trigger URL in place of
+	// FULLSEND_TRIGGER_TOKEN (#8509). Never logged and never written to the
+	// ledger.
+	SecretGitLabTriggerAccountToken = "FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN"
 )
 
 // GitLab CI pipeline-variable minimum-override roles.
@@ -196,12 +313,45 @@ func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
 }
 
+// ErrJobsListingNotFoundFirstPage reports that a workflow run's jobs
+// listing returned not found on its first page. Forges have been observed
+// to do this for runs that have not started; the cause is unverified (see
+// https://github.com/fullsend-ai/fullsend/issues/9124). The sentinel
+// describes the response shape only and does not establish that the
+// listing — or the run — is absent: callers may treat it as absence only
+// when the run status independently shows the run has not started.
+//
+// Adapters attach it only to first-page not-founds. A not-found on a later
+// page means the listing was already partially readable and may hold a
+// completed job, so it never carries this sentinel.
+var ErrJobsListingNotFoundFirstPage = errors.New("workflow run jobs listing not found on first page")
+
 // ErrAlreadyExists indicates that the resource already exists.
 var ErrAlreadyExists = errors.New("already exists")
 
 // IsAlreadyExists reports whether err indicates a duplicate resource.
 func IsAlreadyExists(err error) bool {
 	return errors.Is(err, ErrAlreadyExists)
+}
+
+// ErrConflict indicates that a conditional write was rejected because
+// the target changed since the caller read it (see UpdateFileIfMatch).
+var ErrConflict = errors.New("conflict")
+
+// IsConflict reports whether err indicates a rejected conditional write.
+func IsConflict(err error) bool {
+	return errors.Is(err, ErrConflict)
+}
+
+// GitBlobSHA returns the Git blob object ID (SHA-1) of content: the
+// expectedSHA UpdateFileIfMatch compares against the stored file.
+func GitBlobSHA(content []byte) string {
+	// Git blob IDs use SHA-1 for compatibility with forge APIs.
+	// nosemgrep: go.lang.security.audit.crypto.use-of-sha1
+	h := sha1.New() //nolint:gosec // Git's blob hash algorithm, not used for security
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write(content)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // ErrBranchProtected indicates that a ref update failed because the
@@ -232,6 +382,19 @@ var ErrForbidden = errors.New("forbidden")
 // IsForbidden reports whether err indicates a permission denial.
 func IsForbidden(err error) bool {
 	return errors.Is(err, ErrForbidden)
+}
+
+// ErrSignedCommitsRequired indicates that a commit was rejected because
+// the repository's rules require verified signatures and the commit is
+// not signed. Implementations wrap it together with ErrBranchProtected so
+// existing protection handling still applies, while callers can name the
+// actual rule instead of a generic protection message.
+var ErrSignedCommitsRequired = errors.New("signed commits required")
+
+// IsSignedCommitsRequired reports whether err indicates a rejection by a
+// rule that requires signed commits.
+func IsSignedCommitsRequired(err error) bool {
+	return errors.Is(err, ErrSignedCommitsRequired)
 }
 
 // UnverifiedScopesError is returned by ListInheritedRepoVariables together
@@ -268,6 +431,12 @@ var ErrTreeTruncated = errors.New("tree truncated")
 func IsTreeTruncated(err error) bool {
 	return errors.Is(err, ErrTreeTruncated)
 }
+
+// ErrDiffListingTruncated indicates that a forge returned a safety-capped
+// file-diff listing. Callers that need a complete diff must fail open, while
+// callers that only need the available hunks may still use the returned
+// entries.
+var ErrDiffListingTruncated = errors.New("pull request file diff listing truncated")
 
 // ErrNoChanges indicates that a change proposal could not be created
 // because there are no differences between the head and base branches.
@@ -392,18 +561,31 @@ type Repository struct {
 	Private       bool
 	Archived      bool
 	Fork          bool
+	// Description is the repository description. Populated by CreateRepo
+	// and GetRepo; list operations may leave it empty.
+	Description string
 	// CIConfigPath is the project's configured CI configuration path, as
 	// reported by GitLab (ci_config_path). Empty means the default
 	// .gitlab-ci.yml at the repository root. Other forges leave it empty.
 	CIConfigPath string
+	// CreatedAt is when the repository was created. Populated by the
+	// GitHub CreateRepo and GetRepo; zero when the forge did not report it.
+	CreatedAt time.Time
 }
 
 // ChangeProposal represents a pull request or merge request.
 type ChangeProposal struct {
-	URL    string
-	Title  string
+	URL   string
+	Title string
+	// Number is the display number: GitHub's per-repo PR number or
+	// GitLab's per-project MR IID. It is not a stable identity.
 	Number int
-	Head   string
+	// ID is the immutable forge database ID of the change proposal:
+	// GitHub's REST pull-request id or GitLab's database merge-request
+	// id (not the IID). It is 0 when the adapter did not capture one.
+	// A GitHub PR's issue-space id is not its change-proposal identity.
+	ID   int64
+	Head string
 	// HeadRepo identifies the repository the head branch lives in, as
 	// "owner/repo" on both GitHub and GitLab (GitLab resolves a fork's
 	// numeric source project ID to its path_with_namespace). Empty when
@@ -431,17 +613,23 @@ type PullRequestInfo struct {
 // WorkflowRun represents a CI/CD workflow execution.
 type WorkflowRun struct {
 	ID         int
+	RunAttempt int // Attempt number for a rerunnable execution; zero when unavailable.
 	Name       string
 	Event      string // GitHub trigger event, e.g. "issues", "issue_comment"
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+	// Path is the run's workflow file, e.g. ".github/workflows/fullsend.yaml".
+	// Only populated by ListRecentWorkflowRuns, which lists runs of every
+	// workflow; other run reads leave it empty.
+	Path string
 }
 
 // WorkflowJob represents a job within a workflow run.
 type WorkflowJob struct {
 	ID         int
+	RunAttempt int // Execution attempt containing this job; zero when unavailable.
 	Name       string
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", etc.
@@ -478,11 +666,56 @@ type Annotation struct {
 
 // Issue represents a forge issue.
 type Issue struct {
+	// IsPullRequest identifies pull requests returned by GitHub's issues
+	// endpoint. Populated by GetIssue; issue lifecycle operations must reject them.
+	IsPullRequest bool
+	// Number is the display number: GitHub's per-repo issue number or
+	// GitLab's per-project IID. It is not a stable identity.
 	Number int
+	// ID is the immutable forge database ID of the issue: GitHub's REST
+	// id or GitLab's database id (not the IID). It is 0 when the adapter
+	// did not capture one; trace admission treats that as unresolved
+	// identity rather than guessing.
+	// For a GitHub PR number, GetIssue returns the issue-space id, not the
+	// pull-request id. Never use it as KindChangeProposal identity; resolve
+	// the pull-request id through a trusted pull-request read instead.
+	ID     int64
 	Title  string
 	Body   string
 	URL    string
 	Labels []string
+	// State is "open" or "closed". It is only populated by GetIssue;
+	// other issue reads leave it empty.
+	State string
+	// StateReason is GitHub's state_reason: "completed", "not_planned"
+	// or "duplicate" for a closed issue, "reopened" or empty otherwise.
+	// GitLab does not report one. Only populated by GetIssue.
+	StateReason string
+	// CreatedAt is the issue's creation time as the forge reports it
+	// (RFC 3339). Only populated by GitHub's GetIssue.
+	CreatedAt string
+}
+
+// PullRequestAuthorizationContext carries PR fields used by the e2e CI
+// authorization gate (author identity, label set, frozen updated_at).
+type PullRequestAuthorizationContext struct {
+	AuthorLogin string
+	UpdatedAt   string
+	Labels      []string
+}
+
+// IssueLabelEvent is a labeled timeline event on an issue or pull request.
+type IssueLabelEvent struct {
+	LabelName  string
+	ActorLogin string
+	CreatedAt  string
+}
+
+// GitHubCollaboratorPermissionDetail is the raw collaborator permission API
+// subset used by the e2e gate's strict role_name/permission cross-check.
+type GitHubCollaboratorPermissionDetail struct {
+	RoleName   string
+	Permission string
 }
 
 // IssueComment represents a comment on an issue.
@@ -539,15 +772,57 @@ type ReviewThreadComment struct {
 	CreatedAt          string              `json:"created_at"`
 }
 
+// DiffSide identifies which side of a diff a review-thread position refers to.
+// Left is the old (base) version of the file; right is the new (head)
+// version.
+type DiffSide string
+
+const (
+	// DiffSideLeft is the old (base) side of the diff.
+	DiffSideLeft DiffSide = "left"
+	// DiffSideRight is the new (head) side of the diff.
+	DiffSideRight DiffSide = "right"
+)
+
 // ReviewThread represents the resolution state and comments of a pull-request
 // review thread. Forges that do not expose review threads return
 // ErrNotSupported.
+//
+// Position fields use one contract across forges; a nil value means the forge
+// did not report that value. Line numbers on a side are line numbers in that
+// side's version of the file.
 type ReviewThread struct {
-	ID                     string                `json:"id"`
-	IsResolved             bool                  `json:"is_resolved"`
-	Path                   string                `json:"path"`
-	Line                   *int                  `json:"line"`
-	OriginalLine           *int                  `json:"original_line"`
+	ID         string `json:"id"`
+	IsResolved bool   `json:"is_resolved"`
+	Path       string `json:"path"`
+	// Side is the diff side Line (and OriginalLine) refers to. Nil when the
+	// thread has no diff position.
+	Side *DiffSide `json:"side"`
+	// Line is the last line of the thread's range on Side in the current
+	// diff. Nil when the thread no longer maps onto the current diff (for
+	// example an outdated GitHub thread) or has no line position.
+	Line *int `json:"line"`
+	// StartSide and StartLine give the first line of a multi-line range.
+	// Both are nil for single-line threads. StartLine is nil for an outdated
+	// multi-line thread, while StartSide may still be set.
+	StartSide *DiffSide `json:"start_side"`
+	StartLine *int      `json:"start_line"`
+	// OriginalLine is the line on Side, and OriginalStartLine is the start
+	// line on StartSide, in the diff the thread was created against. For
+	// cross-side ranges the two belong to different file versions. Nil when
+	// the forge does not report the original position (GitLab).
+	OriginalLine      *int `json:"original_line"`
+	OriginalStartLine *int `json:"original_start_line"`
+	// OldLine and NewLine are the current position's line numbers in the
+	// old (left) and new (right) file. A removed line has only OldLine, an
+	// added line only NewLine, and an unchanged context line may have both
+	// when the forge reports them (GitLab). GitHub reports one side only.
+	OldLine *int `json:"old_line"`
+	NewLine *int `json:"new_line"`
+	// IsOutdated reports whether the forge marks the thread as outdated by
+	// later pushes. Nil when the forge does not expose outdated state
+	// (GitLab); a nil NewLine alone never implies an outdated thread.
+	IsOutdated             *bool                 `json:"is_outdated"`
 	ResolvedBy             string                `json:"resolved_by"`
 	ResolvedByType         string                `json:"resolved_by_type"`
 	ResolvedByRole         normevent.ActorRole   `json:"resolved_by_role"`
@@ -565,9 +840,22 @@ type ReviewThreadPage struct {
 
 // PullRequestFileDiff represents a file changed in a pull request along
 // with its unified diff patch. The patch may be empty for binary files,
-// rename-only changes, or when GitHub truncates large diffs.
+// rename-only changes, or when the forge cannot represent the full diff.
+// PreviousPath is populated only for renames. Status is normalized across
+// forges to added, removed, renamed, or modified.
 type PullRequestFileDiff struct {
-	Path  string
+	Path string
+	// PreviousPath is set only when the file was renamed.
+	PreviousPath string
+	// Status is normalized across forges to added, removed, renamed, or modified.
+	Status string
+	// OldMode and NewMode are the Git tree modes for the old and new paths.
+	// ModesVerified is false when the forge could not provide mode metadata;
+	// hash consumers must fail open in that case.
+	OldMode       string
+	NewMode       string
+	ModesVerified bool
+	// Patch is the unified diff, when the forge can represent it.
 	Patch string
 }
 
@@ -604,6 +892,59 @@ func (r RateLimit) String() string {
 // ok is false until the client has seen a response carrying the headers.
 type RateLimitReporter interface {
 	RateLimit() (state RateLimit, ok bool)
+}
+
+// APICallerOther is the caller name of API calls made with a context that
+// carries no WithAPICaller label.
+const APICallerOther = "other"
+
+type apiCallerKey struct{}
+
+// WithAPICaller returns a context whose forge API calls are counted under
+// caller by clients that implement APICallReporter. An inner label replaces
+// an outer one, so a shared client can tell apart the parts of a program
+// that spend its quota.
+func WithAPICaller(ctx context.Context, caller string) context.Context {
+	return context.WithValue(ctx, apiCallerKey{}, caller)
+}
+
+// APICaller returns ctx's WithAPICaller label, or APICallerOther.
+func APICaller(ctx context.Context) string {
+	if caller, ok := ctx.Value(apiCallerKey{}).(string); ok {
+		return caller
+	}
+	return APICallerOther
+}
+
+// APICallReporter is implemented by clients that count their API calls by
+// caller (see WithAPICaller). APICalls returns a copy of the counts. A key
+// of the form "caller/resource" holds calls charged to a quota other than
+// the client's main one.
+type APICallReporter interface {
+	APICalls() map[string]int64
+}
+
+// APIQuotaCounter is one group of core rate-limit readings a client saw,
+// identified by reset time. GitHub processes requests in multiple regions and
+// its rate-limit values can vary between responses, so a token can show more
+// than one reset time at once, and one remaining value describes only the
+// response that answered last.
+type APIQuotaCounter struct {
+	// Reset identifies the group within a client.
+	Reset time.Time
+	Limit int
+	// Highest and Lowest bound the remaining values seen. Their difference
+	// is a spread of readings, not a measure of quota spent.
+	Highest int
+	Lowest  int
+	// Calls counts this client's responses in the group by "caller/METHOD".
+	Calls map[string]int64
+}
+
+// APIQuotaReporter is implemented by clients that attribute their core API
+// calls to quota counters. APIQuotaCounters returns a copy, ordered by Reset.
+type APIQuotaReporter interface {
+	APIQuotaCounters() []APIQuotaCounter
 }
 
 // Installation represents an app installation on an org.
@@ -799,11 +1140,25 @@ type Client interface {
 	CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
+
+	// UpdateFileIfMatch writes content to path on the default branch only
+	// if the file's current Git blob SHA equals expectedSHA (GitBlobSHA of
+	// the content the caller read). An empty expectedSHA creates the file
+	// only if it does not exist yet. When the file changed, was deleted,
+	// or (for an empty expectedSHA) already exists, it returns an error
+	// wrapping ErrConflict. The write is attempted once: implementations
+	// must not retry it after a conflict or an ambiguous failure. The
+	// caller decides whether to reread and try again. GitLab returns
+	// ErrNotSupported.
+	UpdateFileIfMatch(ctx context.Context, owner, repo, path, message string, content []byte, expectedSHA string) error
+
 	DeleteFile(ctx context.Context, owner, repo, path, message string) error
 
-	// DeleteFiles atomically removes multiple paths in a single commit via the
-	// Git Trees API. Missing paths are skipped. Returns the number of paths
-	// removed, or (0, nil) when none of the paths exist.
+	// DeleteFiles atomically removes multiple paths in a single commit.
+	// Missing paths are skipped. Returns the number of paths removed, or
+	// (0, nil) when none of the paths exist. On GitHub the commit is
+	// created with the createCommitOnBranch mutation and is therefore
+	// signed by GitHub (see CommitFiles).
 	DeleteFiles(ctx context.Context, owner, repo, message string, paths []string) (deleted int, err error)
 
 	// ListDirectoryContents returns all files and subdirectories at the given
@@ -831,11 +1186,25 @@ type Client interface {
 	// default branch in a single commit. It is idempotent: if all files
 	// already have the expected content and mode, no commit is created
 	// and it returns (false, nil).
+	//
+	// On GitHub, a commit whose changed files are all regular inline files
+	// (mode 100644, no LocalPath) is created with createCommitOnBranch and
+	// signed by GitHub for any credential; it cannot change an existing
+	// file's mode, so a mode-only difference counts as unchanged. Other
+	// commits (the vendored bundle) use the Git Data REST API, signed only
+	// for App installation tokens. GitLab commits count as web-based
+	// commits and are signed only where web-based commit signing is set
+	// up: the group or project setting on GitLab.com, the instance's
+	// signing key on Self-Managed and Dedicated.
+	//
+	// Returns ErrBranchProtected when a rule rejects the commit, also
+	// wrapping ErrSignedCommitsRequired for a signature rule.
 	CommitFiles(ctx context.Context, owner, repo, message string, files []TreeFile) (committed bool, err error)
 
 	// CommitFilesToBranch atomically commits multiple files to a specific
 	// branch. Like CommitFiles, it is idempotent: if all files already
-	// have the expected content, no commit is created.
+	// have the expected content, no commit is created. The signing rules
+	// documented on CommitFiles apply.
 	CommitFilesToBranch(ctx context.Context, owner, repo, branch, message string, files []TreeFile) (committed bool, err error)
 
 	// ForceCommitFileToBranch force-updates branch to a single-file commit
@@ -865,7 +1234,13 @@ type Client interface {
 	// this allows the caller to specify an explicit starting point — for
 	// example, an upstream HEAD when creating a branch on a stale fork.
 	// Returns forge.ErrAlreadyExists if the branch already exists,
-	// and forge.ErrForbidden on insufficient permissions.
+	// and forge.ErrForbidden on insufficient permissions. Returns
+	// forge.ErrNotFound when the target repository is missing or
+	// inaccessible (HTTP 404), and, on GitLab, when the commit SHA does not
+	// exist in the target project (a 400 "invalid reference name", as seen
+	// for an upstream commit on a fork that has not been synced). Other
+	// implementations, such as GitHub, are not guaranteed to return
+	// ErrNotFound for an unknown commit SHA.
 	CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error
 
 	// DeleteBranch deletes the named git branch.
@@ -1000,6 +1375,10 @@ type Client interface {
 	// Issue operations
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*Issue, error)
 	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
+	// EnsureLabel creates a repository label with the given name. It
+	// returns nil when a label with that name already exists. Unlike
+	// creating an issue that carries the label, it fires no issue event.
+	EnsureLabel(ctx context.Context, owner, repo, name string) error
 	GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error)
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
@@ -1044,9 +1423,18 @@ type Client interface {
 	// pull request. Returns forge.ErrNotSupported if the forge has no
 	// equivalent concept.
 	ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]Reaction, error)
+	// ListIssueLabelEvents returns labeled events on an issue or pull request.
+	// GitHub does not document event ordering; callers must not rely on slice order.
+	ListIssueLabelEvents(ctx context.Context, owner, repo string, number int) ([]IssueLabelEvent, error)
+	// RemoveIssueLabel removes a single label from an issue or pull request.
+	// Returns forge.ErrNotFound when the label is already absent.
+	RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error
 
 	// Pull request operations
 	GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*PullRequestInfo, error)
+	// GetPullRequestAuthorizationContext returns author login, updated_at, and
+	// label names for a pull request. Used by the e2e CI authorization gate.
+	GetPullRequestAuthorizationContext(ctx context.Context, owner, repo string, number int) (*PullRequestAuthorizationContext, error)
 	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
 	// ListPullRequestFiles returns the relative file paths changed by a pull
 	// request. On GitHub, the API caps results at 3000 files total.
@@ -1062,6 +1450,10 @@ type Client interface {
 	// ListPullRequestFileDiffs returns the files changed by a pull request
 	// along with their unified diff patches. Use this when you need to
 	// determine which lines are within diff hunks (e.g. for inline comments).
+	// When a forge reaches its safety cap, it returns the entries collected so
+	// far together with forge.ErrDiffListingTruncated; callers that require a
+	// complete listing must fail open, while callers that can use partial hunks
+	// may continue with the returned entries.
 	ListPullRequestFileDiffs(ctx context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error)
 
 	// Pull request review operations.
@@ -1108,7 +1500,8 @@ type Client interface {
 	ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]RepositoryArtifact, error)
 
 	// GetWorkflowRunLogs downloads the logs for a workflow run as plain text.
-	// On GitHub, this fetches job logs for each job in the run.
+	// It fetches the log of each job in the run that was not skipped; a
+	// skipped job never ran and has no log to fetch.
 	GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 
 	// GetWorkflowRunAnnotations returns annotations (::notice::, ::warning::,
@@ -1189,12 +1582,14 @@ type Client interface {
 	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]PipelineInputValue) (*Pipeline, error)
 
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
+	// CreatePipelineScheduleWithActive is CreatePipelineSchedule with the
+	// schedule's initial active state sent in the create request. With
+	// active false the schedule is never active, so it cannot fire between
+	// a create and a separate disable. GitHub returns ErrNotSupported.
+	CreatePipelineScheduleWithActive(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string, active bool) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	// GetPipelineSchedule includes variables omitted by GitLab's list endpoint.
 	GetPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error)
-	// DeletePipelineScheduleVariable deletes one schedule-level variable from
-	// an existing pipeline schedule. GitHub returns ErrNotSupported.
-	DeletePipelineScheduleVariable(ctx context.Context, owner, repo string, scheduleID int64, key string) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
 	// UpdatePipelineSchedule sets whether an existing pipeline schedule is
 	// active. Used to reactivate required GitLab schedules that exist but
@@ -1261,6 +1656,23 @@ type Client interface {
 	// Returns ErrNotFound if the project does not exist. GitHub returns
 	// ErrNotSupported.
 	SetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo, role string) error
+	// GetJobTokenRepositoryPushAllowed returns the GitLab project setting
+	// ci_push_repository_for_job_token_allowed, which lets a job's
+	// CI_JOB_TOKEN push to the project repository. Returns ErrNotSupported
+	// if the field is absent from GitLab's response (an instance or edition
+	// that does not report the setting), so callers can fail closed rather
+	// than treat an unreported setting as disabled. Returns ErrNotFound if
+	// the project does not exist. GitHub returns ErrNotSupported.
+	GetJobTokenRepositoryPushAllowed(ctx context.Context, owner, repo string) (bool, error)
+	// GetPushRuleBranchNameRegex returns the branch_name_regex of the
+	// GitLab project's push rule (GET /projects/:id/push_rule), which
+	// every pushed or API-created branch name must match. Returns
+	// ("", nil) when the project has no push rule or the rule sets no
+	// branch name regex. Returns ErrNotFound when the endpoint or project
+	// is unavailable (push rules are not offered on every GitLab edition)
+	// and ErrForbidden when the caller may not read push rules. GitHub
+	// returns ErrNotSupported.
+	GetPushRuleBranchNameRegex(ctx context.Context, owner, repo string) (string, error)
 
 	// Commit comparison
 	// CompareCommits compares two commits and returns their relationship
@@ -1344,8 +1756,11 @@ func (v PipelineInputValue) MarshalJSON() ([]byte, error) {
 }
 
 // ProtectedBranchAccess is one grant on a protected branch.
-// A role-based grant has AccessLevel set and UserID/GroupID zero.
-// A user or group grant has the corresponding ID set. ID is the forge's
+// A role-based grant has AccessLevel set and UserID/GroupID/DeployKeyID zero.
+// A user, group, or deploy-key grant has the corresponding ID set. GitLab
+// reports a deploy-key grant with a Maintainer AccessLevel, but it admits
+// only the key, not every Maintainer, so callers must not read it as a role
+// grant. ID is the forge's
 // identifier of this individual entry (zero when the forge does not report
 // one); it lets a caller remove exactly this entry later.
 // GitLab access levels: 0 (No one), 30 (Developer), 40 (Maintainer),
@@ -1355,6 +1770,7 @@ type ProtectedBranchAccess struct {
 	AccessLevel int
 	UserID      int
 	GroupID     int
+	DeployKeyID int
 }
 
 // ProtectedBranchRule is the protection configuration for a branch.
@@ -1368,6 +1784,7 @@ type ProtectedBranchRule struct {
 // PipelineSchedule represents a scheduled pipeline trigger.
 type PipelineSchedule struct {
 	ID           int64
+	OwnerID      int64 // zero when GitLab did not report an owner
 	Description  string
 	Ref          string
 	Cron         string
@@ -1459,6 +1876,12 @@ type GitHubExtensions interface {
 	// owner/repo, resolving custom role names from effective permissions.
 	// Returns forge.ErrNotFound when the user has no explicit permission.
 	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (role string, err error)
+
+	// GetCollaboratorPermissionDetail returns role_name and permission from
+	// the GitHub collaborator permission API without resolving custom roles.
+	// Used by the e2e CI gate, which applies a stricter built-in cross-check
+	// than GetCollaboratorPermission. Returns forge.ErrNotFound for HTTP 404.
+	GetCollaboratorPermissionDetail(ctx context.Context, owner, repo, username string) (GitHubCollaboratorPermissionDetail, error)
 
 	// AddCollaborator grants username a direct collaborator permission
 	// (pull, triage, push, maintain, admin) on owner/repo. It returns an

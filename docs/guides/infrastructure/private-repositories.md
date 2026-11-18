@@ -14,6 +14,47 @@ Fullsend treats all repositories the same at the infrastructure level — the sa
 
 2. **Sensitive data exposure.** Private repos are more likely to contain credentials, PII, internal hostnames, or proprietary logic. Agents may reproduce this content in their output — not because they are instructed to, but because quoting context is a natural part of code review, triage summaries, and retrospective analysis. The [security threat model](../../problems/security-threat-model.md#indirect-information-disclosure) documents how indirect disclosure bypasses content-level guardrails.
 
+## Private Jira projects need a private repository
+
+If you connect fullsend to a private Jira project, prefer a private
+repository. The repository's visibility, not the Jira project's, decides who
+can read what an agent run produces.
+
+The [Jira integration](../user/jira-integration.md) runs agents in the
+repository where fullsend is installed. A run that starts from a Jira issue
+reads that issue's title, description, comments, and other fields, including
+custom fields. By default (`artifacts` level `all`), the run artifact holds
+the run's `output/` directory. These files in the artifact record what the
+agent read:
+
+| File | Contents |
+|------|----------|
+| `output.jsonl` | The raw conversation stream for each iteration, including tool results such as Jira API responses |
+| `transcripts/*.jsonl` | The agent session transcripts for each iteration |
+| `agent-stderr.log` | The agent CLI's stderr for each iteration, as plain text, written only at progress level `quiet` |
+| `run-telemetry.jsonl` | Run spans, which carry conversation content when content capture is on |
+
+On a public GitHub repository, any signed-in GitHub user can download this
+artifact until it expires. A public GitLab project can expose its job
+artifacts in the same way. The output scan masks secret values, but it does
+not remove customer names, personal data, or other private business text.
+
+To keep the raw conversation out of the uploaded artifact, set
+`artifacts.by_source.jira: metadata` (or `none`) in `.fullsend/config.yaml`.
+See [Run artifacts and private data](../user/run-artifacts-and-private-data.md)
+for the levels and how to check the result. The setting is defined by
+[ADR 0161](../../ADRs/0161-repo-config-limits-run-artifact-content.md).
+
+That setting does not cover everything. Agents can also quote Jira text in
+job logs, pull requests, and commits on the code host. To keep Jira text out
+of the live job log, set `progress.by_source.jira: quiet` in
+`.fullsend/config.yaml` (see
+[Keep Jira text out of the job log](../user/run-artifacts-and-private-data.md#keep-jira-text-out-of-the-job-log)).
+Pull requests and commits are not covered, so if that text must stay
+confidential, use a private repository. The broader risk of private
+content crossing into public places is tracked in
+[#1189](https://github.com/fullsend-ai/fullsend/issues/1189).
+
 ## Which agents are safe to enable by default
 
 All agents are designed to operate safely, but some produce output with higher disclosure risk when processing private repos:
@@ -28,15 +69,19 @@ All agents are designed to operate safely, but some produce output with higher d
 
 > **Recommendation:** Start with **triage**, **coder**, and **review** on private repos. Enable **retro** and **prioritize** only after configuring the guardrails described below.
 
-To limit which agents run, edit the `roles` list in `config.yaml`:
+To limit which agents run, add `enabled: false` to their entry on the `agents`
+list. For default agents, add an entry with their name:
 
-- **Per-repo install:** `.fullsend/config.yaml` in the target repo. List only the roles you want enabled:
-  ```yaml
-  version: "1"
-  roles: [triage, coder, review]   # retro and prioritize omitted
-  ```
-
-Roles omitted from the list are not dispatched — the dispatcher blocks them before any agent runs.
+```yaml
+version: "1"
+agents:
+  - name: retro
+    enabled: false
+  - name: prioritize
+    enabled: false
+  - name: fix
+    enabled: false
+```
 
 ## Configuring AGENTS.md for private repos
 
@@ -161,5 +206,6 @@ Not all private repos are equal. A repo containing open-source code that happens
 
 - [Getting Started](../getting-started/) — Initial fullsend setup
 - [Configuring agent behavior](../user/customizing-agents.md) — Harness configuration and layered overrides
+- [Jira Integration](../user/jira-integration.md) — Connecting fullsend to a Jira project
 - [Security threat model](../../problems/security-threat-model.md) — Threat priority and defense considerations
 - [#1189](https://github.com/fullsend-ai/fullsend/issues/1189) — Retro agent private content leak risk

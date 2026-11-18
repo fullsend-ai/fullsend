@@ -253,7 +253,8 @@ for (const [label, edits] of Object.entries(MALFORMED)) {
     if (!REAL_PI) return t.skip("set FULLSEND_TEST_PI_BIN to a pi binary at the pinned PI_VERSION (images/sandbox/Containerfile)");
 
     const without = await runFaux(edits, []);
-    assert.match(editResult(without.stdout), /edits\.0: must be object/, "the defect this extension exists for");
+    // pi 1.5.0 words the rejection "expected object, got string"; 1.3.0 said "must be object".
+    assert.match(editResult(without.stdout), /edits\.0: expected object, got string/, "the defect this extension exists for");
     assert.equal(without.target, "alpha\n");
 
     const withExt = await runFaux(edits, ["-e", EXTENSION]);

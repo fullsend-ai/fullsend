@@ -72,27 +72,43 @@ func DriftFieldName(componentName string) string {
 // expectedVarValues maps variable names to their expected values for
 // value-level drift detection. Pass nil for presence-only checking.
 func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
-	return ProbeComponentsForAuth(ctx, client, owner, repo, forgeName, "", fc, expectedVarValues)
+	return probeComponents(ctx, client, owner, repo, forgeName, "", false, false, fc, expectedVarValues)
 }
 
 // ProbeComponentsForAuth is ProbeComponents for a repository whose
 // effective inference.auth is known. The secrets probed are the ones
 // that carry the selected method's credentials (inferenceSecretsForAuth),
-// and each must be present to match. An empty auth keeps the legacy
-// behavior: the GCP pair is probed and both absent counts as a match.
+// and each must be present to match. An empty auth is a gateway-only
+// repository (past RequireInferenceAuth, its inference.gateway route
+// authenticates on its own): it probes no provider secrets, so a leftover
+// GCP secret never reports drift that convergence cannot clear. Use
+// ProbeComponents for the legacy optional-Vertex probe.
 // openai-wif probes the GCP pair the same optional way and adds an
 // openai-wif:identifiers component that matches only when a complete set
 // of OpenAI WIF identifiers is live on the default branch. Installed repos
 // also report openai-wif:workflows for their live workflow contract.
 func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
+	return probeComponents(ctx, client, owner, repo, forgeName, auth, auth == "", false, fc, expectedVarValues)
+}
+
+// ProbeComponentsForConfig is ProbeComponentsForAuth for a resolved
+// repository configuration. It differs only for a gateway-only repository
+// whose inference.gateway block uses the api-key mode: the gateway API key
+// secret (FULLSEND_INFERENCE_GATEWAY_API_KEY, which setup never writes) is
+// then probed and must be present to match, because runs fail without it.
+// An oidc gateway-only repository needs no secret.
+func ProbeComponentsForConfig(ctx context.Context, client forge.Client, cfg ResolvedConfig, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
+	return probeComponents(ctx, client, cfg.Owner, cfg.Repo, cfg.Forge, cfg.InferenceAuth, cfg.InferenceAuth == "", cfg.requiresGatewayAPIKey(), fc, expectedVarValues)
+}
+
+// probeComponents implements ProbeComponents, ProbeComponentsForAuth, and
+// ProbeComponentsForConfig. gatewayOnly skips the provider-secret
+// components entirely; gatewayAPIKey then probes the gateway API key
+// secret in their place.
+func probeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, gatewayOnly, gatewayAPIKey bool, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
 	var results []ComponentStatus
 
-	// Workflow presence is the current carrier (WorkflowPaths). GitLab
-	// still reads a leftover dispatch stub for the version ref so repos
-	// enrolled before #7707 keep reporting the installed version until
-	// converge writes the marker onto the pipeline wrapper and deletes
-	// the stub. Presence stays false when only the stub exists, so the
-	// missing wrapper is repaired.
+	// Workflow presence is the current carrier (WorkflowPaths).
 	content, _, carrierPresent, err := readWorkflowMarker(ctx, client, owner, repo, fc)
 	if err != nil {
 		return nil, fmt.Errorf("checking workflow file: %w", err)
@@ -205,6 +221,20 @@ func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, rep
 		// Only report drift when the variable is present — these
 		// are optional, so absence is not a problem (the repo may
 		// have been installed without the corresponding flag).
+		// FULLSEND_GCP_REGION and FULLSEND_GCP_SERVICE_ACCOUNT are the
+		// exceptions: a non-empty expected value means the effective
+		// configuration declares inference.region or
+		// inference.service_account, so a missing variable is drift that
+		// convergence repairs and status reports.
+		if !exists && (varName == forge.VarGCPRegion || varName == forge.VarGCPServiceAccount) {
+			results = append(results, ComponentStatus{
+				Name:     "var:" + varName,
+				Present:  false,
+				Expected: expected,
+				Match:    false,
+			})
+			continue
+		}
 		if exists {
 			results = append(results, ComponentStatus{
 				Name:     "var:" + varName,
@@ -257,8 +287,15 @@ func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, rep
 	if auth != "" {
 		probedSecrets = inferenceSecretsForAuth(auth)
 	}
+	if gatewayOnly {
+		probedSecrets = nil
+		if gatewayAPIKey {
+			probedSecrets = []string{forge.SecretInferenceGatewayAPIKey}
+		}
+	}
 	for _, secretName := range probedSecrets {
-		if auth == InferenceAuthOpenAIAPIKey && secretName == forge.SecretOpenAIAPIKey {
+		if (auth == InferenceAuthOpenAIAPIKey && secretName == forge.SecretOpenAIAPIKey) ||
+			(gatewayOnly && secretName == forge.SecretInferenceGatewayAPIKey) {
 			// Existence alone is not readiness: jobs only get a masked,
 			// protected, wildcard-scoped environment variable. Present
 			// keeps meaning "exists"; Match reports usability.
@@ -315,8 +352,9 @@ func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, rep
 		}
 		results = append(results, conflict...)
 		return results, nil
-	} else if auth != "" {
-		// The selected method's credentials are required.
+	} else if auth != "" || gatewayOnly {
+		// The selected method's credentials are required; a gateway-only
+		// repository has none to probe.
 		return results, nil
 	}
 	// Without a selected inference.auth (or with openai-wif), Vertex is

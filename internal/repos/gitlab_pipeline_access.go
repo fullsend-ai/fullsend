@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -99,10 +100,11 @@ func hasPositiveID(userIDs []int) bool {
 }
 
 // roleAllowsPoller reports whether a role-based grant at Developer level or
-// below covers every Developer-level identity.
+// below covers every Developer-level identity. User, group, and deploy-key
+// grants are not role grants.
 func roleAllowsPoller(levels []forge.ProtectedBranchAccess) bool {
 	for _, l := range levels {
-		if l.UserID > 0 || l.GroupID > 0 {
+		if l.UserID > 0 || l.GroupID > 0 || l.DeployKeyID > 0 {
 			continue
 		}
 		if l.AccessLevel > 0 && l.AccessLevel <= gitlabroles.DeveloperAccessLevel {
@@ -163,6 +165,8 @@ func summarizeAccess(kind string, levels []forge.ProtectedBranchAccess) string {
 			bits = append(bits, fmt.Sprintf("user:%d", l.UserID))
 		case l.GroupID > 0:
 			bits = append(bits, fmt.Sprintf("group:%d", l.GroupID))
+		case l.DeployKeyID > 0:
+			bits = append(bits, fmt.Sprintf("deploy-key:%d", l.DeployKeyID))
 		case l.AccessLevel == 0:
 			bits = append(bits, "no one")
 		case l.AccessLevel <= gitlabroles.DeveloperAccessLevel:
@@ -197,6 +201,84 @@ func loadDefaultBranchRule(ctx context.Context, client forge.Client, owner, repo
 		return branch, nil, fmt.Errorf("reading protected branch %q: %w", branch, err)
 	}
 	return branch, rule, nil
+}
+
+// PollerMergeGrantError reports that the forge call granting a Poller user
+// merge access on a protected branch failed. It is distinct from a failure to
+// read the branch rule, so a caller can tell a refused grant (GitLab.com Free
+// refuses per-user grants) from an unreadable project.
+type PollerMergeGrantError struct {
+	UserID int
+	Branch string
+	Err    error
+}
+
+func (e *PollerMergeGrantError) Error() string {
+	return fmt.Sprintf("granting poller user %d merge access on %q: %v", e.UserID, e.Branch, e.Err)
+}
+
+func (e *PollerMergeGrantError) Unwrap() error { return e.Err }
+
+// credentialCleanupError marks a failed attempt to revoke an unpublished
+// replacement credential after its verification failed. Its presence in a
+// token-creation error tells callers the credential may still be active.
+type credentialCleanupError struct{ err error }
+
+func (e *credentialCleanupError) Error() string { return e.err.Error() }
+func (e *credentialCleanupError) Unwrap() error { return e.err }
+
+// revokeCleanupError wraps a non-nil revocation error in a
+// credentialCleanupError and returns nil for a successful revocation.
+func revokeCleanupError(op string, revokeErr error) error {
+	if revokeErr == nil {
+		return nil
+	}
+	return &credentialCleanupError{err: safeAPIError(op, revokeErr)}
+}
+
+// pollerPipelineAccessFailureReason returns the role provisioning failure
+// reason for a Poller credential that was minted and then, unless the
+// revocation failed, revoked because its protected-default-branch merge grant
+// failed, or "" when err is not such a failure. Token creation itself succeeded in that case, so the reason names
+// the protected branch and the remediation instead of reporting a token
+// creation failure. The text is authored by fullsend: it carries a coarse
+// classification of the grant failure, never the server's error text.
+func pollerPipelineAccessFailureReason(err error) string {
+	var grantErr *PollerMergeGrantError
+	if !errors.As(err, &grantErr) {
+		return ""
+	}
+	prefix := fmt.Sprintf("poller pipeline access on protected branch %q could not be granted", grantErr.Branch)
+	revoked := "; the new credential was revoked"
+	var cleanupErr *credentialCleanupError
+	if errors.As(err, &cleanupErr) {
+		revoked = "; revoking the new credential failed, so the unpublished credential may still be active and needs cleanup"
+	}
+	switch {
+	case errors.Is(grantErr.Err, context.Canceled), errors.Is(grantErr.Err, context.DeadlineExceeded):
+		return prefix + " (request canceled or timed out)" + revoked + "; re-run install"
+	case forge.IsTransient(grantErr.Err):
+		return prefix + " (transient server error)" + revoked + "; re-run install"
+	}
+	cause := "the per-user merge grant was refused"
+	if forge.IsForbidden(grantErr.Err) {
+		cause += " (forbidden)"
+	}
+	return fmt.Sprintf("%s: %s%s. GitLab.com Free does not support per-user protected-branch grants; on that tier, relax the protected-branch setting: "+
+		"open the project in GitLab under Settings → Repository → Protected branches, select the %q branch, "+
+		"set \"Allowed to merge\" to Developers + Maintainers (this lets every project Developer merge to the branch), "+
+		"then re-run `fullsend repos install`",
+		prefix, cause, revoked, grantErr.Branch)
+}
+
+// roleTokenCreationFailureReason returns the provisioning failure reason for
+// an error from CreateProjectAccessToken: a Poller pipeline-access failure is
+// reported as such, and anything else keeps the token-creation reason.
+func roleTokenCreationFailureReason(err error) string {
+	if reason := pollerPipelineAccessFailureReason(err); reason != "" {
+		return reason
+	}
+	return "project access token creation failed"
 }
 
 // EnsureGitLabPollerPipelineAccess makes a Developer-level poller able
@@ -245,7 +327,7 @@ func EnsureGitLabPollerPipelineAccess(ctx context.Context, client forge.Client, 
 	}
 	for _, id := range toGrant {
 		if err := client.GrantProtectedBranchMergeUser(ctx, owner, repo, branch, id); err != nil {
-			return result, fmt.Errorf("granting poller user %d merge access on %q: %w", id, branch, err)
+			return result, &PollerMergeGrantError{UserID: id, Branch: branch, Err: err}
 		}
 	}
 	result.Action = pipelineAccessGrant
@@ -310,6 +392,47 @@ func VerifyGitLabSuppliedPollerPipelineAccess(ctx context.Context, client forge.
 	}
 	return nil
 }
+
+// VerifyGitLabPollerProtectedPipelineAccess checks, without changing the
+// protected-branch rule, that userID may start pipelines on the project's
+// default branch under the existing branch policy. A forge without
+// protected-branch support passes; an unreadable rule fails closed.
+func VerifyGitLabPollerProtectedPipelineAccess(ctx context.Context, client forge.Client, owner, repo string, userID int) error {
+	if userID <= 0 {
+		return fmt.Errorf("Poller identity unavailable")
+	}
+	branch, rule, err := loadDefaultBranchRule(ctx, client, owner, repo)
+	if err != nil {
+		if forge.IsNotSupported(err) {
+			return nil
+		}
+		return err
+	}
+	if !PollerCanCreatePipeline(rule, []int{userID}) {
+		return &PollerPipelineAccessDeniedError{
+			Reason:   fmt.Sprintf("user ID %d cannot start pipelines on protected branch %q (%s)", userID, branch, describePipelineAccess(rule)),
+			UserID:   userID,
+			Branch:   branch,
+			RuleName: rule.Name,
+		}
+	}
+	return nil
+}
+
+// PollerPipelineAccessDeniedError reports that the existing protected-branch
+// policy does not let the account start pipelines. Reason is authored by
+// fullsend and carries no credential material. UserID, Branch and RuleName
+// identify the account, the default branch, and the protection rule that
+// covers it (a wildcard rule's name differs from Branch), so a caller can
+// build operator remediation.
+type PollerPipelineAccessDeniedError struct {
+	Reason   string
+	UserID   int
+	Branch   string
+	RuleName string
+}
+
+func (e *PollerPipelineAccessDeniedError) Error() string { return e.Reason }
 
 // VerifyGitLabReplacementPipelineAccess establishes protected-default-branch
 // access and rereads the rule before a replacement Poller credential is published.

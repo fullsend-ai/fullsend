@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -31,13 +32,17 @@ const codexConfigTamperedExit = 98
 // .env is sourced and marked read-only.
 const codexBinaryVar = "FULLSEND_CODEX_BIN"
 
+// codexNodeVar holds the node that starts codex: `codex` on PATH is npm's
+// `#!/usr/bin/env node` launcher, so binaryPin pins node by the same rule.
+const codexNodeVar = "FULLSEND_CODEX_NODE"
+
 // codexRuntimeEnv tells skills running inside the sandbox which runtime they
 // are on, so a skill can take a runtime-specific path deliberately.
 const codexRuntimeEnv = "FULLSEND_RUNTIME"
 
 // codexPathVar holds the PATH captured before the agent-writable .env is
-// sourced, so it can be restored before codex — and therefore every hook — is
-// launched.
+// sourced, so it can be restored before codex is launched. The hook adapter's
+// children take envDataTrustedPathVar instead (see buildCodexRunCommand).
 const codexPathVar = "FULLSEND_CODEX_PATH"
 
 // codexHookDigestsEnv carries the hook scripts' expected digests to the
@@ -210,9 +215,10 @@ func translateCodexModel(model string, gateway bool) (codexModel, error) {
 // binaryPin for why it holds. The launch below uses the path, which no
 // function or alias can shadow. This matters more on codex than on pi:
 // `codex` on PATH is npm's node launcher, so a planted shim would run before
-// the native binary ever starts.
+// the native binary ever starts, and the node that runs the launcher is
+// pinned with it.
 func codexBinaryPin() string {
-	return binaryPin(codexBinaryVar, "codex")
+	return binaryPin(codexBinaryVar, codexNodeVar, "codex")
 }
 
 // codexAssetGuard is the POSIX sh fragment run before codex: the runner-owned
@@ -385,27 +391,29 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
 	parts = append(parts,
 		"&& "+codexBinaryPin(),
-		// PATH is captured before .env and restored after it. The hook scripts
-		// resolve their tools by name — tirith_check.py runs a bare `tirith` —
-		// so a .env that prepends a directory holding a fake `tirith` that
-		// exits 0 neuters the whole PreToolUse chain while every digest stays
-		// green. Reproduced before this was added. `readonly` means a .env
-		// that assigns the same name aborts the sourcing shell under a POSIX
-		// sh rather than winning.
+		// PATH is captured before .env and restored after it for codex
+		// itself, so a .env cannot change the PATH codex runs with; the hook
+		// children take envDataTrustedPathVar instead. `readonly` means a
+		// .env that assigns the same name aborts the sourcing shell under a
+		// POSIX sh rather than winning.
 		"&& readonly "+codexPathVar+`="$PATH"`,
 		"&& "+codexAssetGuard(r, hooksEnabled, digests),
 		"&& "+codexConfigGuard(r, digests),
 		"&& "+codexModelsCacheRemoval(r),
 		"&& "+seed,
-		"&& . "+shellQuote(envFile),
+		// .env is read as data, never sourced (envDataLoad, #8498).
+		"&& "+envDataLoad(envFile, codexBinaryVar, codexNodeVar, codexPathVar),
 		// .env is agent-writable; re-pin the runner-owned config location
 		// after it so a rewritten .env cannot move codex's home out from
 		// under the guards.
 		"&& "+strings.Join(r.EnvExports(), " && "),
-		// Restored for codex itself, and exported so the hook adapter can set
-		// it for its children from a value that never passed through .env —
-		// rather than trusting whatever PATH it happens to inherit.
-		"&& export PATH=\"$"+codexPathVar+"\" && export "+codexPathVar,
+		// Restored for codex itself. The hook adapter sets its children's
+		// PATH from envDataTrustedPathVar instead: the same launch PATH,
+		// recorded read-only before .env by codexBinaryPin, without the
+		// directories the agent can write. It is exported from a value that
+		// never passed through .env, rather than trusting whatever PATH the
+		// adapter happens to inherit.
+		"&& export PATH=\"$"+codexPathVar+"\" && export "+envDataTrustedPathVar,
 		"&& export "+codexRuntimeEnv+"=codex",
 		// NODE_* would load code into npm's codex launcher; PYTHON* would do
 		// the same to the hook adapter's interpreter, which `-I` in hooks.json
@@ -424,12 +432,18 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 		// Again after .env, which runs in this shell and could recreate it.
 		"&& "+codexModelsCacheRemoval(r),
 	)
+	// codex exec has no --debug flag. Its tracing goes to stderr, at error
+	// level by default — a codex run is not silent there the way pi is — and
+	// RUST_LOG sets the level. It is set here outright, after .env, so neither
+	// .env nor the environment can lower it below what codexStderrDrops
+	// needs: exec and the in-process module at warn, where codex reports a
+	// dropped stream notification and a failed backfill; a value codex
+	// cannot parse would silently drop it to the default filter.
+	filter := codexStderrDefaultFilter + ",codex_exec=warn,codex_app_server::in_process=warn"
 	if params.Debug != "" {
-		// codex exec has no --debug flag. Its tracing goes to stderr, at
-		// error level by default — a codex run is not silent there the way pi
-		// is — and RUST_LOG raises it.
-		parts = append(parts, `&& export RUST_LOG="${RUST_LOG:-info}"`)
+		filter = "info"
 	}
+	parts = append(parts, `&& export RUST_LOG=`+shellQuote(filter))
 
 	prompt := DefaultAgentPrompt
 	if params.Prompt != "" {
@@ -448,17 +462,14 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 		parts = append(parts, "&& export "+codexSpawnDigestsEnv+"="+
 			shellQuote(codexSpawnDigestsValue(digests)))
 		// The hook scripts' own configuration, re-asserted from what the
-		// runner derived from the harness. appendHookEnv wrote the same values
-		// into the workspace .env at bootstrap, and that file is
-		// agent-writable: without this, iteration 1 could widen the SSRF
-		// allowlist or clear TIRITH_REQUIRED for iteration 2 and the hooks
-		// would read the agent's values. Reproduced before this was added.
-		for _, pair := range digests.SecurityEnv {
-			parts = append(parts, "&& export "+pair.Key+"="+shellQuote(pair.Value))
-		}
+		// runner recorded at Bootstrap (hookEnvExports): the workspace .env
+		// carries the same values and is agent-writable, so without this,
+		// iteration 1 could widen the SSRF allowlist or clear TIRITH_REQUIRED
+		// for iteration 2. A name the runner has no value for is unset.
+		parts = append(parts, "&& "+hookEnvExports(digests.SecurityEnv))
 	}
 	parts = append(parts,
-		"&& printf '%s' "+shellQuote(prompt)+` | "$`+codexBinaryVar+`"`,
+		"&& printf '%s' "+shellQuote(prompt)+" | "+cliLaunch(codexBinaryVar, codexNodeVar),
 		"exec",
 		"--json",
 		"--skip-git-repo-check",
@@ -503,8 +514,8 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 }
 
 // Run executes one agent iteration and normalizes codex's `exec --json` stream
-// into AgentEvents. codex exits 0 on a failed turn and on an interrupted one,
-// so the stream's verdict overrides the exit code, as it does for pi.
+// into AgentEvents. The stream's verdict overrides a zero exit code, as it
+// does for pi, so a failed turn fails the run whatever codex exits.
 func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
 	m, err := readCodexManifest(params.SandboxName, r.codexManifestPath())
 	if err != nil {
@@ -580,7 +591,10 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 
 	cmd := buildCodexRunCommand(params, model, effort, hooksEnabled, digests)
 
-	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
+	agentStderr, endAgentStderr := openAgentStderr(params, printer)
+	defer endAgentStderr()
+	stderr := &codexStderrDrops{w: agentStderr}
+	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, stderr)
 	if err != nil {
 		return -1, err
 	}
@@ -607,9 +621,12 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		}
 	}
 
+	childIDs := &codexChildIDs{}
+	reader = io.TeeReader(reader, childIDs)
+
 	handler := params.OnEvent
 	if handler == nil {
-		renderer := NewEventRenderer(printer)
+		renderer := newEventRendererAt(printer, params.ProgressVerbosity)
 		handler = renderer.Handle
 	}
 
@@ -629,7 +646,8 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		innerHandler(evt)
 	}
 
-	if _, parseErr := parseCodexStream(reader, handler); parseErr != nil {
+	primaryThreadID, parseErr := parseCodexStream(reader, handler)
+	if parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
@@ -639,6 +657,17 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+	childIDs.flush()
+	stderr.flush()
+	if params.Debug != "" {
+		// Under --debug codex's stderr went to the sandbox log instead.
+		dropped, backfillFailed, derr := codexCountDroppedInLog(params.SandboxName)
+		if derr != nil {
+			printer.StepWarn(detailWarning("Could not read codex's log for dropped stream notifications", redactSummary(sanitizeOutput(derr.Error())), params.ProgressVerbosity))
+		}
+		stderr.Dropped += dropped
+		stderr.BackfillFailed += backfillFailed
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
@@ -654,12 +683,73 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 			r.ConfigDir())
 	}
 
+	// The children on disk are read whatever the exit code, for a delegating
+	// agent and whenever the stream shows a spawn: a child that started a turn
+	// leaves a rollout even when the stream lost its spawn item, which is how
+	// the admission check below and the usage fold see it.
+	checkSpawns := digests.delegating() || len(childIDs.Senders) > 0
+	diskChildren, diskIDs := 0, []string(nil)
+	var rolloutsErr error
+	if checkSpawns {
+		diskChildren, diskIDs, rolloutsErr = r.readCodexChildRollouts(params.SandboxName, primaryThreadID, childIDs.Receivers)
+	}
+	foldIDs := slices.Compact(slices.Sorted(slices.Values(slices.Concat(childIDs.IDs, diskIDs))))
+
+	// The fold runs whatever the exit code: codex writes a child's usage as
+	// each response completes, and the parent's entry keeps per_model_usage
+	// summing to the totals across a retry. A read failure is a warning.
+	if digests.delegating() || len(foldIDs) > 0 {
+		n, ferr := r.foldCodexChildUsage(params.SandboxName, foldIDs, metrics)
+		if ferr != nil {
+			printer.StepWarn(detailWarning("Sub-agent usage not fully counted", redactSummary(sanitizeOutput(ferr.Error())), params.ProgressVerbosity))
+		}
+		if n > 0 {
+			printer.StepInfo(fmt.Sprintf("%d sub-agent thread(s) folded into the run metrics", n))
+		}
+		// At the budget or on a cancel OpenShell kills nothing, so codex's
+		// children can record more after the read.
+		if len(foldIDs) > 0 && (ctx.Err() != nil || exitCode == 124 || exitCode == -1) {
+			printer.StepWarn("Sub-agent usage may be undercounted: codex was stopped, and its children can record more after the read")
+		}
+	}
+
+	// Checked whatever the exit code: with a validation loop an iteration's
+	// non-zero exit does not fail the run; an error from Run does, and a
+	// failed read or an unread spawn item is one too, unlike the usage read
+	// above. Each iteration adds its spawns seen on either side, each counted
+	// once per thread: the stream's spawn items (completed or failed: each
+	// passed the guard) and the children on disk. A dropped stream
+	// notification is a warning, as settled on #8712: most drops hide no
+	// spawn.
+	if stderr.Dropped > 0 {
+		msg := fmt.Sprintf("codex dropped %d stream notification(s) under backpressure", stderr.Dropped)
+		if stderr.BackfillFailed > 0 {
+			msg += ", and its backfill of the turn's items failed, so a dropped completed item stayed lost"
+		}
+		printer.StepWarn(msg + "; the progress log is incomplete")
+	}
+	if childIDs.UnreadSpawn {
+		return exitCode, fmt.Errorf("%s: a spawn_agent item longer than %d bytes could not be read", codexSpawnWithoutAdmission, streamBufSize)
+	}
+	if rolloutsErr != nil {
+		return exitCode, fmt.Errorf("%s: counting the child rollouts: %w", codexSpawnWithoutAdmission, rolloutsErr)
+	}
+	spawned := slices.Compact(slices.Sorted(slices.Values(slices.Concat(childIDs.Receivers, diskIDs))))
+	union := len(spawned) + childIDs.NoReceiver + (diskChildren - len(diskIDs))
+	if children := max(len(childIDs.Senders), diskChildren, union); checkSpawns && children > 0 {
+		digests.CompletedSpawns += children
+		recordRunnerHeldDigests(params.SandboxName, digests)
+		if err := checkCodexSpawnAdmissions(params.SandboxName, primaryThreadID, childIDs.Senders, digests.CompletedSpawns); err != nil {
+			return exitCode, err
+		}
+	}
+
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {
 		msg := lastResult.ErrorMessage
 		if msg == "" {
 			msg = "stream ended without a completed turn (" + lastResult.Subtype + ")"
 		}
-		printer.StepWarn("codex exited 0 but the stream reports an error: " + sanitizeOutput(msg))
+		printer.StepWarn(exitedZeroStreamError("codex", msg, lastResult.Subtype, params.ProgressVerbosity))
 		return 1, nil
 	}
 	return exitCode, nil

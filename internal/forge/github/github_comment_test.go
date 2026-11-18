@@ -46,6 +46,35 @@ func TestCreateIssueWithLabels(t *testing.T) {
 	assert.Equal(t, []string{"type/chore"}, issue.Labels)
 }
 
+func TestCreateIssueEscapesRepositoryPathSegment(t *testing.T) {
+	tests := []struct {
+		name string
+		repo string
+		path string
+	}{
+		{name: "fragment", repo: "widgets#ignored", path: "/repos/acme/widgets%23ignored/issues"},
+		{name: "query", repo: "widgets?ignored", path: "/repos/acme/widgets%3Fignored/issues"},
+		{name: "extra path segments", repo: "widgets/issues/42/comments", path: "/repos/acme/widgets%2Fissues%2F42%2Fcomments/issues"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handlerCalled := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, tc.path, r.URL.EscapedPath())
+				assert.Empty(t, r.URL.RawQuery)
+				json.NewEncoder(w).Encode(map[string]any{"number": 1, "title": "title"})
+			}))
+			defer srv.Close()
+
+			_, err := newTestClient(t, srv).CreateIssue(context.Background(), "acme", tc.repo, "title", "body")
+			require.NoError(t, err)
+			assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+		})
+	}
+}
+
 func TestCreateIssueRetriesWithoutLabelsOnValidationError(t *testing.T) {
 	call := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -480,18 +509,41 @@ func TestCreatePullRequestReview_WithInlineComments(t *testing.T) {
 func TestListPullRequestFileDiffs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
-		assert.Equal(t, "/repos/owner/repo/pulls/5/files", r.URL.Path)
-
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode([]map[string]any{
-			{
-				"filename": "main.go",
-				"patch":    "@@ -10,5 +10,7 @@ func main() {\n context\n+added line",
-			},
-			{
-				"filename": "binary.png",
-			},
-		})
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/5/files":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"filename": "main.go",
+					"patch":    "@@ -10,5 +10,7 @@ func main() {\n context\n+added line",
+				},
+				{
+					"filename": "binary.png",
+				},
+			})
+		case "/repos/owner/repo/pulls/5":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{
+				"base": map[string]string{"sha": "base"},
+				"head": map[string]string{"sha": "head"},
+			})
+		case "/repos/owner/repo/compare/base...head":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{
+				"merge_base_commit": map[string]string{"sha": "merge-base"},
+			})
+		case "/repos/owner/repo/git/trees/merge-base", "/repos/owner/repo/git/trees/head":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{
+				"truncated": false,
+				"tree": []map[string]string{
+					{"path": "main.go", "mode": "100644", "type": "blob"},
+					{"path": "binary.png", "mode": "100644", "type": "blob"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
 	}))
 	defer srv.Close()
 
@@ -503,6 +555,25 @@ func TestListPullRequestFileDiffs(t *testing.T) {
 	assert.Contains(t, files[0].Patch, "@@ -10,5 +10,7 @@")
 	assert.Equal(t, "binary.png", files[1].Path)
 	assert.Empty(t, files[1].Patch)
+}
+
+func TestListPullRequestFileDiffs_ReturnsAvailableFilesWithTruncationError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/owner/repo/pulls/5/files", r.URL.Path)
+		files := make([]map[string]any, 100)
+		for i := range files {
+			files[i] = map[string]any{
+				"filename": "file-" + strconv.Itoa(i),
+				"patch":    "@@ -1 +1 @@\n-old\n+new",
+			}
+		}
+		json.NewEncoder(w).Encode(files)
+	}))
+	defer srv.Close()
+
+	files, err := newTestClient(t, srv).ListPullRequestFileDiffs(context.Background(), "owner", "repo", 5)
+	require.ErrorIs(t, err, forge.ErrDiffListingTruncated)
+	assert.Len(t, files, 3000)
 }
 
 func TestListPullRequestCommits(t *testing.T) {

@@ -39,6 +39,36 @@ of Apps that fullsend operates (see [why](../infrastructure/standalone-mint.md))
 Picking a `role:` it doesn't serve — or a custom `slug:` — will not create one;
 it produces the `403` above.
 
+## Built-in roles
+
+Each built-in role is a GitHub App identity with a fixed permission ceiling.
+An agent's name is separate from its role: the `code` and `fix` agents both run
+as the `coder` role. For each role's permissions, see
+[`fullsend agent` — Roles](../../cli/agent.md#roles).
+
+| Role | GitHub App | Purpose |
+|------|------------|---------|
+| `fullsend` | `{org}-fullsend[bot]` | Dispatch/control |
+| `triage` | `{org}-triage[bot]` | Issue triage |
+| `coder` | `{org}-coder[bot]` | Code generation |
+| `review` | `{org}-review[bot]` | PR review |
+| `fix` | (reuses coder app) | Fix failures |
+| `retro` | `{org}-retro[bot]` | Retrospectives |
+| `prioritize` | `{org}-prioritize[bot]` | Backlog priority |
+
+Apps are named `{org}-{role}` and act as `{org}-{role}[bot]`. Each role's
+private key is stored as `fullsend-{role}-app-pem`, in GCP Secret Manager or on
+the filesystem (standalone mint). The `fix` role reuses the `coder` App and PEM,
+so no separate GitHub App or secret is created for it. Which of these roles a
+repository provisions is set by the
+[`roles` field in `config.yaml`](../../reference/config-reference.md#roles).
+
+> **Note:** The default deployment uses a shared vendor App
+> (`fullsend-ai-review[bot]`). Code that gates on a review bot's identity must
+> match the org-specific and shared vendor forms, plus
+> `${FULLSEND_APP_SET}-review[bot]` when a custom app set is configured — see
+> [Bot Identities](../../contributing/bot-identities.md) for details.
+
 ## Most customization needs no custom identity
 
 Before reaching for your own mint, check whether you actually need a new
@@ -51,7 +81,8 @@ identity. You usually don't:
   hosted mint — set its `role:` to the built-in role whose permissions match
   what it does. A code-writing agent uses `role: coder`; a triage-like agent
   uses `role: triage`. The agent's own name lives in `name:` in its `.md`, not
-  in `role:`.
+  in `role:`. `role:` also sets who may trigger the agent: `triage` or
+  `review` needs triage access, any other role needs write.
 - **Acting on the result after the run** — to re-run CI jobs, dispatch a
   workflow, deploy, and so on, chain your own workflow on the run's artifact;
   see [Chaining Follow-up Workflows](chaining-follow-up-workflows.md).

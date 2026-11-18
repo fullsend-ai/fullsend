@@ -3,6 +3,8 @@ package forge
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +16,17 @@ var _ Client = (*FakeClient)(nil)
 var _ GitHubExtensions = (*FakeClient)(nil)
 var _ GitLabExtensions = (*FakeClient)(nil)
 var _ ProjectLeaser = (*FakeClient)(nil)
+
+// fakeUpstreamAnyRefFiles returns the files NewFakeClient serves at every
+// ref: the upstream fullsend-ai/fullsend repository declares the current
+// per-repo configuration schema unless a test overrides it (#9292). Kept
+// equal to config.ManagedConfigSchemaDeclarationPath and
+// config.ManagedConfigSchemaVersion by a test in internal/repos.
+func fakeUpstreamAnyRefFiles() map[string][]byte {
+	return map[string][]byte{
+		"fullsend-ai/fullsend/internal/config/managed-config-schema": []byte("2\n"),
+	}
+}
 
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
@@ -28,6 +41,7 @@ func NewFakeClient() *FakeClient {
 		Errors:                   make(map[string]error),
 		DirContents:              make(map[string][]DirectoryEntry),
 		FileContentsRef:          make(map[string][]byte),
+		FileContentsAnyRef:       fakeUpstreamAnyRefFiles(),
 		BranchRefs:               make(map[string]string),
 		ExistingBranches:         make(map[string]bool),
 		Refs:                     make(map[string]string),
@@ -40,6 +54,9 @@ func NewFakeClient() *FakeClient {
 		ProjectHooks:             make(map[string][]ProjectHook),
 		PipelineVarOverrideRoles: make(map[string]string),
 		ProjectLeases:            make(map[string]string),
+
+		JobTokenRepositoryPushAllowed: make(map[string]bool),
+		PushRuleBranchNameRegexes:     make(map[string]string),
 		// New trigger tokens are owned by a Developer-level user unless a
 		// test says otherwise.
 		TriggerTokenOwnerID: 1001,
@@ -241,6 +258,20 @@ type FakeClient struct {
 
 	// CollaboratorPermissions maps "owner/repo/username" → role_name for GetCollaboratorPermission.
 	CollaboratorPermissions map[string]string
+	// CollaboratorPermissionDetails maps "owner/repo/username" → raw API fields
+	// for GetCollaboratorPermissionDetail (e2e gate tests).
+	CollaboratorPermissionDetails map[string]GitHubCollaboratorPermissionDetail
+	// CollaboratorPermissionErrors maps "owner/repo/username" → injected errors.
+	CollaboratorPermissionErrors map[string]error
+	// PullRequestAuthContexts maps "owner/repo/number" → authorization context.
+	PullRequestAuthContexts map[string]PullRequestAuthorizationContext
+	// IssueLabelEvents maps "owner/repo/number" → labeled timeline events.
+	IssueLabelEvents map[string][]IssueLabelEvent
+	// RemovedIssueLabels records RemoveIssueLabel calls as "owner/repo/number/label".
+	RemovedIssueLabels []string
+	// RepoLabels maps "owner/repo" → repository label names, in creation
+	// order. EnsureLabel appends to it.
+	RepoLabels map[string][]string
 	// AddedCollaborators records AddCollaborator calls as "owner/repo/username" → permission.
 	AddedCollaborators map[string]string
 	// OrgMemberships maps "org/username" → membership for GetOrgMembership.
@@ -295,11 +326,24 @@ type FakeClient struct {
 	// Key: "owner/repo". Missing keys round-trip as empty string.
 	PipelineVarOverrideRoles map[string]string
 
+	// JobTokenRepositoryPushAllowed stores the GitLab
+	// ci_push_repository_for_job_token_allowed setting per project.
+	// Key: "owner/repo". Missing keys read as false (push disabled).
+	JobTokenRepositoryPushAllowed map[string]bool
+
+	// PushRuleBranchNameRegexes stores the GitLab push rule
+	// branch_name_regex per project. Key: "owner/repo". Missing keys read
+	// as "" (no push rule).
+	PushRuleBranchNameRegexes map[string]string
+
 	// Directory listings for ListDirectoryContents.
 	DirContents map[string][]DirectoryEntry // key: "owner/repo/path@ref"
 
 	// File contents at specific refs for GetFileContentAtRef.
 	FileContentsRef map[string][]byte // key: "owner/repo/path@ref"
+	// FileContentsAnyRef is served by GetFileContentAtRef for a path at any
+	// ref absent from FileContentsRef. key: "owner/repo/path"
+	FileContentsAnyRef map[string][]byte
 
 	// ForceReachableCommits maps "owner/repo/branch" to the number of
 	// commits reachable on that branch after force-re-root writes.
@@ -323,6 +367,11 @@ type FakeClient struct {
 	// CreateBranchErrors injects per-repo errors for CreateBranch.
 	// Key is "owner/repo", checked before the generic Errors map.
 	CreateBranchErrors map[string]error
+
+	// CreateBranchFromSHAErrors injects per-commit errors for
+	// CreateBranchFromSHA. Key is "owner/repo/sha", checked before the
+	// generic Errors map.
+	CreateBranchFromSHAErrors map[string]error
 
 	// DeleteFilesErrors injects per-repo errors for DeleteFiles.
 	// Key is "owner/repo", checked before the generic Errors map.
@@ -372,6 +421,10 @@ type FakeClient struct {
 
 	// Pull request file diffs for ListPullRequestFileDiffs.
 	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
+	// PRFileDiffModes controls whether diff fixtures report verified mode
+	// metadata. When a key is absent, fixtures retain the historical default
+	// of verified metadata; a false value models a forge mode lookup failure.
+	PRFileDiffModes map[string]bool // key: "owner/repo/number"
 
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
@@ -506,10 +559,15 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 	}
 
 	r := Repository{
+		// Created plus deleted never decreases and grows by one per
+		// create, so a recreated name gets a fresh ID.
+		ID:            int64(1000 + len(f.CreatedRepos) + len(f.DeletedRepos)),
 		Name:          name,
 		FullName:      fullName,
+		Description:   description,
 		DefaultBranch: "main",
 		Private:       private,
+		CreatedAt:     time.Now(),
 	}
 	f.CreatedRepos = append(f.CreatedRepos, r)
 	return &r, nil
@@ -523,16 +581,17 @@ func (f *FakeClient) GetRepo(_ context.Context, owner, repo string) (*Repository
 		return nil, e
 	}
 
+	// Return copies: UpdateRepoVisibility and DeleteRepo write these slots in place.
 	fullName := owner + "/" + repo
-	for i := range f.Repos {
-		if f.Repos[i].FullName == fullName {
-			return &f.Repos[i], nil
+	for _, r := range f.Repos {
+		if r.FullName == fullName {
+			return &r, nil
 		}
 	}
 	// Also check created repos.
-	for i := range f.CreatedRepos {
-		if f.CreatedRepos[i].FullName == fullName {
-			return &f.CreatedRepos[i], nil
+	for _, r := range f.CreatedRepos {
+		if r.FullName == fullName {
+			return &r, nil
 		}
 	}
 	return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
@@ -744,7 +803,44 @@ func (f *FakeClient) GetFileContent(_ context.Context, owner, repo, path string)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
-	return data, nil
+	return slices.Clone(data), nil
+}
+
+// UpdateFileIfMatch writes content only when the stored file's blob SHA
+// equals expectedSHA (or, for an empty expectedSHA, when no file exists).
+// Otherwise it returns ErrConflict and leaves the file unchanged.
+func (f *FakeClient) UpdateFileIfMatch(_ context.Context, owner, repo, path, message string, content []byte, expectedSHA string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateFileIfMatch"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + path
+	current, exists := f.FileContents[key]
+	switch {
+	case expectedSHA == "" && exists:
+		return fmt.Errorf("%w: %s already exists", ErrConflict, key)
+	case expectedSHA != "" && !exists:
+		return fmt.Errorf("%w: %s does not exist", ErrConflict, key)
+	case expectedSHA != "" && GitBlobSHA(current) != expectedSHA:
+		return fmt.Errorf("%w: %s does not match %s", ErrConflict, key, expectedSHA)
+	}
+
+	stored := slices.Clone(content)
+	f.CreatedFiles = append(f.CreatedFiles, FileRecord{
+		Owner:   owner,
+		Repo:    repo,
+		Path:    path,
+		Message: message,
+		Content: stored,
+	})
+	if f.FileContents == nil {
+		f.FileContents = make(map[string][]byte)
+	}
+	f.FileContents[key] = stored
+	return nil
 }
 
 func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, message string) error {
@@ -830,7 +926,7 @@ func (f *FakeClient) ListDirectoryContents(_ context.Context, owner, repo, path,
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
-	return entries, nil
+	return slices.Clone(entries), nil
 }
 
 func (f *FakeClient) GetFileContentAtRef(_ context.Context, owner, repo, path, ref string) ([]byte, error) {
@@ -844,9 +940,12 @@ func (f *FakeClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 	key := fmt.Sprintf("%s/%s/%s@%s", owner, repo, path, ref)
 	content, ok := f.FileContentsRef[key]
 	if !ok {
+		content, ok = f.FileContentsAnyRef[fmt.Sprintf("%s/%s/%s", owner, repo, path)]
+	}
+	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
-	return content, nil
+	return slices.Clone(content), nil
 }
 
 func (f *FakeClient) CommitFiles(_ context.Context, owner, repo, message string, files []TreeFile) (bool, error) {
@@ -1066,6 +1165,11 @@ func (f *FakeClient) CreateBranchFromSHA(_ context.Context, owner, repo, branchN
 			return e
 		}
 	}
+	if f.CreateBranchFromSHAErrors != nil {
+		if e, ok := f.CreateBranchFromSHAErrors[owner+"/"+repo+"/"+sha]; ok {
+			return e
+		}
+	}
 	if e := f.err("CreateBranchFromSHA"); e != nil {
 		return e
 	}
@@ -1161,6 +1265,9 @@ func (f *FakeClient) CreateChangeProposal(_ context.Context, owner, repo, title,
 
 	f.proposalCounter++
 	cp := ChangeProposal{
+		// Synthetic immutable database ID in a distinct space from the
+		// display number, mirroring the real forges.
+		ID:     int64(9100000000 + f.proposalCounter),
 		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", owner, repo, f.proposalCounter),
 		Title:  title,
 		Number: f.proposalCounter,
@@ -1181,11 +1288,13 @@ func (f *FakeClient) CreateCrossRepoChangeProposal(_ context.Context, baseOwner,
 
 	f.proposalCounter++
 	cp := ChangeProposal{
-		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
-		Title:  title,
-		Number: f.proposalCounter,
-		Head:   headOwner + ":" + headBranch,
-		Base:   baseBranch,
+		URL:      fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
+		ID:       int64(9100000000 + f.proposalCounter),
+		Title:    title,
+		Number:   f.proposalCounter,
+		Head:     headOwner + ":" + headBranch,
+		HeadRepo: headOwner + "/" + headRepo,
+		Base:     baseBranch,
 	}
 	f.CreatedProposals = append(f.CreatedProposals, cp)
 	return &cp, nil
@@ -1201,7 +1310,7 @@ func (f *FakeClient) ListRepoPullRequests(_ context.Context, owner, repo string)
 
 	if f.PullRequests != nil {
 		if prs, ok := f.PullRequests[owner+"/"+repo]; ok {
-			return prs, nil
+			return slices.Clone(prs), nil
 		}
 	}
 	return []ChangeProposal{}, nil
@@ -1253,7 +1362,8 @@ func (f *FakeClient) GetAuthenticatedUserIdentity(_ context.Context) (*UserIdent
 	}
 
 	if f.AuthenticatedUserIdentity != nil {
-		return f.AuthenticatedUserIdentity, nil
+		id := *f.AuthenticatedUserIdentity
+		return &id, nil
 	}
 	return nil, fmt.Errorf("%w: no user identity configured", ErrNotFound)
 }
@@ -1266,7 +1376,7 @@ func (f *FakeClient) GetTokenScopes(_ context.Context) ([]string, error) {
 		return nil, e
 	}
 
-	return f.TokenScopes, nil
+	return slices.Clone(f.TokenScopes), nil
 }
 
 func (f *FakeClient) IsInstallationToken(_ context.Context) (bool, error) {
@@ -1478,7 +1588,8 @@ func (f *FakeClient) GetWorkflow(_ context.Context, owner, repo, workflowFile st
 	key := owner + "/" + repo + "/" + workflowFile
 	if f.Workflows != nil {
 		if wf, ok := f.Workflows[key]; ok {
-			return wf, nil
+			w := *wf
+			return &w, nil
 		}
 	}
 
@@ -1502,7 +1613,8 @@ func (f *FakeClient) GetLatestWorkflowRun(_ context.Context, owner, repo, workfl
 	if !ok {
 		return nil, fmt.Errorf("no workflow run found: %s", key)
 	}
-	return run, nil
+	r := *run
+	return &r, nil
 }
 
 func (f *FakeClient) GetWorkflowRun(_ context.Context, owner, repo string, runID int) (*WorkflowRun, error) {
@@ -1515,7 +1627,8 @@ func (f *FakeClient) GetWorkflowRun(_ context.Context, owner, repo string, runID
 
 	for _, run := range f.WorkflowRuns {
 		if run.ID == runID {
-			return run, nil
+			r := *run
+			return &r, nil
 		}
 	}
 	return nil, fmt.Errorf("workflow run %d not found in %s/%s", runID, owner, repo)
@@ -1539,7 +1652,11 @@ func (f *FakeClient) CreateIssue(_ context.Context, owner, repo, title, body str
 		return nil, e
 	}
 	f.issueCounter++
+	// The synthetic immutable database ID lives in a distinct space from
+	// the display number, mirroring the real forges, so identity tests
+	// can detect conflation. Deterministic: 9000000000 + counter.
 	issue := Issue{
+		ID:     int64(9000000000 + f.issueCounter),
 		Number: f.issueCounter,
 		Title:  title,
 		Body:   body,
@@ -1559,7 +1676,9 @@ func (f *FakeClient) CreateIssue(_ context.Context, owner, repo, title, body str
 		f.OpenIssues = make(map[string][]Issue)
 	}
 	f.OpenIssues[key] = append(f.OpenIssues[key], issue)
-	return &issue, nil
+	out := issue
+	out.Labels = slices.Clone(issue.Labels)
+	return &out, nil
 }
 
 func (f *FakeClient) AddIssueLabels(_ context.Context, owner, repo string, number int, labels ...string) error {
@@ -1590,6 +1709,23 @@ func (f *FakeClient) AddIssueLabels(_ context.Context, owner, repo string, numbe
 	return fmt.Errorf("issue #%d not found", number)
 }
 
+func (f *FakeClient) EnsureLabel(_ context.Context, owner, repo, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("EnsureLabel"); e != nil {
+		return e
+	}
+	key := owner + "/" + repo
+	if slices.Contains(f.RepoLabels[key], name) {
+		return nil
+	}
+	if f.RepoLabels == nil {
+		f.RepoLabels = make(map[string][]string)
+	}
+	f.RepoLabels[key] = append(f.RepoLabels[key], name)
+	return nil
+}
+
 func (f *FakeClient) GetIssue(_ context.Context, owner, repo string, number int) (*Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1599,6 +1735,7 @@ func (f *FakeClient) GetIssue(_ context.Context, owner, repo string, number int)
 	for _, issue := range f.OpenIssues[owner+"/"+repo] {
 		if issue.Number == number {
 			copy := issue
+			copy.Labels = slices.Clone(issue.Labels)
 			return &copy, nil
 		}
 	}
@@ -1622,11 +1759,16 @@ func (f *FakeClient) ListOpenIssues(_ context.Context, owner, repo string, label
 	}
 	issues := f.OpenIssues[owner+"/"+repo]
 	if len(labels) == 0 {
-		return append([]Issue(nil), issues...), nil
+		out := append([]Issue(nil), issues...)
+		for i := range out {
+			out[i].Labels = slices.Clone(out[i].Labels)
+		}
+		return out, nil
 	}
 	filtered := make([]Issue, 0, len(issues))
 	for _, issue := range issues {
 		if issueHasLabels(issue, labels) {
+			issue.Labels = slices.Clone(issue.Labels)
 			filtered = append(filtered, issue)
 		}
 	}
@@ -1655,7 +1797,7 @@ func (f *FakeClient) ListIssueComments(_ context.Context, owner, repo string, nu
 	if f.IssueComments != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if comments, ok := f.IssueComments[key]; ok {
-			return comments, nil
+			return slices.Clone(comments), nil
 		}
 	}
 	return nil, nil
@@ -1876,6 +2018,33 @@ func (f *FakeClient) ListIssueReactions(_ context.Context, owner, repo string, n
 	return reactions, nil
 }
 
+func (f *FakeClient) ListIssueLabelEvents(_ context.Context, owner, repo string, number int) ([]IssueLabelEvent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListIssueLabelEvents"); e != nil {
+		return nil, e
+	}
+	if f.IssueLabelEvents != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if events, ok := f.IssueLabelEvents[key]; ok {
+			out := make([]IssueLabelEvent, len(events))
+			copy(out, events)
+			return out, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) RemoveIssueLabel(_ context.Context, owner, repo string, number int, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("RemoveIssueLabel"); e != nil {
+		return e
+	}
+	f.RemovedIssueLabels = append(f.RemovedIssueLabels, fmt.Sprintf("%s/%s/%d/%s", owner, repo, number, label))
+	return nil
+}
+
 func (f *FakeClient) GetPullRequestInfo(_ context.Context, owner, repo string, number int) (*PullRequestInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1886,6 +2055,23 @@ func (f *FakeClient) GetPullRequestInfo(_ context.Context, owner, repo string, n
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if info, ok := f.PullRequestInfos[key]; ok {
 			return &info, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (f *FakeClient) GetPullRequestAuthorizationContext(_ context.Context, owner, repo string, number int) (*PullRequestAuthorizationContext, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetPullRequestAuthorizationContext"); e != nil {
+		return nil, e
+	}
+	if f.PullRequestAuthContexts != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if ctx, ok := f.PullRequestAuthContexts[key]; ok {
+			out := ctx
+			out.Labels = append([]string(nil), ctx.Labels...)
+			return &out, nil
 		}
 	}
 	return nil, ErrNotFound
@@ -1909,7 +2095,7 @@ func (f *FakeClient) ListPullRequestFiles(_ context.Context, owner, repo string,
 	if f.PRFiles != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if files, ok := f.PRFiles[key]; ok {
-			return files, nil
+			return slices.Clone(files), nil
 		}
 	}
 	return nil, nil
@@ -1922,7 +2108,7 @@ func (f *FakeClient) ListPullRequestCommits(_ context.Context, owner, repo strin
 		return nil, e
 	}
 	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
-	return f.PRCommits[key], nil
+	return slices.Clone(f.PRCommits[key]), nil
 }
 
 func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error) {
@@ -1934,7 +2120,21 @@ func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo str
 	if f.PRFileDiffs != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if files, ok := f.PRFileDiffs[key]; ok {
-			return files, nil
+			cloned := slices.Clone(files)
+			if verified, configured := f.PRFileDiffModes[key]; configured {
+				for i := range cloned {
+					cloned[i].ModesVerified = verified
+				}
+			} else {
+				for i := range cloned {
+					// Fake diffs represent complete fixtures unless a test
+					// explicitly models unavailable forge metadata.
+					if !cloned[i].ModesVerified {
+						cloned[i].ModesVerified = true
+					}
+				}
+			}
+			return cloned, nil
 		}
 	}
 	return nil, nil
@@ -1987,7 +2187,7 @@ func (f *FakeClient) ListPullRequestReviews(_ context.Context, owner, repo strin
 	if f.PRReviews != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if reviews, ok := f.PRReviews[key]; ok {
-			return reviews, nil
+			return slices.Clone(reviews), nil
 		}
 	}
 	return nil, nil
@@ -2002,10 +2202,33 @@ func (f *FakeClient) ListPullRequestReviewThreads(_ context.Context, owner, repo
 	if f.PRReviewThreads != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if threads, ok := f.PRReviewThreads[key]; ok {
+			threads.Threads = slices.Clone(threads.Threads)
+			for i := range threads.Threads {
+				t := &threads.Threads[i]
+				t.Comments = slices.Clone(t.Comments)
+				t.Side = clonePtr(t.Side)
+				t.Line = clonePtr(t.Line)
+				t.StartSide = clonePtr(t.StartSide)
+				t.StartLine = clonePtr(t.StartLine)
+				t.OriginalLine = clonePtr(t.OriginalLine)
+				t.OriginalStartLine = clonePtr(t.OriginalStartLine)
+				t.OldLine = clonePtr(t.OldLine)
+				t.NewLine = clonePtr(t.NewLine)
+				t.IsOutdated = clonePtr(t.IsOutdated)
+			}
 			return threads, nil
 		}
 	}
 	return ReviewThreadPage{}, nil
+}
+
+// clonePtr returns a pointer to a copy of *p, or nil when p is nil.
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 func (f *FakeClient) DismissPullRequestReview(_ context.Context, owner, repo string, number, reviewID int, message string) error {
@@ -2175,7 +2398,7 @@ func (f *FakeClient) GetWorkflowRunAnnotations(_ context.Context, _, _ string, _
 	if e := f.err("GetWorkflowRunAnnotations"); e != nil {
 		return nil, e
 	}
-	return f.Annotations, nil
+	return slices.Clone(f.Annotations), nil
 }
 
 func (f *FakeClient) ListOrgInstallations(_ context.Context, _ string) ([]Installation, error) {
@@ -2186,7 +2409,11 @@ func (f *FakeClient) ListOrgInstallations(_ context.Context, _ string) ([]Instal
 		return nil, e
 	}
 
-	return f.Installations, nil
+	out := slices.Clone(f.Installations)
+	for i := range out {
+		out[i].Permissions = maps.Clone(out[i].Permissions)
+	}
+	return out, nil
 }
 
 func (f *FakeClient) GetAppClientID(_ context.Context, slug string) (string, error) {
@@ -2220,6 +2447,46 @@ func (f *FakeClient) GetCollaboratorPermission(_ context.Context, owner, repo, u
 		}
 	}
 	return "", ErrNotFound
+}
+
+func (f *FakeClient) GetCollaboratorPermissionDetail(_ context.Context, owner, repo, username string) (GitHubCollaboratorPermissionDetail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetCollaboratorPermissionDetail"); e != nil {
+		return GitHubCollaboratorPermissionDetail{}, e
+	}
+
+	key := owner + "/" + repo + "/" + username
+	if f.CollaboratorPermissionErrors != nil {
+		if e, ok := f.CollaboratorPermissionErrors[key]; ok {
+			return GitHubCollaboratorPermissionDetail{}, e
+		}
+	}
+	if f.CollaboratorPermissionDetails != nil {
+		if detail, ok := f.CollaboratorPermissionDetails[key]; ok {
+			return detail, nil
+		}
+	}
+	if f.CollaboratorPermissions != nil {
+		if role, ok := f.CollaboratorPermissions[key]; ok {
+			return fakeCollaboratorDetailFromRole(role), nil
+		}
+	}
+	return GitHubCollaboratorPermissionDetail{}, ErrNotFound
+}
+
+func fakeCollaboratorDetailFromRole(role string) GitHubCollaboratorPermissionDetail {
+	switch role {
+	case "maintain":
+		return GitHubCollaboratorPermissionDetail{RoleName: "maintain", Permission: "write"}
+	case "triage":
+		return GitHubCollaboratorPermissionDetail{RoleName: "triage", Permission: "read"}
+	case "admin", "write", "read", "none":
+		return GitHubCollaboratorPermissionDetail{RoleName: role, Permission: role}
+	default:
+		return GitHubCollaboratorPermissionDetail{RoleName: role, Permission: role}
+	}
 }
 
 func (f *FakeClient) AddCollaborator(_ context.Context, owner, repo, username, permission string) error {
@@ -2641,10 +2908,21 @@ func (f *FakeClient) CreatePipelineWithInputs(_ context.Context, owner, repo, re
 	return &p, nil
 }
 
-func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error) {
+func (f *FakeClient) CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error) {
+	return f.CreatePipelineScheduleWithActive(ctx, owner, repo, ref, description, cron, variables, true)
+}
+
+// CreatePipelineScheduleWithActive shares CreatePipelineSchedule's error
+// injection ("CreatePipelineSchedule", CreatePipelineScheduleErrSeq), also
+// honors its own "CreatePipelineScheduleWithActive" error key, and records the
+// schedule with the requested active state.
+func (f *FakeClient) CreatePipelineScheduleWithActive(_ context.Context, owner, repo, ref, description, cron string, variables map[string]string, active bool) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if e := f.err("CreatePipelineScheduleWithActive"); e != nil {
+		return 0, e
+	}
 	if len(f.CreatePipelineScheduleErrSeq) > 0 {
 		e := f.CreatePipelineScheduleErrSeq[0]
 		f.CreatePipelineScheduleErrSeq = f.CreatePipelineScheduleErrSeq[1:]
@@ -2656,14 +2934,17 @@ func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref,
 	}
 
 	s := PipelineSchedule{
-		ID:          int64(len(f.CreatedSchedules) + 1),
-		Description: description,
-		Ref:         ref,
-		Cron:        cron,
-		Active:      true,
-		Variables:   variables,
+		ID:           int64(len(f.CreatedSchedules) + 1),
+		Description:  description,
+		Ref:          ref,
+		Cron:         cron,
+		CronTimezone: "UTC",
+		Active:       active,
+		Variables:    maps.Clone(variables), // stored copy, independent of the caller's map
 	}
-	f.CreatedSchedules = append(f.CreatedSchedules, s)
+	rec := s
+	rec.Variables = maps.Clone(variables) // separate copy so the log keeps what the caller sent
+	f.CreatedSchedules = append(f.CreatedSchedules, rec)
 	key := owner + "/" + repo
 	if f.PipelineSchedules == nil {
 		f.PipelineSchedules = make(map[string][]PipelineSchedule)
@@ -2714,21 +2995,6 @@ func (f *FakeClient) GetPipelineSchedule(_ context.Context, owner, repo string, 
 	return nil, ErrNotFound
 }
 
-func (f *FakeClient) DeletePipelineScheduleVariable(_ context.Context, owner, repo string, scheduleID int64, key string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.err("DeletePipelineScheduleVariable"); err != nil {
-		return err
-	}
-	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
-		if schedule.ID == scheduleID {
-			delete(schedule.Variables, key)
-			return nil
-		}
-	}
-	return ErrNotFound
-}
-
 func (f *FakeClient) UpdatePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64, active bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2758,7 +3024,17 @@ func (f *FakeClient) ListPipelineSchedules(_ context.Context, owner, repo string
 		return nil, e
 	}
 
-	return f.PipelineSchedules[owner+"/"+repo], nil
+	// Deep copy: schedule writers change elements and their Variables maps in place.
+	src := f.PipelineSchedules[owner+"/"+repo]
+	if src == nil {
+		return nil, nil
+	}
+	out := make([]PipelineSchedule, len(src))
+	for i, s := range src {
+		out[i] = s
+		out[i].Variables = maps.Clone(s.Variables)
+	}
+	return out, nil
 }
 
 func (f *FakeClient) UpdateCIVariable(_ context.Context, owner, repo, name, value string, protected bool) error {
@@ -2838,6 +3114,26 @@ func (f *FakeClient) SetPipelineVariablesMinimumOverrideRole(_ context.Context, 
 	}
 	f.PipelineVarOverrideRoles[owner+"/"+repo] = role
 	return nil
+}
+
+func (f *FakeClient) GetJobTokenRepositoryPushAllowed(_ context.Context, owner, repo string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetJobTokenRepositoryPushAllowed"); e != nil {
+		return false, e
+	}
+	return f.JobTokenRepositoryPushAllowed[owner+"/"+repo], nil
+}
+
+func (f *FakeClient) GetPushRuleBranchNameRegex(_ context.Context, owner, repo string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetPushRuleBranchNameRegex"); e != nil {
+		return "", e
+	}
+	return f.PushRuleBranchNameRegexes[owner+"/"+repo], nil
 }
 
 func (f *FakeClient) CompareCommits(_ context.Context, owner, repo, base, head string) (string, error) {

@@ -70,7 +70,7 @@ func TestEnsureManagedConfigDefaults_KeepsDenyAllOnUnselectedRepo(t *testing.T) 
 	assert.Empty(t, web.AllowedResources())
 }
 
-// The upstream create_issues grant is only a default for a pristine
+// The upstream tracking grant is only a default for a pristine
 // repository; one with an existing base layer needs an operator declaration.
 func TestEnsureManagedConfigDefaults_NonPristineRepoGetsNoUpstreamGrant(t *testing.T) {
 	m := newConvergeManifest("acme/api")
@@ -92,10 +92,11 @@ func TestPreflightManagedConfig_PresetLoadFailureIsReportedInGuidance(t *testing
 	fc := newFakeClientForBatch("acme/api")
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("keep_history: true\n")
 
-	err := PreflightManagedConfig(context.Background(), m, newTestClientFactory(fc), nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "adoption required")
-	assert.Contains(t, err.Error(), "loading the declared preset")
+	adoption, err := PreflightManagedConfig(context.Background(), m, newTestClientFactory(fc), nil)
+	require.NoError(t, err)
+	require.Len(t, adoption, 1)
+	assert.Contains(t, adoption[0].Guidance, "adoption required")
+	assert.Contains(t, adoption[0].Guidance, "loading the declared preset")
 }
 
 // pristineInstallation is the single predicate convergence, status and

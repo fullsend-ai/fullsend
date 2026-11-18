@@ -32,6 +32,11 @@ type GitLabClient interface {
 	// ListIssueNotes MUST return notes in ascending created_at order.
 	ListIssueNotes(ctx context.Context, owner, repo string, issueIID int) ([]Note, error)
 	ListMergeRequestNotes(ctx context.Context, owner, repo string, mrIID int) ([]Note, error)
+	// ListMergeRequestDiffVersions returns every diff version of the
+	// merge request. GitLab records a new version each time the source
+	// branch is pushed, so the versions reveal pushes to an open MR.
+	// Order is not significant: callers order versions by ID.
+	ListMergeRequestDiffVersions(ctx context.Context, owner, repo string, mrIID int) ([]MergeRequestDiffVersion, error)
 	// ListResourceLabelEvents MUST return events in ascending ID order
 	// (the poller iterates in reverse to find the most recent "add").
 	ListResourceLabelEvents(ctx context.Context, owner, repo string, issueIID int) ([]ResourceLabelEvent, error)
@@ -63,6 +68,9 @@ type GitLabClient interface {
 	DeleteRef(ctx context.Context, owner, repo, refPath string) error
 	GetAuthenticatedUser(ctx context.Context) (string, error)
 	GetAuthenticatedUserID(ctx context.Context) (int, error)
+	// GetUserBot reads the authoritative user bot flag. Issue and note author
+	// objects can omit it, including for project service accounts.
+	GetUserBot(ctx context.Context, userID int) (bool, error)
 	// CreateNoteAwardEmoji adds an emoji reaction. noteableType must be
 	// "Issue" or "MergeRequest" to select the correct API endpoint.
 	CreateNoteAwardEmoji(ctx context.Context, owner, repo string, noteableType string, noteableIID, noteID int, emoji string) error
@@ -74,21 +82,26 @@ type GitLabClient interface {
 	// which only returns direct members.
 	GetMemberAccessLevel(ctx context.Context, owner, repo string, userID int) (int, error)
 	GetProjectPath(ctx context.Context, projectID int) (string, error)
-	// CreatePipeline creates a new pipeline on the given ref with the
-	// given variables. Returns the pipeline ID and web URL.
-	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error)
 	// CreatePipelineWithInputs creates a new pipeline on the given ref
 	// using typed GitLab CI/CD pipeline inputs (spec:inputs) instead of
-	// user-defined pipeline variables. Unlike CreatePipeline, this
-	// remains usable when a project's
+	// user-defined pipeline variables. It remains usable when a project's
 	// ci_pipeline_variables_minimum_override_role is
 	// forge.PipelineVarOverrideNoOneAllowed, because that setting does
-	// not govern pipeline inputs (#7850). dispatch() uses this for a
+	// not govern pipeline inputs (#7850). dispatch() uses it only for a
 	// target repository whose committed wrapper declares the typed
-	// contract (see usesTypedDispatch) and falls back to CreatePipeline
-	// otherwise, since a poller binary upgrade is not synchronized with
-	// that repository's own scaffold migration.
+	// contract (see usesTypedDispatch); there is no variable-based
+	// fallback.
 	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error)
+	// CreateChildPipelineWithInputs starts a downstream pipeline on ref
+	// through the pipeline trigger API, authenticated by the running
+	// job's CI_JOB_TOKEN rather than the client's PAT (#8438). GitLab
+	// records it with source "pipeline" and attributes it to the user who
+	// owns the calling job, so it runs on a protected branch whenever that
+	// user may, independently of the Poller credential's protected-ref
+	// access. Implementations MUST NOT retry: an ambiguous outcome could
+	// otherwise start a duplicate agent pipeline. Returns the pipeline ID
+	// and web URL.
+	CreateChildPipelineWithInputs(ctx context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error)
 }
 
 // Issue represents a GitLab issue as returned by the API.
@@ -99,6 +112,7 @@ type Issue struct {
 	State     string    `json:"state"`
 	Labels    []string  `json:"labels"`
 	Author    UserRef   `json:"author"`
+	Assignees []UserRef `json:"assignees"`
 	ClosedBy  UserRef   `json:"closed_by"`
 	ClosedAt  time.Time `json:"closed_at"`
 	CreatedAt time.Time `json:"created_at"`
@@ -117,7 +131,9 @@ type MergeRequest struct {
 	TargetProjectID int       `json:"target_project_id"`
 	SourceBranch    string    `json:"source_branch"`
 	TargetBranch    string    `json:"target_branch"`
+	SHA             string    `json:"sha"` // head commit of the source branch
 	Author          UserRef   `json:"author"`
+	Assignees       []UserRef `json:"assignees"`
 	MergeUser       UserRef   `json:"merge_user"`
 	MergedBy        UserRef   `json:"merged_by"`
 	ClosedBy        UserRef   `json:"closed_by"`
@@ -133,6 +149,15 @@ type Note struct {
 	Body      string    `json:"body"`
 	Author    UserRef   `json:"author"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// MergeRequestDiffVersion is one diff version of a merge request, as
+// returned by the merge request versions API. Version IDs increase with
+// creation order.
+type MergeRequestDiffVersion struct {
+	ID            int       `json:"id"`
+	HeadCommitSHA string    `json:"head_commit_sha"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // UserRef is a minimal user reference from the GitLab API.

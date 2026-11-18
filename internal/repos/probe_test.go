@@ -644,40 +644,7 @@ func TestProbeComponents_GitLab_ReadsPipelineMarker(t *testing.T) {
 	}
 }
 
-func TestProbeComponents_GitLab_FallsBackToLegacyDispatchMarker(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# Fullsend CI pipeline\n")
-	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
-
-	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
-	if err != nil {
-		t.Fatalf("ProbeComponents() error = %v", err)
-	}
-	present, ref := workflowRefFromProbe(t, components)
-	if !present {
-		t.Fatal("workflow present = false, want true because the pipeline wrapper exists")
-	}
-	if ref != "v2.4.0" {
-		t.Errorf("workflow ref = %q, want v2.4.0 from leftover dispatch stub", ref)
-	}
-}
-
-func TestProbeComponents_GitLab_PrefersPipelineMarkerOverLegacy(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.6.0\n")
-	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
-
-	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
-	if err != nil {
-		t.Fatalf("ProbeComponents() error = %v", err)
-	}
-	_, ref := workflowRefFromProbe(t, components)
-	if ref != "v2.6.0" {
-		t.Errorf("workflow ref = %q, want v2.6.0 from pipeline wrapper", ref)
-	}
-}
-
-func TestProbeComponents_GitLab_LegacyDispatchOnly(t *testing.T) {
+func TestProbeComponents_GitLab_IgnoresLeftoverDispatchMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
 
@@ -687,9 +654,9 @@ func TestProbeComponents_GitLab_LegacyDispatchOnly(t *testing.T) {
 	}
 	present, ref := workflowRefFromProbe(t, components)
 	if present {
-		t.Fatal("workflow present = true, want false so converge repairs the missing pipeline wrapper")
+		t.Fatal("workflow present = true, want false: only the pipeline wrapper carries the marker")
 	}
-	if ref != "v2.4.0" {
-		t.Errorf("workflow ref = %q, want v2.4.0 from leftover dispatch stub", ref)
+	if ref != "" {
+		t.Errorf("workflow ref = %q, want empty: the retired dispatch file is not read", ref)
 	}
 }

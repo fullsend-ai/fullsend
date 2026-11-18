@@ -1,0 +1,5 @@
+{
+  "target_repo": "<repo>",
+  "title": "Proposal for #<issue>",
+  "body": "Filed from <repo>#<issue>"
+}

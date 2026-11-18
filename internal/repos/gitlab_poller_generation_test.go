@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -45,6 +46,8 @@ type handoffFake struct {
 	accountUID    int64
 	accountErr    error
 	accountCalls  int
+	prepareErrs   []error // consumed per EnsureReplacementPollerAccess call
+	prepareCalls  int
 	inventoryErrs []error // consumed per VerifyReplacementPollerCredentialsRevoked call
 	bootstrapErr  error
 	bootRevokeErr error
@@ -82,6 +85,19 @@ func (f *handoffFake) CreateReplacementPoller(context.Context, string, string) (
 		f.c.ProjectMemberAccess[f.accountUID] = forge.GitLabAccessLevelDeveloper
 	}
 	return f.accountUID, f.accountErr
+}
+
+// EnsureReplacementPollerAccess consumes prepareErrs one call at a time, so a
+// membership or branch-policy failure can be followed by a later success. It
+// is not recorded in events: the ordering tests concern the elevation steps.
+func (f *handoffFake) EnsureReplacementPollerAccess(context.Context, string, string, int64) error {
+	f.prepareCalls++
+	if len(f.prepareErrs) == 0 {
+		return nil
+	}
+	err := f.prepareErrs[0]
+	f.prepareErrs = f.prepareErrs[1:]
+	return err
 }
 
 func (f *handoffFake) VerifyTriggerStartsProtectedPipeline(context.Context, string, string, *forge.PipelineTriggerToken) error {
@@ -1109,12 +1125,46 @@ func TestLoadPollerGenerations_Validation(t *testing.T) {
 	assert.Equal(t, int64(6), pair.CurrentUserID)
 	assert.Equal(t, int64(5), pair.RetiringUserID)
 
-	fc = forge.NewFakeClient()
-	fc.VariableValues = map[string]string{handoffOwner + "/" + handoffRepo + "/" + forge.VarGitLabPollerGenerations: "  "}
-	fc.VariablesExist = map[string]bool{handoffOwner + "/" + handoffRepo + "/" + forge.VarGitLabPollerGenerations: true}
-	st, err = loadPollerGenerations(ctx, fc, handoffOwner, handoffRepo)
+}
+
+// An absent variable is the first handoff, or the documented recovery after
+// an administrator deleted it, so it loads as an empty state.
+func TestLoadPollerGenerations_AbsentIsEmpty(t *testing.T) {
+	fc := forge.NewFakeClient()
+	st, err := loadPollerGenerations(context.Background(), fc, handoffOwner, handoffRepo)
 	require.NoError(t, err)
-	assert.Equal(t, PollerGenerationState{}, st, "an empty variable is an empty state")
+	assert.Equal(t, PollerGenerationState{}, st)
+}
+
+// A variable that exists but is blank may mean recorded state was lost, so it
+// fails closed instead of silently dropping a current, retiring, or
+// quarantined record.
+func TestLoadPollerGenerations_PresentBlankFailsClosed(t *testing.T) {
+	key := handoffOwner + "/" + handoffRepo + "/" + forge.VarGitLabPollerGenerations
+	for name, raw := range map[string]string{"empty": "", "whitespace": " \n\t "} {
+		t.Run(name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.VariableValues = map[string]string{key: raw}
+			_, err := loadPollerGenerations(context.Background(), fc, handoffOwner, handoffRepo)
+			require.ErrorIs(t, err, errPollerGenerationsBlank)
+		})
+	}
+}
+
+// The handoff refuses to start a generation over blank state, and leaves the
+// variable for the administrator to reconcile.
+func TestHandoffPollerGeneration_BlankStateFailsClosed(t *testing.T) {
+	f := newHandoffFake()
+	key := handoffOwner + "/" + handoffRepo + "/" + forge.VarGitLabPollerGenerations
+	if f.c.VariableValues == nil {
+		f.c.VariableValues = map[string]string{}
+	}
+	f.c.VariableValues[key] = "  "
+	res, err := f.run(t)
+	require.ErrorIs(t, err, errPollerGenerationsBlank)
+	assert.Nil(t, res.Trigger)
+	assert.Zero(t, f.accountCalls, "no account is created over possibly lost state")
+	assert.Equal(t, "  ", f.c.VariableValues[key])
 }
 
 func TestWritePollerGenerations_Error(t *testing.T) {
@@ -1159,4 +1209,105 @@ func TestPollerCutoverTransitions(t *testing.T) {
 	require.Error(t, err)
 	_, err = finishPollerRetirement(done, 0)
 	require.Error(t, err)
+}
+
+// A generation left at account_recorded after a failed membership write is
+// resumable: the next run re-establishes Developer membership before it
+// elevates, instead of minting a trigger for an account that is not a member.
+func TestHandoffPollerGeneration_AccountRecordedResumesAfterMembershipFailure(t *testing.T) {
+	f := newHandoffFake()
+	f.c.ProjectMemberAccess[handoffNewUID] = forge.GitLabAccessLevelDeveloper
+	f.seed(t, PollerGenerationState{CurrentUserID: handoffCurrentUID, Pending: &PendingPollerGeneration{UserID: handoffNewUID, Phase: PollerPhaseAccountRecorded}})
+	f.prepareErrs = []error{fmt.Errorf("adding the replacement Poller as a Developer: %w", errors.New("500 internal error"))}
+
+	res, err := f.run(t)
+	require.Error(t, err)
+	assert.Nil(t, res.Trigger)
+	assert.Empty(t, f.events, "the account is not raised while its membership is unproven")
+	assert.Equal(t, PollerPhaseAccountRecorded, f.state(t).Pending.Phase)
+
+	res, err = f.run(t)
+	require.NoError(t, err)
+	require.NotNil(t, res.Trigger)
+	assert.Equal(t, 2, f.prepareCalls, "every attempt re-prepares the recorded account")
+	assert.Zero(t, f.accountCalls, "the recorded account is reused")
+	assert.Equal(t, PollerPhaseVerified, f.state(t).Pending.Phase)
+}
+
+// A protected-branch policy that does not admit the account defers before any
+// elevation or trigger mint, stays resumable, and completes once the
+// operator's policy admits it.
+func TestHandoffPollerGeneration_AccountRecordedDefersUntilBranchPolicyAdmitsIt(t *testing.T) {
+	f := newHandoffFake()
+	f.prepareErrs = []error{&PollerGenerationUnsafeError{Reason: "user ID 5005 cannot start pipelines on protected branch \"main\""}}
+
+	res, err := f.run(t)
+	require.NoError(t, err)
+	assert.Nil(t, res.Trigger)
+	assert.Contains(t, res.DeferReason, "cannot start pipelines on protected branch")
+	assert.Contains(t, res.DeferReason, "polling schedules remain in effect")
+	assert.Equal(t, []string{"create-account"}, f.events, "no elevation, bootstrap credential, or trigger")
+	assert.Zero(t, f.triggerCreates)
+	st := f.state(t)
+	require.NotNil(t, st.Pending)
+	assert.Equal(t, PollerPhaseAccountRecorded, st.Pending.Phase)
+
+	res, err = f.run(t)
+	require.NoError(t, err)
+	require.NotNil(t, res.Trigger)
+	assert.Equal(t, 1, f.accountCalls, "the deferred account is resumed, not replaced")
+	assert.Equal(t, 1, f.triggerCreates)
+}
+
+// A branch-access refusal is reported as standalone remediation that names the
+// replacement account by username and the exact GitLab setting to change,
+// without the generic "was not raised because" wrapper.
+func TestHandoffPollerGeneration_BranchAccessDeferralIsInstructional(t *testing.T) {
+	f := newHandoffFake()
+	f.prepareErrs = []error{&ReplacementPollerBranchAccessError{UserID: 5005, Username: "service_account_x", Branch: "master", RuleName: "master"}}
+
+	res, err := f.run(t)
+	require.NoError(t, err)
+	assert.Nil(t, res.Trigger)
+	assert.True(t, strings.HasPrefix(res.DeferReason, "webhook fast-path blocked: the replacement GitLab Poller service account @service_account_x (user ID 5005) cannot start pipelines on protected branch \"master\". "), res.DeferReason)
+	assert.Contains(t, res.DeferReason, `edit the "master" rule, and add @service_account_x under "Allowed to merge"`)
+	assert.Contains(t, res.DeferReason, "re-run repos install")
+	assert.True(t, strings.HasSuffix(res.DeferReason, ". The polling schedules remain in effect"), res.DeferReason)
+	assert.NotContains(t, res.DeferReason, "was not raised")
+	assert.Equal(t, []string{"create-account"}, f.events, "no elevation, bootstrap credential, or trigger")
+	assert.Equal(t, PollerPhaseAccountRecorded, f.state(t).Pending.Phase)
+}
+
+func TestReplacementPollerBranchAccessError(t *testing.T) {
+	t.Run("username and exact rule", func(t *testing.T) {
+		msg := (&ReplacementPollerBranchAccessError{UserID: 7, Username: "svc", Branch: "main", RuleName: "main"}).Error()
+		assert.Contains(t, msg, `service account @svc (user ID 7) cannot start pipelines on protected branch "main"`)
+		assert.Contains(t, msg, `open the project's Settings > Repository > Protected branches, edit the "main" rule, and add @svc under "Allowed to merge"`)
+		assert.Contains(t, msg, "allowed to merge or push")
+	})
+	t.Run("unknown username falls back to the user ID", func(t *testing.T) {
+		msg := (&ReplacementPollerBranchAccessError{UserID: 7, Branch: "main", RuleName: "main"}).Error()
+		assert.Contains(t, msg, `service account (user ID 7) cannot start pipelines`)
+		assert.Contains(t, msg, `add the fullsend-poller service account with user ID 7 under "Allowed to merge"`)
+		assert.NotContains(t, msg, "@")
+	})
+	t.Run("does not suggest a Developer-wide grant", func(t *testing.T) {
+		msg := (&ReplacementPollerBranchAccessError{UserID: 7, Username: "svc", Branch: "main", RuleName: "main"}).Error()
+		assert.NotContains(t, msg, "Developers")
+		assert.Contains(t, msg, "keep the polling schedules in effect")
+	})
+	t.Run("username with control characters falls back to the user ID", func(t *testing.T) {
+		for _, name := range []string{"svc\x1b[31m", "svc\rforged", "svc\nforged line", "svc name", "svc@x"} {
+			msg := (&ReplacementPollerBranchAccessError{UserID: 7, Username: name, Branch: "main", RuleName: "main"}).Error()
+			assert.NotContains(t, msg, "\x1b", name)
+			assert.NotContains(t, msg, "\r", name)
+			assert.NotContains(t, msg, "\n", name)
+			assert.NotContains(t, msg, "@", name)
+			assert.Contains(t, msg, `add the fullsend-poller service account with user ID 7 under "Allowed to merge"`, name)
+		}
+	})
+	t.Run("wildcard-only rule is named", func(t *testing.T) {
+		msg := (&ReplacementPollerBranchAccessError{UserID: 7, Username: "svc", Branch: "main", RuleName: "ma*"}).Error()
+		assert.Contains(t, msg, `edit the wildcard rule "ma*" that protects "main"`)
+	})
 }

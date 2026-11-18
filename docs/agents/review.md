@@ -10,7 +10,7 @@ Code review specialist that evaluates pull requests for correctness, security, i
 
 ## How the agent works
 
-The review agent is triggered when a PR is opened or updated. It follows the same pre-script / sandbox / post-script pipeline as the other agents.
+The review agent is triggered when a PR is opened or updated, subject to the synchronize diff guard described below. It follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
 1. **Pre-script** validates inputs and fetches PR metadata.
 2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator triages the change, then dispatches specialized sub-agents in parallel — each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
@@ -35,17 +35,57 @@ Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-fix` still require
 write or higher.
 
-The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
-synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
-On GitLab, automatic review fires when the cron poller sees an MR whose `created_at` is newer than the watermark
-(up to one poll interval of delay). Native `merge_request_event` dispatch was removed. `fullsend repos install`
-provisions a project webhook with merge-request events enabled ([ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md))
-as a fast path that cuts this latency. Provisioning is deferred until the dispatcher and its scripts are on the
-default branch, the default branch is protected, and `no_one_allowed` is verified, so a repository whose scaffold
-merge request is still open dispatches via the ADR 0067 poller until then. The poller stays in place as the
-reconciliation backstop for missed events.
-Push-to-open-MR (GitHub `synchronize`) is not auto-detected;
-comment `/fs-review` to re-review after new commits.
+The `/fs-review` command does not accept arguments and always forces a review. The review agent also runs automatically when a PR is opened,
+when its effective diff changes on a synchronize event, or when it is moved out of draft by a user with triage-level repository permission or higher.
+For GitHub `pull_request_target` synchronize events, the review is skipped when the complete effective diff matches the previous app-verified approved review. The guard posts or updates one PR-visible `fullsend:review-skip` status comment linking the previous approved review. GitLab diff metadata uses the same normalized model, but the GitLab poller does not consume this marker yet and continues to review synchronized merge requests.
+The deduplication check runs before final Bash/CEL stage selection, so CEL-selected review routes participate as well. File modes are part of the compared effective diff identity, so executable-bit changes cannot be hidden by an otherwise identical textual patch.
+The guard fails open and runs the review when there is no prior diff hash, the prior review cannot be verified, a required hash/head or base/head tree-mode API call fails,
+the file listing is incomplete or truncated, or any file has no representable patch (for example, a binary or rename-only change).
+If a built-in GitHub review run is cancelled while its commit is still the
+pull request HEAD, its GitHub status comment identifies that commit and directs
+maintainers to review or retry with `/fs-review` before merging. If a newer
+commit superseded the cancelled review, the comment directs maintainers to
+check the new HEAD's review status without suggesting `/fs-review`, which could
+cancel an in-progress review for that HEAD. If the current HEAD cannot be
+verified, the comment omits retry guidance. Status comments routed to Jira omit
+this GitHub-only guidance.
+
+The reviewed commit comes from the explicit workflow input or the PR event's
+`pull_request.head.sha`; GitHub's generic `GITHUB_SHA` can identify a merge or
+base commit and is not used to decide whether a cancelled review was superseded.
+
+GitHub review submissions, including `commented` reviews with an empty summary,
+continue through normal routing. An empty summary can still accompany
+substantive inline review comments, so custom triggers receive the complete
+review event.
+
+On GitLab, opening an MR triggers automatic review through the
+[ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) webhook fast
+path. `fullsend repos install` provisions a project webhook with merge-request
+events enabled. Each event starts a dispatcher pipeline on the protected default
+branch, which dispatches review without waiting for a poll. Provisioning is
+deferred until the dispatcher and its scripts are on the default branch, the
+default branch is protected, and `no_one_allowed` is verified. A repository
+whose scaffold merge request is still open therefore relies on the poller alone
+once the scaffold is merged to a protected default branch. Until then neither
+path dispatches, because the poll jobs also require a protected ref. The
+[ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) cron poller stays
+in place as the reconciliation backstop. When a webhook delivery is missed or
+the fast path is not provisioned, review fires once the poller sees an MR whose
+`created_at` is newer than the watermark (up to one poll interval of delay).
+Native `merge_request_event` pipeline dispatch was removed.
+A push to an open MR (GitHub `synchronize`) also triggers automatic review,
+through the poller only, so expect up to one poll interval of delay. The
+webhook dispatcher rejects merge request updates. GitLab records a new diff
+version on each push. When the newest version moves the MR head and was created
+after the watermark, the poller dispatches review for that head. This includes
+fix-agent pushes to bot-authored MRs, and the fix stage's iteration cap bounds
+the loop. Dispatch is keyed on the head SHA, so later polls that see the same
+head do not review it again. Diff versions do not record who pushed, so the
+poller cannot authorize the pusher. It therefore reviews pushes only to
+same-project MRs, where any pusher already has project push access. A push to
+a fork MR is not reviewed automatically, and re-review of fork MR pushes is
+currently unsupported (the router also denies slash commands on fork MRs).
 
 ## Control labels
 
@@ -62,8 +102,11 @@ When the review agent requests changes (without rejecting), no outcome label is
 applied. On GitHub, the native `pull_request_review` event triggers the
 [fix agent](fix.md) directly. On GitLab, which has no equivalent native review
 event, the review bot posts an MR note with the hidden
-`<!-- fullsend:changes-requested -->` marker; the scheduled poller retains that
-bot-authored note and the dispatch router routes it to fix. Fork merge requests
+`<!-- fullsend:changes-requested -->` marker; the webhook fast path, with the
+scheduled poller as reconciliation backstop, retains that bot-authored note and
+the dispatch router routes it to fix. Both paths retain the note only when its
+author is the Poller bot user, so with distinct Analyst and Poller identities
+it does not dispatch automatically and `/fs-fix` is needed. Fork merge requests
 are blocked from automatic fix runs, matching GitHub. Comment-only reviews do
 not carry the marker and do not dispatch fix.
 

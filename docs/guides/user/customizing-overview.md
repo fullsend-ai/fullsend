@@ -19,22 +19,9 @@ needs. Most teams only need AGENTS.md and perhaps a skill or two.
 
 ## AGENTS.md
 
-The simplest way to influence agent behavior. Add an `AGENTS.md` file to your
-repository with conventions that apply to all contributors — human and agent
-alike:
-
-```markdown
-# AGENTS.md
-
-## Testing
-- Always run `make test` before committing.
-
-## Code style
-- Use structured logging via `slog`. Do not use `log.Printf`.
-```
-
-Every agent reads `AGENTS.md` automatically. No fullsend configuration
-changes needed.
+The simplest way to influence agent behavior. Commit an `AGENTS.md` file with
+conventions that apply to all contributors, human and agent alike. Every agent
+reads it automatically, with no fullsend configuration changes.
 
 **Best for:** coding conventions, test commands, architecture rules, domain
 context.
@@ -44,19 +31,9 @@ context.
 ## Skills
 
 Skills are self-contained markdown documents that teach an agent how to
-perform a specific task. Place them in `.agents/skills/` in your repo and
-symlink `.claude/skills` to make them discoverable:
-
-```
-your-repo/
-  .agents/skills/
-    deployment-checks/
-      SKILL.md
-  .claude/skills -> ../.agents/skills
-```
-
-Skills extend what agents know — linting rules, deployment checklists,
-customer data sources — without changing any fullsend configuration.
+perform a specific task, such as a linting rule, a deployment checklist, or a
+customer data source. Commit them to your repo to extend what agents know
+without changing any fullsend configuration.
 
 **Best for:** agent-specific domain knowledge, helper scripts, extension
 points, replacing built-in skills.

@@ -34,10 +34,9 @@ func openAIWIFInstallStatusRuntimeIntegration(t *testing.T, vendor bool) {
 	manifest := writeTestManifest(t, manifestYAML)
 	opts := useOpenAIInputs(githubManagedInstallOpts(manifest, fc))
 	opts.openAIAPIKey = ""
-	opts.roles = config.PerRepoDefaultRoles()
-	opts.rolesChanged = true
 	if vendor {
-		opts.vendor, opts.vendorChanged = true, true
+		// The manifest entry declares vendor: true; the local artifacts are
+		// command-line inputs.
 		opts.fullsendSource = "../.."
 		opts.fullsendBinary = amd64VendorBinary(t)
 	}
@@ -114,7 +113,7 @@ func TestOpenAIWIFLiveInstallAndRun(t *testing.T) {
 	}
 	checkSecrets()
 	manifest := writeTestManifest(t, fmt.Sprintf("version: 1\ngithub:\n  mint_url: %q\n  fullsend_ref: %q\n  inference:\n    auth: openai-wif\n  repos:\n    - name: %q\n", mintURL, ref, fullName))
-	require.NoError(t, runReposInstall(ctx, &reposInstallConfig{manifest: manifest, concurrency: 1, direct: true, rolesChanged: true, roles: config.PerRepoDefaultRoles(), testClient: client}))
+	require.NoError(t, runReposInstall(ctx, &reposInstallConfig{manifest: manifest, concurrency: 1, direct: true, testClient: client}))
 	result, err := statusJSON(t, manifest, client)
 	require.NoError(t, err, "%+v", result.Repos)
 	require.Len(t, result.Repos, 1)

@@ -10,19 +10,21 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 const (
@@ -53,6 +55,29 @@ const (
 	// PI_CODING_AGENT_DIR so pi never auto-loads them; PiRuntime.Run passes
 	// each one explicitly with -e.
 	SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"
+	// SandboxOpenCodeConfig is the OpenCode config directory inside the
+	// sandbox. Exported as OPENCODE_CONFIG_DIR (OpenCodeRuntime.EnvExports).
+	// Outside the cloned repo tree, like SandboxClaudeConfig and
+	// SandboxPiConfig, so the target repo cannot pre-seed it and a workspace
+	// reset does not clear it. Unlike pi's config dir, OpenCode takes an
+	// explicit env pointer to it, so the agent-writable workspace .opencode/
+	// is never on the config search path. Path convention pinned by #515
+	// (the hook plugin adapter lives under this dir at plugins/, integrity-
+	// gated before .env is sourced, mirroring pi's piHooksGuard).
+	SandboxOpenCodeConfig = "/sandbox/opencode-config" //nolint:gosec // not a credential
+	// SandboxJiraDir holds SandboxJiraTokenFile. Outside the cloned repo
+	// tree, so the target repo cannot pre-seed it and a workspace reset does
+	// not clear it.
+	SandboxJiraDir = "/sandbox/fullsend-jira" //nolint:gosec // not a credential
+	// SandboxJiraTokenFile holds the current JIRA_TOKEN placeholder when the
+	// runner mints the sandbox's Jira access token (the fullsend-jira
+	// provider with OAuth 2.0 client credentials, fullsend#9220). The runner
+	// rewrites it after every refresh, because a running process keeps the
+	// placeholder it started with and OpenShell resolves that one to the
+	// old, expired token (ADR 0092). Jira skills read the token from this
+	// file per call and fall back to $JIRA_TOKEN when it is absent. It holds
+	// only the placeholder, never the token.
+	SandboxJiraTokenFile = SandboxJiraDir + "/token" //nolint:gosec // not a credential
 
 	// KeepAliveCommand is the sandbox's canonical main process, started by
 	// createOnce so the sandbox stays Ready between `sandbox exec` calls
@@ -81,7 +106,31 @@ const (
 	// ("provider was modified concurrently").
 	providerRetries      = 3
 	providerRetryBackoff = 500 * time.Millisecond
+
+	// safeDownloadAttempts is the number of full download attempts
+	// SafeDownload makes into a fresh staging directory. OpenShell retries
+	// every tar-extraction failure internally, including deterministic
+	// failures, and directory retries unpack into the same destination. The
+	// outer attempt can recover only when the earlier failure was transient;
+	// a deterministic failure will repeat. Track NVIDIA/OpenShell#4805 and
+	// remove this workaround once upstream stages each directory retry.
+	safeDownloadAttempts = 2
 )
+
+// ErrRepositoryValidation marks a failure in post-download repository
+// processing: sanitization, root validation, or shallow reconciliation after
+// the download itself succeeded. It names the phase only and wraps the cause,
+// so errors.Is and errors.As still report the underlying condition (for
+// example context.DeadlineExceeded or an fs error). Transport, staging, and
+// publication failures are not tagged.
+var ErrRepositoryValidation = errors.New("repository validation failed")
+
+// ErrRepositoryRejected marks a direct, deterministic content rejection: the
+// same downloaded output cannot pass. Timeouts, Git query failures, and
+// filesystem errors are never tagged.
+var ErrRepositoryRejected = errors.New("repository rejected")
+
+func rejectRepository(err error) error { return fmt.Errorf("%w: %w", ErrRepositoryRejected, err) }
 
 // RetrySleepFn is the function called between retry attempts in
 // CreateWithRetry. It defaults to time.Sleep. Override in tests to
@@ -119,9 +168,98 @@ func sanitizeDownload(localDir string) error {
 		return err
 	}
 
-	return filepath.WalkDir(absLocal, func(path string, d fs.DirEntry, err error) error {
+	var reftableDirs []string
+	reftableSeen := make(map[string]bool)
+	worktreeDirs := make(map[string]bool)
+	err = filepath.WalkDir(absLocal, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		inGit, rel := inGitDir(path, absLocal)
+		// Filter metadata that can redirect commit ancestry.
+		if inGit {
+			folded := strings.ToLower(rel)
+			// Reftable stores are verified natively after the walk, but their
+			// on-disk shape is validated here first. Every entry beneath the
+			// store must be a regular file: a directory, symlink, or special
+			// file could redirect or block native Git.
+			if folded == "reftable" {
+				if d.Type()&fs.ModeSymlink != 0 || !d.IsDir() {
+					return rejectRepository(fmt.Errorf("git reftable storage %s is not a real directory", path))
+				}
+				gitDir := filepath.Dir(path)
+				if !reftableSeen[gitDir] {
+					reftableSeen[gitDir] = true
+					reftableDirs = append(reftableDirs, gitDir)
+				}
+				return nil
+			}
+			if strings.HasPrefix(folded, "reftable/") {
+				if !d.Type().IsRegular() {
+					return rejectRepository(fmt.Errorf("git reftable storage entry %s is not a regular file", path))
+				}
+				return nil
+			}
+			if folded == "worktrees" {
+				worktreeDirs[filepath.Dir(path)] = true
+			}
+			switch folded {
+			case "":
+				// A symlinked .git hides metadata from this walk at any depth;
+				// root gitfiles redirect it outside the inspected directory.
+				if d.Type()&fs.ModeSymlink != 0 {
+					return rejectRepository(fmt.Errorf("repository git metadata %s is a symlink", path))
+				}
+				if filepath.Dir(path) == absLocal && !d.IsDir() {
+					return rejectRepository(fmt.Errorf("repository git metadata %s is not a real directory", path))
+				}
+			case "commondir":
+				return rejectRepository(fmt.Errorf("unsupported git metadata redirect %s", path))
+			case "objects/info/alternates", "objects/info/http-alternates":
+				// Alternate stores can carry unfiltered commit graphs.
+				return rejectRepository(fmt.Errorf("unsupported git metadata alternate object store %s", path))
+			case "refs", "info", "objects", "objects/info":
+				// These containers must be real directories: Git follows
+				// symlinks that the directory walker does not.
+				if d.Type()&fs.ModeSymlink != 0 || !d.IsDir() {
+					return rejectRepository(fmt.Errorf("git metadata container %s is not a real directory", path))
+				}
+			case "packed-refs":
+				// WalkDir has already read a directory entry before the
+				// callback; removing it here would make the walk read a
+				// deleted path. Reject the layout instead.
+				if d.IsDir() {
+					return rejectRepository(fmt.Errorf("unsupported git metadata storage %s", path))
+				}
+				if !d.Type().IsRegular() {
+					return removeGitMetadata(path)
+				}
+				return filterPackedRefs(path)
+			case "shallow":
+				// Only the root boundary is reconciled with the trusted host
+				// snapshot by SafeDownload. Defer that entry so the
+				// generic symlink handling below cannot discard a supplied
+				// symlink before that validation rejects it. Nested
+				// repositories keep the ordinary walk behavior.
+				if filepath.Dir(filepath.Dir(path)) == absLocal {
+					// The name matched case-insensitively, so a case variant
+					// would defer too and skip the generic symlink handling.
+					if !d.Type().IsRegular() {
+						return rejectRepository(fmt.Errorf("git shallow metadata %s is not a regular file", path))
+					}
+					return nil
+				}
+			default:
+				if ancestryMetadata(folded) {
+					if err := removeGitMetadata(path); err != nil {
+						return err
+					}
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+			}
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			target, readErr := os.Readlink(path)
@@ -170,26 +308,161 @@ func sanitizeDownload(localDir string) error {
 		// Remove AppleDouble (._*) files inside .git/ directories.
 		// These are created by macOS bsdtar when archiving files with
 		// extended attributes and corrupt git when extracted on Linux.
-		if !d.IsDir() && strings.HasPrefix(d.Name(), "._") && inGitDir(path, absLocal) {
+		if !d.IsDir() && strings.HasPrefix(d.Name(), "._") && inGit {
 			return os.Remove(path)
 		}
 
 		return nil
 	})
-}
-
-// inGitDir reports whether path is inside a ".git" directory under root.
-func inGitDir(path, root string) bool {
-	rel, err := filepath.Rel(root, path)
 	if err != nil {
-		return false
+		return err
 	}
-	for _, component := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
-		if component == ".git" {
-			return true
+
+	// Reject registered worktrees because they can carry additional ref stores
+	// that this walker does not inspect.
+	for _, gitDir := range reftableDirs {
+		if worktreeDirs[gitDir] {
+			return rejectRepository(fmt.Errorf("unsupported reftable worktree metadata %s", filepath.Join(gitDir, "worktrees")))
 		}
 	}
-	return false
+
+	// Only after the walk accepted the layout, verify and clean each store.
+	// The staging parent, not the untrusted tree, is the command's cwd.
+	cwd := filepath.Dir(absLocal)
+	for _, gitDir := range reftableDirs {
+		if err := sanitizeReftableStore(cwd, gitDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// inGitDir reports whether path is inside a .git directory and returns its path
+// below the outermost .git. The .git entry itself returns true, "" so the
+// root symlink check can reject it. Ordinary nested directory-form .git repos
+// are filtered the same way; alternate layouts are not resolved.
+func inGitDir(path, root string) (bool, string) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false, ""
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i, part := range parts {
+		if strings.EqualFold(part, ".git") {
+			// Metadata comparisons use slash-separated paths on every
+			// platform; filesystem paths stay native at call sites.
+			return true, filepath.ToSlash(filepath.Join(parts[i+1:]...))
+		}
+	}
+	return false, ""
+}
+
+// ancestryMetadata reports whether a lowercased .git-relative path holds an
+// ancestry override: loose replacement refs, grafts, or commit-graph caches
+// (the monolithic file and the split commit-graphs directory).
+func ancestryMetadata(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	if rel == "refs/replace" || rel == "info/grafts" {
+		return true
+	}
+	return filepath.ToSlash(filepath.Dir(rel)) == "objects/info" && strings.HasPrefix(filepath.Base(rel), "commit-graph")
+}
+
+func removeGitMetadata(path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("removing git metadata %s: %w", path, err)
+	}
+	return nil
+}
+
+// replaceRefRecord matches an ordinary packed-refs line in the refs/replace
+// namespace. Go's POSIX [[:space:]] class is ASCII-only, so ref names that
+// contain non-ASCII whitespace do not match the separator.
+var replaceRefRecord = regexp.MustCompile(`^[^[:space:]]+[[:space:]]+refs/replace/`)
+
+const (
+	maxPackedRefsBytes = 32 << 20
+	maxShallowBytes    = 4 << 20
+)
+
+// readBoundedFile reads up to limit+1 bytes to detect oversized files.
+func readBoundedFile(path string, limit int64) ([]byte, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	return data, int64(len(data)) > limit, nil
+}
+
+// filterPackedRefs drops refs/replace lines and one immediately following
+// peeled line, keeping every other line byte-for-byte. Matching is
+// case-sensitive because Git ref names are. The rewrite uses a sibling
+// temporary file so a hardlinked packed-refs target is replaced, not truncated.
+func filterPackedRefs(path string) error {
+	data, oversized, err := readBoundedFile(path, maxPackedRefsBytes)
+	if err != nil {
+		return fmt.Errorf("reading git metadata %s: %w", path, err)
+	}
+	if oversized {
+		return rejectRepository(fmt.Errorf("git metadata %s is larger than %d bytes", path, maxPackedRefsBytes))
+	}
+
+	var out strings.Builder
+	out.Grow(len(data))
+	changed, droppingPeeled := false, false
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		switch {
+		case droppingPeeled && strings.HasPrefix(line, "^"):
+			droppingPeeled = false
+			changed = true
+		case !strings.HasPrefix(line, "#") && replaceRefRecord.MatchString(line):
+			droppingPeeled = true
+			changed = true
+		default:
+			droppingPeeled = false
+			out.WriteString(line)
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return replaceFileContents(path, []byte(out.String()))
+}
+
+// replaceFileContents atomically replaces path via a sibling temporary file.
+func replaceFileContents(path string, data []byte) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("rewriting git metadata %s: %w", path, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("rewriting git metadata %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	err = tmp.Chmod(info.Mode().Perm())
+	if err == nil {
+		_, err = tmp.Write(data)
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmpName, path)
+	}
+	if err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("rewriting git metadata %s: %w", path, err)
+	}
+	return nil
 }
 
 // ImportProfile imports a single openshell provider profile from a YAML
@@ -334,6 +607,28 @@ var gatewayDefaultFalseKeys = map[string]bool{
 	"allow_uninspected_credentials":   true,
 }
 
+// normalizeLocalBinaries rewrites, in place, the entries of the top-level
+// `binaries` list in the local profile from the object form
+// `{path: <string>}` to the scalar the gateway exports (OpenShell 0.1.2; see
+// #8754). An entry is rewritten only when it is an object holding exactly the
+// key `path` with a string value, so any other object shape still fails the
+// comparison. The gateway export is canonical and is never normalized.
+func normalizeLocalBinaries(doc map[string]any) {
+	list, ok := doc["binaries"].([]any)
+	if !ok {
+		return
+	}
+	for i, entry := range list {
+		obj, ok := entry.(map[string]any)
+		if !ok || len(obj) != 1 {
+			continue
+		}
+		if path, ok := obj["path"].(string); ok {
+			list[i] = path
+		}
+	}
+}
+
 // profileContentEqual reports whether the gateway's export of a profile
 // (exported) still carries the content of the local profile YAML document
 // (local). It is driven by the local file, not by knowledge of what OpenShell
@@ -355,6 +650,9 @@ var gatewayDefaultFalseKeys = map[string]bool{
 // a non-zero default; a new non-zero default OpenShell adds fails closed
 // rather than hiding a stale value.
 //
+// Before comparing, local `binaries` entries written as `{path: X}` are
+// rewritten to the scalar form the export uses (normalizeLocalBinaries).
+//
 // Unparseable input is an error, not a mismatch.
 func profileContentEqual(local, exported []byte) (bool, error) {
 	var localDoc map[string]any
@@ -370,6 +668,9 @@ func profileContentEqual(local, exported []byte) (bool, error) {
 	// file happens to carry a stale copy.
 	delete(localDoc, "resource_version")
 	delete(exportedDoc, "resource_version")
+
+	// The local binaries input form compares as the scalar the export writes.
+	normalizeLocalBinaries(localDoc)
 
 	// Top-level fields the export fills in with a non-zero default when the
 	// local file omits them. Only the exact default value is tolerated.
@@ -571,7 +872,7 @@ func ImportProfileVerified(ctx context.Context, id, profilePath string) error {
 // credential keys. Credential keys become env vars in the openshell child
 // process; allowing security-sensitive names would let a URL-fetched provider
 // definition influence process loading or shell behavior.
-// NOTE: see also reservedSandboxKeys in internal/cli/run.go for the sandbox env blocklist.
+// NOTE: internal/cli's env.sandbox gate checks this list too (#3373).
 var reservedCredentialKeys = map[string]bool{
 	// Process loading / shell behavior
 	"PATH":            true,
@@ -617,6 +918,42 @@ var reservedCredentialKeys = map[string]bool{
 	"GIT_ASKPASS":       true,
 }
 
+// ReservedCredentialKeys returns the names reservedCredentialKeys refuses as
+// provider credential keys. Production code checks membership through
+// IsReservedCredentialKey; this accessor exists so tests in other packages
+// (internal/cli's env.sandbox gate tests) can enumerate the live list
+// instead of copying it.
+//
+// A name is on this list because letting harness-supplied configuration set it
+// in a child process could change process loading, shell behavior, TLS trust
+// or git behavior. The doors differ: a credential name reaches the host-side
+// `openshell provider` environment, while harness `env.sandbox` is exported
+// inside the sandbox. The exposure is the same once the name is in a child's
+// environment, so every name here is blocked on both sides — internal/cli's
+// env.sandbox gate checks it through IsReservedCredentialKey, so the two
+// cannot drift apart (#3373). Absence from this list is not a statement that
+// a name is safe — the plugin-env deny-list is deliberately broader, in the
+// direction reserved_env_drift_test.go pins: every credential name is also a
+// plugin-env name, not the converse. The cross-door invariant is pinned by
+// TestReservedSandboxKeys_CoversReservedCredentialKeys in internal/cli.
+//
+// The result is a fresh sorted slice, so callers cannot edit the blocklist
+// and subtests run in a stable order.
+func ReservedCredentialKeys() []string {
+	keys := make([]string, 0, len(reservedCredentialKeys))
+	for k := range reservedCredentialKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// IsReservedCredentialKey reports, case-insensitively, whether name is
+// refused as a provider credential key.
+func IsReservedCredentialKey(name string) bool {
+	return reservedCredentialKeys[strings.ToUpper(name)]
+}
+
 // EnsureProvider creates or updates a provider on the gateway. Credential
 // values may contain ${VAR} references which are expanded from the host
 // environment before being passed to openshell.
@@ -635,7 +972,7 @@ var reservedCredentialKeys = map[string]bool{
 func EnsureProvider(ctx context.Context, name, providerType string, credentials, config map[string]string, fromURL bool) error {
 	if fromURL {
 		for k := range credentials {
-			if reservedCredentialKeys[strings.ToUpper(k)] {
+			if IsReservedCredentialKey(k) {
 				return fmt.Errorf("provider %q: credential key %q is a reserved environment variable name", name, k)
 			}
 		}
@@ -655,7 +992,7 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 // form in the child process environment, never on the command line.
 func EnsureProviderLiteral(ctx context.Context, name, providerType string, credentials map[string]string) error {
 	for k := range credentials {
-		if reservedCredentialKeys[strings.ToUpper(k)] {
+		if IsReservedCredentialKey(k) {
 			return fmt.Errorf("provider %q: credential key %q is a reserved environment variable name", name, k)
 		}
 	}
@@ -943,6 +1280,15 @@ func expandProviderValue(v string) string {
 	})
 }
 
+// ProviderCredentialEmpty reports whether a provider credential value
+// expands, as EnsureProvider would expand it, to nothing but whitespace.
+// The runner uses it to tell whether a definition has a static value or
+// needs one resolved in process (the fullsend-jira provider, fullsend#9220).
+// The expanded value itself is not returned.
+func ProviderCredentialEmpty(v string) bool {
+	return strings.TrimSpace(expandProviderValue(v)) == ""
+}
+
 // CredentialOnlyExpansionKeys marks environment variable names that provider
 // credential values may expand but provider config values may not.
 func CredentialOnlyExpansionKeys(keys ...string) {
@@ -1102,14 +1448,18 @@ func effectiveReadyTimeout(override time.Duration) time.Duration {
 // It retries up to DefaultMaxCreateAttempts times with exponential backoff,
 // deleting the failed sandbox between attempts.
 func Create(name string, providers []string, image, policy string) error {
-	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0)
+	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0, false)
 }
 
 // CreateWithRetry creates a sandbox, retrying up to maxAttempts times with
 // exponential backoff on failure. Between attempts the failed sandbox is
 // deleted to avoid name conflicts. If readyTimeoutOverride is positive, it
 // overrides the default ready timeout.
-func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration) error {
+//
+// If keep is true (--keep-sandbox), a failed attempt is neither deleted nor
+// retried: retrying would require deleting the sandbox under the same name,
+// which destroys the state the caller asked to keep for inspection.
+func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration, keep bool) error {
 	if maxAttempts < 1 {
 		return fmt.Errorf("maxAttempts must be >= 1, got %d", maxAttempts)
 	}
@@ -1121,6 +1471,11 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 		lastErr = createOnce(name, providers, image, policy, timeout)
 		if lastErr == nil {
 			return nil
+		}
+
+		// Keep the failed sandbox in place for inspection and stop.
+		if keep {
+			return fmt.Errorf("sandbox creation failed (sandbox kept, not retried): %w", lastErr)
 		}
 
 		// A global policy source is a stable mismatch — retrying with a
@@ -1303,18 +1658,18 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 			// Detect terminal phases and fail immediately instead of
 			// polling through the full timeout.
 			if phase := terminalSandboxPhase(lastOutput); phase != "" {
-				return fmt.Errorf("sandbox %q entered terminal phase %q (will not become Ready)\ncreate output: %s\nstdout: %s\nstderr: %s",
-					name, phase, createOutput, lastOutput, lastStderr)
+				// The sandbox still exists here, so its logs are still
+				// available; collect them before CreateWithRetry deletes it.
+				supervisorLogs, gatewayLogs, containerLogs := collectCreateFailureLogs(name)
+				return fmt.Errorf("sandbox %q entered terminal phase %q (will not become Ready)\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
+					name, phase, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
 			}
 		}
 		time.Sleep(readyPoll)
 	}
 
 	// Collect sandbox logs to help diagnose the failure.
-	supervisorLogs, _ := CollectLogs(name, "supervisor")
-	gatewayLogs, _ := CollectLogs(name, "gateway")
-
-	containerLogs := collectPodmanLogs(name)
+	supervisorLogs, gatewayLogs, containerLogs := collectCreateFailureLogs(name)
 
 	if lastPolicyErr != nil {
 		return fmt.Errorf("sandbox %q policy verification failed after %s: %w\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
@@ -1323,6 +1678,17 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 
 	return fmt.Errorf("sandbox %q not ready after %s\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
 		name, timeout, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
+}
+
+// collectCreateFailureLogs gathers the supervisor, gateway and container logs
+// of a sandbox whose creation failed, for inclusion in the creation error.
+// Collection errors are ignored: a log source with nothing to report must not
+// mask the creation failure itself.
+func collectCreateFailureLogs(name string) (supervisorLogs, gatewayLogs, containerLogs string) {
+	supervisorLogs, _ = CollectLogs(name, "supervisor")
+	gatewayLogs, _ = CollectLogs(name, "gateway")
+	containerLogs = collectPodmanLogs(name)
+	return supervisorLogs, gatewayLogs, containerLogs
 }
 
 // errPolicyGlobal is returned by verifyPolicy when the sandbox's policy
@@ -1598,6 +1964,8 @@ func Upload(sandboxName, localPath, remotePath string) error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "openshell", "sandbox", "upload",
+		// fullsend always uploads one file it already chose (UploadDir applies its own excludes); OpenShell's Git filtering must not drop it (NVIDIA/OpenShell#3957).
+		"--no-git-ignore",
 		sandboxName,
 		uploadPath,
 		remotePath,
@@ -1625,7 +1993,7 @@ const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 func randStringBytes(n int) string {
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = letterBytes[rand.IntN(len(letterBytes))]
+		b[i] = letterBytes[randutil.IntN(len(letterBytes))]
 	}
 	return string(b)
 }
@@ -1813,13 +2181,524 @@ func DownloadFile(sandboxName, remotePath, localPath string) error {
 	return nil
 }
 
-// SafeDownload copies a directory from a sandbox to the local machine and then
-// sanitizes the result by removing dangerous symlinks (absolute or repo-escaping) and .git/hooks/.
-func SafeDownload(sandboxName, remoteDir, localDir string) error {
-	if err := Download(sandboxName, remoteDir, localDir); err != nil {
+// ShallowState is a repository's root git shallow state: whether a shallow
+// file exists and its exact bytes. Git treats the commits listed there as
+// having no parents, so the file bounds the visible history.
+type ShallowState struct {
+	Present bool
+	Data    []byte
+}
+
+// RepositorySnapshot captures selected host repository state before upload for
+// validating or restoring downloaded output. It is not a copy of repository
+// contents. IsCheckout records that the host input was a real .git checkout.
+type RepositorySnapshot struct {
+	Shallow    ShallowState
+	IsCheckout bool
+}
+
+// restoreTrustedShallow replaces the downloaded repository's root .git/shallow
+// with the trusted snapshot. The sandbox may remove the boundary (unshallow),
+// but any boundary entry it added fails closed because only the host's
+// pre-upload cutoffs may survive. Non-regular entries are rejected rather than
+// written through, and a trusted marker without a real .git directory fails
+// closed rather than creating git metadata in a non-repository.
+func restoreTrustedShallow(localDir string, trusted ShallowState) error {
+	gitDir := filepath.Join(localDir, ".git")
+	path := filepath.Join(gitDir, "shallow")
+
+	info, err := os.Lstat(path)
+	switch {
+	case err == nil && !info.Mode().IsRegular():
+		return rejectRepository(fmt.Errorf("git shallow metadata %s is not a regular file", path))
+	case err == nil:
+		returned, oversized, err := readBoundedFile(path, maxShallowBytes)
+		if err != nil {
+			return fmt.Errorf("reading downloaded git shallow metadata %s: %w", path, err)
+		}
+		if oversized {
+			return rejectRepository(fmt.Errorf("downloaded git shallow metadata %s is larger than %d bytes", path, maxShallowBytes))
+		}
+		// A sandbox fetch --depth may add cutoffs the host never trusted, so
+		// every returned boundary entry must already be in the trusted set.
+		allowed := make(map[string]bool)
+		if trusted.Present {
+			for _, entry := range strings.Fields(string(trusted.Data)) {
+				allowed[entry] = true
+			}
+		}
+		for _, entry := range strings.Fields(string(returned)) {
+			if !allowed[entry] {
+				return rejectRepository(fmt.Errorf("unsupported sandbox shallow boundary change in %s: returned shallow cutoffs were not in the trusted snapshot; sandbox fetch --depth or --deepen must not introduce new boundaries", path))
+			}
+		}
+		if !trusted.Present {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("removing untrusted git shallow metadata %s: %w", path, err)
+			}
+			return nil
+		}
+		return replaceFileContents(path, trusted.Data)
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("inspecting git shallow metadata %s: %w", path, err)
+	}
+
+	if !trusted.Present {
+		return nil
+	}
+	gitInfo, err := os.Lstat(gitDir)
+	if err != nil {
+		return fmt.Errorf("restoring trusted git shallow metadata: %w", err)
+	}
+	if !gitInfo.IsDir() {
+		return fmt.Errorf("restoring trusted git shallow metadata: %s is not a directory", gitDir)
+	}
+	if err := os.WriteFile(path, trusted.Data, 0o644); err != nil {
+		return fmt.Errorf("writing trusted git shallow metadata %s: %w", path, err)
+	}
+	return nil
+}
+
+// validateGitCheckout checks that tree is a real Git worktree root whose known
+// .git directory resolves as itself, without modifying tree. It is read-only
+// and intended for trusted host inputs before upload; downloads must pass
+// sanitizeDownload first. It does not reject every unsupported repository
+// format, and the query does not honor an alternate repository selected by the
+// caller's inherited environment.
+func validateGitCheckout(tree string) error {
+	absTree, err := filepath.Abs(tree)
+	if err != nil {
 		return err
 	}
-	return sanitizeDownload(localDir)
+	gitDir := filepath.Join(absTree, ".git")
+
+	// The known .git must be a real directory: a gitfile or symlink points at
+	// a layout this check does not inspect, so reject before the query can
+	// follow it.
+	info, err := os.Lstat(gitDir)
+	if err != nil {
+		return fmt.Errorf("checking git checkout %s: %w", absTree, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("unsupported git layout in %s: .git is not a real directory; use a normal .git checkout", absTree)
+	}
+
+	// The host Git is the layout oracle for the known .git; there is no
+	// discovery fallback to a parent or bare root. The shared helper keeps
+	// inherited selectors, config, and tracing out of the query and bounds it.
+	// An empty helper gitDir leaves the layout query without a --git-dir.
+	out, err := runBoundedGit(filepath.Dir(absTree), "", nil, "rev-parse", "--resolve-git-dir", gitDir)
+	if err != nil {
+		return fmt.Errorf("checking git checkout %s: %w", absTree, err)
+	}
+	// Only one trailing newline is removed; path whitespace is significant.
+	if resolved := strings.TrimSuffix(string(out), "\n"); resolved != gitDir {
+		return fmt.Errorf("checking git checkout %s: git directory resolved to %q", absTree, resolved)
+	}
+
+	// The repository config names the ref backend. Reftable needs Git 2.53's
+	// strict ref verification, so it is gated on the native version; an
+	// unknown backend is never assumed safe.
+	storage, err := readRefStorage(filepath.Dir(absTree), gitDir)
+	if err != nil {
+		return fmt.Errorf("checking git checkout %s: %w", absTree, err)
+	}
+	switch storage {
+	case "files":
+	case "reftable":
+		supported, err := nativeGitSupportsReftable(filepath.Dir(absTree))
+		if err != nil {
+			return fmt.Errorf("checking git checkout %s: %w", absTree, err)
+		}
+		if !supported {
+			return fmt.Errorf("checking git checkout %s: reftable storage requires Git 2.53 or newer", absTree)
+		}
+	default:
+		return fmt.Errorf("checking git checkout %s: unsupported git ref storage %q", absTree, storage)
+	}
+	return nil
+}
+
+// ValidateRepositoryRoot validates tree as a plain directory or a real .git
+// checkout, reporting whether it is plain. A root with a .git entry keeps the
+// strict checkout validation and is never treated as plain; plain roots are
+// classified by entry presence without invoking Git.
+func ValidateRepositoryRoot(tree string) (plain bool, err error) {
+	absTree, err := filepath.Abs(tree)
+	if err != nil {
+		return false, err
+	}
+
+	_, err = os.Lstat(filepath.Join(absTree, ".git"))
+	switch {
+	case err == nil:
+		return false, validateGitCheckout(absTree)
+	case !errors.Is(err, fs.ErrNotExist):
+		return false, fmt.Errorf("checking git checkout %s: %w", absTree, err)
+	}
+
+	// Conservatively mirror Git's is_git_directory() layout checks by entry
+	// presence. Avoid rev-parse: untrusted metadata can redirect or block reads.
+	present := make(map[string]bool, 4)
+	for _, name := range []string{"HEAD", "commondir", "objects", "refs"} {
+		_, err := os.Lstat(filepath.Join(absTree, name))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false, fmt.Errorf("checking git checkout %s: inspecting root entry %s: %w", absTree, name, err)
+		}
+		present[name] = err == nil
+	}
+	if present["HEAD"] && (present["commondir"] || (present["objects"] && present["refs"])) {
+		return false, rejectRepository(fmt.Errorf("checking git checkout %s: unsupported git layout: root has Git directory metadata but no .git directory; use a normal .git checkout or a plain directory", absTree))
+	}
+	return true, nil
+}
+
+// runBoundedGit runs one native Git command with isolated config and a fixed
+// deadline, returning stdout only on success. A non-empty gitDir is passed as
+// an absolute --git-dir, and cwd must be outside any untrusted tree.
+func runBoundedGit(cwd, gitDir string, stdin []byte, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if gitDir != "" {
+		args = append([]string{"--no-replace-objects", "--git-dir=" + gitDir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = cwd
+	// Inherited Git selectors and tracing are omitted, and global and system
+	// config are disabled so repository config is the only config source.
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"LC_ALL=C",
+		"TMPDIR=" + os.TempDir(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+	}
+	cmd.WaitDelay = time.Second
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, fmt.Errorf("git %s: %w", gitSubcommand(args), ctxErr)
+	}
+	if runErr != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return nil, fmt.Errorf("git %s: %w: %s", gitSubcommand(args), runErr, msg)
+		}
+		return nil, fmt.Errorf("git %s: %w", gitSubcommand(args), runErr)
+	}
+	return stdout.Bytes(), nil
+}
+
+// gitSubcommand returns the command name for error messages, skipping global
+// options and the values of -c.
+func gitSubcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-c":
+			i++
+		case strings.HasPrefix(args[i], "-"):
+		default:
+			return args[i]
+		}
+	}
+	return "git"
+}
+
+// readRefStorage returns the repository's declared ref backend. Local config
+// is read without includes, and an absent key means the default files backend.
+// Any other query failure is fatal rather than assumed to be files.
+func readRefStorage(cwd, gitDir string) (string, error) {
+	out, err := runBoundedGit(cwd, gitDir, nil, "config", "--no-includes", "--local", "--get", "extensions.refStorage")
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "files", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// nativeGitSupportsReftable reports whether native Git meets the 2.53 minimum
+// used for reftable verification. Only the major and minor version fields are
+// parsed; an unrecognized version is an error, not a guess.
+func nativeGitSupportsReftable(cwd string) (bool, error) {
+	out, err := runBoundedGit(cwd, "", nil, "--version")
+	if err != nil {
+		return false, err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 3 || fields[0] != "git" || fields[1] != "version" {
+		return false, fmt.Errorf("unrecognized git version %q", strings.TrimSpace(string(out)))
+	}
+	parts := strings.SplitN(fields[2], ".", 3)
+	if len(parts) < 2 {
+		return false, fmt.Errorf("unrecognized git version %q", fields[2])
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false, fmt.Errorf("unrecognized git version %q", fields[2])
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false, fmt.Errorf("unrecognized git version %q", fields[2])
+	}
+	return major > 2 || (major == 2 && minor >= 53), nil
+}
+
+// sanitizeReftableStore removes replacement refs from one validated reftable
+// store using native Git against a fresh trusted scratch repository with an
+// empty template, so downloaded config and hooks cannot run. Only the
+// already-validated flat reftable files are copied; the cleaned tables replace
+// the download's store.
+func sanitizeReftableStore(cwd, gitDir string) error {
+	// A reftable's real HEAD lives in the copied tables, so the source HEAD
+	// file is only a sentinel; reject a malformed one rather than proceed.
+	head, err := os.Lstat(filepath.Join(gitDir, "HEAD"))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return rejectRepository(fmt.Errorf("inspecting HEAD in %s: %w", gitDir, err))
+		}
+		return fmt.Errorf("inspecting HEAD in %s: %w", gitDir, err)
+	}
+	if !head.Mode().IsRegular() {
+		return rejectRepository(fmt.Errorf("git HEAD %s is not a regular file", filepath.Join(gitDir, "HEAD")))
+	}
+
+	storage, err := readRefStorage(cwd, gitDir)
+	if err != nil {
+		return fmt.Errorf("reading reftable storage %s: %w", gitDir, err)
+	}
+	if storage != "reftable" {
+		return fmt.Errorf("git reftable storage %s is not declared as reftable", gitDir)
+	}
+	supported, err := nativeGitSupportsReftable(cwd)
+	if err != nil {
+		return fmt.Errorf("reading git version for %s: %w", gitDir, err)
+	}
+	if !supported {
+		return fmt.Errorf("git reftable storage %s requires Git 2.53 or newer", gitDir)
+	}
+	format, err := readObjectFormat(cwd, gitDir)
+	if err != nil {
+		return fmt.Errorf("reading object format for %s: %w", gitDir, err)
+	}
+
+	scratch, err := os.MkdirTemp(cwd, ".fullsend-refs-*")
+	if err != nil {
+		return fmt.Errorf("creating trusted reftable store for %s: %w", gitDir, err)
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	if _, err := runBoundedGit(cwd, "", nil,
+		"init", "--quiet", "--bare", "--template=", "--ref-format=reftable", "--object-format="+format, scratch); err != nil {
+		return fmt.Errorf("creating trusted reftable store for %s: %w", gitDir, err)
+	}
+
+	scratchStore := filepath.Join(scratch, "reftable")
+	if err := os.RemoveAll(scratchStore); err != nil {
+		return fmt.Errorf("replacing trusted reftable store for %s: %w", gitDir, err)
+	}
+	// The sanitize walk already required every reftable entry to be a regular
+	// file, so CopyFS cannot introduce a source symlink or special file.
+	if err := os.CopyFS(scratchStore, os.DirFS(filepath.Join(gitDir, "reftable"))); err != nil {
+		return fmt.Errorf("copying reftable store %s: %w", gitDir, err)
+	}
+	if err := removeReplacementRefs(cwd, scratch); err != nil {
+		return fmt.Errorf("sanitizing reftable store %s: %w", gitDir, err)
+	}
+	if err := os.RemoveAll(filepath.Join(gitDir, "reftable")); err != nil {
+		return fmt.Errorf("replacing reftable store %s: %w", gitDir, err)
+	}
+	if err := os.Rename(scratchStore, filepath.Join(gitDir, "reftable")); err != nil {
+		return fmt.Errorf("replacing reftable store %s: %w", gitDir, err)
+	}
+	return nil
+}
+
+// readObjectFormat returns the repository's declared object format, defaulting
+// to sha1 when local config does not declare one. Any other query failure or
+// unsupported format is fatal.
+func readObjectFormat(cwd, gitDir string) (string, error) {
+	out, err := runBoundedGit(cwd, gitDir, nil, "config", "--no-includes", "--local", "--get", "extensions.objectFormat")
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "sha1", nil
+		}
+		return "", err
+	}
+	switch format := strings.TrimSpace(string(out)); format {
+	case "sha1", "sha256":
+		return format, nil
+	default:
+		return "", fmt.Errorf("unsupported git object format %q", format)
+	}
+}
+
+// removeReplacementRefs verifies and cleans a trusted scratch store without
+// dereferencing symbolic refs. The symref-target override catches a finding
+// that --strict alone leaves informational.
+func removeReplacementRefs(cwd, gitDir string) error {
+	if _, err := runBoundedGit(cwd, gitDir, nil,
+		"-c", "fsck.symrefTargetIsNotARef=error", "refs", "verify", "--strict"); err != nil {
+		return fmt.Errorf("verifying refs in %s: %w", gitDir, err)
+	}
+
+	listed, err := runBoundedGit(cwd, gitDir, nil, "replace", "--list", "--format=short")
+	if err != nil {
+		return fmt.Errorf("listing replacement refs in %s: %w", gitDir, err)
+	}
+	var batch []byte
+	// Git terminates every listed suffix with one newline. Never trim the
+	// suffix itself: bytes such as U+00A0 are legal in a ref name, and
+	// normalizing them either skips a ref or deletes a different one.
+	if listing := strings.TrimSuffix(string(listed), "\n"); listing != "" {
+		for _, name := range strings.Split(listing, "\n") {
+			if name == "" {
+				return fmt.Errorf("unexpected empty replacement ref name in %s", gitDir)
+			}
+			// Pass raw suffixes over NUL-delimited stdin, not through a shell.
+			// The final relist fails if replacement refs remain.
+			batch = append(batch, "delete refs/replace/"...)
+			batch = append(batch, name...)
+			batch = append(batch, 0, 0)
+		}
+	}
+	if len(batch) > 0 {
+		if _, err := runBoundedGit(cwd, gitDir, batch, "update-ref", "--no-deref", "--stdin", "-z"); err != nil {
+			return fmt.Errorf("removing replacement refs in %s: %w", gitDir, err)
+		}
+	}
+
+	if _, err := runBoundedGit(cwd, gitDir, nil,
+		"-c", "fsck.symrefTargetIsNotARef=error", "refs", "verify", "--strict"); err != nil {
+		return fmt.Errorf("verifying cleaned refs in %s: %w", gitDir, err)
+	}
+	remain, err := runBoundedGit(cwd, gitDir, nil, "replace", "--list", "--format=short")
+	if err != nil {
+		return fmt.Errorf("relisting replacement refs in %s: %w", gitDir, err)
+	}
+	if len(remain) != 0 {
+		return fmt.Errorf("replacement refs remain in %s", gitDir)
+	}
+	return nil
+}
+
+// SafeDownload copies a directory from a sandbox to the local machine and then
+// sanitizes the result by removing dangerous symlinks (absolute or
+// repo-escaping), real .git/hooks/ directories, and Git ancestry overrides.
+// Symlinked .git entries and ancestry containers, root gitfiles, commondir
+// redirects, unsupported reftable storage, and alternate object stores are rejected.
+// The root .git/shallow is replaced with the state in snapshot, captured from
+// the host before upload, so the sandbox cannot introduce or narrow that
+// boundary.
+// Each attempt downloads into a fresh staging directory, so a partial
+// extraction from a failed attempt cannot collide with a later one. The
+// downloaded tree must pass root validation as a real .git checkout or a plain
+// directory, so only a valid root is published. When snapshot.IsCheckout is set,
+// the downloaded root must remain a checkout, because a plain output could
+// resolve Git metadata through a parent repository on later host use.
+// The sanitized staging directory replaces localDir only after download,
+// sanitization, and that check succeed.
+func SafeDownload(sandboxName, remoteDir, localDir string, snapshot RepositorySnapshot) error {
+	localDir = filepath.Clean(localDir)
+	parent := filepath.Dir(localDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("creating download parent %s: %w", parent, err)
+	}
+
+	var errs []error
+	for attempt := 1; attempt <= safeDownloadAttempts; attempt++ {
+		stagingDir, err := os.MkdirTemp(parent, ".fullsend-safe-download-*")
+		if err != nil {
+			return fmt.Errorf("creating download staging directory: %w", err)
+		}
+
+		if err := Download(sandboxName, remoteDir, stagingDir); err != nil {
+			errs = append(errs, fmt.Errorf("attempt %d/%d: %w", attempt, safeDownloadAttempts, err))
+			if cleanupErr := cleanupStagingDir(stagingDir); cleanupErr != nil {
+				errs = append(errs, fmt.Errorf("cleaning staging directory after failed attempt: %w", cleanupErr))
+			}
+			continue
+		}
+
+		err = sanitizeDownload(stagingDir)
+		var plain bool
+		if err == nil {
+			plain, err = ValidateRepositoryRoot(stagingDir)
+		}
+		if err == nil && snapshot.IsCheckout && plain {
+			err = rejectRepository(fmt.Errorf("downloaded directory %s is a plain directory, but the input repository was a git checkout; a checkout input must remain a git checkout", stagingDir))
+		}
+		if err == nil {
+			err = restoreTrustedShallow(stagingDir, snapshot.Shallow)
+		}
+		if err != nil {
+			// One phase marker for everything above, before cleanup joins its
+			// own errors: the cause keeps its identity via the second %w.
+			err = fmt.Errorf("%w: %w", ErrRepositoryValidation, err)
+			cleanupErr := cleanupStagingDir(stagingDir)
+			if cleanupErr == nil {
+				return fmt.Errorf("sanitizing downloaded directory: %w", err)
+			}
+			return errors.Join(
+				fmt.Errorf("sanitizing downloaded directory: %w", err),
+				fmt.Errorf("cleaning staging directory after sanitization failure: %w", cleanupErr),
+			)
+		}
+		if err := replaceDownload(stagingDir, localDir); err != nil {
+			cleanupErr := cleanupStagingDir(stagingDir)
+			if cleanupErr == nil {
+				return err
+			}
+			return errors.Join(err, fmt.Errorf("cleaning staging directory after publish failure: %w", cleanupErr))
+		}
+		fmt.Fprintf(os.Stderr, "  sandbox download succeeded on attempt %d/%d\n", attempt, safeDownloadAttempts)
+		return nil
+	}
+
+	return fmt.Errorf("safe download from sandbox failed after %d attempts: %w", safeDownloadAttempts, errors.Join(errs...))
+}
+
+// cleanupStagingDir removes a staging tree after restoring write permission
+// to its directories. Permission restoration is best effort and does not
+// follow symlinks; os.RemoveAll provides the authoritative cleanup result.
+func cleanupStagingDir(stagingDir string) error {
+	_ = filepath.WalkDir(stagingDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			parent := filepath.Dir(path)
+			if info, err := os.Lstat(parent); err == nil && info.IsDir() {
+				_ = os.Chmod(parent, 0o755)
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			_ = os.Chmod(path, 0o755)
+		}
+		return nil
+	})
+	if err := os.RemoveAll(stagingDir); err != nil {
+		return fmt.Errorf("removing staging directory %s: %w", stagingDir, err)
+	}
+	return nil
+}
+
+// replaceDownload publishes a sanitized staging directory at localDir by
+// removing the existing destination and renaming the staged tree. The staging
+// directory is created in localDir's parent, so the rename stays on the same
+// filesystem; replacement is not failure-preserving.
+func replaceDownload(stagingDir, localDir string) error {
+	if err := os.RemoveAll(localDir); err != nil {
+		return fmt.Errorf("replacing existing download directory %s: %w", localDir, err)
+	}
+	if err := os.Rename(stagingDir, localDir); err != nil {
+		return fmt.Errorf("publishing downloaded directory to %s: %w", localDir, err)
+	}
+	return nil
 }
 
 // CollectLogs runs `openshell logs <name> --source <source> -n 0` and returns
@@ -1899,7 +2778,18 @@ func collectPodmanLogs(sandboxName string) string {
 
 // ExtractOutputFiles copies all files under a remote directory in the sandbox
 // to a local output directory, preserving relative paths.
-func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, error) {
+//
+// A listing that openshell itself failed (non-zero exit, e.g. exec refused for
+// a sandbox that is not Ready) or a listing in which no file could be
+// extracted returns an error, so the caller does not report either as "no
+// output". The remote find still runs with "2>/dev/null || true", so a missing
+// or unreadable remoteDir reads as an empty listing and returns nil, nil.
+//
+// Each file that is skipped or not copied prints a line with its path and
+// the error. With quiet set (the quiet progress level, ADR 0163) those
+// lines are left out, since the agent chose the names; one line gives the
+// count.
+func ExtractOutputFiles(sandboxName, remoteDir, localDir string, quiet bool) ([]string, error) {
 	if err := os.MkdirAll(localDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating local output dir: %w", err)
 	}
@@ -1910,12 +2800,17 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 	}
 	defer root.Close()
 
-	stdout, _, _, err := Exec(sandboxName,
+	stdout, stderr, exitCode, err := Exec(sandboxName,
 		fmt.Sprintf("find %s -type f 2>/dev/null || true", remoteDir),
 		10*time.Second,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing output files: %w", err)
+	}
+	// The remote command ends in "|| true", so a non-zero exit can only come
+	// from openshell itself (e.g. exec refused for a sandbox that is not Ready).
+	if exitCode != 0 {
+		return nil, fmt.Errorf("listing output files: exit %d: %s", exitCode, strings.TrimSpace(stderr))
 	}
 
 	trimmed := strings.TrimSpace(stdout)
@@ -1925,17 +2820,31 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 	lines := strings.Split(trimmed, "\n")
 
 	var extracted []string
+	listed := 0
+	skipped := 0
+	skip := func(format string, args ...any) {
+		skipped++
+		if !quiet {
+			fmt.Fprintf(os.Stderr, format, args...)
+		}
+	}
+	defer func() {
+		if quiet && skipped > 0 {
+			fmt.Fprintf(os.Stderr, "  %d output file(s) skipped or failed to copy\n", skipped)
+		}
+	}()
 	for _, remotePath := range lines {
 		remotePath = strings.TrimSpace(remotePath)
 		if remotePath == "" {
 			continue
 		}
+		listed++
 		relPath := strings.TrimPrefix(remotePath, remoteDir)
 		relPath = strings.TrimPrefix(relPath, "/")
 
 		if dir := filepath.Dir(relPath); dir != "." {
 			if mkErr := root.MkdirAll(dir, 0o755); mkErr != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping (dir rejected): %s: %v\n", relPath, mkErr)
+				skip("  Skipping (dir rejected): %s: %v\n", relPath, mkErr)
 				continue
 			}
 		}
@@ -1944,7 +2853,7 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 		// the probe file so DownloadFile can write the actual content.
 		f, createErr := root.Create(relPath)
 		if createErr != nil {
-			fmt.Fprintf(os.Stderr, "  Skipping (path rejected): %s: %v\n", relPath, createErr)
+			skip("  Skipping (path rejected): %s: %v\n", relPath, createErr)
 			continue
 		}
 		f.Close()
@@ -1953,11 +2862,14 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 		os.Remove(localPath)
 
 		if dlErr := DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
-			fmt.Fprintf(os.Stderr, "  Failed to copy %s: %v\n", relPath, dlErr)
+			skip("  Failed to copy %s: %v\n", relPath, dlErr)
 			continue
 		}
 		extracted = append(extracted, localPath)
 	}
 
+	if listed > 0 && len(extracted) == 0 {
+		return nil, fmt.Errorf("copying output files: %d listed, none copied", listed)
+	}
 	return extracted, nil
 }

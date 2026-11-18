@@ -232,9 +232,11 @@ export default defineConfig({
             { text: "fullsend agent", link: "/cli/agent" },
             { text: "fullsend github", link: "/cli/github" },
             { text: "fullsend inference", link: "/cli/inference" },
+            { text: "fullsend lint", link: "/cli/lint" },
             { text: "fullsend mint", link: "/cli/mint" },
             { text: "fullsend repos", link: "/cli/repos" },
             { text: "fullsend run", link: "/cli/run" },
+            { text: "fullsend self-update", link: "/cli/self-update" },
           ],
         },
       ],
@@ -249,6 +251,10 @@ export default defineConfig({
             { text: "Configuring GitHub", link: "/guides/getting-started/configuring-github" },
             { text: "Configuring GitLab", link: "/guides/getting-started/configuring-gitlab" },
             { text: "Repo Management", link: "/guides/getting-started/repo-management" },
+            {
+              text: "Migrating to Manifest-Driven Install",
+              link: "/guides/getting-started/migrating-from-github-setup",
+            },
             { text: "Operations", link: "/guides/getting-started/operations" },
           ],
         },
@@ -260,6 +266,7 @@ export default defineConfig({
             { text: "Claude Code", link: "/runtimes/claude" },
             { text: "Pi", link: "/runtimes/pi" },
             { text: "Codex", link: "/runtimes/codex" },
+            { text: "OpenCode", link: "/runtimes/opencode" },
           ],
         },
         {
@@ -273,6 +280,7 @@ export default defineConfig({
             { text: "Fix", link: "/agents/fix" },
             { text: "Retro", link: "/agents/retro" },
             { text: "Prioritize", link: "/agents/prioritize" },
+            { text: "Scribe", link: "/agents/scribe" },
           ],
         },
         {
@@ -316,10 +324,6 @@ export default defineConfig({
                 { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },
                 { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
-                {
-                  text: "Building custom agents (deprecated)",
-                  link: "/guides/user/building-custom-agents",
-                },
               ],
             },
             {
@@ -327,7 +331,15 @@ export default defineConfig({
               link: "/guides/user/owners-file-authorization",
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
+            {
+              text: "Tightening Command Scanning",
+              link: "/guides/user/tightening-command-scanning",
+            },
             { text: "Jira Integration", link: "/guides/user/jira-integration" },
+            {
+              text: "Run Artifacts and Private Data",
+              link: "/guides/user/run-artifacts-and-private-data",
+            },
             { text: "How To Emit Traces", link: "/guides/user/how-to-emit-traces" },
             { text: "Tracing with MLflow", link: "/guides/user/tracing-with-mlflow" },
           ],
@@ -347,6 +359,7 @@ export default defineConfig({
           items: [
             { text: "Config Reference", link: "/reference/config-reference" },
             { text: "Harness Field Reference", link: "/reference/harness-reference" },
+            { text: "Trace Context Reference", link: "/reference/trace-context" },
           ],
         },
         {
@@ -413,6 +426,11 @@ export default defineConfig({
               text: "Architecture Decisions",
               collapsed: true,
               items: getMarkdownFiles("ADRs", "ADRs"),
+            },
+            {
+              text: "Normative Specifications",
+              collapsed: true,
+              items: getMarkdownFiles("normative", "normative"),
             },
             {
               text: "Design Documents",

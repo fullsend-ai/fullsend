@@ -89,7 +89,7 @@ func TestAppendGitLabSuppliedCredentialStatus_ClassifiesInstalledCredential(t *t
 			t.Parallel()
 			ctx := context.Background()
 			fc := seededRoleClient(t, gitlabroles.RoleCoder)
-			state := `{"roles":{"coder":{"phase":"failed","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"error":"` + pending + `"}}}`
+			state := `{"version":2,"roles":{"coder":{"phase":"failed","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"error":"` + pending + `"}}}`
 			require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation, state, true))
 			asked := false
 			tokens := ServiceAccountTokenClient{
@@ -142,7 +142,7 @@ func TestAppendGitLabSuppliedCredentialStatus_UnresolvedPublicationWithRestoredM
 	ctx := context.Background()
 	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
-	state := `{"roles":{"coder":{"phase":"failed","incoming_id":9,"created_token_ids":[9],"managed_user_id":55,` +
+	state := `{"version":2,"roles":{"coder":{"phase":"failed","incoming_id":9,"created_token_ids":[9],"managed_user_id":55,` +
 		`"distributed_at":"2026-09-01T00:00:00Z","excluded_user_ids":[777],"error":"` + providedPublicationFailedError + `"}}}`
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation, state, true))
 	require.False(t, provenanceOf(readRoleState(t, fc, gitlabroles.RoleCoder)).Supplied, "the managed provenance was restored")
@@ -174,7 +174,7 @@ func TestEnrichGitLabRoleStatus_HealthyOutsideInventorySuppliedIgnoresHistorical
 	ctx := context.Background()
 	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
-	state := `{"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":777,` +
+	state := `{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":777,` +
 		`"supplied_token_id":13,"excluded_user_ids":[777],"created_token_ids":[12]}}}`
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation, state, true))
 	tokens := []ProjectAccessToken{
@@ -302,4 +302,4 @@ func TestAppendGitLabSuppliedCredentialStatus_ListedCredentialWithoutVerifiableO
 
 // ownerlessCoderState records an enrolled supplied coder credential without a
 // resolved owner.
-const ownerlessCoderState = `{"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true}}}`
+const ownerlessCoderState = `{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true}}}`

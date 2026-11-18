@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,6 +80,14 @@ type persistedPollState struct {
 	// is an in-memory view only: on the wire each entry is an encoded key in
 	// FailedKeysFull, which an older writer round-trips untouched.
 	LegacyMirrors mirrorSet `json:"-"`
+	// IssueOpenCutoff is the instant the events poll first ran against this
+	// project: issue-open recovery never emits an issue created before it,
+	// because such an issue predates installation. It is set once and is
+	// independent of the discovery watermark, which is held back and
+	// overlapped and so cannot mark that boundary. Like PendingLabels it is
+	// an in-memory view only: on the wire it is an encoded key in
+	// FailedKeysFull (see encodeIssueOpenCutoff). Zero means not yet set.
+	IssueOpenCutoff time.Time `json:"-"`
 
 	// HMAC is an HMAC-SHA256 signature (hex-encoded) over the rest of
 	// this document, computed with the HMAC field cleared and prefixed
@@ -133,6 +142,7 @@ func pollStateForMode(slash bool, state persistedPollState) persistedPollState {
 		FailedKeysFull:     state.FailedKeysFull,
 		PendingLabels:      state.PendingLabels,
 		LegacyMirrors:      state.LegacyMirrors,
+		IssueOpenCutoff:    state.IssueOpenCutoff,
 	}
 }
 
@@ -248,6 +258,69 @@ func hasPendingKeys(failed map[string]int) bool {
 	return false
 }
 
+// issueOpenCutoffKeyPrefix marks the failed_keys_full entry that carries the
+// issue-open recovery cutoff on the wire (count 1, inside the retry-budget
+// range every writer's prune keeps), for the same reason as pendingKeyPrefix:
+// a writer from before the cutoff existed round-trips an unknown failed-key
+// entry untouched and re-signs it with the document, whereas it would drop an
+// unknown top-level field and invalidate the signature for older readers.
+const issueOpenCutoffKeyPrefix = "fullsend-issue-open-cutoff:"
+
+// encodeIssueOpenCutoff returns state with IssueOpenCutoff written into
+// FailedKeysFull as one issueOpenCutoffKeyPrefix entry (replacing any already
+// there). The input map is not modified.
+func encodeIssueOpenCutoff(state persistedPollState) persistedPollState {
+	if state.IssueOpenCutoff.IsZero() && !hasKeyPrefix(state.FailedKeysFull, issueOpenCutoffKeyPrefix) {
+		return state
+	}
+	failed := make(map[string]int, len(state.FailedKeysFull)+1)
+	for k, c := range state.FailedKeysFull {
+		if !strings.HasPrefix(k, issueOpenCutoffKeyPrefix) {
+			failed[k] = c
+		}
+	}
+	if !state.IssueOpenCutoff.IsZero() {
+		failed[issueOpenCutoffKeyPrefix+strconv.FormatInt(state.IssueOpenCutoff.UnixMilli(), 10)] = 1
+	}
+	if len(failed) == 0 {
+		failed = nil
+	}
+	state.FailedKeysFull = failed
+	return state
+}
+
+// decodeIssueOpenCutoff is the inverse of encodeIssueOpenCutoff: it moves the
+// issueOpenCutoffKeyPrefix entry out of FailedKeysFull into IssueOpenCutoff.
+// With several entries the earliest wins; a malformed one is dropped with a
+// warning (recovery then waits for a later cycle to set a fresh cutoff).
+func decodeIssueOpenCutoff(state persistedPollState) persistedPollState {
+	if !hasKeyPrefix(state.FailedKeysFull, issueOpenCutoffKeyPrefix) {
+		return state
+	}
+	failed := make(map[string]int, len(state.FailedKeysFull))
+	var cutoff time.Time
+	for k, c := range state.FailedKeysFull {
+		if !strings.HasPrefix(k, issueOpenCutoffKeyPrefix) {
+			failed[k] = c
+			continue
+		}
+		ms, err := strconv.ParseInt(strings.TrimPrefix(k, issueOpenCutoffKeyPrefix), 10, 64)
+		if err != nil || ms <= 0 {
+			log.Printf("WARNING: dropping malformed issue-open cutoff entry in poll state")
+			continue
+		}
+		if t := time.UnixMilli(ms); cutoff.IsZero() || t.Before(cutoff) {
+			cutoff = t
+		}
+	}
+	if len(failed) == 0 {
+		failed = nil
+	}
+	state.FailedKeysFull = failed
+	state.IssueOpenCutoff = cutoff
+	return state
+}
+
 // replayKeyPrefix marks failed_keys_{fast,full} entries that mirror a
 // dispatched key on the wire. A writer from before the webhook driver prunes
 // dispatched_keys_* at the poll watermark and re-signs the document, which
@@ -346,10 +419,11 @@ func hasKeyPrefix(failed map[string]int, prefix string) bool {
 	return false
 }
 
-// signPollState encodes state's pending labels and replay-evidence mirrors
-// into the wire document and fills in state.HMAC over it.
+// signPollState encodes state's pending labels, replay-evidence mirrors, and
+// issue-open recovery cutoff into the wire document and fills in state.HMAC
+// over it.
 func signPollState(secret, domain string, state persistedPollState) (persistedPollState, error) {
-	state, err := encodePendingLabels(encodeLegacyMirrors(encodeReplayKeys(state)))
+	state, err := encodePendingLabels(encodeLegacyMirrors(encodeReplayKeys(encodeIssueOpenCutoff(state))))
 	if err != nil {
 		return state, err
 	}
@@ -404,10 +478,12 @@ func (p *Poller) loadPollStateAtRef(ctx context.Context, owner, repo, ref string
 	}
 	var state persistedPollState
 	if err := json.Unmarshal(data, &state); err != nil {
+		// Malformed state is an integrity failure like a bad signature, so
+		// it wraps errPollStateTampered and callers stay fail-closed.
 		if discardErr := p.discardPollState(ctx, owner, repo, branch); discardErr != nil {
-			return persistedPollState{}, fmt.Errorf("unmarshal poll state on %s: %w (also failed to discard branch: %v)", branch, err, discardErr)
+			return persistedPollState{}, fmt.Errorf("unmarshal poll state on %s: %w (also failed to discard branch: %v): %w", branch, err, discardErr, errPollStateTampered)
 		}
-		return persistedPollState{}, fmt.Errorf("unmarshal poll state on %s: %w", branch, err)
+		return persistedPollState{}, fmt.Errorf("unmarshal poll state on %s: %w: %w", branch, err, errPollStateTampered)
 	}
 	valid, err := verifyPollState(p.opts.DispatchSecret, p.hmacDomain(), state)
 	if err != nil {
@@ -419,7 +495,7 @@ func (p *Poller) loadPollStateAtRef(ctx context.Context, owner, repo, ref string
 		}
 		return persistedPollState{}, fmt.Errorf("%w on %s; discarded branch", errPollStateTampered, branch)
 	}
-	return p.modeDocument(decodeLegacyMirrors(decodePendingLabels(decodeReplayKeys(state)))), nil
+	return p.modeDocument(decodeIssueOpenCutoff(decodeLegacyMirrors(decodePendingLabels(decodeReplayKeys(state))))), nil
 }
 
 func (p *Poller) discardPollState(ctx context.Context, owner, repo, branch string) error {
@@ -487,6 +563,10 @@ type persistDeltas struct {
 	// loaded document already holds as genuine legacy evidence is not
 	// registered: it stays a plain legacy key.
 	mirrors mirrorSet
+	// issueOpenCutoff, when non-nil, records the issue-open recovery cutoff
+	// on a document that has none (an earlier one is kept; see
+	// applyPersistDeltas).
+	issueOpenCutoff *time.Time
 }
 
 // PendingLabel is a label addition whose webhook dispatch failed, kept
@@ -698,6 +778,12 @@ func (p *Poller) applyPersistDeltas(state persistedPollState, deltas persistDelt
 	if deltas.watermark != nil {
 		p.applyWatermark(&state, *deltas.watermark)
 	}
+	// Set once: a concurrent writer's cutoff, or one persisted by an earlier
+	// cycle, is the installation boundary and is never moved later.
+	if deltas.issueOpenCutoff != nil && !p.slashCommandsOnly &&
+		(state.IssueOpenCutoff.IsZero() || deltas.issueOpenCutoff.Before(state.IssueOpenCutoff)) {
+		state.IssueOpenCutoff = *deltas.issueOpenCutoff
+	}
 	if deltas.labels != nil {
 		if deltas.labelsBase != nil {
 			state.LabelState = mergeLabelStateAgainst(state.LabelState, deltas.labelsBase, deltas.labels)
@@ -764,7 +850,11 @@ func pruneLegacyMirrors(state persistedPollState) mirrorSet {
 }
 
 // readWatermark reads the last-polled timestamp from poller state.
-// On first run (no stored value), it defaults to one hour ago.
+// On first run (no stored value), it defaults to one hour ago. When the
+// events poll has no watermark but a persisted issue-open cutoff is older
+// than that, discovery starts at the cutoff instead, so a first successful
+// cycle that runs more than an hour after the cutoff (a failed first cycle,
+// or a cutoff seeded at install) still reaches issues opened since.
 func (p *Poller) readWatermark(ctx context.Context, owner, repo string) (time.Time, error) {
 	state, err := p.loadPollState(ctx, owner, repo)
 	if err != nil {
@@ -775,13 +865,28 @@ func (p *Poller) readWatermark(ctx context.Context, owner, repo string) (time.Ti
 		val = state.LastPollAtFast
 	}
 	if val == "" {
-		return time.Now().Add(-1 * time.Hour), nil
+		start := time.Now().Add(-1 * time.Hour)
+		if !p.slashCommandsOnly && !state.IssueOpenCutoff.IsZero() && state.IssueOpenCutoff.Before(start) {
+			start = state.IssueOpenCutoff
+		}
+		return start, nil
 	}
 	t, err := time.Parse(time.RFC3339, val)
 	if err != nil {
 		return time.Time{}, err
 	}
 	return t, nil
+}
+
+// readIssueOpenCutoff reads the persisted issue-open recovery cutoff: the
+// instant the events poll first ran, before which no issue open is recovered
+// (the issue predates installation). It reports false when none is persisted.
+func (p *Poller) readIssueOpenCutoff(ctx context.Context, owner, repo string) (time.Time, bool, error) {
+	state, err := p.loadPollState(ctx, owner, repo)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return state.IssueOpenCutoff, !state.IssueOpenCutoff.IsZero(), nil
 }
 
 // updateWatermark persists the given timestamp as the poll watermark.
@@ -1843,69 +1948,6 @@ func toSet(labels []string) map[string]bool {
 	return s
 }
 
-// buildLegacyPollStateFromVars assembles a persistedPollState from a
-// name-to-value map of pre-branch-store poller CI/CD variables.
-// Returns found=false if none of the seven legacy state vars are present.
-func buildLegacyPollStateFromVars(vars map[string]string, owner, repo string) (persistedPollState, bool) {
-	var state persistedPollState
-	found := false
-
-	if v, ok := vars[forge.VarLastPollAtFast]; ok {
-		state.LastPollAtFast = v
-		found = true
-	}
-	if v, ok := vars[forge.VarLastPollAtFull]; ok {
-		state.LastPollAtFull = v
-		found = true
-	}
-	if v, ok := vars[forge.VarLabelState]; ok {
-		found = true
-		var ls LabelState
-		if err := json.Unmarshal([]byte(v), &ls); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy label state for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.LabelState = ls
-		}
-	}
-	if v, ok := vars[forge.VarDispatchedKeysFast]; ok {
-		found = true
-		var m map[string]int64
-		if err := json.Unmarshal([]byte(v), &m); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy dispatched keys (fast) for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.DispatchedKeysFast = m
-		}
-	}
-	if v, ok := vars[forge.VarDispatchedKeysFull]; ok {
-		found = true
-		var m map[string]int64
-		if err := json.Unmarshal([]byte(v), &m); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy dispatched keys (full) for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.DispatchedKeysFull = m
-		}
-	}
-	if v, ok := vars[forge.VarFailedKeysFast]; ok {
-		found = true
-		var m map[string]int
-		if err := json.Unmarshal([]byte(v), &m); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy failed keys (fast) for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.FailedKeysFast = m
-		}
-	}
-	if v, ok := vars[forge.VarFailedKeysFull]; ok {
-		found = true
-		var m map[string]int
-		if err := json.Unmarshal([]byte(v), &m); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy failed keys (full) for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.FailedKeysFull = m
-		}
-	}
-	return state, found
-}
-
 // EnsureDispatchSecret returns the project's existing
 // FULLSEND_DISPATCH_SECRET CI/CD variable value, or generates and
 // stores a new one (masked, protected, like the bot PAT) if none is
@@ -1934,13 +1976,11 @@ func EnsureDispatchSecret(ctx context.Context, client forge.Client, owner, repo 
 
 // SeedGitLabPollStateBranches creates both poll-state branches with an
 // HMAC-signed state.json, using the operator's Maintainer-capable
-// client so legacy CI/CD variables can still be read. *Fast fields are
-// written to the slash branch; *Full fields plus LabelState go to the
-// events branch.
+// client.
 //
-// A missing branch is seeded from any present legacy variables, or with
-// an empty signed baseline when none are present. An already-present
-// state.json is left untouched so live poller writes are not clobbered.
+// A missing branch is seeded with an empty signed baseline. An
+// already-present state.json is left untouched so live poller writes are
+// not clobbered.
 // dispatchSecret must be non-empty: unsigned documents would be
 // discarded as tampered by the runtime poller.
 //
@@ -1950,11 +1990,6 @@ func SeedGitLabPollStateBranches(ctx context.Context, client forge.Client, owner
 		return false, errDispatchSecretUnset
 	}
 
-	vars, err := client.ListRepoVariables(ctx, owner, repo)
-	if err != nil {
-		return false, fmt.Errorf("listing repo variables: %w", err)
-	}
-	legacy, _ := buildLegacyPollStateFromVars(vars, owner, repo)
 	projectPath := owner + "/" + repo
 
 	branches := []struct {
@@ -1975,7 +2010,15 @@ func SeedGitLabPollStateBranches(ctx context.Context, client forge.Client, owner
 			return seeded, fmt.Errorf("checking poll state on %s: %w", b.name, err)
 		}
 
-		doc := pollStateForMode(b.slash, legacy)
+		doc := pollStateForMode(b.slash, persistedPollState{})
+		if !b.slash && doc.IssueOpenCutoff.IsZero() {
+			// A freshly seeded events branch starts the issue-open recovery
+			// boundary at installation, so an issue opened before the first
+			// scheduled poll is still recovered (ADR 0125). The runtime
+			// persists it in this wire form and signs the encoded document.
+			doc.IssueOpenCutoff = time.Now().Truncate(time.Millisecond)
+			doc = encodeIssueOpenCutoff(doc)
+		}
 		sig, err := computeStateHMAC(dispatchSecret, hmacDomainFor(b.name, projectPath), doc)
 		if err != nil {
 			return seeded, fmt.Errorf("computing poll state HMAC on %s: %w", b.name, err)
@@ -1986,6 +2029,9 @@ func SeedGitLabPollStateBranches(ctx context.Context, client forge.Client, owner
 			return seeded, fmt.Errorf("marshaling poll state on %s: %w", b.name, err)
 		}
 		if err := client.ForceCommitFileToBranch(ctx, owner, repo, b.name, PollStateFileName, "fullsend: seed poll state", data); err != nil {
+			if strings.Contains(err.Error(), "must match this regular expression") {
+				return seeded, fmt.Errorf("seeding poll state on %s: %w (the project's push rule rejects this branch name; update Settings > Repository > Push rules > Branch name so it also allows %s and %s)", b.name, err, PollStateBranchSlash, PollStateBranchEvents)
+			}
 			return seeded, fmt.Errorf("seeding poll state on %s: %w", b.name, err)
 		}
 		seeded = true

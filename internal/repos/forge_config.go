@@ -16,9 +16,7 @@ var (
 	// \b anchors the match to a bare ref: token so it does not match a
 	// longer *_ref: key. The optional (?:\s+\(.*?\))? matches SHA
 	// annotations like "(v0.34.0)". The GitLab version marker is a ref:
-	// line injected into the pipeline wrapper at install time. Native
-	// dispatch, and its jq scripts, were removed in #7322; the leftover
-	// dispatch stub stopped carrying the marker in #7707.
+	// line injected into the pipeline wrapper at install time.
 	glWorkflowRefPattern = regexp.MustCompile(
 		`(?m)\bref:\s+['"]?(\S+?)['"]?(?:\s+\(.*?\))?[ \t]*$`,
 	)
@@ -75,8 +73,7 @@ func GitHubForgeConfig() ForgeConfig {
 // with ref: fields. The pipeline wrapper carries the version marker
 // (#7707). Native dispatch itself was removed in #7322 (see ADR 0067).
 // ShimRefPattern matches the injected ref: marker line for upgrade
-// drift detection. Leftover fullsend-dispatch.yml from installs before
-// #7707 is still read for the installed ref by readWorkflowMarker.
+// drift detection.
 func GitLabForgeConfig() ForgeConfig {
 	return ForgeConfig{
 		WorkflowPaths: []string{

@@ -6,15 +6,17 @@ package jirapoll
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
-	"math/rand/v2"
 	"os"
 	"regexp"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 
 	"github.com/google/uuid"
 )
@@ -30,14 +32,14 @@ type EventMatcher interface {
 // evaluation. It mirrors harnessdispatch.ExecutionRef but is defined here to
 // keep the jirapoll package decoupled from harness internals.
 type DispatchRecord struct {
-	Agent         string `json:"agent"`
-	Role          string `json:"role"`
-	SourceRepo    string `json:"source_repo"`
-	EventType     string `json:"event_type"`
-	EventPayload  string `json:"event_payload"`
-	TriggerSource string `json:"trigger_source,omitempty"`
-	StatusRepo    string `json:"status_repo"`
-	StatusNumber  string `json:"status_number"`
+	Agent         string          `json:"agent"`
+	Role          string          `json:"role"`
+	SourceRepo    string          `json:"source_repo"`
+	EventType     string          `json:"event_type"`
+	EventPayload  json.RawMessage `json:"event_payload"`
+	TriggerSource string          `json:"trigger_source,omitempty"`
+	StatusRepo    string          `json:"status_repo"`
+	StatusNumber  string          `json:"status_number"`
 }
 
 // maxEventsPerIssue bounds how many routable events one issue can dispatch
@@ -62,8 +64,13 @@ type Poller struct {
 	roleMembership      map[string]string                    // accountID → Jira project role name
 	roleGroups          map[string][]string                  // Jira role name → group IDs for per-actor resolution
 	roleGroupsChecked   map[string]bool                      // accountID → group membership already fetched this cycle
+	rolesLoaded         bool                                 // project role roster loaded (or skipped for a missing project key) this cycle
+	userGroups          map[string][]jira.UserGroupInfo      // accountID → GetUserGroups result, cached per cycle
 	statusCategoryCache map[string]string                    // status name → statusCategory key, reset each cycle
 	selfAccountID       string                               // authenticated Jira account from GetMyself; used to classify self-authored events as bot
+	eventsSeen          int                                  // events converted this cycle
+	eventsInvalid       int                                  // events skipped this cycle because they failed validation
+	eventsMatchErrors   int                                  // events dropped this cycle because matcher.Match errored
 }
 
 // ctxSleep sleeps for d or until ctx is cancelled, whichever comes first,
@@ -103,10 +110,13 @@ func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
 func (p *Poller) Run(ctx context.Context) error {
 	cycleID := uuid.New().String()
 	p.dispatches = nil
+	p.eventsSeen, p.eventsInvalid, p.eventsMatchErrors = 0, 0, 0
 	p.statusCategoryCache = make(map[string]string)
 	p.roleMembership = make(map[string]string)
 	p.roleGroups = make(map[string][]string)
 	p.roleGroupsChecked = make(map[string]bool)
+	p.rolesLoaded = false
+	p.userGroups = make(map[string][]jira.UserGroupInfo)
 
 	// Auth preflight: verify credentials before any discovery, lock, or
 	// checkpoint operations. Without this, bad credentials cause Jira to
@@ -141,32 +151,14 @@ func (p *Poller) Run(ctx context.Context) error {
 	// Step 3: Randomly select min(N, len(unlocked)) candidates.
 	selected := selectRandom(unlocked, p.opts.N)
 
-	// Load project role structure for actor role resolution. Uses
-	// per-actor resolution instead of full group member enumeration to
-	// avoid the 100-page pagination cap on the group/member endpoint
-	// (see issue #6041). Direct user actors are resolved immediately;
-	// group-based membership is resolved lazily per actor in
-	// processIssue via GetUserGroups.
-	//
-	// Deferred until after selection so a cycle with nothing to process
-	// doesn't spend Jira API calls resolving roles that end up unused.
-	// A load FAILURE fails the whole cycle rather than degrading to an
-	// empty map: with no membership every actor resolves to "external",
-	// write-gated events (slash commands, ready-to-code labels) route to
-	// nothing, and the checkpoint would still advance past them —
-	// permanently dropping real events over a transient roles-API error.
-	// Failing the cycle leaves checkpoints untouched so the next cron
-	// run retries. (A missing project key is different: JQL-only mode
-	// is documented as always-external, so that path proceeds.)
-	if len(selected) > 0 {
-		if p.opts.JiraProject != "" {
-			if err := p.loadRoleStructure(ctx, p.opts.JiraProject); err != nil {
-				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, err)
-			}
-		} else {
-			log.Printf("WARNING: no Jira project key set, cannot resolve actor roles (defaulting to external)")
-		}
-	}
+	// The project role roster (GET /project/{key}/role, which Jira Cloud
+	// serves only with the Administer Projects permission) is not loaded
+	// here. processIssue loads it on first use, only when an event needs
+	// project-role resolution (see roleSourceFor), so a setup whose jira
+	// authorization entry uses the lists, or only label triggers under
+	// the jira_editors rule, never calls it. A load FAILURE fails the whole
+	// cycle (see ensureRoleStructure), leaving checkpoints untouched so
+	// the next cron run retries.
 
 	// Step 4: Process each selected issue. Checkpoint advances are not
 	// committed to Jira here — detectChanges/routing only compute the
@@ -179,15 +171,18 @@ func (p *Poller) Run(ctx context.Context) error {
 	var pending []pendingCheckpoint
 	var processErrors int
 	for _, issue := range selected {
+		start := len(p.dispatches)
 		checkpoint, err := p.processIssue(ctx, issue, cycleID)
 		if err != nil {
+			var rle *roleLoadError
+			if errors.As(err, &rle) {
+				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, rle.err)
+			}
 			log.Printf("WARNING: processing %s: %v", issue.Key, err)
 			processErrors++
 			continue
 		}
-		if !checkpoint.IsZero() {
-			pending = append(pending, pendingCheckpoint{issueKey: issue.Key, t: checkpoint})
-		}
+		pending = append(pending, pendingCheckpoint{issueKey: issue.Key, t: checkpoint, records: p.dispatches[start:len(p.dispatches):len(p.dispatches)]})
 	}
 	if processErrors > 0 && processErrors == len(selected) {
 		return fmt.Errorf("all %d selected issues failed to process", processErrors)
@@ -208,8 +203,76 @@ func (p *Poller) Run(ctx context.Context) error {
 	// follow-up), a failure in that downstream step will silently drop the
 	// event instead of being retried. Local persistence of dispatches.json
 	// itself is durable before Step 6 below commits any checkpoint.
-	if len(p.dispatches) > 0 {
+	//
+	// With an output driver (Options.Dispatcher, used for GitLab targets)
+	// the records are scheduled here instead, and an issue's checkpoint is
+	// committed only when all of its records were dispatched. A failed
+	// dispatch leaves that issue's checkpoint untouched so the next cycle
+	// retries it; records of the same issue that did dispatch may then be
+	// dispatched again.
+	var dispatchErrors int
+	var firstDispatchErr error
+	if p.opts.Dispatcher != nil {
+		for i := range pending {
+			for _, record := range pending[i].records {
+				if err := p.opts.Dispatcher.Dispatch(ctx, record); err != nil {
+					if errors.Is(err, dispatch.ErrTransportBudget) {
+						// The refusal is deterministic — the same
+						// record re-marshals to the same oversized
+						// payload — so a retry can never succeed: the
+						// refused record never holds the issue's
+						// checkpoint back. The checkpoint still waits
+						// for the issue's other records: a sibling
+						// record that fails ordinarily keeps the
+						// checkpoint (see dispatchFailed below), and
+						// the next cycle re-detects — and re-refuses —
+						// the refused record until that sibling
+						// succeeds.
+						log.Printf("WARNING: dispatching %s for %s: %v (the refused record never holds back lastCheck, which advances once the issue's other records dispatch; the transport-budget refusal is permanent)", record.Agent, pending[i].issueKey, err)
+						continue
+					}
+					log.Printf("WARNING: dispatching %s for %s: %v (lastCheck not advanced; the issue is retried next cycle)", record.Agent, pending[i].issueKey, err)
+					pending[i].dispatchFailed = true
+					dispatchErrors++
+					if firstDispatchErr == nil {
+						firstDispatchErr = err
+					}
+					break
+				}
+			}
+		}
+	} else if len(p.dispatches) > 0 {
 		log.Printf("WARNING: committing checkpoints for %d dispatch(es) not yet confirmed as scheduled downstream; see KNOWN LIMITATION note in Run", len(p.dispatches))
+	}
+
+	// A bad issue can skip several of its events — the guard counts
+	// events, not issues, so one bad issue alone in a cycle is "every
+	// event" — while a setting that breaks every event skips them all,
+	// which these lines show. Logged once here — before the
+	// all-invalid guard's early return below — so the guard needs no copy
+	// of its own and the two sites cannot drift apart.
+	if p.eventsInvalid > 0 {
+		log.Printf("WARNING: skipped %d of %d events this cycle because they failed normalized-event validation", p.eventsInvalid, p.eventsSeen)
+	}
+	if p.eventsMatchErrors > 0 {
+		log.Printf("WARNING: dropped %d of %d events this cycle because matching them failed", p.eventsMatchErrors, p.eventsSeen)
+	}
+
+	// A cycle in which every event was dropped before dispatch is a
+	// systemic problem — a Jira response-shape change, an adapter gap or
+	// a trigger matcher that errors on every event, not one bad issue
+	// among good ones. Advancing the checkpoints would drop those events
+	// for good behind a green run, so the cycle fails and holds every
+	// checkpoint, as a dispatch failure does; the next cycle retries them
+	// and the operator sees the error. Matcher errors count beside
+	// validation failures because an event whose Match call errors is
+	// dropped just as silently.
+	dropped := p.eventsInvalid + p.eventsMatchErrors
+	if dropped > 0 && dropped == p.eventsSeen {
+		if p.eventsMatchErrors == 0 {
+			return fmt.Errorf("all %d events this cycle failed normalized-event validation; no checkpoint was advanced, so they are retried next cycle", p.eventsInvalid)
+		}
+		return fmt.Errorf("all %d events this cycle were dropped before dispatch (%d failed normalized-event validation, %d failed matching); no checkpoint was advanced, so they are retried next cycle", dropped, p.eventsInvalid, p.eventsMatchErrors)
 	}
 
 	// Step 6: Commit checkpoints now that the dispatch file is durably
@@ -218,8 +281,12 @@ func (p *Poller) Run(ctx context.Context) error {
 	// dispatches are already persisted, so an uncommitted checkpoint means
 	// the next cycle re-detects the same activity and emits duplicates,
 	// which should not masquerade as a clean run.
-	var advanceErrors int
+	var advanceErrors, advanceAttempts int
 	for _, pc := range pending {
+		if pc.t.IsZero() || pc.dispatchFailed {
+			continue
+		}
+		advanceAttempts++
 		if err := p.advanceLastCheck(ctx, pc.issueKey, pc.t); err != nil {
 			log.Printf("WARNING: advancing lastCheck for %s: %v", pc.issueKey, err)
 			advanceErrors++
@@ -228,17 +295,24 @@ func (p *Poller) Run(ctx context.Context) error {
 
 	log.Printf("poll complete: %d candidates, %d unlocked, %d selected, %d dispatches",
 		len(candidates), len(unlocked), len(selected), len(p.dispatches))
+	if dispatchErrors > 0 {
+		return fmt.Errorf("failed to dispatch records for %d issue(s); their lastCheck was not advanced, so they are retried next cycle: %w", dispatchErrors, firstDispatchErr)
+	}
 	if advanceErrors > 0 {
-		return fmt.Errorf("failed to commit lastCheck for %d of %d issues; their activity will be re-detected (and re-dispatched) next cycle", advanceErrors, len(pending))
+		return fmt.Errorf("failed to commit lastCheck for %d of %d issues; their activity will be re-detected (and re-dispatched) next cycle", advanceErrors, advanceAttempts)
 	}
 	return nil
 }
 
 // pendingCheckpoint holds a computed lastCheck value for an issue, deferred
-// until the dispatch file write succeeds (see Run).
+// until the dispatch file write succeeds (see Run), together with the
+// dispatch records the issue produced this cycle. A zero t means there is
+// no checkpoint to advance.
 type pendingCheckpoint struct {
-	issueKey string
-	t        time.Time
+	issueKey       string
+	t              time.Time
+	records        []DispatchRecord
+	dispatchFailed bool // set when Options.Dispatcher failed one of records
 }
 
 // maxRolePriority is the highest value jira.RolePriority can return
@@ -255,6 +329,12 @@ func (p *Poller) loadRoleStructure(ctx context.Context, projectKey string) error
 	actors, err := p.client.GetProjectRoleActors(ctx, projectKey)
 	if err != nil {
 		return err
+	}
+	if p.roleMembership == nil {
+		p.roleMembership = make(map[string]string)
+	}
+	if p.roleGroups == nil {
+		p.roleGroups = make(map[string][]string)
 	}
 	for roleName, ra := range actors {
 		for aid := range ra.DirectUsers {
@@ -292,7 +372,7 @@ func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error
 	var lastErr error
 	var errorCount int
 	for _, aid := range actorIDs {
-		groups, err := p.client.GetUserGroups(ctx, aid)
+		groups, err := p.userGroupsFor(ctx, aid)
 		if err != nil {
 			log.Printf("WARNING: getting groups for actor %s: %v", aid, err)
 			lastErr = err
@@ -375,7 +455,7 @@ func selectRandom(items []jira.Issue, n int) []jira.Issue {
 	if len(items) <= n {
 		return items
 	}
-	rand.Shuffle(len(items), func(i, j int) {
+	randutil.Shuffle(len(items), func(i, j int) {
 		items[i], items[j] = items[j], items[i]
 	})
 	return items[:n]
@@ -461,56 +541,78 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// number of agent workflow runs, and thus Actions minutes / model
 	// spend / actions:write rate-limit pressure — an attacker or accident
 	// can trigger from one issue. The checkpoint still advances past all
-	// inspected entries, so overflow is not re-processed next cycle.
+	// inspected entries, so overflow is not re-processed next cycle. The
+	// cap applies before event validation, so an issue whose capped prefix
+	// is all invalid while events beyond the cap would have validated
+	// fires Run's all-invalid guard and holds the checkpoint; that failure
+	// is loud (this WARNING names the truncation) and bounded —
+	// readLastCheck clamps a lastCheck older than the backfill window
+	// forward, so the cycle retires within a day rather than looping
+	// forever.
 	if len(events) > maxEventsPerIssue {
 		log.Printf("WARNING: %s produced %d routable events this cycle; capping dispatch at %d (possible lastCheck rewind or bulk change)", issue.Key, len(events), maxEventsPerIssue)
 		events = events[:maxEventsPerIssue]
 	}
 
-	// Resolve per-actor roles for actors below the highest possible
-	// priority (Administrators). A direct role assignment doesn't rule
-	// out also belonging to a higher-priority group, so every such actor
-	// is checked, not just ones with no role yet — otherwise a direct
-	// Developers member who is also in an Administrators-mapped group
-	// would never have their groups checked. This handles group-based
-	// role membership by checking each actor's groups against the
-	// role-assigned groups, avoiding the 100-page group/member
-	// pagination cap that truncated large groups. roleGroupsChecked
-	// skips actors already resolved via groups earlier this cycle, since
-	// group membership can't change mid-cycle and re-checking would
-	// repeat the same GetUserGroups call for no new information. Any
-	// lookup failure — partial or total — fails this issue's processing
-	// so it's retried next cycle rather than silently dispatching a
-	// downgraded role for the failed actor.
-	if p.opts.JiraProject != "" && len(p.roleGroups) > 0 {
-		seen := make(map[string]bool)
-		var candidateActors []string
-		for _, event := range events {
-			aid := actorID(event)
-			if aid == "" || seen[aid] || p.roleGroupsChecked[aid] {
-				continue
-			}
-			seen[aid] = true
-			if jira.RolePriority(p.roleMembership[aid]) < maxRolePriority {
-				candidateActors = append(candidateActors, aid)
-			}
+	// Resolve what each event's actor.role needs: the jira lists' group
+	// memberships and, only when an event uses it, the project role
+	// roster plus per-actor group checks against its role-assigned
+	// groups (avoiding the 100-page group/member pagination cap that
+	// truncated large groups). Any group lookup failure fails this
+	// issue's processing so it's retried next cycle rather than silently
+	// dispatching a downgraded role for the failed actor. A roster load
+	// failure is a *roleLoadError, which fails the whole cycle in Run.
+	if err := p.resolveEventRoles(ctx, events); err != nil {
+		var rle *roleLoadError
+		if errors.As(err, &rle) {
+			return time.Time{}, err
 		}
-		if err := p.resolveActorRoles(ctx, candidateActors); err != nil {
-			return time.Time{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
-		}
+		return time.Time{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
 	}
 
-	// Convert, match harness triggers, dispatch. A transiently failing
-	// event is skipped rather than retried: the checkpoint advances past
-	// all inspected entries regardless, which prevents the poller from
-	// stalling when a routing error persists across cycles.
+	// Convert, match harness triggers, dispatch. An event that fails
+	// validation is skipped rather than retried, so one issue's bad event
+	// cannot stall the other issues: the checkpoint advances past all
+	// inspected entries once at least one event of the cycle validated.
+	// A cycle in which every event fails validation fails the whole
+	// cycle in Run instead, holding the checkpoints so those events
+	// are retried.
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
+		p.eventsSeen++
+		// fullsend run cannot use an invalid embedded event, so an event
+		// that fails validation is skipped here rather than dispatched.
+		// An issue served without a labels array never reaches this skip:
+		// toNormalizedEvent maps nil labels to an empty list.
+		if err := ne.Validate(); err != nil {
+			log.Printf("WARNING: skipping event %s for issue %s: %v (Jira issue id %q)", event.Key(), event.IssueKey, err, event.IssueID)
+			p.eventsInvalid++
+			continue
+		}
+
+		// On the GitLab target, bound state.labels before trigger
+		// matching with the same bound the dispatch door applies when
+		// encoding (dispatch.LogBoundTransportLabels): a trigger keyed on a
+		// label past the bound must not launch an agent whose
+		// transported event lacks that label — the silent
+		// trigger/payload mismatch the transport bounds exist to
+		// prevent. The GitHub target is unchanged: its transport
+		// carries the event unbounded, so matching on the full label
+		// set stays correct there.
+		if p.opts.TargetForge == TargetForgeGitLab {
+			where := fmt.Sprintf("%s event on %s", event.Type, event.IssueKey)
+			ne.State.Labels = dispatch.LogBoundTransportLabels(where, ne.State.Labels)
+		}
 
 		if p.matcher != nil {
 			records, matchErr := p.matcher.Match(ctx, &ne)
 			if matchErr != nil {
+				// Counted beside validation failures so an
+				// all-matcher-error cycle fails the run at the
+				// guard above instead of advancing behind a
+				// green Run.
 				log.Printf("WARNING: matching event %s: %v", event.Key(), matchErr)
+				p.eventsMatchErrors++
 				continue
 			}
 			p.dispatches = append(p.dispatches, records...)

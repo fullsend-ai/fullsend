@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
@@ -55,7 +56,7 @@ func TestNewReconcileStatusCmd_ValidationErrors(t *testing.T) {
 		{
 			name:    "missing mint-url",
 			args:    []string{"--repo", "org/repo", "--number", "7", "--run-id", "run-1"},
-			wantErr: "--mint-url or FULLSEND_MINT_URL required",
+			wantErr: "--mint-url, a layered mint_url in config.yaml/config.base.yaml, or FULLSEND_MINT_URL required",
 		},
 		{
 			name:    "invalid number",
@@ -70,7 +71,7 @@ func TestNewReconcileStatusCmd_ValidationErrors(t *testing.T) {
 		{
 			name:    "mint-url without role",
 			args:    []string{"--repo", "org/repo", "--number", "7", "--run-id", "run-1", "--mint-url", "https://mint.example.com"},
-			wantErr: "--role is required when using --mint-url",
+			wantErr: "--role is required to mint a token",
 		},
 	}
 	for _, tt := range tests {
@@ -109,6 +110,53 @@ func TestNewReconcileStatusCmd_MintURLFromEnv(t *testing.T) {
 	// proves the env var was picked up and --role validation passed.
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "minting status token")
+}
+
+// TestNewReconcileStatusCmd_MintURLFromFile checks that reconcile-status must resolve mint_url from the
+// same layered config.yaml/config.base.yaml that fullsend run reads via
+// --fullsend-dir, not just --mint-url/FULLSEND_MINT_URL, so the two agree
+// on a mint endpoint within the same CI job.
+func TestNewReconcileStatusCmd_MintURLFromFile(t *testing.T) {
+	dir := t.TempDir()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nmint_url: "+srv.URL+"\n"), 0o644))
+
+	var capturedMintURL string
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		capturedMintURL = req.MintURL
+		return &mintclient.MintResult{Token: "ghs_file_minted_token"}, nil
+	}
+	defer func() { reconcileMintToken = origMint }()
+
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(token string) forge.Client {
+		return gh.New(token).WithBaseURL(srv.URL)
+	}
+	defer func() { reconcileNewForgeClient = origForge }()
+
+	// A stale/different value in the environment — simulating a repository
+	// variable the file has since overridden — must lose to the file.
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--role", "review",
+		"--fullsend-dir", dir,
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, srv.URL, capturedMintURL, "config.yaml's mint_url must win over FULLSEND_MINT_URL")
 }
 
 func TestNewReconcileStatusCmd_TokenFlagRemoved(t *testing.T) {
@@ -303,6 +351,157 @@ func TestNewReconcileStatusCmd_GitLabCancelled(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestNewReconcileStatusCmd_ReviewRunDoesNotEnableGitHubGuidanceOnGitLab(t *testing.T) {
+	srv := gitlabNoteServer()
+	defer srv.Close()
+
+	origReconcile := reconcileOrphaned
+	var capturedGuidance string
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, options statuscomment.ReconcileOptions) error {
+		capturedGuidance = options.CancellationGuidance
+		return nil
+	}
+	t.Cleanup(func() { reconcileOrphaned = origReconcile })
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_SERVER_URL", srv.URL)
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--forge", "gitlab",
+		"--role", "review",
+		"--review-run",
+	})
+
+	require.NoError(t, cmd.Execute())
+	assert.Empty(t, capturedGuidance, "GitHub-specific /fs-review guidance must not be rendered for GitLab")
+}
+
+func TestNewReconcileStatusCmd_ReviewRunEnablesGitHubGuidance(t *testing.T) {
+	const reviewedSHA = "abc1234567890abcdef1234567890abcdef123456"
+
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_token"}, nil
+	}
+	t.Cleanup(func() { reconcileMintToken = origMint })
+
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = reviewedSHA
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(string) forge.Client { return fc }
+	t.Cleanup(func() { reconcileNewForgeClient = origForge })
+
+	origReconcile := reconcileOrphaned
+	var capturedGuidance string
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, options statuscomment.ReconcileOptions) error {
+		capturedGuidance = options.CancellationGuidance
+		return nil
+	}
+	t.Cleanup(func() { reconcileOrphaned = origReconcile })
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--sha", reviewedSHA,
+		"--reason", "cancelled",
+		"--forge", "github",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--review-run",
+	})
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, builtInGitHubReviewRetryGuidance, capturedGuidance)
+}
+
+func TestNewReconcileStatusCmd_ReviewRunSupersededOmitsRetry(t *testing.T) {
+	const reviewedSHA = "abc1234567890abcdef1234567890abcdef123456"
+
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_token"}, nil
+	}
+	t.Cleanup(func() { reconcileMintToken = origMint })
+
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "def4567890abcdef1234567890abcdef12345678"
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(string) forge.Client { return fc }
+	t.Cleanup(func() { reconcileNewForgeClient = origForge })
+
+	origReconcile := reconcileOrphaned
+	var capturedGuidance string
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, options statuscomment.ReconcileOptions) error {
+		capturedGuidance = options.CancellationGuidance
+		return nil
+	}
+	t.Cleanup(func() { reconcileOrphaned = origReconcile })
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--sha", reviewedSHA,
+		"--reason", "cancelled",
+		"--forge", "github",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--review-run",
+	})
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, builtInGitHubReviewSupersededGuidance, capturedGuidance)
+	assert.NotContains(t, capturedGuidance, "/fs-review")
+}
+
+func TestNewReconcileStatusCmd_ReviewRunHeadLookupFailureOmitsGuidance(t *testing.T) {
+	const reviewedSHA = "abc1234567890abcdef1234567890abcdef123456"
+
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_token"}, nil
+	}
+	t.Cleanup(func() { reconcileMintToken = origMint })
+
+	fc := forge.NewFakeClient()
+	fc.Errors["GetPullRequestHeadSHA"] = fmt.Errorf("lookup failed")
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(string) forge.Client { return fc }
+	t.Cleanup(func() { reconcileNewForgeClient = origForge })
+
+	origReconcile := reconcileOrphaned
+	var capturedGuidance string
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, options statuscomment.ReconcileOptions) error {
+		capturedGuidance = options.CancellationGuidance
+		return nil
+	}
+	t.Cleanup(func() { reconcileOrphaned = origReconcile })
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--sha", reviewedSHA,
+		"--reason", "cancelled",
+		"--forge", "github",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--review-run",
+	})
+
+	require.NoError(t, cmd.Execute())
+	assert.Empty(t, capturedGuidance)
+}
+
 func TestNewReconcileStatusCmd_GitLabNoToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "")
 	t.Setenv("FULLSEND_MINT_URL", "")
@@ -385,7 +584,7 @@ func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus 
 	reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
 		return tracker.NewForgeClient(fc)
 	}
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, _ statuscomment.ReconcileOptions) error {
 		onReconcile(completionMode, jobStatus, wasSkipped, agentDescription)
 		return nil
 	}
@@ -632,12 +831,16 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ statuscomment.ReconcileOptions) error {
 		gotProject = project
 		gotNumber = number
 		return nil
 	}
-	reconcileNewJiraTrackerClient = func() (tracker.Client, error) {
+	var gotBaseURL string
+	reconcileNewJiraTrackerClient = func(tracking *config.TrackingConfig) (tracker.Client, error) {
+		if tracking != nil && tracking.Jira != nil {
+			gotBaseURL = tracking.Jira.BaseURL
+		}
 		return tracker.NewForgeClient(gh.New("fake")), nil // stub; type doesn't matter for this test
 	}
 	t.Cleanup(func() {
@@ -647,10 +850,7 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 
 	dir := t.TempDir()
 	writeJiraDispatchEvent(t, dir, "PROJ-123")
-
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, dir)
 
 	cmd := newReconcileStatusCmd()
 	cmd.SetArgs([]string{
@@ -662,14 +862,22 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "PROJ", gotProject)
 	assert.Equal(t, 123, gotNumber)
+	assert.Equal(t, "https://acme.atlassian.net", gotBaseURL, "the Jira client is built from tracker.jira in --fullsend-dir")
 }
 
-func TestNewReconcileStatusCmd_Jira_NoBaseURL(t *testing.T) {
+// writeJiraTrackerConfigFile writes a config.yaml with tracker.jira
+// connection settings under dir.
+func writeJiraTrackerConfigFile(t *testing.T, dir string) {
+	t.Helper()
+	cfg := "version: \"1\"\ntracker:\n  jira:\n    base_url: https://acme.atlassian.net\n    project: PROJ\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o600))
+}
+
+func TestNewReconcileStatusCmd_Jira_NoJiraConfig(t *testing.T) {
 	dir := t.TempDir()
 	writeJiraDispatchEvent(t, dir, "PROJ-123")
 
-	t.Setenv("JIRA_BASE_URL", "")
-	t.Setenv("JIRA_TOKEN", "test-token")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "test-token")
 
 	cmd := newReconcileStatusCmd()
 	cmd.SetArgs([]string{
@@ -679,15 +887,15 @@ func TestNewReconcileStatusCmd_Jira_NoBaseURL(t *testing.T) {
 
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_BASE_URL required")
+	assert.Contains(t, err.Error(), "tracker.jira.base_url")
 }
 
 func TestNewReconcileStatusCmd_Jira_NoToken(t *testing.T) {
 	dir := t.TempDir()
 	writeJiraDispatchEvent(t, dir, "PROJ-123")
+	writeJiraTrackerConfigFile(t, dir)
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "")
 
 	cmd := newReconcileStatusCmd()
 	cmd.SetArgs([]string{
@@ -698,7 +906,7 @@ func TestNewReconcileStatusCmd_Jira_NoToken(t *testing.T) {
 
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_TOKEN required")
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is required")
 }
 
 func TestNewReconcileStatusCmd_NoTrackerFlags(t *testing.T) {
@@ -719,12 +927,12 @@ func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ statuscomment.ReconcileOptions) error {
 		gotProject = project
 		gotNumber = number
 		return nil
 	}
-	reconcileNewJiraTrackerClient = func() (tracker.Client, error) {
+	reconcileNewJiraTrackerClient = func(*config.TrackingConfig) (tracker.Client, error) {
 		return tracker.NewForgeClient(gh.New("fake")), nil
 	}
 	t.Cleanup(func() {
@@ -740,8 +948,6 @@ func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(eventFile, []byte(eventContent), 0o644))
 
 	t.Setenv("GITHUB_EVENT_PATH", eventFile)
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
 
 	cmd := newReconcileStatusCmd()
 	cmd.SetArgs([]string{
@@ -773,4 +979,19 @@ func TestNewReconcileStatusCmd_NoEvent_FallsBackToForge(t *testing.T) {
 
 	err := cmd.Execute()
 	require.NoError(t, err)
+}
+
+// TestReconcileNewForgeClient_HonoursGITHUBAPIURL verifies the default
+// reconcile-status GitHub client targets GITHUB_API_URL so orphaned
+// status comments are reconciled on non-github.com hosts (#9041).
+func TestReconcileNewForgeClient_HonoursGITHUBAPIURL(t *testing.T) {
+	t.Setenv("GITHUB_API_URL", "https://ghes.example.com/api/v3")
+	client, ok := reconcileNewForgeClient("t").(*gh.LiveClient)
+	require.True(t, ok, "expected *github.LiveClient")
+	assert.Equal(t, "https://ghes.example.com/api/v3", client.BaseURL())
+
+	t.Setenv("GITHUB_API_URL", "")
+	client, ok = reconcileNewForgeClient("t").(*gh.LiveClient)
+	require.True(t, ok, "expected *github.LiveClient")
+	assert.Equal(t, "https://api.github.com", client.BaseURL())
 }

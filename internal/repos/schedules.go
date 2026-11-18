@@ -1,7 +1,5 @@
 package repos
 
-import "github.com/fullsend-ai/fullsend/internal/forge"
-
 // ScheduleSpec defines a fullsend pipeline schedule for GitLab repos.
 // All sites that create, detect, or match pipeline schedules must use
 // PipelineScheduleSpecs() to stay in sync.
@@ -35,6 +33,27 @@ var pipelineScheduleSpecs = []ScheduleSpec{
 	},
 }
 
+// jiraPollScheduleSpec is the Fullsend-owned GitLab Jira poll schedule
+// (#9108). It is deliberately not in pipelineScheduleSpecs: it exists only
+// while the repository's effective tracker.jira.poll.enabled is true, and it
+// is converged by gitlabJiraPollReconciler alone. The poll template selects
+// the Jira poll mode from this description, and the schedule carries no
+// pipeline variables: every Jira setting comes from .fullsend/config.yaml.
+// It is offset by one minute from the slash poll.
+var jiraPollScheduleSpec = ScheduleSpec{
+	ComponentName: "schedule:jira-poll",
+	Description:   "fullsend jira poll",
+	Cron:          "1-59/5 * * * *",
+}
+
+// JiraPollScheduleDescription returns the description of the Fullsend-owned
+// GitLab Jira poll schedule. Callers that recreate the managed polling
+// schedules (PipelineScheduleSpecs) must leave it alone: repos install
+// converges it from tracker.jira.poll.enabled.
+func JiraPollScheduleDescription() string {
+	return jiraPollScheduleSpec.Description
+}
+
 // PipelineScheduleSpecs returns the canonical list of fullsend pipeline
 // schedules for GitLab repos.
 func PipelineScheduleSpecs() []ScheduleSpec {
@@ -50,37 +69,4 @@ func scheduleSpecByComponent(name string) *ScheduleSpec {
 		}
 	}
 	return nil
-}
-
-// legacyPollModeVariables are the FULLSEND_POLL_MODE pipeline variables
-// required by the pre-typed-dispatch GitLab templates, keyed by
-// ComponentName. Those templates select poll mode from this variable and
-// do not derive it from the schedule description, so creating or
-// repairing a schedule for a repo that is not yet on the typed
-// pipeline-input contract must still set it. Typed installations select
-// poll mode from the schedule description instead (see
-// GitLabUsesTypedDispatch) and must use variable-free schedules so the
-// pipeline-variable override restriction can be enforced.
-var legacyPollModeVariables = map[string]map[string]string{
-	"schedule:slash-poll": {forge.VarPollMode: "slash"},
-	"schedule:event-poll": {forge.VarPollMode: "events"},
-}
-
-// ScheduleVariablesFor returns the pipeline variables to submit when
-// creating the given schedule spec. When typed reports that the repo's
-// effective GitLab wrapper is not yet on the typed pipeline-input
-// contract, it returns the legacy FULLSEND_POLL_MODE override so slash
-// and event polling keep working; otherwise it returns the spec's
-// (variable-free) defaults. Exported so every schedule-creation call
-// site — convergeSchedules and the CLI's post-install fresh-install
-// path (setupGitLabPipelineSchedules) — selects variables from the same
-// transport-aware logic instead of risking drift between two copies.
-func ScheduleVariablesFor(spec ScheduleSpec, typed bool) map[string]string {
-	if typed {
-		return spec.Variables
-	}
-	if vars, ok := legacyPollModeVariables[spec.ComponentName]; ok {
-		return vars
-	}
-	return spec.Variables
 }

@@ -1,0 +1,16 @@
+{
+  "action": "request-changes",
+  "pr_number": 1,
+  "repo": "owner/repo",
+  "head_sha": "<pr_head_sha>",
+  "body": "Behaviour smoke: the review bot requests changes.",
+  "findings": [
+    {
+      "severity": "high",
+      "category": "logic-error",
+      "file": "behaviour/pr.txt",
+      "line": 1,
+      "description": "Behaviour smoke finding so the review requests changes."
+    }
+  ]
+}

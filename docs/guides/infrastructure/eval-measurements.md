@@ -4,9 +4,7 @@ Eval measurements score agent runs from their **OpenTelemetry traces** for
 trends over time. They are **not** functional evals (PR-gate fixtures under
 `fullsend-ai/agents` `eval/<agent>/`).
 
-**Decided:** [ADR 0087](../../ADRs/0087-eval-measurements-online-trace-scoring.md).
-Telemetry baseline: [Distributed Tracing](./distributed-tracing.md)
-([ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md)).
+Telemetry baseline: [Distributed Tracing](./distributed-tracing.md).
 
 ## Prerequisites
 
@@ -37,7 +35,7 @@ scores to any compatible backend — Phoenix, MLflow, Jaeger, etc.
 fullsend run
   └─ always writes  output/<runDir>/run-telemetry.jsonl
   └─ if OTEL_EXPORTER_OTLP_* set → live OTLP export of agent spans
-       (any compatible backend — ADR 0050)
+       (any compatible backend)
 
 fullsend eval-measure   (same GHA job, fail-open, after run)
   └─ writes  output/<runDir>/eval-measurements.jsonl when at least one
@@ -113,11 +111,11 @@ First scorer: **`trace_fitness`** (catalog id `em-001`) — span tree + expected
 attributes so later scorers can trust the trace.
 
 Second scorer: **`run_health`** (catalog id `em-002`) — deterministic
-tool-call defect detection over the always-on `execute_tool` spans
-([ADR 0108](../../ADRs/0108-tool-call-span-topology.md)). It fails a run only
+tool-call defect detection over the always-on `execute_tool` spans. It fails
+a run only
 on an unambiguous integrity break (a tool result with no matching call) and
 reports tool errors and unanswered calls as signals; runs whose runtime emits
-no `execute_tool` spans (pi, codex) and runs that made no tool calls are
+no `execute_tool` spans (codex) and runs that made no tool calls are
 skipped.
 
 Manifest shape (first ship — enablement only):
@@ -183,7 +181,7 @@ newer `agents@v0` manifest this binary does not implement yet) also writes
 
 | Topic | Relationship to measurements |
 |---|---|
-| Level 3 content capture ([ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md); activation draft closed without merge in [#5947](https://github.com/fullsend-ai/fullsend/pull/5947)) | First ship scores Level 1/2 metadata fitness. **Planned:** content-aware scorers on Level 3 prompt/completion bodies once L3 is implemented — that is the real quality signal. Measure CLI is host-side after the sandbox exits. Tool-result content and `execute_tool` spans are Claude-only until the pi and codex parsers emit call ids and results ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)); a scorer that reads tool I/O should key on `fullsend.runtime` and skip, not fail, other runtimes. |
+| Level 3 content capture (activation draft closed without merge in [#5947](https://github.com/fullsend-ai/fullsend/pull/5947)) | First ship scores Level 1/2 metadata fitness. **Planned:** content-aware scorers on Level 3 prompt/completion bodies once L3 is implemented — that is the real quality signal. Measure CLI is host-side after the sandbox exits. Tool arguments, tool-result content and `execute_tool` spans cover Claude and pi; the codex parser emits no call ids, arguments or results yet ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)), so a scorer that reads tool I/O should key on `fullsend.runtime` and skip, not fail, codex. |
 | [#5944](https://github.com/fullsend-ai/fullsend/pull/5944) Span status from run outcome *(merged)* | Unblocks outcome scorers keyed on Status, not raw exit alone. |
 | Semantic observability / observer / lessons (draft closed without merge in [#2423](https://github.com/fullsend-ai/fullsend/pull/2423)) | Observer + lessons → fixtures remains a sibling idea; measurements are the online score path. |
 | [#5524](https://github.com/fullsend-ai/fullsend/pull/5524) Harness snapshot / forge join keys *(open)* | Complementary join/identity proposal beside telemetry; measurements are derived scores, not primary run facts. |
@@ -193,16 +191,26 @@ newer `agents@v0` manifest this binary does not implement yet) also writes
 ```text
 GitHub Actions job
 ├── fullsend run
-├── fullsend eval-measure   # reads output/<runDir>/run-telemetry.jsonl; never fails the job
-└── upload-artifact         # includes both JSONL files under output/
+├── fullsend eval-measure      # reads output/<runDir>/run-telemetry.jsonl; never fails the job
+├── fullsend prepare-artifacts # copy of output/ per config.yaml artifacts (ADR 0161)
+└── upload-artifact            # uploads that copy (skipped for artifacts level none)
 
 GitLab CI agent job
-├── fullsend run            # --output-dir $CI_PROJECT_DIR/output
-├── fullsend eval-measure   # always (even if run failed); || true
-└── artifacts: output/      # when: always (parity with GHA upload of output/)
+├── fullsend run               # --output-dir $CI_PROJECT_DIR/output
+├── fullsend eval-measure      # always (even if run failed); || true
+├── fullsend prepare-artifacts # --artifact-dir $CI_PROJECT_DIR/fullsend-artifact
+└── artifacts: fullsend-artifact/ # when: always (parity with the GHA upload)
 ```
 
-Add `output/` to the consuming repo's `.gitignore` so local GitLab-checkout
+Both JSONL files reach the artifact under the `all` and `metadata`
+[artifact levels](../../reference/config-reference.md#artifacts). Under
+`metadata`, the uploaded `run-telemetry.jsonl` has its content-capture
+attributes, span status messages, exception text and pre-script skip reason
+removed, and every `skip` row in the uploaded `eval-measurements.jsonl` gets a
+fixed explanation. A file that cannot be parsed is left out. The files in
+`output/` are not changed.
+
+Add `output/` and `fullsend-artifact/` to the consuming repo's `.gitignore` so local GitLab-checkout
 runs do not stage telemetry accidentally. The GitLab per-repo scaffold embeds
 a recommended `.gitignore` fragment (asserted in tests) but does **not**
 install it as a root file — that would overwrite an existing consumer ignore
@@ -255,8 +263,9 @@ fullsend eval-measure \
 
 - `--agent` + `--output-dir` is the managed-job form. `--registry` /
   `--telemetry` remain for pointing at explicit files.
-- `--offline` rejects the remote `agents@v0` fetch (local FULLSEND_DIR
-  manifest only), matching `fullsend run --offline`.
+- `--offline` rejects network fetches of the remote `agents@v0` manifest but
+  still uses a manifest cached by an earlier online `eval-measure` with the
+  same `--fullsend-dir` (or the per-user cache when it is omitted).
 - Exit `0` when a score is `fail` — scores are data.
 - Exit `0` when telemetry or the manifest is missing (skip).
 

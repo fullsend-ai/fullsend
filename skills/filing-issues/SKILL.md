@@ -1,5 +1,5 @@
 ---
-name: Filing GitHub Issues
+name: filing-issues
 description: >
   File well-crafted GitHub issues. Use when the user wants to report a bug,
   request a feature, propose a change, or file any GitHub issue. Searches for

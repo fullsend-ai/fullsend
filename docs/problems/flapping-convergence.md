@@ -48,7 +48,7 @@ Each iteration's diff is compared to the previous iteration's diff. If the diffs
 
 ### Cost and turn accounting
 
-The functional test framework (#1682) already enforces `max_turns` and `max_cost_usd` per run. Extending these thresholds across retries catches slow-burn flapping: an agent that uses 5 turns per attempt but makes 8 attempts has consumed 40 turns total, which may exceed the cross-run budget even if each individual run was within bounds.
+Per-run execution limits and post-run evaluation thresholds do not account for cumulative work across retries. The [functional-test suite](../testing/functional-tests.md) checks turn and cost thresholds against completed runs rather than enforcing live budgets. Cross-run accounting could detect slow-burn flapping: eight attempts using five turns each consume forty turns in total, even if every attempt stays within its individual limits. Collecting and attributing those measurements across runs remains a separate requirement.
 
 ### Review comment velocity
 

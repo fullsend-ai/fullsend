@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,24 @@ func TestCleanupScenario_ClosesForkPR(t *testing.T) {
 	assert.Equal(t, "org", scmDriver.closedIssues[0].owner)
 	assert.Equal(t, "repo", scmDriver.closedIssues[0].repo)
 	assert.Equal(t, 42, scmDriver.closedIssues[0].number)
+}
+
+func TestCleanupScenario_ClosesAgentFiledIssues(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		CreatedIssueNumbers: []int{13, 14},
+		SCM:                 scmDriver,
+	}
+	CleanupScenario(w)
+	var closed []int
+	for _, rec := range scmDriver.closedIssues {
+		closed = append(closed, rec.number)
+	}
+	assert.Equal(t, []int{13, 14}, closed)
 }
 
 func TestCleanupScenario_RestoresGatewayConfig(t *testing.T) {
@@ -521,7 +540,16 @@ type fakeCleanupSCM struct {
 	commits          []committedFileRecord
 	fileContent      []byte
 	getFileErr       error
-	openPRs          []forge.ChangeProposal
+	// baseFileConfigured, when true, makes GetFileContent answer
+	// config.base.yaml requests with baseFileContent/baseFileErr
+	// instead of the config.yaml-oriented fileContent/getFileErr
+	// above. Tests that don't care about config.base.yaml leave this
+	// false, so GetFileContent keeps its original path-agnostic
+	// behavior (returning fileContent/getFileErr for every path).
+	baseFileConfigured bool
+	baseFileContent    []byte
+	baseFileErr        error
+	openPRs            []forge.ChangeProposal
 }
 
 type committedFileRecord struct {
@@ -581,6 +609,9 @@ func (f *fakeCleanupSCM) CreateIssue(context.Context, string, string, string, st
 func (f *fakeCleanupSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
 	return nil
 }
+func (f *fakeCleanupSCM) EnsureLabel(context.Context, string, string, string) error {
+	return nil
+}
 
 func (f *fakeCleanupSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
 	return nil, nil
@@ -590,7 +621,14 @@ func (f *fakeCleanupSCM) GetIssue(context.Context, string, string, int) (*forge.
 	return nil, nil
 }
 
-func (f *fakeCleanupSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
+func (f *fakeCleanupSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
+	return nil, nil
+}
+
+func (f *fakeCleanupSCM) GetFileContent(_ context.Context, _, _, path string) ([]byte, error) {
+	if f.baseFileConfigured && strings.Contains(path, "config.base.yaml") {
+		return f.baseFileContent, f.baseFileErr
+	}
 	return f.fileContent, f.getFileErr
 }
 
@@ -836,6 +874,58 @@ func TestCleanupScenario_DeactivateKillSwitch_Error(t *testing.T) {
 	CleanupScenario(w)
 	require.Len(t, logged, 1)
 	assert.Contains(t, logged[0], "deactivate kill switch")
+}
+
+func TestCleanupScenario_DeactivatesKillSwitchBase(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\n"),
+	}
+	w := &world.World{
+		Org:                     "org",
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		KillSwitchBaseActivated: true,
+		SCM:                     scmDriver,
+	}
+	CleanupScenario(w)
+	assert.True(t, scmDriver.commitFileCalled, "should commit config.base.yaml to deactivate kill switch")
+}
+
+func TestCleanupScenario_SkipsKillSwitchBaseWhenNotActivated(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		KillSwitchBaseActivated: false,
+		SCM:                     scmDriver,
+	}
+	CleanupScenario(w)
+	assert.False(t, scmDriver.commitFileCalled, "should not commit when config.base.yaml kill switch was not activated")
+}
+
+func TestCleanupScenario_DeactivateKillSwitchBase_Error(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{
+		fileContent:   []byte("version: \"1\"\nkill_switch: true\n"),
+		commitFileErr: fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		Org:                     "org",
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		KillSwitchBaseActivated: true,
+		SCM:                     scmDriver,
+		Logf:                    func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "deactivate kill switch in config.base.yaml")
 }
 
 // --- Allowed remote resources cleanup tests ---
@@ -1220,12 +1310,19 @@ func (f *fakeRetryCleanupSCM) CreateIssue(context.Context, string, string, strin
 func (f *fakeRetryCleanupSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
 	return nil
 }
+func (f *fakeRetryCleanupSCM) EnsureLabel(context.Context, string, string, string) error {
+	return nil
+}
 
 func (f *fakeRetryCleanupSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
 	return nil, nil
 }
 
 func (f *fakeRetryCleanupSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
+	return nil, nil
+}
+
+func (f *fakeRetryCleanupSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
 	return nil, nil
 }
 
@@ -1334,6 +1431,45 @@ func TestValidateSlotClean(t *testing.T) {
 		t.Parallel()
 		err := ValidateSlotClean(leased(slotConfig(t, func(c config.PerRepoConfigWriter) { c.SetKillSwitch(true) })))
 		require.ErrorContains(t, err, "kill_switch is active")
+	})
+
+	// config.yaml is silent on kill_switch here (the "clean slot"
+	// baseline); only ValidateSlotClean consulting config.base.yaml
+	// too catches this.
+	t.Run("kill switch left on in config.base.yaml only", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, nil))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileContent = slotConfig(t, func(c config.PerRepoConfigWriter) { c.SetKillSwitch(true) })
+		err := ValidateSlotClean(w)
+		require.ErrorContains(t, err, "kill_switch is active")
+	})
+
+	t.Run("config.base.yaml missing is not an error", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, nil))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileErr = forge.ErrNotFound
+		require.NoError(t, ValidateSlotClean(w))
+	})
+
+	t.Run("malformed config.base.yaml does not mask an overlay kill switch left on", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, func(c config.PerRepoConfigWriter) { c.SetKillSwitch(true) }))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileContent = []byte("kill_switch: [unterminated\n")
+		err := ValidateSlotClean(w)
+		require.ErrorContains(t, err, "config.base.yaml is malformed")
+		require.ErrorContains(t, err, "kill_switch is active")
+	})
+
+	t.Run("malformed config.base.yaml alone is reported as stale", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, nil))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileContent = []byte("kill_switch: [unterminated\n")
+		err := ValidateSlotClean(w)
+		require.ErrorContains(t, err, "config.base.yaml is malformed")
 	})
 
 	t.Run("no leased repo", func(t *testing.T) {

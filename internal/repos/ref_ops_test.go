@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func TestReplaceShimRef(t *testing.T) {
@@ -37,7 +38,7 @@ func TestReplaceShimRef(t *testing.T) {
 			input:    "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n",
 			newRef:   "def456",
 			newTag:   "v2.3.0",
-			wantRef:  "@def456 # v2.3.0",
+			wantRef:  "@def456  # v2.3.0",
 			wantDiff: true,
 		},
 		{
@@ -405,6 +406,29 @@ func TestCollectGitLabUpgradeTemplates_IncludesPipelineWrapper(t *testing.T) {
 	}
 }
 
+// Upgrading fullsend_ref re-renders the runner image tag in the same set of
+// upgrade templates, so a ref upgrade moves the image with the CLI (#8865).
+func TestCollectGitLabUpgradeTemplates_RendersRunnerImageForTarget(t *testing.T) {
+	files, err := collectGitLabUpgradeTemplates(nil, nil, "deadbeef1234567890abcdef1234567890abcdef", "v0.51.0")
+	if err != nil {
+		t.Fatalf("collectGitLabUpgradeTemplates: %v", err)
+	}
+	want := "name: " + scaffold.RunnerImageRepository + ":0.51.0\n"
+	seen := 0
+	for _, f := range files {
+		switch f.Path {
+		case fullsendAgentTemplatePath, fullsendPollTemplatePath, fullsendDispatcherTemplatePath:
+			seen++
+			if !strings.Contains(string(f.Content), want) {
+				t.Errorf("%s: want runner image %q", f.Path, want)
+			}
+		}
+	}
+	if seen != 3 {
+		t.Errorf("expected agent, poll, and dispatcher templates, saw %d", seen)
+	}
+}
+
 func TestReadWorkflowContent_GitLabPrefersPipelineMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.6.0\n")
@@ -422,7 +446,7 @@ func TestReadWorkflowContent_GitLabPrefersPipelineMarker(t *testing.T) {
 	}
 }
 
-func TestReadWorkflowContent_GitLabFallsBackToDispatch(t *testing.T) {
+func TestReadWorkflowMarker_GitLabIgnoresLeftoverDispatch(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# Fullsend CI pipeline\n")
 	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
@@ -434,30 +458,11 @@ func TestReadWorkflowContent_GitLabFallsBackToDispatch(t *testing.T) {
 	if !carrier {
 		t.Fatal("carrierPresent = false, want true because the pipeline wrapper exists")
 	}
-	if path != fullsendDispatchInclude {
-		t.Errorf("path = %q, want leftover %q", path, fullsendDispatchInclude)
+	if path != fullsendPipelineInclude {
+		t.Errorf("path = %q, want %q", path, fullsendPipelineInclude)
 	}
-	if extractWorkflowRef(content, GitLabForgeConfig()) != "v2.4.0" {
-		t.Errorf("ref = %q, want v2.4.0", extractWorkflowRef(content, GitLabForgeConfig()))
-	}
-}
-
-func TestReadWorkflowMarker_GitLabDispatchOnlyIsNotCarrier(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
-
-	content, path, carrier, err := readWorkflowMarker(context.Background(), fc, "acme", "api", GitLabForgeConfig())
-	if err != nil {
-		t.Fatalf("readWorkflowMarker() error = %v", err)
-	}
-	if carrier {
-		t.Fatal("carrierPresent = true, want false so converge repairs the missing pipeline wrapper")
-	}
-	if path != fullsendDispatchInclude {
-		t.Errorf("path = %q, want leftover %q", path, fullsendDispatchInclude)
-	}
-	if extractWorkflowRef(content, GitLabForgeConfig()) != "v2.4.0" {
-		t.Errorf("ref = %q, want v2.4.0", extractWorkflowRef(content, GitLabForgeConfig()))
+	if ref := extractWorkflowRef(content, GitLabForgeConfig()); ref != "" {
+		t.Errorf("ref = %q, want empty: the retired dispatch file is not read", ref)
 	}
 }
 
@@ -473,5 +478,42 @@ func TestValidateConcurrency(t *testing.T) {
 	}
 	if err := validateConcurrency(33); err == nil {
 		t.Error("expected 33 to be invalid")
+	}
+}
+
+func TestFormatRefAnnotation(t *testing.T) {
+	tests := []struct {
+		name, ref, tag, forge, want string
+	}{
+		{"github sha with tag", "def456", "v2.3.0", ForgeGitHub, "def456  # v2.3.0"},
+		{"github no tag", "def456", "", ForgeGitHub, "def456"},
+		{"github tag equals ref", "v2.3.0", "v2.3.0", ForgeGitHub, "v2.3.0"},
+		{"gitlab sha with tag", "def456", "v2.3.0", ForgeGitLab, "def456 (v2.3.0)"},
+		{"gitlab no tag", "def456", "", ForgeGitLab, "def456"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatRefAnnotation(tt.ref, tt.tag, tt.forge); got != tt.want {
+				t.Errorf("formatRefAnnotation(%q, %q, %q) = %q, want %q", tt.ref, tt.tag, tt.forge, got, tt.want)
+			}
+		})
+	}
+}
+
+// Upgrading a repo installed with the old single-space comment must rewrite
+// it to the yamllint-compliant two-space form (#7902).
+func TestReplaceShimRef_FixesSingleSpaceComment(t *testing.T) {
+	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v2.1.0\n"
+	want := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@def456  # v2.3.0\n"
+	got, changed := replaceShimRef([]byte(input), "def456", "v2.3.0", GitHubForgeConfig(), ForgeGitHub)
+	if !changed || string(got) != want {
+		t.Errorf("replaceShimRef() = %q (changed=%v), want %q", got, changed, want)
+	}
+}
+
+func TestReplaceShimRef_SpacingOnlyIsNotAChange(t *testing.T) {
+	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v2.1.0\n"
+	if _, changed := replaceShimRef([]byte(input), "abc123", "v2.1.0", GitHubForgeConfig(), ForgeGitHub); changed {
+		t.Error("replaceShimRef() reported a change for a spacing-only difference")
 	}
 }

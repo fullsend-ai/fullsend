@@ -37,7 +37,7 @@ fullsend github setup <owner/repo> \
 
 See [Configuring GitHub — Using a vendor preset](../getting-started/configuring-github.md#using-a-vendor-preset) for details. Fleet installs declare the same source in `repos.yaml` (`defaults.config_base` / per-repo `config_base`) and converge it with `fullsend repos install`; see [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
 
-If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `admin install` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project.
+If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `admin install` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project. (`admin install` is deprecated; see [Deprecated: all-in-one admin install](#deprecated-all-in-one-admin-install).)
 
 > This section documents the **SaaS installation profile** — the default variant of the Managed model, where a platform operator pre-provisions the shared GitHub Apps and mint for you. See the [CLI reference](../../cli/github.md#flags) for the full flag list.
 
@@ -97,6 +97,28 @@ fullsend github setup "$ORG_NAME/$REPO_NAME" \
 If no GitHub Apps exist for the app set, the setup command opens browser windows to create them via the manifest flow and stores the PEMs in Secret Manager. Creating apps requires `admin:org` OAuth scope. Reusing existing apps only requires `repo` and `workflow` scopes.
 
 See [standalone commands](../getting-started/operations.md#standalone-commands) for the full command reference.
+
+### Runners that use a remote OpenShell gateway
+
+By default, the composite action turns each runner into a sandbox host. It
+installs and configures rootless Podman, writes a local OpenShell gateway
+configuration, and installs the OpenShell CLI. That suits GitHub-hosted
+runners, which start empty.
+
+A self-hosted runner can instead use an OpenShell gateway that runs
+elsewhere. Set `OPENSHELL_GATEWAY_ENDPOINT` in the runner's environment to
+that gateway's `https://` endpoint. When it is set, the action skips the
+Podman installation, the rootless Podman configuration, and the local gateway
+configuration, and sandboxes are created on the remote gateway. If the
+`openshell` CLI is already on the runner's `PATH`, the action also skips the
+OpenShell CLI installer, which needs `sudo` and starts a local gateway
+service. Install the CLI version pinned in
+`.github/scripts/openshell-version.sh` in the runner image.
+
+The action also needs the Python `jsonschema` package to validate agent
+output. It skips the install when `python3` can already import the package. On
+a container image whose Python is an externally managed environment, the
+action retries the install with `--break-system-packages`.
 
 ### Custom app sets
 
@@ -193,7 +215,7 @@ fullsend github setup "$ORG_NAME/$REPO_NAME" \
 
 ## Deprecated: all-in-one admin install
 
-> **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup <owner/repo>`. Per-org installation has been removed, so `fullsend admin install` and `fullsend github setup` accept only `owner/repo` targets. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow.
+> **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup <owner/repo>`. Per-org installation has been removed, so `fullsend admin install` and `fullsend github setup` accept only `owner/repo` targets. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow. For GitLab projects, follow [Installing Fullsend](../getting-started/configuring-gitlab.md#installing-fullsend) in the GitLab guide (set `gitlab.url`, `gitlab.inference.auth` and the project in `repos.yaml`, then run `fullsend repos install`). To create GitHub Apps, use `fullsend mint add-role <role> --project <gcp-project> --org <org>` per role, or the deprecated `admin install` to create every role's app in one run (see [Mint administration](mint-administration.md)).
 
 ## See Also
 

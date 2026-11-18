@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"embed"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -370,6 +371,53 @@ func TestCollaboratorPermissionJQ(t *testing.T) {
 			assert.Equal(t, tc.want, strings.TrimSpace(string(out)))
 		})
 	}
+}
+
+// TestShimStopFixShellCheck verifies the stop-fix script in the shim template
+// passes ShellCheck as downstream repos run it (#8780). This repo's actionlint
+// hook ignores SC2016 globally, but repos that receive the generated shim do
+// not, so the single-quoted --jq program (which uses the jq variable $p) needs
+// a directive placed directly before the command it covers.
+func TestShimStopFixShellCheck(t *testing.T) {
+	content, err := FullsendRepoFile("templates/shim-per-repo.yaml")
+	require.NoError(t, err)
+	var doc struct {
+		Jobs struct {
+			StopFix struct {
+				Steps []struct {
+					Run string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"stop-fix"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &doc))
+	require.NotEmpty(t, doc.Jobs.StopFix.Steps, "stop-fix must have a step")
+	run := doc.Jobs.StopFix.Steps[0].Run
+	require.NotEmpty(t, run, "stop-fix step must have a run script")
+
+	// ShellCheck applies a directive to the next command only, so the
+	// directive must sit on the line directly above the gh api call.
+	lines := strings.Split(run, "\n")
+	cmdIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, `role=$(gh api "repos/$REPO/collaborators/$COMMENT_USER_LOGIN/permission"`) {
+			cmdIdx = i
+			break
+		}
+	}
+	require.Greater(t, cmdIdx, 0, "stop-fix permission gh api command not found")
+	assert.Equal(t, "# shellcheck disable=SC2016", strings.TrimSpace(lines[cmdIdx-1]),
+		"SC2016 directive must directly precede the permission gh api command")
+	assert.Contains(t, run, ".user.permissions as $p",
+		"the custom-role --jq resolution must be preserved")
+
+	if _, err := exec.LookPath("shellcheck"); err != nil {
+		t.Skip("shellcheck not available")
+	}
+	script := filepath.Join(t.TempDir(), "stop-fix.sh")
+	require.NoError(t, os.WriteFile(script, []byte(run), 0o600))
+	out, err := exec.Command("shellcheck", "--shell=bash", script).CombinedOutput()
+	assert.NoError(t, err, "shellcheck reported issues in the stop-fix script:\n%s", out)
 }
 
 // TestManagedShimStopFixNotStale guards against drift between the shim
@@ -764,6 +812,26 @@ func TestScaffoldVertexProfile_BinaryAllowlist(t *testing.T) {
 	// fullsend-ai/agents (the fleet copy), which is what the sandbox
 	// actually enforces. Claude Code 2.1.2xx installs its native binary at
 	// bin/claude.exe even on Linux, so **/claude alone denies it STS access.
-	assert.ElementsMatch(t, []string{"**/claude", "**/claude.exe", "**/node", "**/pi"}, profile.Binaries,
+	assert.ElementsMatch(t, []string{"**/claude", "**/claude.exe", "**/node", "**/opencode", "**/pi"}, profile.Binaries,
 		"scaffold Vertex profile binaries drifted from the pinned allowlist; keep it in sync with the fullsend-ai/agents copy")
+}
+
+// walkFixture holds .fullsend-cache dirs (force-added past the root
+// .gitignore) so the skip runs against a real embed.FS (#5184).
+//
+//go:embed all:testdata/walkembedfs
+var walkFixture embed.FS
+
+func TestWalkEmbedFSSkipsFullsendCache(t *testing.T) {
+	var got []string
+	// nil skip matches WalkGitLabPerRepo: the exclusion must not depend on it.
+	err := walkEmbedFS(walkFixture, "testdata/walkembedfs", func(path string, _ []byte) error {
+		got = append(got, path)
+		return nil
+	}, nil)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		".fullsend/config.yaml",
+		"notes/.fullsend-cache",
+	}, got)
 }

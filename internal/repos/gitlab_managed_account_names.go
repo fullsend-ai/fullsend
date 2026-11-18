@@ -40,5 +40,15 @@ func ManagedGitLabRoleAccountNames(ctx context.Context, client forge.Client, own
 		}
 		names[rs.ManagedUserID] = name
 	}
+	// Generation accounts are created by the handoff with the Poller name.
+	generationIDs, err := ManagedGitLabPollerGenerationAccountIDs(ctx, client, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range generationIDs {
+		if _, exists := names[id]; !exists {
+			names[id] = gitlabroles.PollerTokenName
+		}
+	}
 	return names, nil
 }

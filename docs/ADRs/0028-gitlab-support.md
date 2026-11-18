@@ -270,6 +270,10 @@ The implementation document is structured for iterative evolution as GitLab supp
 > rotation, status and uninstall now use the service-account lifecycle
 > described above. Native trigger creation and rotation as the Poller remain
 > deferred.
+>
+> **Update (#8243):** native trigger creation and rotation are now enabled for
+> eligible projects. A fresh Poller service-account generation mints the
+> trigger and is cut over to; the current Poller is never re-elevated.
 
 ### Positive
 

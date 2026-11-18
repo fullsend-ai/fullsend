@@ -4,9 +4,12 @@
 //
 // The live TriggerOwner deliberately does not implement
 // repos.GitLabPollerQuiescenceVerifier: GitLab offers no server-side drain
-// barrier for requests accepted with revoked credentials, so the webhook fast
-// path keeps deferring trigger creation and rotation, and polling remains the
-// dispatch path.
+// barrier for requests accepted with revoked credentials, so the current
+// Poller is never re-elevated. It implements repos.GitLabPollerHandoff
+// instead (poller_handoff.go): a fresh service account mints the webhook
+// trigger, is demoted to Developer and verified, and only then receives a
+// runtime credential. Any ineligible or ambiguous state defers the fast path
+// and polling remains the dispatch path.
 package gitlablifecycle
 
 import (
@@ -552,9 +555,72 @@ func (o *TriggerOwner) noPollerMember(ctx context.Context, owner, repo string) e
 }
 
 // ManagedPollerUserIDs lists every managed Poller service account, lowest ID
-// first, so install reconciles duplicates as uninstall does.
+// first, so install reconciles duplicates as uninstall does. It also lists the
+// Poller accounts recorded in the generation document (the current, retiring,
+// and abandoned ones), because after a cutover the previous Poller is no
+// longer the rotation state's managed account yet its runtime credential stays
+// valid until retirement. Supplied-account exclusions apply to those as well.
+// This inventory is for reconciliation only: selecting the runtime Poller
+// identity still uses the rotation state's managed account alone (see
+// managedPollerIDs).
+//
+// A recorded account that the service-account inventory confirms is already
+// deleted is omitted, because there is nothing left to reconcile for it. The
+// trigger-account collision check keeps such IDs (recordedPollerUserIDs).
 func (o *TriggerOwner) ManagedPollerUserIDs(ctx context.Context, owner, repo string) ([]int64, error) {
-	return o.managedPollerIDs(ctx, owner, repo)
+	return o.pollerUserIDs(ctx, owner, repo, true)
+}
+
+// recordedPollerUserIDs is ManagedPollerUserIDs that also lists recorded
+// Poller generations whose service account no longer exists. A deleted Poller's
+// ID is still a Poller identity GitLab must not hand to the trigger account, so
+// the collision check keeps it.
+func (o *TriggerOwner) recordedPollerUserIDs(ctx context.Context, owner, repo string) ([]int64, error) {
+	return o.pollerUserIDs(ctx, owner, repo, false)
+}
+
+func (o *TriggerOwner) pollerUserIDs(ctx context.Context, owner, repo string, dropDeleted bool) ([]int64, error) {
+	ids, err := o.managedPollerIDs(ctx, owner, repo)
+	if err != nil && !forge.IsNotFound(err) {
+		return nil, err
+	}
+	recorded, genErr := repos.GitLabPollerGenerationReconcileAccountIDs(ctx, o.Admin, owner, repo)
+	if genErr != nil {
+		return nil, genErr
+	}
+	if len(recorded) > 0 {
+		excluded, supErr := o.excludedAccountIDs(ctx, owner, repo)
+		if supErr != nil {
+			return nil, supErr
+		}
+		// With dropDeleted, a recorded account that the service-account
+		// inventory confirms is gone (retirement deleted it but could not clear
+		// its record) has no membership or bootstrap credential to reconcile,
+		// and reconciling it would fail closed and tear down the current fast
+		// path. An inventory that cannot be read confirms nothing, so the
+		// account stays listed.
+		var accounts []gitlab.ServiceAccount
+		var listErr error
+		if dropDeleted {
+			accounts, listErr = o.Admin.ListProjectServiceAccounts(ctx, owner, repo)
+		}
+		for _, id := range recorded {
+			if dropDeleted && listErr == nil && !slices.ContainsFunc(accounts, func(sa gitlab.ServiceAccount) bool { return int64(sa.ID) == id }) {
+				continue
+			}
+			if !slices.Contains(ids, id) && !slices.Contains(excluded, id) {
+				ids = append(ids, id)
+			}
+		}
+		slices.Sort(ids)
+	}
+	if len(ids) == 0 {
+		if err == nil {
+			err = fmt.Errorf("no %s project service account exists: %w", gitlabroles.PollerTokenName, forge.ErrNotFound)
+		}
+		return nil, err
+	}
+	return ids, nil
 }
 
 // lowestManagedPollerID returns the managed Poller account provisioning uses,

@@ -172,6 +172,17 @@ func CleanupGitLabRoleIdentityLocked(ctx context.Context, cfg GitLabRoleCleanupC
 			}
 		}
 	}
+	// The generation document names the Poller accounts just deleted. Once
+	// they are conclusively gone it is retired, so a reinstall starts from an
+	// empty generation state instead of being blocked by stale current or
+	// retiring IDs. It is kept whenever cleanup was incomplete or ambiguous.
+	if len(errs) == 0 && !pre.preserved {
+		if _, ok := tokens.(GitLabManagedAccountCleaner); ok {
+			if err := retirePollerGenerations(ctx, cfg, excluded, &result); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
 	// The rotation document holds the exclusions that protect administrator-
 	// supplied accounts, so it is kept whenever any cleanup step failed: a retry
 	// then still knows which accounts are not fullsend's to demote or revoke.
@@ -231,10 +242,18 @@ func preflightGitLabRoleCleanup(ctx context.Context, client forge.Client, owner,
 			excluded = appendExcludedID(excluded, id)
 		}
 	}
+	// Generation accounts (current, retiring, pending, abandoned) are owned
+	// too. The document is read for every token client, so a client without
+	// account cleanup cannot let cleanup succeed while a recorded Poller stays
+	// behind; an unreadable generation document fails closed.
+	generationIDs, genErr := ManagedGitLabPollerGenerationAccountIDs(ctx, client, owner, repo)
+	if genErr != nil {
+		return nil, genErr
+	}
 	if sa, ok := tokens.(ServiceAccountTokenClient); ok {
 		// Recorded ownership is applied first so inventory, revocation and
 		// account deletion all rely on the same ownership evidence.
-		wrapped, frozen, exclErr := sa.withRecordedOwnership(state).withProjectExclusions(ctx, owner, repo, state)
+		wrapped, frozen, exclErr := sa.withRecordedOwnership(state, generationIDs...).withProjectExclusions(ctx, owner, repo, state)
 		if exclErr != nil {
 			// The error is already redacted by suppliedOwnerIDs.
 			return nil, fmt.Errorf("resolving supplied-account exclusions before cleanup: %w", exclErr)
@@ -279,6 +298,11 @@ func preflightGitLabRoleCleanup(ctx context.Context, client forge.Client, owner,
 		for _, rs := range state.Roles {
 			if rs.ManagedUserID > 0 {
 				owned[rs.ManagedUserID] = true
+			}
+		}
+		for _, id := range generationIDs {
+			if id > 0 {
+				owned[id] = true
 			}
 		}
 		// excluded holds the recorded exclusions and every owner resolved above.
@@ -425,6 +449,42 @@ func retireRotationState(ctx context.Context, cfg GitLabRoleCleanupConfig, froze
 		return safeAPIError("preserving supplied-account exclusions in "+forge.VarGitLabRoleRotation, err)
 	}
 	result.Diagnostics = append(result.Diagnostics, "Preserved supplied-account exclusions in "+forge.VarGitLabRoleRotation+"; the administrator-owned service accounts were left in place")
+	return nil
+}
+
+// retirePollerGenerations deletes the Poller generation document after every
+// account it records was cleaned up. A recorded account that is excluded as
+// administrator-owned was left in place, so the document is preserved: its
+// cleanup is ambiguous. An absent document needs nothing; an unreadable one is
+// left untouched and reported.
+func retirePollerGenerations(ctx context.Context, cfg GitLabRoleCleanupConfig, excluded []int, result *GitLabRoleCleanupResult) error {
+	st, err := loadPollerGenerations(ctx, cfg.Client, cfg.Owner, cfg.Repo)
+	if err != nil {
+		return fmt.Errorf("reading Poller generation state to retire it (%s left in place): %w", forge.VarGitLabPollerGenerations, err)
+	}
+	ids, err := ManagedGitLabPollerGenerationAccountIDs(ctx, cfg.Client, cfg.Owner, cfg.Repo)
+	if err != nil {
+		return err
+	}
+	if st.Pending == nil && len(ids) == 0 {
+		return nil
+	}
+	if st.Pending != nil && st.Pending.UserID <= 0 {
+		// A replacement-account creation was requested but its account ID was
+		// never recorded, so an account may exist that cleanup could not name.
+		result.Diagnostics = append(result.Diagnostics, "Preserved "+forge.VarGitLabPollerGenerations+": a pending Poller account creation has no recorded account ID and must be reconciled manually")
+		return nil
+	}
+	for _, id := range ids {
+		if containsInt(excluded, id) {
+			result.Diagnostics = append(result.Diagnostics, "Preserved "+forge.VarGitLabPollerGenerations+": a recorded Poller account is excluded as administrator-owned and was left in place")
+			return nil
+		}
+	}
+	if err := cfg.Client.DeleteRepoVariable(ctx, cfg.Owner, cfg.Repo, forge.VarGitLabPollerGenerations); err != nil && !forge.IsNotFound(err) {
+		return safeAPIError("deleting variable "+forge.VarGitLabPollerGenerations, err)
+	}
+	result.VarsDeleted++
 	return nil
 }
 

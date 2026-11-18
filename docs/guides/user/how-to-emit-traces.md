@@ -123,23 +123,44 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
 
 ## Capture conversation content
 
-Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to add the agent's
-text, reasoning, tool calls, and tool results — when the runtime's stream
-provides them; Claude runs do — to each `agent` span, in the
-local file and
-at the endpoint. Content is redacted for secrets and bounded per iteration,
-but may still contain proprietary code or PII — make sure your backend's
-access controls fit before enabling it.
+By default, traces carry metadata only: timing, token counts, tool names, and
+errors. Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to also record
+the agent's conversation content (Level 3) on each `agent` span: its text,
+reasoning, tool calls, and tool results. On a retry that carries validation
+feedback, the prompt the runner composed is recorded too. Content goes to the
+local `run-telemetry.jsonl` file and, when configured, to the endpoint.
+
+To enable it on a repository:
 
 ```bash
 gh variable set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT --body "true" --repo <owner/repo>
 ```
 
-With the `claude` runtime, id-bearing tool calls are visible at every level as
-`execute_tool` child spans of each `agent` span (tool name, call id, timing,
-error) — that is metadata, not content, and this variable does not affect
-it. The pi and codex runtimes emit none yet (see
-[Runtimes](../../runtimes.md)).
+To enable it for all repositories in an organization:
+
+```bash
+gh variable set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT \
+  --body "true" \
+  --org <org> --visibility all
+```
+
+::: warning Check your backend's access controls first
+Content is redacted for secrets and bounded in size, but it can still contain
+proprietary code or PII, such as the commands an agent ran and the file paths
+it read. Make sure your backend's access controls are appropriate before
+enabling capture.
+:::
+
+What gets recorded depends on the agent runtime. Claude and pi runs include
+tool arguments and results; the codex runtime does not yet (see
+[Runtimes](../../runtimes.md)). With the `claude` and `pi` runtimes, tool calls
+also appear as `execute_tool` child spans at every level. Those spans are
+metadata, and this variable does not affect them.
+
+For accepted values, redaction rules, size limits, and the attributes that
+hold content, see
+[Content capture (Level 3)](../infrastructure/distributed-tracing.md#content-capture-level-3)
+in the Tracing Reference.
 
 ## Disable trace export
 

@@ -52,6 +52,12 @@ type fakeCFWranglerRunner struct {
 	secretCalls  []fakeCFSecretCall
 	deleteCalls  []string
 	secretPutErr error
+	// events records Deploy and PutSecret calls in order as "deploy" and
+	// "put:<secret>".
+	events []string
+	// beforePut, when set, runs at the start of every PutSecret call
+	// (used to interleave a second deploy with the first).
+	beforePut func()
 	// workerExists controls the return value of WorkerExists.
 	// Defaults to true (Worker exists).
 	workerExists *bool
@@ -72,6 +78,7 @@ type fakeCFSecretCall struct {
 
 func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, envVars map[string]string, secrets map[string][]byte) (string, error) {
 	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName, previewAlias: previewAlias, envVars: envVars, secrets: secrets})
+	f.events = append(f.events, "deploy")
 	if f.deployErr != nil {
 		return "", f.deployErr
 	}
@@ -83,11 +90,17 @@ func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName st
 }
 
 func (f *fakeCFWranglerRunner) PutSecret(_ context.Context, workerName, secretName string, value []byte) error {
+	if f.beforePut != nil {
+		hook := f.beforePut
+		f.beforePut = nil
+		hook()
+	}
 	f.secretCalls = append(f.secretCalls, fakeCFSecretCall{
 		workerName: workerName,
 		secretName: secretName,
 		value:      value,
 	})
+	f.events = append(f.events, "put:"+secretName)
 	return f.secretPutErr
 }
 
@@ -223,7 +236,7 @@ func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
 	require.NoError(t, err)
 	oldStdout := os.Stdout
 	os.Stdout = w
-	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false, gcf.StatusGitHubAuth{})
+	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false, gcf.StatusGitHubAuth{}, mintTracingConfig{})
 	require.NoError(t, w.Close())
 	os.Stdout = oldStdout
 	require.NoError(t, deployErr)
@@ -236,6 +249,8 @@ func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
 	assert.Contains(t, out, "Version:")
 	assert.Contains(t, out, "Commit:")
 	assert.Contains(t, out, "Deployment complete")
+	assert.Contains(t, out, "Tracing: unchanged")
+	assert.NotContains(t, out, "Tracing: disabled")
 }
 
 func TestMintDeployCmd_DryRunShowsResolvedSource(t *testing.T) {
@@ -651,7 +666,7 @@ func withFakeWASMBuild(t *testing.T) {
 	t.Helper()
 	origBuild := cf.BuildWASMFn
 	origCopy := cf.CopyWASMExecFn
-	cf.BuildWASMFn = func(outPath, _, _ string, _ cf.StatusGitHubAuth) error {
+	cf.BuildWASMFn = func(outPath, _, _ string, _ cf.StatusGitHubAuth, _ cf.TracingStamp) error {
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	cf.CopyWASMExecFn = func(destPath string) error {

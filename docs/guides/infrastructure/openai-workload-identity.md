@@ -316,6 +316,14 @@ runner uses it only when the three `FULLSEND_OPENAI_*` WIF identifiers are unset
 errors — a typo cannot fall through to the key. When the trio and the secret are both set, WIF wins
 and the secret is unused.
 
+> **Recommended on GitHub: keep the key behind an inference gateway.** Instead of a repository
+> secret, run an inference gateway that holds the OpenAI key in a secret store and accepts each
+> job's GitHub Actions OIDC token, so no repository secret holds the key at all. See
+> [Using an inference gateway](../user/inference-gateway.md) and the
+> [operator guide](inference-gateway-operator.md). The trade-off is infrastructure you run: a cloud
+> project, a gateway service and its config to maintain. The repository secret below stays supported
+> when you cannot take that on.
+
 1. If the repository's workflow files predate OpenAI credential forwarding, update them before
    running the agent. Re-running `fullsend github setup <owner/repo>` (or `fullsend repos install`
    for a manifest-managed repository) can sync them without GCP credentials. A Vertex run still
@@ -339,9 +347,12 @@ not change: the key never enters the sandbox, only the endpoint-bound placeholde
 
 **GitLab CI.** Store the key as a masked `FULLSEND_OPENAI_API_KEY` CI/CD variable. You can do this
 with `fullsend repos install <group/project> --openai-api-key <value>` for projects whose
-`inference.auth` is `openai-api-key`. The Fullsend job maps it to `OPENAI_API_KEY` on the runner.
+`inference.auth` is `openai-api-key`. The fullsend job maps it to `OPENAI_API_KEY` on the runner.
 An unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used, with no fallback. See the
 [upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking).
+In a GitLab CI job the run log does not recommend the WIF variables. It reports the key as a
+CI/CD-variable credential instead; see
+[Provider credentials from CI/CD variables](../../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables).
 
 ## 4. Tell fullsend the three identifiers
 
@@ -396,16 +407,21 @@ workflows pass them to every agent run, and when any of them is set they replace
 ### Manifest-managed repositories (`repos install`)
 
 For repositories managed with a `repos.yaml` manifest, select the method as `inference.auth:
-openai-wif`, under `defaults`, in the `github` section, or on a repo or glob entry, or pass
-`--inference-auth openai-wif` to `fullsend repos install`:
+openai-wif`, under `defaults`, in the `github` section, or on a repo or glob entry. `repos install`
+has no flag for it. Declare the repository and its method, then install:
 
 ```bash
-fullsend repos install acme/api --forge github --inference-auth openai-wif
+fullsend repos set 'github.repos["acme/api"]' '{"inference": {"auth": "openai-wif"}}'
+fullsend repos install acme/api
 ```
 
 - No `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER` or `FULLSEND_OPENAI_API_KEY` is required.
-  Pass the Vertex flags (`--vertex-project`, `--vertex-region`) as well to provision the GCP pair for
-  Vertex sub-agents. Existing GCP secrets are never removed from an `openai-wif` repository.
+  To provision the GCP pair for Vertex sub-agents, pass `--vertex-project` (and
+  `--vertex-wif-provider` if needed) or declare `inference.project` / `inference.wif_provider` in the
+  managed configuration. A declared `config.inference.region` sets `FULLSEND_GCP_REGION`; without one,
+  an existing variable is kept and `global` is written only where it is missing (see
+  [Effective infrastructure values](../../cli/repos.md#effective-infrastructure-values)).
+  Existing GCP secrets are never removed from an `openai-wif` repository.
 - The identifiers come from the same places and in the same order as at run time: the
   `FULLSEND_OPENAI_*` Actions variables (repository variables, falling back per name to organization
   variables available to the repository) when any is set, otherwise `inference.openai` from
@@ -414,10 +430,11 @@ fullsend repos install acme/api --forge github --inference-auth openai-wif
   partial set fails before anything is written, and the error names only the missing identifiers.
 - Migrating from `fullsend github setup --openai-*` needs no new OpenAI values: the existing
   `inference.openai` block or repository variables are still read as they are. The existing
-  `.fullsend/config.yaml` has no ownership marker, though, so `repos install` stops before any
-  write until it is adopted: move the settings you want to keep, including `inference.openai`,
-  into the repository's `repos.yaml` entry, then remove or replace the file (see
-  [Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration)).
+  `.fullsend/config.yaml` has no ownership marker, though, so `repos install` skips that
+  repository, writing nothing to it, until it is adopted (the other repositories still converge): move the settings you want to keep, including `inference.openai`,
+  into the repository's `repos.yaml` entry, then add the ownership marker to the file (see
+  [Migrating to manifest-driven `repos install`](../getting-started/migrating-from-github-setup.md#repository-installed-with-github-setup-markerless-overlay)).
+  The identifiers are configuration, not secrets, and install never treats them as credentials.
   An existing `.fullsend/config.base.yaml` likewise blocks install unless a `config_base` preset
   is declared for the repository.
 - Switching from `openai-api-key` keeps `FULLSEND_OPENAI_API_KEY` until a complete identifier set is
@@ -557,9 +574,7 @@ to carry the credential over.
   iteration follows a refresh.
 - **Bound to one endpoint.** The gateway substitutes the placeholder only on requests to
   `api.openai.com` `/v1/responses` — the endpoint the profile names — so even a compromised agent
-  cannot get the token resolved against another host its policy allows. The design and what was
-  verified against OpenShell 0.0.115 are in
-  [ADR 0092](../../ADRs/0092-openai-wif-credential-delivery.md).
+  cannot get the token resolved against another host its policy allows.
 
 ## Troubleshooting
 
@@ -579,6 +594,7 @@ to carry the credential over.
 | `sandbox policy rule codex allows api.openai.com:443 without L7 inspection` | The named policy (or a provider-composed rule) leaves an uninspected route to `api.openai.com`. Use the fleet `policies/base.yaml`: it has no network rules of its own, and the openai provider supplies the inspected route. |
 | `500 credential_unavailable` from `api.openai.com` | The placeholder pi sent no longer resolves: the credential expired, or the provider was replaced. With `--keep-sandbox` this is expected after the run ends. Otherwise check the refresh lines in the run log. |
 | `401` or `500` from `api.openai.com` partway through a run | The refresh could not get a new token in time (the run log shows the attempts) and the credential expired as designed. Check the exchange errors above and re-run. |
+| Local run on a laptop that slept | The refresher checks the wall clock every 30 seconds and refreshes on the first check after wake if the credential is due or already expired. Agent requests sent before that check can still fail. The [inference gateway route](../user/inference-gateway.md#troubleshooting-the-gateway-route) refreshes its token the same way. Note that `timeout_minutes` and the "Agent running (… elapsed, … remaining)" heartbeat count only time the host was awake. |
 
 ## Related
 

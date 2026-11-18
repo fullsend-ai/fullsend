@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -65,11 +66,8 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 		}
 	}
 	for _, c := range components {
-		// Capture the version marker even when the current carrier is
-		// missing: GitLab repos enrolled before #7707 still host it in
-		// the leftover dispatch stub. Presence of that stub is not
-		// install evidence; the ref is still useful once another
-		// required component proves the repo is installed.
+		// Record the installed version marker. It is only non-empty
+		// when the workflow carrier exists.
 		if c.Name == "workflow" {
 			state.FullsendRef = c.Actual
 		}
@@ -129,6 +127,17 @@ type RepoStatus struct {
 	Drifts          []Drift `json:"drifts,omitempty"`
 	Error           string  `json:"error,omitempty"`
 
+	// ConfigCompatibility reports whether the installed
+	// .fullsend/config.yaml is readable at the repository's effective
+	// fullsend_ref (#9292): ConfigCompatible, ConfigIncompatible or
+	// ConfigUnknown; empty when no overlay is installed.
+	// ConfigCompatibilityReason explains an incompatible or unknown result,
+	// and ConfigSchemaRef names the pinned ref it was assessed against
+	// (empty when the repository follows the running release).
+	ConfigCompatibility       string `json:"config_compatibility,omitempty"`
+	ConfigCompatibilityReason string `json:"config_compatibility_reason,omitempty"`
+	ConfigSchemaRef           string `json:"config_schema_ref,omitempty"`
+
 	// ConfigRejected marks a repo whose manifest configuration was rejected
 	// before any forge state was inspected (for example a missing
 	// inference.auth selection). Callers that enrich status with further
@@ -140,6 +149,14 @@ type RepoStatus struct {
 	GitLabRolesPartial    bool                         `json:"gitlab_roles_partial,omitempty"`
 	GitLabRoleDiagnostics []string                     `json:"gitlab_role_diagnostics,omitempty"`
 	GitLabServiceAccounts []GitLabServiceAccountStatus `json:"gitlab_service_accounts,omitempty"`
+
+	// GitLabTriggerAccount is the trigger-only service account's readiness,
+	// drift, and the exact reasons for a deferral or unfinished cleanup.
+	GitLabTriggerAccount *GitLabTriggerAccountStatus `json:"gitlab_trigger_account,omitempty"`
+
+	// GitLabWebhook is the webhook fast path's readiness (ADR 0125): names,
+	// IDs and booleans only, never the trigger token, webhook secret or URL.
+	GitLabWebhook *GitLabWebhookStatus `json:"gitlab_webhook,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.
@@ -174,14 +191,13 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 
 	var warnings []string
 	if len(repoFilter) > 0 {
-		var unmatched []string
-		var filterErr error
-		resolved, unmatched, filterErr = filterRepos(resolved, repoFilter)
-		if filterErr != nil {
-			return nil, filterErr
-		}
-		for _, p := range unmatched {
-			warnings = append(warnings, fmt.Sprintf("--repo filter %q matched no manifest entries", p))
+		// Select exactly what repos install selects, including concrete
+		// glob-covered repositories that glob expansion does not list. A
+		// selector that matches no declared repository fails the run,
+		// like install does (#8219).
+		resolved, err = selectDeclaredRepos(manifest, resolved, repoFilter)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -197,12 +213,13 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 		refResolver = NewRefResolver(ghFC.Client)
 	}
 
-	// Build the drift config from the manifest. InferenceRegion and
-	// ReviewAppClientID are CLI flags on the install command and are
-	// not available in the status path, so value drift for
-	// GCP region and review client ID can only be
-	// detected by repos install, not repos status. Agent/control
-	// runner tags come from the manifest's GitLab platform section.
+	// Build the drift config from the manifest. ReviewAppClientID is
+	// resolved by the install command and is not available in the status
+	// path, so value drift for the review client ID can only be detected
+	// by repos install, not repos status. The mint URL and GCP region come
+	// from each repository's effective configuration, exactly as install
+	// resolves them (applyEffectiveInfrastructure). Agent/control runner
+	// tags come from the manifest's GitLab platform section.
 	dcfg := DriftConfig{
 		AgentRunnerTags:   gitlabAgentRunnerTags(manifest),
 		ControlRunnerTags: gitlabControlRunnerTags(manifest),
@@ -230,8 +247,18 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 			defer func() { <-sem }()
 
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+			// The declared preset may supply the inference.gateway route,
+			// so load it before the check. A load failure is reported by
+			// checkRepoStatus (checkPresetDrift); the check then sees the
+			// managed configuration alone.
+			if cfg.Config != "" {
+				if data, loadErr := store.Load(ctx, cfg.Config, cfg.ConfigHash); loadErr == nil {
+					cfg.ProposedBase = data
+				}
+			}
 			// Status checks the same desired state as install, so a repo
-			// without an inference.auth selection cannot be evaluated.
+			// without an inference.auth selection (or an inference.gateway
+			// route) cannot be evaluated.
 			if authErr := cfg.RequireInferenceAuth(); authErr != nil {
 				results[idx] = RepoStatus{
 					Owner: rr.Owner,
@@ -285,21 +312,51 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	fc := cfg.ForgeConfig
 
 	status := RepoStatus{
-		Owner:           owner,
-		Repo:            repo,
-		Forge:           cfg.Forge,
-		ExpectedRef:     cfg.FullsendRef,
-		ExpectedMintURL: cfg.MintURL,
+		Owner:       owner,
+		Repo:        repo,
+		Forge:       cfg.Forge,
+		ExpectedRef: cfg.FullsendRef,
 	}
 
 	// Load a declared preset up front so the managed-config safety gate
 	// evaluates the proposed overlay over the proposed base, matching
 	// install (#8218). A load failure is reported by checkPresetDrift.
+	presetLoaded := cfg.Config == ""
 	if cfg.Config != "" {
 		if data, loadErr := store.Load(ctx, cfg.Config, cfg.ConfigHash); loadErr == nil {
 			cfg.ProposedBase = data
+			presetLoaded = true
 		}
 	}
+	// Assess managed configuration against the schema of the repository's
+	// effective fullsend_ref, as install renders it (#9292).
+	// The installed overlay is read here only for a pinned ref; a read
+	// error is reported by checkManagedConfigDrift.
+	if cfg.ConfigManaged && pinnedFullsendRef(cfg.FullsendRef, dcfg.UpstreamRef, dcfg.UpstreamTag) {
+		existing, _, _ := readManagedConfigOverlayFile(ctx, cfg)
+		cfg.ConfigSchema = selectManagedConfigSchema(ctx, cfg, existing, dcfg.UpstreamRef, dcfg.UpstreamTag, resolver)
+	}
+	// Resolve the mint URL and region from the effective configuration, as
+	// install and dry run do (#8220). Without the declared preset the
+	// effective values are unknown; checkPresetDrift reports the load error.
+	if presetLoaded {
+		if err := cfg.applyEffectiveInfrastructure(); err != nil {
+			status.Error = err.Error()
+			return status
+		}
+		// Validate the declared Vertex project/WIF inputs exactly as install
+		// and dry run do (with no command-line inputs), so a configuration
+		// install would reject is not reported healthy.
+		if _, _, err := vertexCredentialInputs(ConvergeConfig{}, cfg); err != nil {
+			status.Error = err.Error()
+			return status
+		}
+		if err := checkPinnedServiceAccountSupport(ctx, cfg, dcfg.UpstreamRef, dcfg.UpstreamTag, resolver); err != nil {
+			status.Error = err.Error()
+			return status
+		}
+	}
+	status.ExpectedMintURL = cfg.MintURL
 
 	// Build expected values for all static variables using the same
 	// function as the converge path, so variable classification
@@ -313,17 +370,18 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		appSet = cfg.AppSet
 	}
 	expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
-		Forge:             cfg.Forge,
-		MintURL:           cfg.MintURL,
-		InferenceRegion:   inferenceRegionForAuth(cfg.InferenceAuth, dcfg.InferenceRegion),
-		ReviewAppClientID: dcfg.ReviewAppClientID,
-		AppSet:            appSet,
+		Forge:                   cfg.Forge,
+		MintURL:                 cfg.MintURL,
+		InferenceRegion:         cfg.expectedInferenceRegion(),
+		InferenceServiceAccount: cfg.DeclaredServiceAccount,
+		ReviewAppClientID:       dcfg.ReviewAppClientID,
+		AppSet:                  appSet,
 	}, cfg.MintURL)
 	if varValErr != nil {
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)
 		return status
 	}
-	components, probeErr := ProbeComponentsForAuth(ctx, client, owner, repo, cfg.Forge, cfg.InferenceAuth, fc, expectedVars)
+	components, probeErr := ProbeComponentsForConfig(ctx, client, cfg, fc, expectedVars)
 	if probeErr != nil {
 		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status
@@ -346,6 +404,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			return status
 		}
 		checkManagedConfigDrift(ctx, cfg, &status)
+		if status.Error != "" {
+			return status
+		}
+		// A partial earlier installation can leave vendored assets behind.
+		checkStaleVendoredAssets(ctx, cfg, dcfg, resolver, true, &status)
 		return status
 	}
 	status.Installed = true
@@ -382,6 +445,15 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			Expected: expected,
 			Actual:   actual,
 		})
+	}
+
+	// Report the configuration error install would fail on: nothing will
+	// refresh a live agent job script that ignores the service account.
+	if workflowPresent && presetLoaded {
+		if err := checkEstablishedServiceAccountSupport(ctx, cfg, dcfg.UpstreamRef, components); err != nil {
+			status.Error = err.Error()
+			return status
+		}
 	}
 
 	checkObsoleteInferenceConfig(ctx, client, cfg, &status)
@@ -427,7 +499,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	// presence checks above. Refs are normalized before comparison so that
 	// ref-format differences do not produce false content-drift reports —
 	// ref drift is already detected separately.
-	checkScaffoldContentDrift(ctx, client, cfg, dcfg, resolver, &status)
+	checkScaffoldContentDrift(ctx, client, cfg, dcfg, resolver, workflowPresent && isUnstampedInstallRef(cfg.Forge, status.CurrentRef), &status)
 	if status.Error != "" {
 		return status
 	}
@@ -445,6 +517,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		return status
 	}
 
+	checkStaleVendoredAssets(ctx, cfg, dcfg, resolver, !workflowPresent, &status)
+	if status.Error != "" {
+		return status
+	}
+
 	// Read display-only variable not covered by required vars.
 	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGCPRegion)
 	if regionErr != nil {
@@ -455,14 +532,41 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 
 	if cfg.Forge == ForgeGitLab {
 		appendGitLabRoleStatus(ctx, client, owner, repo, &status)
+		// Ledger and sink only; the CLI adds the live GitLab drift checks.
+		diag := DiagnoseGitLabTriggerAccount(ctx, client, nil, owner, repo, "")
+		ApplyGitLabTriggerAccountStatus(&status, diag)
+		// Identifying the managed webhook needs the instance base URL, which
+		// every live GitLab client exposes; a client without one has no
+		// webhook fast path to diagnose.
+		if GitLabBaseURL(client) != "" {
+			ApplyGitLabWebhookStatus(&status, DiagnoseGitLabWebhook(ctx, client, owner, repo))
+		}
 	}
 
 	return status
 }
 
+// ApplyGitLabTriggerAccountStatus records the trigger account's diagnosis on
+// status and reports every state that needs attention as drift. A
+// not-installed or deferred account is informational: polling keeps working.
+func ApplyGitLabTriggerAccountStatus(status *RepoStatus, diag GitLabTriggerAccountStatus) {
+	status.GitLabTriggerAccount = &diag
+	status.Drifts = slices.DeleteFunc(status.Drifts, func(d Drift) bool { return d.Field == "gitlab-trigger-account" })
+	switch diag.State {
+	case GitLabTriggerStateNotInstalled, GitLabTriggerStateDeferred, GitLabTriggerStateReady:
+		return
+	}
+	status.Drifts = append(status.Drifts, Drift{
+		Field:    "gitlab-trigger-account",
+		Expected: GitLabTriggerStateReady,
+		Actual:   diag.State + ": " + strings.Join(diag.Reasons, "; "),
+	})
+}
+
 // checkObsoleteInferenceConfig reports Fullsend-managed inference secrets
-// and variables that belong to a method the repository's inference.auth
-// does not select. A valid selection does not make leftover configuration
+// and variables the repository's effective configuration does not use (a
+// method inference.auth does not select, or an undeclared
+// inference.service_account on GitLab). A valid selection does not make leftover configuration
 // healthy desired state: convergence deletes these once the selected
 // method is established, so status reports them as drift. Secrets are
 // checked for presence only — secret values are never read. GitLab's
@@ -472,19 +576,19 @@ func checkObsoleteInferenceConfig(ctx context.Context, client forge.Client, cfg 
 	if status.Error != "" {
 		return
 	}
-	for _, name := range obsoleteInferenceVariables(cfg.InferenceAuth) {
-		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, name)
+	for _, v := range obsoleteInferenceVariables(cfg) {
+		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, v.name)
 		if err != nil {
-			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", name, cfg.Owner, cfg.Repo, err)
+			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", v.name, cfg.Owner, cfg.Repo, err)
 			return
 		}
 		if !exists {
 			continue
 		}
 		status.Drifts = append(status.Drifts, Drift{
-			Field:    name,
+			Field:    v.name,
 			Expected: "absent",
-			Actual:   fmt.Sprintf("obsolete variable (inference.auth is %s)", cfg.InferenceAuth),
+			Actual:   fmt.Sprintf("obsolete variable (%s)", v.reason),
 		})
 	}
 }
@@ -536,6 +640,23 @@ func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 	}
 }
 
+// unpinnedScaffoldContent renders the expected scaffold for a repository
+// whose manifest sets no fullsend_ref, using the same target ref as
+// convergeContentDriftFiles: the running release's ref when the build has
+// one, otherwise config.DefaultUpstreamRef (the renderer's fallback) when
+// unstampedInstall reports that a build without a release ref wrote the
+// scaffold. Returns (nil, nil) when neither applies, because no baseline
+// can be rendered without repointing the installed ref.
+func unpinnedScaffoldContent(resolved ResolvedConfig, dcfg DriftConfig, unstampedInstall bool) ([]forge.TreeFile, error) {
+	if dcfg.UpstreamRef == "" && !unstampedInstall {
+		return nil, nil
+	}
+	installCfg := driftInstallConfig(resolved, dcfg)
+	installCfg.UpstreamRef = dcfg.UpstreamRef
+	installCfg.UpstreamTag = dcfg.UpstreamTag
+	return BuildScaffoldFiles(installCfg)
+}
+
 func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {
 	content, _, err := readWorkflowContent(ctx, client, owner, repo, fc)
 	if err != nil {
@@ -555,6 +676,42 @@ func extractWorkflowRef(content []byte, fc ForgeConfig) string {
 		return ""
 	}
 	return string(m[1])
+}
+
+// selectDeclaredRepos narrows repos to the repositories selected by filter:
+// the expansion plus concrete filter names a glob entry covers but
+// expansion did not list (forks, archived repositories). Every selector
+// must select at least one repository; one that matches none (a name or
+// glob no manifest entry covers, an unrelated glob next to another declared
+// glob) is an error, so install, dry run and status agree and a partially
+// valid selection never runs.
+func selectDeclaredRepos(m *Manifest, repos []ResolvedRepo, filter []string) ([]ResolvedRepo, error) {
+	repos = withGlobCoveredSelections(m, repos, filter)
+	selected, unmatched, err := filterRepos(repos, filter)
+	if err != nil {
+		return nil, err
+	}
+	if len(unmatched) > 0 {
+		return nil, fmt.Errorf("--repo filter matched no manifest entries: %s", strings.Join(unmatched, ", "))
+	}
+	return selected, nil
+}
+
+// RequireDeclaredSelections fails when any selector in filter matches no
+// repository declared by the manifest (an explicit entry, a repository a
+// glob entry covers, or a glob that matches at least one such repository).
+// It only reads from the forge (glob expansion), so repos install runs it
+// before any manifest or forge write.
+func RequireDeclaredSelections(ctx context.Context, m *Manifest, clients ForgeClientFactory, filter []string) error {
+	if len(filter) == 0 {
+		return nil
+	}
+	expanded, err := m.ExpandGlobsFor(ctx, clients, filter)
+	if err != nil {
+		return fmt.Errorf("expanding globs: %w", err)
+	}
+	_, err = selectDeclaredRepos(m, expanded, filter)
+	return err
 }
 
 // filterRepos returns the subset of repos matching at least one filter
@@ -611,8 +768,18 @@ func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []strin
 // The refResolver is used to fetch remote scaffold templates when
 // fullsend_ref pins a version that differs from the running binary,
 // ensuring the baseline matches the pinned version's templates.
-func checkScaffoldContentDrift(ctx context.Context, client forge.Client, cfg ResolvedConfig, dcfg DriftConfig, refResolver *RefResolver, status *RepoStatus) {
-	expectedFiles, err := ExpectedScaffoldContent(ctx, cfg, dcfg, refResolver)
+//
+// Without fullsend_ref the baseline matches convergeContentDriftFiles:
+// the running release's ref, or — for a build without one — the default
+// ref when unstampedInstall reports that such a build wrote the scaffold.
+func checkScaffoldContentDrift(ctx context.Context, client forge.Client, cfg ResolvedConfig, dcfg DriftConfig, refResolver *RefResolver, unstampedInstall bool, status *RepoStatus) {
+	var expectedFiles []forge.TreeFile
+	var err error
+	if cfg.FullsendRef == "" {
+		expectedFiles, err = unpinnedScaffoldContent(cfg, dcfg, unstampedInstall)
+	} else {
+		expectedFiles, err = ExpectedScaffoldContent(ctx, cfg, dcfg, refResolver)
+	}
 	if err != nil {
 		status.Error = fmt.Sprintf("rendering expected scaffold for %s/%s: %v", cfg.Owner, cfg.Repo, err)
 		return

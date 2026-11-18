@@ -50,7 +50,7 @@ Next:
   2. Test locally, printing the result instead of commenting:
        POST_LINT_DOCS_DRY_RUN=1 fullsend run lint-docs \
          --target-repo . --env-file .env.local
-     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
+     .env.local needs FULLSEND_WORK_ITEM_URL, ISSUE_NUMBER, REPO_FULL_NAME,
      GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and
      GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP credentials file;
      the run stops before it starts without them.
@@ -109,11 +109,13 @@ Commit it with the agent.
 | Built-in providers and their profiles | Resolved from the `fullsend` binary | Copy the provider and profile under your own name (for example `providers/myorg-github-ro.yaml` with `name: myorg-github-ro` and `type: myorg-github-ro`, and `profiles/myorg-github-ro.yaml` with `id: myorg-github-ro`), list the profile under `openshell.profiles`, and declare `myorg-github-ro` instead of the built-in name |
 
 The built-in names (`vertex-ai`, `github`, `github-ro`, `github-artifacts`,
-`gitleaks`, `package-registries`, `atlassian-cloud`, `openai`) and their
-`fullsend-<name>` profile ids are reserved. A harness that still uses its own
-copy under one of them keeps working for now: `fullsend run` uses the copy
-and prints a warning naming the migration below. A later release rejects
-it. `fullsend-openai` is already rejected.
+`gitleaks`, `package-registries`, `atlassian-cloud`, `openai`, `jira`) and
+their `fullsend-<name>` profile ids are reserved. `fullsend-openai` is always rejected, and `fullsend-jira` is rejected when
+the run mints the Jira token,
+because `fullsend run` mints the tokens those profiles govern. Otherwise, a
+harness that still uses its own copy keeps working for now: `fullsend run`
+uses the copy and prints a warning naming the migration below. A later
+release rejects it.
 
 Bare names need the same `fullsend` release in CI as the one that
 generated the agent, or a newer one. The scaffolded workflows run the
@@ -137,7 +139,7 @@ for the four-step migration to the bare built-in names above.
 | `--trigger` | | A trigger written by hand, in CEL (the expression language dispatch evaluates); mutually exclusive with `--on` |
 | `--model` | `opus` | Model for the agent. With `--runtime codex` there is no default: pass an OpenAI id such as `openai/<id>`, or `gateway/<model>` for an [inference gateway](../runtimes/codex.md#models-through-an-inference-gateway-experimental), or the command refuses |
 | `--effort` | `high` | Effort level (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`); when omitted, the repo's `runtime:` default applies. The runtime and model decide which credentials the harness asks for: see [Picking a route](#picking-a-route) |
+| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi`, `codex` or `opencode`); when omitted, the repo's `runtime:` default applies. The runtime and model decide which credentials the harness asks for: see [Picking a route](#picking-a-route) |
 | `--slug` | `<owner>-<name>` | Names the GitHub App to look for when the agent is installed; `<owner>` comes from the `origin` remote |
 | `--image` | per-role pin | Container image the agent runs inside |
 | `--timeout-minutes` | `15` | Agent timeout in minutes |
@@ -347,7 +349,7 @@ stale provider profiles, schema validation, triggers that never fire), see
 
 ## `agent add`
 
-Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch. The URL prefix is added to `allowed_remote_resources` if not already present.
+Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch. The URL prefix is added to `allowed_remote_resources` only when the effective allowlist does not already cover it; the effective allowlist is the layered list plus fullsend's default prefixes. The prefix is appended to the config's own list only: entries the parent chain resolves (fullsend's defaults, `GITHUB_SERVER_URL`-derived prefixes, `config.base.yaml` entries) are never written into `config.yaml`.
 
 ```bash
 fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml
@@ -377,7 +379,12 @@ fullsend agent list
 |------|---------|-------------|
 | `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 
-Read-only. Displays a table with `NAME` and `SOURCE` columns. For URL agents, the `#sha256=...` integrity hash suffix is stripped from the displayed source for readability. Disabled agents (`enabled: false`) are included in the listing.
+Read-only. Displays a table with `NAME` and `SOURCE` columns. For URL agents,
+the `#sha256=...` integrity hash suffix is stripped from the displayed source
+for readability. Disabled agents (`enabled: false`) are included in the listing.
+A built-in agent tuned by an entry without `source:` shows `(built-in)`. An
+entry's settings follow in brackets, for example `[model=sonnet effort=high]`;
+an entry with an `agents[].trigger` shows `trigger` there.
 
 Example output:
 ```
@@ -424,18 +431,19 @@ fullsend agent set review --subagent correctness=opus --subagent default=haiku
 | Flag | Description |
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`) |
-| `--runtime` | Agent runtime for this agent (`claude`, `pi` or `codex`) |
-| `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi and codex (codex takes OpenAI ids and `gateway/<model>` only) |
+| `--runtime` | Agent runtime for this agent (`claude`, `pi`, `codex` or `opencode`) |
+| `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi, codex, and opencode (codex takes OpenAI ids and `gateway/<model>` only) |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (its frontmatter model, then `subagents.default`). On pi, a value that resolves to `openai/` prints a warning when the agent's local harness declares no `openai` provider; see [pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai) |
+| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference (on codex, an OpenAI id the pinned CLI's catalog lists). Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (on pi, its frontmatter model, then `subagents.default`; on codex, the run-level child model, see [Codex § Child models](../runtimes/codex.md#child-models)). On pi, a value that resolves to `openai/` prints a warning when the agent's local harness declares no `openai` provider; see [pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai) |
 
 See [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort) for precedence.
-See [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration) for
-how `subagents` map to persona dispatch.
+See [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration) and
+[Codex § Child models](../runtimes/codex.md#child-models) for how `subagents` map to persona
+dispatch on each runtime.
 
 ## `agent remove`
 
-Remove an agent from config. If the removed agent was the last one using a given `allowed_remote_resources` prefix, that prefix is also cleaned up.
+Remove an agent from config. If the removed agent was the last one using a given `allowed_remote_resources` prefix, that prefix is cleaned from the config's own list only. Entries the parent chain resolves (fullsend's defaults, `GITHUB_SERVER_URL`-derived prefixes, `config.base.yaml` entries) are never carried into the cleaned list, and a prefix the base owns is left to the base. When the cleaned local list becomes empty, the local `allowed_remote_resources` key is dropped so the parent chain resolves again. Over a chain that resolves to deny-all (a base `[]`), the command instead writes the fullsend default prefixes a remaining agent still uses. Those can be host-specific when `GITHUB_SERVER_URL` names a GitHub Enterprise host.
 
 ```bash
 fullsend agent remove triage

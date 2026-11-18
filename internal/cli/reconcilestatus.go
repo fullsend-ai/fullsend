@@ -9,7 +9,6 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -19,7 +18,7 @@ import (
 
 var reconcileMintToken = mintclient.MintToken
 var reconcileNewForgeClient = func(token string) forge.Client {
-	return gh.New(token)
+	return newGitHubLiveClient(token, "")
 }
 var reconcileOrphaned = statuscomment.ReconcileOrphaned
 
@@ -29,9 +28,10 @@ var reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
 	return tracker.NewForgeClient(fc)
 }
 
-// reconcileNewJiraTrackerClient creates a tracker.Client backed by Jira.
-// Extracted as a package-level var so tests can replace it.
-var reconcileNewJiraTrackerClient = newJiraTrackerClientFromEnv
+// reconcileNewJiraTrackerClient creates a tracker.Client backed by Jira
+// from the effective tracker config. Extracted as a package-level var so
+// tests can replace it.
+var reconcileNewJiraTrackerClient = newJiraTrackerClientFromConfig
 
 func newReconcileStatusCmd() *cobra.Command {
 	var (
@@ -47,6 +47,7 @@ func newReconcileStatusCmd() *cobra.Command {
 		fullsendDir string
 		jobStatus   string
 		wasSkipped  bool
+		reviewRun   bool
 	)
 
 	cmd := &cobra.Command{
@@ -63,7 +64,9 @@ to an "Interrupted" state and adds the terminal tag. If already
 finalized, this is a no-op.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var tc tracker.Client
+			var statusForgeClient forge.Client
 			var project string
+			var forgePlatform string
 
 			// Event-source routing (ADR 0093): read the normalized
 			// event from the same sources as fullsend run—the on-disk
@@ -95,51 +98,12 @@ finalized, this is a no-op.`,
 				return fmt.Errorf("--number must be a positive integer, got %d", number)
 			}
 
-			if trackerSource == "jira" {
-				var jErr error
-				tc, jErr = reconcileNewJiraTrackerClient()
-				if jErr != nil {
-					return fmt.Errorf("creating Jira tracker client: %w", jErr)
-				}
-			} else {
-				parts := strings.SplitN(repo, "/", 2)
-				if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-					return fmt.Errorf("--repo must be in owner/repo format, got %q", repo)
-				}
-				owner, repoName := parts[0], parts[1]
-
-				forgePlatform, err := detectForgePlatform(forgeFlag, nil)
-				if err != nil {
-					return err
-				}
-
-				var forgeClient forge.Client
-				if forgePlatform == "gitlab" {
-					var gitlabErr error
-					forgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
-					if gitlabErr != nil {
-						return gitlabErr
-					}
-				} else {
-					var githubErr error
-					forgeClient, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName)
-					if githubErr != nil {
-						return githubErr
-					}
-				}
-
-				tc = reconcileNewTrackerClient(forgeClient)
-				project = owner + "/" + repoName
-			}
-
-			var termReason statuscomment.TerminationReason
-			switch reason {
-			case "cancelled":
-				termReason = statuscomment.ReasonCancelled
-			default:
-				termReason = statuscomment.ReasonTerminated
-			}
-
+			// Loaded once, before mint-URL resolution and completion-mode
+			// lookup below, so both consult the same layered config.yaml/
+			// config.base.yaml snapshot. orgCfg stays nil when
+			// --fullsend-dir was not provided or the config failed to
+			// load; downstream readers treat that as "no file layer".
+			var orgCfg config.ConfigReader
 			completionMode := ""
 			if fullsendDir != "" {
 				writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true})
@@ -147,6 +111,7 @@ finalized, this is a no-op.`,
 				case err != nil:
 					fmt.Fprintf(os.Stderr, "WARNING: could not load config from %s: %v; using default completion mode\n", fullsendDir, err)
 				default:
+					orgCfg = writer
 					// ConfigWriter embeds StatusNotificationsReader (via
 					// ConfigReader) directly, so no type assertion is
 					// needed.
@@ -158,9 +123,69 @@ finalized, this is a no-op.`,
 				}
 			}
 
-			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
+			if trackerSource == "jira" {
+				var tracking *config.TrackingConfig
+				if orgCfg != nil {
+					tracking = orgCfg.IssueTracking()
+				}
+				var jErr error
+				tc, jErr = reconcileNewJiraTrackerClient(tracking)
+				if jErr != nil {
+					return fmt.Errorf("creating Jira tracker client: %w", jErr)
+				}
+			} else {
+				parts := strings.SplitN(repo, "/", 2)
+				if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+					return fmt.Errorf("--repo must be in owner/repo format, got %q", repo)
+				}
+				owner, repoName := parts[0], parts[1]
 
-			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
+				var err error
+				forgePlatform, err = detectForgePlatform(forgeFlag, nil)
+				if err != nil {
+					return err
+				}
+
+				if forgePlatform == "gitlab" {
+					var gitlabErr error
+					statusForgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
+					if gitlabErr != nil {
+						return gitlabErr
+					}
+				} else {
+					var githubErr error
+					statusForgeClient, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName, orgCfg)
+					if githubErr != nil {
+						return githubErr
+					}
+				}
+
+				tc = reconcileNewTrackerClient(statusForgeClient)
+				project = owner + "/" + repoName
+			}
+
+			var termReason statuscomment.TerminationReason
+			switch reason {
+			case "cancelled":
+				termReason = statuscomment.ReasonCancelled
+			default:
+				termReason = statuscomment.ReasonTerminated
+			}
+
+			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
+			guidance := ""
+			if reviewRun && termReason == statuscomment.ReasonCancelled {
+				var guidanceErr error
+				guidance, guidanceErr = resolveBuiltInGitHubReviewCancellationGuidance(
+					cmd.Context(), statusForgeClient, "review", forgePlatform, trackerSource, project, number, sha,
+				)
+				if guidanceErr != nil {
+					fmt.Fprintf(os.Stderr, "WARNING: could not determine whether cancelled review was superseded; omitting retry guidance: %v\n", guidanceErr)
+				}
+			}
+			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, statuscomment.ReconcileOptions{
+				CancellationGuidance: guidance,
+			})
 		},
 	}
 
@@ -170,28 +195,33 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&runURL, "run-url", "", "URL to the workflow run (optional)")
 	cmd.Flags().StringVar(&sha, "sha", "", "commit SHA (optional, shown as short hash)")
 	cmd.Flags().StringVar(&reason, "reason", "terminated", "termination reason: terminated or cancelled")
-	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for on-demand token (default: $FULLSEND_MINT_URL)")
-	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required with --mint-url)")
+	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for on-demand token (default: layered mint_url from --fullsend-dir, then $FULLSEND_MINT_URL)")
+	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required to mint a token)")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode and read normalized event for tracker routing)")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode, resolve a layered mint_url, and read normalized event for tracker routing)")
 	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
 	cmd.Flags().BoolVar(&wasSkipped, "was-skipped", false, "whether the pre-script decided to skip the run (forces synthesis under on_failure even when --job-status is success)")
+	cmd.Flags().BoolVar(&reviewRun, "review-run", false, "whether this is the built-in GitHub review agent (enables GitHub-specific cancellation guidance)")
 	_ = cmd.MarkFlagRequired("run-id")
 
 	return cmd
 }
 
 // reconcileGitHubClient mints a GitHub token and returns a forge client.
-func reconcileGitHubClient(cmd *cobra.Command, mintURL, role, repoName string) (forge.Client, error) {
-	if mintURL == "" {
-		mintURL = os.Getenv("FULLSEND_MINT_URL")
-	}
+// mintURL resolution mirrors fullsend run's precedence (flag > layered
+// config.yaml/config.base.yaml mint_url > FULLSEND_MINT_URL) so that
+// reconcile-status agrees with run on which mint endpoint to use when both
+// are invoked with the same --fullsend-dir in the same CI job (#8400).
+// orgCfg may be nil when --fullsend-dir was not provided or its config
+// failed to load; resolveMintURL treats that the same as "no file layer".
+func reconcileGitHubClient(cmd *cobra.Command, mintURL, role, repoName string, orgCfg config.ConfigReader) (forge.Client, error) {
+	mintURL, _ = resolveMintURL(mintURL, orgCfg, os.Getenv)
 
 	if mintURL == "" {
-		return nil, fmt.Errorf("--mint-url or FULLSEND_MINT_URL required")
+		return nil, fmt.Errorf("--mint-url, a layered mint_url in config.yaml/config.base.yaml, or FULLSEND_MINT_URL required")
 	}
 	if role == "" {
-		return nil, fmt.Errorf("--role is required when using --mint-url")
+		return nil, fmt.Errorf("--role is required to mint a token")
 	}
 	result, err := reconcileMintToken(cmd.Context(), mintclient.MintRequest{
 		MintURL: mintURL,
@@ -212,7 +242,8 @@ func reconcileGitHubClient(cmd *cobra.Command, mintURL, role, repoName string) (
 }
 
 // newGitLabClientFromEnv creates a GitLab forge client from environment
-// variables (GITLAB_TOKEN, FULLSEND_GITLAB_URL or CI_SERVER_URL).
+// variables (GITLAB_TOKEN, and the first set of FULLSEND_GITLAB_URL,
+// GITLAB_API_URL and CI_SERVER_URL, via gl.ResolveBaseURL).
 // Unlike the GitHub path, no token format validation or CI log masking is
 // performed: GitLab uses pre-provisioned PATs (not minted tokens), and
 // GitLab CI auto-masks variables that have the "masked" flag set at the
@@ -224,13 +255,8 @@ func newGitLabClientFromEnv(errContext string) (forge.Client, error) {
 		return nil, fmt.Errorf("no GitLab token found: set GITLAB_TOKEN for %s", errContext)
 	}
 
-	baseURL := os.Getenv("FULLSEND_GITLAB_URL")
-	if baseURL == "" {
-		baseURL = os.Getenv("GITLAB_API_URL")
-	}
-	if baseURL == "" {
-		baseURL = os.Getenv("CI_SERVER_URL")
-	}
+	// Same URL rule as newForgeClient and the credential profile binding.
+	baseURL, _ := gl.ResolveBaseURL("")
 	var opts []gl.Option
 	if baseURL != "" {
 		opts = append(opts, gl.WithBaseURL(baseURL))

@@ -78,13 +78,18 @@ token counts and prices them against MLflow's internal model table. This
 excludes cache-creation and cache-read tokens, which dominate agent-run cost.
 
 The authoritative cost figure is the runtime-reported `fullsend.cost_usd`
-attribute on `agent` spans (also in `run-telemetry.jsonl`).
+attribute on `agent` spans (also in `run-telemetry.jsonl`). When that value
+is zero, or when you need a list-price figure rather than the
+runtime's reported estimate, compute it from the persisted token fields
+— see [Computing dollar cost from token telemetry](../infrastructure/distributed-tracing.md#computing-dollar-cost-from-token-telemetry).
 
 ## Level 3 content
 
 With content capture enabled (see
 [How To Emit Traces](how-to-emit-traces.md#capture-conversation-content)),
-the conversation lives on each `agent` span as `gen_ai.output.messages`:
+the conversation lives on each `agent` span as `gen_ai.output.messages`
+(and, on a retry that carried validation feedback, the runner's prompt as
+`gen_ai.input.messages`):
 open the trace and select the span to read it. The trace list's
 Request/Response preview columns derive from the root span only (capped
 at 1000 characters), so they stay empty for fullsend traces — content is

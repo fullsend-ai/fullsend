@@ -291,6 +291,96 @@ func TestPiExtensionsGuard(t *testing.T) {
 	assert.Equal(t, "", piExtensionsGuard(nil), "no extensions, no guard")
 }
 
+func TestPiExtensionTreeHash_MatchesChildDispatcher(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	ext := writeExtensionFixture(t, "docs")
+	require.NoError(t, os.Mkdir(filepath.Join(ext, "empty"), 0o755))
+	want, err := piExtensionTreeHash(ext)
+	require.NoError(t, err)
+	cmd := exec.Command(node, "--input-type=module", "-e", `import {extensionTreeHash} from './pi_extension/fullsend-agent.js'; console.log(await extensionTreeHash(process.argv[1]));`, ext)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	assert.Equal(t, want, strings.TrimSpace(string(out)))
+}
+
+func TestPiBootstrap_ChildDeclaredExtensions(t *testing.T) {
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+	ext := writeExtensionFixture(t, "docs")
+	err := (PiRuntime{}).Bootstrap(bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, "---\nname: code\ntools: [Agent, 'mcp__docs__*']\n---\nBody"),
+		agentName:   "code",
+		plugins:     []PluginInput{{Path: ext, Kind: pluginformat.KindPi, PiArgs: []string{"--strict"}, Env: map[string]string{"DOCS_MODE": "offline"}}},
+	})
+	require.NoError(t, err)
+	var m piManifest
+	require.NoError(t, json.Unmarshal(storedUpload(t, store, PiRuntime{}.ConfigDir()+"/fullsend-manifest.json"), &m))
+	require.NotNil(t, m.Agent)
+	require.Len(t, m.Agent.DeclaredExtensions, 1)
+	assert.Equal(t, m.Extensions, m.Agent.DeclaredExtensions)
+}
+
+func TestPiBootstrap_MCPResourcesReachLaunch(t *testing.T) {
+	for _, vocabulary := range []struct{ name, parent, persona string }{
+		{"pi", "read_mcp_resource, 'list_mcp_*'", "read_mcp_resource, 'list_mcp_*'"},
+		{"Claude", "ReadMcpResourceTool, ListMcpResourcesTool", "ReadMcpResourceTool, ListMcpResourcesTool"},
+	} {
+		t.Run(vocabulary.name, func(t *testing.T) {
+			work := t.TempDir()
+			store := filepath.Join(work, "store")
+			fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+			skill := t.TempDir()
+			writePersonaFile(t, skill, "docs", "---\nname: docs\ntools: ["+vocabulary.persona+"]\n---\nRead docs.\n")
+			require.NoError(t, (PiRuntime{}).Bootstrap(bootstrapInput{
+				sandboxName: "sb",
+				agentPath:   writeAgentFile(t, "---\nname: code\ntools: [Agent, "+vocabulary.parent+"]\n---\nBody"),
+				agentName:   "code",
+				skillDirs:   []string{skill},
+			}))
+			var m piManifest
+			require.NoError(t, json.Unmarshal(storedUpload(t, store, PiRuntime{}.ConfigDir()+"/fullsend-manifest.json"), &m))
+			require.NotNil(t, m.Agent)
+			assert.Contains(t, m.Tools, "read_mcp_resource")
+			if vocabulary.name == "Claude" {
+				assert.ElementsMatch(t, append([]string{"read"}, piMCPResourceTools...), m.Agent.Tools)
+				assert.ElementsMatch(t, piMCPResourceTools, m.Agent.Personas["docs"].Tools)
+			} else {
+				assert.Contains(t, m.Agent.Tools, "list_mcp_*")
+				assert.Equal(t, []string{"read_mcp_resource", "list_mcp_*"}, m.Agent.Personas["docs"].Tools)
+			}
+			command := buildPiRunCommand(piTestParams(), &m, nil, "")
+			assert.Contains(t, command, "read_mcp_resource")
+			assert.NotContains(t, piMCPExclusions(m.Tools), "read_mcp_resource")
+			assert.NotContains(t, piMCPExclusions(m.Tools), "list_mcp_resources")
+			if _, err := exec.LookPath("node"); err != nil {
+				t.Skip("node not installed")
+			}
+			encoded, err := json.Marshal(m.Agent)
+			require.NoError(t, err)
+			script := `import {childTools, childArgs} from "./pi_extension/fullsend-agent.js";
+const agent = JSON.parse(process.argv[1]);
+const registry = ["read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates"].map(name => ({name, exposure: "codemode"}));
+const tools = childTools(agent, "docs", [], registry);
+const args = childArgs(agent, {seq: 1, modelSpec: "m", tools});
+process.stdout.write(JSON.stringify({tools, excluded: args[args.indexOf("--exclude-tools")+1]}));`
+			out, err := exec.Command("node", "--input-type=module", "-e", script, string(encoded)).CombinedOutput()
+			require.NoError(t, err, string(out))
+			var child struct {
+				Tools    []string
+				Excluded string
+			}
+			require.NoError(t, json.Unmarshal(out, &child))
+			assert.ElementsMatch(t, piMCPResourceTools, child.Tools)
+			assert.Equal(t, "mcp__*", child.Excluded)
+		})
+	}
+}
+
 func TestPiResolveRunPlugins(t *testing.T) {
 	t.Parallel()
 	dir := writeExtensionFixture(t, "go-diagnostics")
@@ -352,7 +442,7 @@ func TestBuildPiRunCommand_Extensions(t *testing.T) {
 	require.NotEmpty(t, guard)
 	guardIdx := strings.Index(cmd, guard)
 	hooksIdx := strings.Index(cmd, piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json"))
-	envIdx := strings.Index(cmd, ". '/sandbox/workspace/.env'")
+	envIdx := strings.Index(cmd, piEnvLoad)
 	require.True(t, guardIdx > 0 && hooksIdx > 0 && envIdx > 0, cmd)
 	assert.True(t, hooksIdx < guardIdx && guardIdx < envIdx, "hook guard, then extension guard, then .env: %s", cmd)
 	assert.Contains(t, guard, strings.Repeat("a", 64))
@@ -367,7 +457,7 @@ func TestBuildPiRunCommand_Extensions(t *testing.T) {
 
 	// env: exported right before pi, after the runtime's own exports, keys
 	// sorted within an extension; values shell-quoted.
-	envExports := `&& export FFF_MULTIGREP='1' && export FFF_ROOT='/sandbox/work space' && "$FULLSEND_PI_BIN" --print`
+	envExports := `&& export FFF_MULTIGREP='1' && export FFF_ROOT='/sandbox/work space' && ` + cliLaunch(piBinaryVar, piNodeVar) + ` --print`
 	assert.Contains(t, cmd, envExports, cmd)
 	assert.Less(t, strings.Index(cmd, `export GOOGLE_CLOUD_PROJECT=`), strings.Index(cmd, "export FFF_MULTIGREP="), "runtime exports come first")
 
@@ -586,7 +676,7 @@ func TestPiRuntimeEnvExports_DisablesJitiCache(t *testing.T) {
 	// EnvExports() after sourcing it, so the agent cannot turn the cache
 	// back on for the next iteration.
 	cmd := buildPiRunCommand(RunParams{RepoDir: "/sandbox/workspace/repo"}, &piManifest{}, nil, "")
-	env := strings.Index(cmd, ". '/sandbox/workspace/.env'")
+	env := strings.Index(cmd, piEnvLoad)
 	jiti := strings.Index(cmd, "export JITI_FS_CACHE=false")
 	require.GreaterOrEqual(t, env, 0)
 	require.GreaterOrEqual(t, jiti, 0)

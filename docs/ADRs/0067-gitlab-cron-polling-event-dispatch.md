@@ -142,6 +142,14 @@ trigger-token threat model for the new inbound-surface controls.
 > Consequences. Push-to-open-MR (GitHub `synchronize`) is not detected
 > by the poller; use `/fs-review`.
 >
+> **Update (2026-10, #7681):** The poller now detects pushes to open MRs
+> from merge request diff versions and dispatches review as
+> `transition.kind: synchronized`, keyed on the head SHA. Automatic
+> dispatch applies only to same-project MRs; re-review of fork MR
+> pushes is currently unsupported, because the router also denies
+> slash commands on fork MRs. See
+> [review agent](../agents/review.md).
+>
 > **Update (2026-09, #7323):** The single shared bot PAT (see "Credential
 > model" below) means GitLab's own `merge_requests_author_approval=false`
 > default always rejects `POST .../approve` with 401 whenever the
@@ -219,6 +227,13 @@ trigger-token threat model for the new inbound-surface controls.
 > dropped the leftover empty `dispatch` stage from the required stage
 > list and strips it from already-enrolled root files on converge
 > (`StripObsoleteGitLabStages`).
+>
+> **Update (2026-10, #8031):** After the webhook-dispatch rollout, these
+> converge-time migrations were removed, as were the converge deletion
+> of a leftover `fullsend-dispatch.yml` and the status/upgrade read of
+> its version marker. Converge now reports a leftover stub as an orphan.
+> Uninstall still deletes it, and still removes the obsolete
+> `merge_request_event` rule from a fullsend-owned `workflow:` block.
 
 ## Context
 
@@ -436,6 +451,12 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > CI/CD-variable state when present). The poller self-heals a deleted
 > branch within one cycle. `repos uninstall` deletes both branches.
 >
+> **Update (2026-10, #8032):** The legacy CI/CD-variable migration was
+> removed. Install and converge seed missing branches with an empty
+> signed baseline and neither read nor delete the retired variables.
+> The orphan detector still ignores them, and uninstall still deletes
+> them.
+>
 > Phase 3c (#7381) dropped the created bot PAT from Maintainer (40)
 > to Developer (30); Developer can force-write and delete an
 > unprotected branch. The historical Maintainer-role description
@@ -467,6 +488,10 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > project service account by default. Trigger creation and rotation as the
 > Poller remain deferred, and cron polling remains the dispatch path.
 >
+> **Update (#8243):** trigger creation and rotation are now enabled for
+> eligible projects through a fresh Poller service-account generation; cron
+> polling remains available as the fallback dispatch path.
+>
 > **Update (#7667):** a failed `CreatePipeline` (including that 403) now
 > fails the poll cycle after persisting retry state. The permission gap
 > is unchanged; the poll job no longer reports success when no agent
@@ -495,6 +520,14 @@ Key properties:
   `Error code invalid_grant: Error connecting to the given credential's issuer`.
   Inference is not available for GitLab instances that are not
   resolvable in public DNS.
+
+  > **Update (2026-10, #8468):**
+  > The last sentence above is incorrect. Uploading the instance's public
+  > JWKS to the WIF provider (`--jwk-json-path`) lets STS verify tokens
+  > without contacting the issuer. This was tested on an internal instance
+  > in [#5897](https://github.com/fullsend-ai/fullsend/issues/5897). The
+  > operator must re-upload the keys whenever the instance rotates them. See
+  > [Configuring GitLab → Private OIDC issuers](../guides/getting-started/configuring-gitlab.md#private-oidc-issuers-uploaded-jwks).
 
 ### Cron poller (`gitlab-poll` input driver)
 
@@ -597,6 +630,13 @@ configuration.
 | MR merged | Cron poll (MR `merged_at` > watermark) | retro |
 | MR closed (unmerged) | Cron poll (MR `closed_at` > watermark, `merged_at` empty) | retro |
 | MR note with `<!-- fullsend:changes-requested -->` | Cron poll (note body marker) | fix (same-project MRs only) |
+
+> **Update (2026-10, [#8553](https://github.com/fullsend-ai/fullsend/issues/8553) / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)):**
+> The events poll also acts as a backstop for a missed webhook issue-open
+> delivery: an issue opened after both the discovery watermark and a persisted
+> installation cutoff is dispatched as an issue-opened event. See the
+> [normalized event README](../normative/normalized-event/v1/README.md) for
+> details.
 
 Bot-authored comments are skipped to prevent re-triggering loops (exception:
 the `changes-requested` marker from the review agent).

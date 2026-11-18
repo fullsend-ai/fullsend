@@ -173,9 +173,20 @@ func (u UninstallTokenClient) ReconcileGitLabPollersForUninstall(ctx context.Con
 	if ownershipErr != nil {
 		return ownershipErr
 	}
+	// A completed handoff leaves the superseded Poller (and an interrupted one
+	// a pending replacement) recorded only in the generation document; they
+	// are reconciled and cleaned up like the managed Poller.
+	generationIDs, genErr := repos.ManagedGitLabPollerGenerationAccountIDs(ctx, u.owner.Admin, owner, repo)
+	if genErr != nil {
+		return genErr
+	}
 	var ids []int64
 	for _, sa := range accounts {
-		if managedID <= 0 || sa.ID != managedID || slices.Contains(excluded, int64(sa.ID)) {
+		isManaged := managedID > 0 && sa.ID == managedID
+		if !isManaged && !slices.Contains(generationIDs, sa.ID) {
+			continue
+		}
+		if slices.Contains(excluded, int64(sa.ID)) {
 			continue
 		}
 		ids = append(ids, int64(sa.ID))

@@ -84,7 +84,7 @@ func TestBuildPiRunCommand_GatewayGuardAndEnvOrdering(t *testing.T) {
 	cmd := buildPiRunCommand(params, &piManifest{}, exts, "abc123")
 	guard := piGatewayConfigGuard(PiRuntime{}.ConfigDir(), run.configSum())
 	assert.Equal(t, 2, strings.Count(cmd, guard), "the config guard runs twice")
-	envIdx := strings.Index(cmd, ". '/sandbox/workspace/.env'")
+	envIdx := strings.Index(cmd, piEnvLoad)
 	first := strings.Index(cmd, guard)
 	second := strings.LastIndex(cmd, guard)
 	plugin := strings.Index(cmd, "export OTHER_KEY='v'")

@@ -35,7 +35,7 @@ func ScoreRunHealth(tr Trace) EvaluationResult {
 // signals, not failures: a tool error is often a legitimate recovery, and
 // an unanswered call is often a legitimate timeout or kill, neither of
 // which is decidable as a defect from the span alone. Runs whose runtime
-// emits no execute_tool spans (pi and codex report no call id) and runs
+// emits no execute_tool spans (codex reports no call id) and runs
 // that made no tool calls are skipped, not scored, so the trend measures
 // only runs whose tool behavior was actually observable.
 func ScoreRunHealthNamed(tr Trace, evalName, version string) EvaluationResult {

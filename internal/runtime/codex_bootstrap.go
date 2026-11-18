@@ -58,17 +58,40 @@ type codexHookGroup struct {
 	Wired   bool   `json:"wired"`
 }
 
-// claudeToolForCodex is the adapter's translation table, mirrored into the
-// manifest for operators reading it. codex's shell tool is already called
-// `Bash`; `apply_patch` covers Claude's Write and Edit, and the canonical
-// name it reports is what the scripts see translated
-// (codex-rs/core/src/tools/hook_names.rs).
-var claudeToolForCodex = map[string]string{
-	"apply_patch": "Edit",
-	"spawn_agent": "Agent",
+// codexAgentToolNames are the codex multi-agent calls the adapter reports as
+// Agent: the V1 spawn and the control calls the spawn guard passes through
+// from the root (ADR 0126), and the V2 spawn and control calls ADR 0159
+// decision 3 maps the same way. send_message, followup_task and resume stay
+// unmapped, so an allowlist without their names blocks them even when the
+// guard cannot run. No mapped call has that backstop: an allowlist that
+// permits Agent passes them all and the spawn guard is their only name-level
+// check. The V1 spawn still sits under codex's agents.max_depth; the V2 spawn
+// does not (#9085); its backstop is that the runner starts a V2 parent's
+// children only on models off V2, which get no multi-agent tools
+// (codexV2ChildModelReason). codex joins namespace and name with no
+// separator (codex-rs/core/src/tools/registry.rs function_hook_tool_name);
+// only the default and multi_agent_v1 namespaces keep the bare spawn_agent.
+var codexAgentToolNames = []string{
+	"spawn_agent",
+	"multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input",
+	"collaborationspawn_agent", "collaborationwait_agent", "collaborationlist_agents", "collaborationinterrupt_agent",
 }
 
+// claudeToolForCodex is the adapter's translation table, mirrored into the
+// manifest for operators reading it. codex's shell tool is already called
+// `Bash`; `apply_patch` covers Claude's Write and Edit.
+var claudeToolForCodex = func() map[string]string {
+	m := map[string]string{"apply_patch": "Edit"}
+	for _, name := range codexAgentToolNames {
+		m[name] = "Agent"
+	}
+	return m
+}()
+
 func (r CodexRuntime) codexHooksDir() string { return r.ConfigDir() + "/hooks" }
+
+// codexRolesDir is where codex discovers sub-agent roles at launch (#6970).
+func (r CodexRuntime) codexRolesDir() string { return r.ConfigDir() + "/agents" }
 
 func (r CodexRuntime) codexManifestPath() string { return r.ConfigDir() + "/" + codexManifestFile }
 
@@ -151,10 +174,56 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	if !ok || repoInput.RepoDir() == "" {
 		return fmt.Errorf("codex bootstrap: the target repository's sandbox path is required")
 	}
+	// Delegation gate (ADR 0126, extended by ADR 0159). Part one: tools
+	// include Agent and harness security is on. Part two needs the pinned
+	// CLI's catalog: the gate takes the collaboration version from the entry
+	// of the model Run will launch, V1 when the entry selects V1 or carries
+	// no version (codex's multi_agent feature, on by default, supplies V1)
+	// and V2 when it selects V2. A V1 or V2 parent delegates: the gate reads
+	// the version, not the reason. A V2 child's result passes the PostToolUse
+	// chain at SubagentStop before codex delivers it (codexHooksJSON, ADR 0159
+	// decision 4), and a V2 parent delegates only while no child model selects
+	// V2 (codexV2ChildModelReason). Bootstrap passes the version on to the
+	// roles, the developer instructions and the config, which take their V2
+	// forms for a V2 parent. A disabled, unknown-version, unlisted or gateway/
+	// parent, and a V2 parent with a V2 child model, is declined with its own
+	// explanation, keeps the multi-agent tools off and runs in one context,
+	// as an agent that does not delegate does.
+	_, securityOn := input.(SandboxHooksBootstrap)
+	var catalog codexCatalog
+	delegating, collab := false, ""
+	if codexDelegates(def, securityOn) {
+		if catalog, err = codexPreflightCatalog(sandboxName); err != nil {
+			return err
+		}
+		var reason string
+		collab, reason = codexParentCollabVersion(catalog, input.ParentModel(), def.Model)
+		if delegating = collab == "v1" || collab == "v2"; !delegating {
+			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
+		}
+	}
+	// Resolved before config.toml is written: a bad subagents value fails here.
+	var roles []codexRole
+	defaultSubagentModel, childEffort := "", ""
+	if delegating {
+		discovered, skipped := codexRoles(input.SkillDirs(), agentName, collab)
+		roles, defaultSubagentModel, childEffort, err = resolveCodexChildModels(
+			discovered, skipped, input.AgentSubagents(), os.Getenv(codexSubagentModelEnv), input.Effort(), catalog)
+		if err != nil {
+			return err
+		}
+		if reason := codexV2ChildModelReason(catalog, roles, defaultSubagentModel); collab == "v2" && reason != "" {
+			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
+			delegating, roles = false, nil
+		}
+	}
 	// The gateway provider is rendered only when the runner registered an
 	// inference.gateway block for this sandbox (PrepareGatewayRun).
 	gatewayBaseURL := codexGatewayRunFor(sandboxName)
-	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(), codexDeveloperInstructions(agentName, def), gatewayBaseURL)
+	multiAgentV2 := delegating && collab == "v2"
+	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(),
+		codexDeveloperInstructions(agentName, def, roles, collab), gatewayBaseURL, roles, defaultSubagentModel, childEffort,
+		multiAgentV2)
 	if err != nil {
 		return err
 	}
@@ -190,18 +259,9 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		return err
 	}
 
-	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
+	// codex discovers $CODEX_HOME/skills natively.
+	if err := uploadHarnessSkills(sandboxName, cfg+"/skills", input.SkillDirs()); err != nil {
 		return err
-	}
-	for _, skillPath := range input.SkillDirs() {
-		if skillPath == "" {
-			continue
-		}
-		// codex discovers $CODEX_HOME/skills natively.
-		if err := sandbox.Upload(sandboxName, skillPath, cfg+"/skills/"); err != nil {
-			return fmt.Errorf("copying skill %q: %w", skillPath, err)
-		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
 	for _, e := range input.Plugins() {
@@ -235,19 +295,13 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		}
 		// Exactly what was installed, by name: Run cannot re-derive the set
 		// because it does not see the harness's hook config.
-		securityEnv := codexSecurityEnv(hooks)
-		// FULLSEND_CANARY_TOKEN and FULLSEND_TOOL_ALLOWLIST are harness-supplied
-		// (env.sandbox / host_files) rather than derived from SandboxHookConfig,
-		// so the runner has no typed copy to re-export. It can still read them
-		// here: the runner writes .env and then calls Bootstrap, and no agent
-		// iteration has run yet, so the file is still exactly what the runner
-		// put there. Reading them later — in Run — would read whatever the
-		// previous iteration left behind, which is the problem.
-		harnessEnv, err := codexReadHarnessSecurityEnv(sandboxName)
+		// The hook settings, recorded while .env is still exactly what the
+		// runner wrote (bootstrapHookEnv).
+		securityEnv, err := bootstrapHookEnv(sandboxName, hooks)
 		if err != nil {
 			return err
 		}
-		digests.SecurityEnv = append(securityEnv, harnessEnv...)
+		digests.SecurityEnv = securityEnv
 		digests.HookScripts = map[string]string{}
 		for name, content := range security.HookFiles(hooks) {
 			digests.HookScripts[name] = codexAssetSHA256(content)
@@ -258,11 +312,14 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		if err := uploadBytes(sandboxName, r.codexAdapterPath(), codexHookAdapterPy); err != nil {
 			return fmt.Errorf("installing hook adapter: %w", err)
 		}
-		python, err := codexPreflightPython(sandboxName)
+		// The hook children's PATH is pinned by the launch itself
+		// (envDataTrustedPath, see buildCodexRunCommand), so only the
+		// interpreter is taken from here.
+		python, _, err := hookPreflightInterpreter(sandboxName)
 		if err != nil {
 			return err
 		}
-		hooksJSON, notes, err := codexHooksJSON(cfg, python, hooks)
+		hooksJSON, notes, err := codexHooksJSON(cfg, python, hooks, multiAgentV2)
 		if err != nil {
 			return err
 		}
@@ -273,6 +330,21 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 			return fmt.Errorf("writing %s: %w", codexHooksFile, err)
 		}
 		digests.HooksJSON = codexAssetSHA256(hooksJSON)
+		// The role files are agent-writable, so their digests join the
+		// runner-held set the spawn guard re-checks before every spawn.
+		if len(roles) > 0 {
+			if err := codexExecOK(sandboxName, "mkdir -p "+shellQuote(r.codexRolesDir()), "creating codex roles dir"); err != nil {
+				return err
+			}
+			digests.RoleFiles = map[string]string{}
+			for _, role := range roles {
+				data := role.toml()
+				if err := uploadBytes(sandboxName, r.codexRolesDir()+"/"+role.Name+".toml", data); err != nil {
+					return fmt.Errorf("writing role %q: %w", role.Name, err)
+				}
+				digests.RoleFiles[role.Name] = codexAssetSHA256(data)
+			}
+		}
 		manifest.Hooks = codexHooksManifestFor(r.codexHooksDir(), hooks)
 	}
 
@@ -315,8 +387,11 @@ func codexExecOK(sandboxName, cmd, what string) error {
 // slot for caller-supplied instructions, which it composes with its own base
 // prompt and tool guidance — the same relationship pi's APPEND_SYSTEM.md has,
 // and a deliberate difference from Claude Code, where the body *is* the system
-// prompt.
-func codexDeveloperInstructions(agentName string, def *piAgentDef) string {
+// prompt. roles is the registered roster of a delegating agent; empty means
+// the agent runs in one context and gets codexNoSubagentNote. version is
+// the collaboration version the gate admitted, which picks the dispatch
+// note.
+func codexDeveloperInstructions(agentName string, def *piAgentDef, roles []codexRole, version string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Agent: %s\n\n", agentName)
 	if def.Description != "" {
@@ -325,28 +400,38 @@ func codexDeveloperInstructions(agentName string, def *piAgentDef) string {
 	}
 	b.WriteString(def.Body)
 	b.WriteString("\n")
-	b.WriteString(codexNoSubagentNote)
+	if len(roles) == 0 {
+		b.WriteString(codexNoSubagentNote)
+	} else {
+		b.WriteString(codexSubagentNote(roles, version))
+	}
 	return b.String()
 }
 
-// codexNoSubagentNote makes the absence of a sub-agent tool explicit so skills
-// written for Claude Code's Agent tool (pr-review, retro) take their
+// codexNoSubagentNote makes the absence of a sub-agent roster explicit so
+// skills written for Claude Code's Agent tool (pr-review, retro) take their
 // single-context path deliberately instead of recording a failed dispatch.
-// codex does have a spawn_agent tool, but fullsend wires no sub-agent roster
-// for it in v1, the same position pi was in (#6527).
-//
-// The second paragraph is the chunked-read rule for Codex's exec truncation
-// (10,000 tokens, head and tail, at 0.157.0). A single cat of a long SKILL.md
-// drops the middle with no retry (#7831). Lines are counted with awk's NR, not
-// `wc -l`: `wc -l` counts newline characters, so a file whose last line has no
-// trailing newline reports one line too few and the last range would stop
-// short of it.
+// Every agent the delegation gate declines gets it (tools without Agent,
+// security off, a disabled, unknown-version, unlisted or gateway/ parent, or
+// a V2 parent with a V2 child model); a delegating agent gets
+// codexSubagentNote.
 const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). No fullsend sub-agent " +
 	"roster is available. When a skill says to dispatch sub-agents, execute each sub-agent " +
 	"definition yourself, in the listed order, with the same context package, and treat each " +
 	"output as that sub-agent's result.\n\n" +
-	"When reading a SKILL.md or other instruction file, do not cat it in one call: Codex " +
+	codexChunkedReadNote
+
+// codexChunkedReadNote is the chunked-read rule for Codex's exec truncation
+// (10,000 tokens, head and tail; verified at 0.157.0 and 0.166.0, the latter
+// live: a 200-line dense file rides whole, a larger one is cut in the middle
+// behind an "N tokens truncated" marker). A single cat of a long SKILL.md
+// drops the middle with no retry (#7831). Lines are counted with awk's NR, not
+// `wc -l`: `wc -l` counts newline characters, so a file whose last line has no
+// trailing newline reports one line too few and the last range would stop
+// short of it. codexNoSubagentNote and every role file (codexChildNote) end
+// their runtime note with it.
+const codexChunkedReadNote = "When reading a SKILL.md or other instruction file, do not cat it in one call: Codex " +
 	"truncates exec output (head and tail, dropping the middle). For each file, count its " +
 	"lines with `awk 'END { print NR }' <file>` (`wc -l` misses a last line with no newline), " +
 	"then `sed -n '<start>,<end>p'` in contiguous ranges of at most 200 lines, one range per " +
@@ -356,6 +441,85 @@ const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	"output for a truncation warning before advancing; if a range is truncated, split it into " +
 	"smaller contiguous windows that together still cover its start through end — never skip " +
 	"the back half — and read those windows before moving on to the next range.\n"
+
+// codexV2DispatchMarker is the sentence that marks a V2 note: it comes right
+// after "Sub-agents are native Codex children.", the sentence after the
+// roster sentence, so the agents repository's skills can tell the two
+// dispatch contracts apart on the sentences they key on.
+const codexV2DispatchMarker = "Dispatch follows collaboration V2."
+
+// codexSubagentNote is the dispatch bridge for a delegating agent (#6970,
+// ADR 0126, ADR 0159): it maps the skills' "dispatch a sub-agent" onto
+// codex's native tools and states the policy the spawn guard enforces, so
+// the parent passes the arguments the guard admits and handles a denial
+// without retrying. The first two sentences and the denied-spawn sentence
+// are what the agents repository's pr-review skill keys on; change them
+// only together with that skill. roles is
+// the registered roster, sorted by name (codexRoles); version is the
+// collaboration version the gate admitted. The V2 note keeps the keyed
+// sentences, puts codexV2DispatchMarker right after its third sentence,
+// before the dispatch text, and carries V2's spawn arguments and control
+// calls (ADR 0159 decision 5). It quotes codexWithheldNotice, the result a
+// child whose final message the chain blocked is told to give instead. The
+// child contract is in every role file (codexChildNote, codexChildNoteV2),
+// not here.
+func codexSubagentNote(roles []codexRole, version string) string {
+	names := make([]string, len(roles))
+	for i, role := range roles {
+		names[i] = role.Name
+	}
+	head := "\n## Runtime note\n\n" +
+		"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). " +
+		"Registered sub-agent roles: " + strings.Join(names, ", ") + ". " +
+		"Sub-agents are native Codex children. "
+	const denied = "A denied spawn is final for that role: do not retry it, execute that sub-agent " +
+		"definition yourself with the same context package, and treat the output as that " +
+		"sub-agent's result.\n\n"
+	if version == "v2" {
+		return head + codexV2DispatchMarker + " " +
+			"When a skill says to dispatch a sub-agent, call `spawn_agent` with `task_name` set to a short " +
+			"name for the task, unique among the children you spawn (lowercase letters, digits and `_` " +
+			"only; `root` is reserved), " +
+			"`agent_type` set to a role listed above — the persona's name, or `explore` " +
+			"where the skill asks for an `Explore` pass (instruction-only; nothing enforces read-only on " +
+			"a child); for a task that names no persona, omit `agent_type` — and `message` carrying that " +
+			"sub-agent's whole context package: a child starts with nothing but that message. Pass " +
+			"`fork_turns: \"none\"` explicitly on every spawn, and never pass a `model`, `reasoning_effort` " +
+			"or `fork_context` argument: the runner has bound each role's model. Use only the roles " +
+			"listed above; `explorer` and `worker` are not registered and are denied. Spawn only the " +
+			"sub-agents the skill selected; a role being registered is not a reason to spawn it.\n\n" +
+			"`wait_agent` takes only `timeout_ms` and never a target. A child's result arrives as a " +
+			"message in your conversation, one per finished child, through the runner's checked delivery " +
+			"path, not in the wait's result. At most four children can run at once: a fifth spawn is " +
+			"refused while four are running, and Codex evicts an idle finished child when a new spawn " +
+			"needs its slot. There is no close or follow-up call: never resume, message or follow up a " +
+			"child. Interrupt a child that is over its budget with `interrupt_agent`. An interrupted " +
+			"child sends no result: report a coverage gap for that role. A child whose result reports " +
+			"an error is final for that role. A message whose payload is `" + codexWithheldNotice +
+			"`, ignoring whitespace around it, is a withheld result: report a coverage gap for " +
+			"that role, and never retry the spawn or read the child's raw rollout. " +
+			denied +
+			codexChunkedReadNote
+	}
+	return head +
+		"When a skill says to dispatch a sub-agent, call " +
+		"`spawn_agent` with `agent_type` set to a role listed above — the persona's name, or `explore` " +
+		"where the skill asks for an `Explore` pass (instruction-only; nothing enforces read-only on " +
+		"a child); for a task that names no persona, omit `agent_type` — and `message` carrying that " +
+		"sub-agent's whole context package: a child starts with nothing but that message. Pass " +
+		"`fork_context: false` explicitly on every spawn, and never pass a `model` or " +
+		"`reasoning_effort` argument: the runner has bound each role's model. Use only the roles " +
+		"listed above; `explorer` and `worker` are not registered and are denied. Spawn only the " +
+		"sub-agents the skill selected; a role being registered is not a reason to spawn it.\n\n" +
+		"At most four children can be open at once, and a finished child keeps its slot until it " +
+		"is closed. Start up to four, `wait_agent` on one child at a time (one target id per call), " +
+		"`close_agent` each child once it has reported, then start the remaining ones. Close every " +
+		"child you spawned and never resume one. A `wait_agent` that returns `timed_out: true` and " +
+		"no status has timed out, not failed: call it again. A child whose status is `errored` is " +
+		"final for that role. " +
+		denied +
+		codexChunkedReadNote
+}
 
 // codexUnsupportedTools returns the Claude tool names from an agent
 // definition that have no codex tool. Unlike pi, nothing is dropped from an
@@ -433,86 +597,69 @@ func codexPreflightVersion(sandboxName string) (string, error) {
 	return sanitizeOutput(number), nil
 }
 
+// codexPreflightCatalog dumps the catalog compiled into the pinned binary
+// (offline, no CODEX_HOME needed) and parses it. Failure here is a broken
+// image, reported before any iteration.
+func codexPreflightCatalog(sandboxName string) (codexCatalog, error) {
+	const cmd = "codex debug models --bundled"
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("codex preflight: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, fmt.Errorf("codex preflight: `%s` exited %d: %s",
+			cmd, exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
+	}
+	catalog, err := parseCodexCatalog([]byte(stdout))
+	if err != nil {
+		return nil, fmt.Errorf("codex preflight: `%s` printed no model catalog: %w", cmd, err)
+	}
+	return catalog, nil
+}
+
 // codexVersionPrefix is what `codex --version` puts before the number.
 // Asserted at image build time too (images/sandbox/Containerfile compares the
 // whole "codex-cli <pin>" string), so a change here shows up as a build
 // failure before it reaches a run.
 const codexVersionPrefix = "codex-cli "
 
-// codexHarnessSecurityEnvKeys are the hook-configuration variables the harness
-// supplies through the sandbox environment rather than through
-// SandboxHookConfig, so the runner learns them by reading the file it just
-// wrote rather than from its own state.
-var codexHarnessSecurityEnvKeys = []string{"FULLSEND_CANARY_TOKEN", "FULLSEND_TOOL_ALLOWLIST"}
+// hookInterpreterSep separates the interpreter from the PATH on the line
+// hookInterpreterProbe prints.
+const hookInterpreterSep = "|fullsend-hook-sep|"
 
-// codexEnvReadSeparator delimits the values read back, chosen so a plausible
-// token or allowlist cannot contain it.
-const codexEnvReadSeparator = "|fullsend-env-sep|"
-
-// codexReadHarnessSecurityEnvCmd sources envFile silently, so nothing a
-// sourced file prints lands in front of the first value, and prints the
-// codexHarnessSecurityEnvKeys values joined by codexEnvReadSeparator. A failed
-// source prints nothing and exits non-zero, so a broken .env fails Bootstrap
-// instead of pinning the values as unset. Its stderr stays discarded because
-// the shell echoes the offending .env line, which can carry a token. The
-// references are double-quoted, not shellQuote'd: single quotes would print
-// the literal "${KEY:-}" text instead of expanding it.
-func codexReadHarnessSecurityEnvCmd(envFile string) string {
-	var refs []string
-	for _, key := range codexHarnessSecurityEnvKeys {
-		refs = append(refs, fmt.Sprintf("${%s:-}", key))
-	}
-	return fmt.Sprintf(`. %s >/dev/null 2>&1 && printf '%%s' "%s"`,
-		shellQuote(envFile), strings.Join(refs, codexEnvReadSeparator))
+// hookInterpreterProbe is the sandbox command hookPreflightInterpreter runs:
+// the launch's own python3 pin (envDataPin), then one line holding the pinned
+// interpreter and the trusted PATH it was taken from.
+func hookInterpreterProbe() string {
+	return envDataPin() + ` && printf '%s` + hookInterpreterSep + `%s\n' "$` + envDataPythonVar + `" "$` + envDataTrustedPathVar + `"`
 }
 
-// codexReadHarnessSecurityEnv reads the harness-supplied hook variables from
-// the workspace .env, which at Bootstrap time is still exactly what the runner
-// wrote — no agent iteration has run. Unset values are re-asserted as empty,
-// which every hook treats as unset, so an agent that sets one in .env later
-// cannot supply an allowlist the harness left out.
-func codexReadHarnessSecurityEnv(sandboxName string) ([]codexEnvPair, error) {
-	cmd := codexReadHarnessSecurityEnvCmd(sandbox.SandboxWorkspace + "/.env")
-	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
+// hookPreflightInterpreter resolves the absolute interpreter the hook
+// handlers name and the PATH the hooks resolve their tools from, both from
+// directories the agent cannot write. It runs the lookup the launch makes
+// before it reads .env (envDataPin) on a shell the agent has not touched,
+// rather than leaving a bare `python3` in hooks.json or taking the sandbox
+// PATH as is: an image can put a directory the agent owns (a virtualenv's
+// bin) first on PATH.
+func hookPreflightInterpreter(sandboxName string) (python, path string, err error) {
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, hookInterpreterProbe(), 10*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("reading the harness hook environment: %w", err)
+		return "", "", fmt.Errorf("resolving python3 for the hooks: %w", err)
 	}
-	if exitCode != 0 {
-		return nil, fmt.Errorf("reading the harness hook environment: exited %d: %s",
+	line := strings.TrimSpace(stdout)
+	if i := strings.LastIndexByte(line, '\n'); i >= 0 {
+		line = strings.TrimSpace(line[i+1:])
+	}
+	python, path, found := strings.Cut(line, hookInterpreterSep)
+	if exitCode != 0 || !found || python == "" {
+		return "", "", fmt.Errorf("resolving python3 for the hooks: none found in a PATH directory the agent cannot write (exit %d): %s",
 			exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
 	}
-
-	values := strings.Split(stdout, codexEnvReadSeparator)
-	if len(values) != len(codexHarnessSecurityEnvKeys) {
-		return nil, fmt.Errorf("reading the harness hook environment: expected %d values, got %d",
-			len(codexHarnessSecurityEnvKeys), len(values))
+	if !strings.HasPrefix(python, "/") {
+		return "", "", fmt.Errorf("resolving python3 for the hooks: %q is not an absolute path", sanitizeOutput(python))
 	}
-	var env []codexEnvPair
-	for i, key := range codexHarnessSecurityEnvKeys {
-		env = append(env, codexEnvPair{key, strings.TrimSpace(values[i])})
-	}
-	return env, nil
-}
-
-// codexPreflightPython resolves the absolute interpreter the hook handlers
-// will name. It is resolved here, on a shell the agent has not touched, rather
-// than left as a bare `python3` in hooks.json: codex spawns hooks after the
-// agent-writable .env is sourced, so PATH resolution at that point is the
-// agent's to influence.
-func codexPreflightPython(sandboxName string) (string, error) {
-	stdout, _, exitCode, err := sandbox.Exec(sandboxName, "command -v python3", 10*time.Second)
-	if err != nil {
-		return "", fmt.Errorf("resolving python3 for the hook adapter: %w", err)
-	}
-	path := strings.TrimSpace(stdout)
-	if exitCode != 0 || path == "" {
-		return "", fmt.Errorf("resolving python3 for the hook adapter: not found in the sandbox image (exit %d)", exitCode)
-	}
-	if i := strings.LastIndexByte(path, '\n'); i >= 0 {
-		path = strings.TrimSpace(path[i+1:])
-	}
-	if !strings.HasPrefix(path, "/") {
-		return "", fmt.Errorf("resolving python3 for the hook adapter: %q is not an absolute path", sanitizeOutput(path))
+	if path == "" || strings.ContainsAny(path, "\r\n") {
+		return "", "", fmt.Errorf("resolving the PATH for the hooks: unusable result (exit %d)", exitCode)
 	}
 	// The adapter's isolation of its children rests on `-I` keeping the
 	// script's own directory off sys.path, so the verified hooks directory can
@@ -520,10 +667,10 @@ func codexPreflightPython(sandboxName string) (string, error) {
 	// true of every CPython that has had `-I`, but the floor is asserted here
 	// rather than assumed: below it, a planted `hooks/json/` would shadow a
 	// stdlib import inside a hook script.
-	if err := codexPreflightPythonVersion(sandboxName, path); err != nil {
-		return "", err
+	if err := codexPreflightPythonVersion(sandboxName, python); err != nil {
+		return "", "", err
 	}
-	return path, nil
+	return python, path, nil
 }
 
 // codexMinPythonMinor is the 3.x minor the hook adapter requires. 3.11 is the

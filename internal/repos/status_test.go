@@ -196,24 +196,6 @@ func TestProbeRepoState_GitLab_PostUninstall_NotInstalled(t *testing.T) {
 	}
 }
 
-func TestProbeRepoState_GitLab_LegacyDispatchMarker(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# Fullsend CI pipeline\n")
-	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("  ref: v2.4.0\n")
-	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
-
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
-	if err != nil {
-		t.Fatalf("ProbeRepoState() error = %v", err)
-	}
-	if !state.Installed {
-		t.Fatal("Installed = false, want true")
-	}
-	if state.FullsendRef != "v2.4.0" {
-		t.Errorf("FullsendRef = %q, want v2.4.0 from leftover dispatch stub", state.FullsendRef)
-	}
-}
-
 // failForgeTokenSecretExistsClient fails RepoSecretExists only for the
 // GitLab shared/role secrets that ProbeRepoState itself checks, leaving the
 // generic required-secret checks inside ProbeComponents (GCP project ID and
@@ -470,8 +452,10 @@ func TestStatus_RefDrift(t *testing.T) {
 }
 
 func TestStatus_RegionDrift_NoLongerReported(t *testing.T) {
-	// FULLSEND_GCP_REGION is no longer in the manifest (install-time only),
-	// so status should not report region drift.
+	// With no inference.region declared by the effective configuration, an
+	// existing FULLSEND_GCP_REGION is preserved, so status must not report
+	// region drift (a declared region is enforced; see
+	// TestConverge_DeclaredRegionDriftAgreesAcrossStatusDryRunAndInstall).
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
@@ -1341,26 +1325,55 @@ func TestStatus_RepoFilterAllUnmatched(t *testing.T) {
 	}
 }
 
-func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
+func TestStatus_RepoFilterPartialUnmatchedFails(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
 	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4,
+	// One valid selector does not rescue an unmatched one: status selects
+	// exactly like install.
+	_, err := Status(context.Background(), m, newTestClientFactory(fc), 4,
 		[]string{"acme-corp/api-server", "org/nonexistent"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error when one selector matches no declared repository")
 	}
-	if result.Summary.Total != 1 {
-		t.Errorf("total = %d, want 1", result.Summary.Total)
+	if !strings.Contains(err.Error(), "org/nonexistent") || strings.Contains(err.Error(), "acme-corp/api-server") {
+		t.Errorf("error should name only the unmatched selector: %v", err)
 	}
-	if len(result.Warnings) != 1 {
-		t.Fatalf("warnings count = %d, want 1", len(result.Warnings))
+}
+
+func TestRequireDeclaredSelections(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub:  &PlatformConfig{Repos: []RepoEntry{{Name: "acme/*"}}},
 	}
-	if result.Warnings[0] != `--repo filter "org/nonexistent" matched no manifest entries` {
-		t.Errorf("warning = %q, want match message", result.Warnings[0])
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "api", FullName: "acme/api", DefaultBranch: "main"},
+	}
+	clients := newTestClientFactory(fc)
+	ctx := context.Background()
+
+	if err := RequireDeclaredSelections(ctx, m, clients, nil); err != nil {
+		t.Fatalf("empty selection: %v", err)
+	}
+	if err := RequireDeclaredSelections(ctx, m, clients, []string{"acme/api", "acme/*"}); err != nil {
+		t.Fatalf("declared selectors: %v", err)
+	}
+	// A concrete fork/archived repository a glob covers needs no listing.
+	if err := RequireDeclaredSelections(ctx, m, clients, []string{"acme/forked"}); err != nil {
+		t.Fatalf("glob-covered concrete name: %v", err)
+	}
+	// An unrelated glob is not declared because another glob exists, even
+	// next to a valid selector.
+	err := RequireDeclaredSelections(ctx, m, clients, []string{"acme/api", "other/*"})
+	if err == nil || !strings.Contains(err.Error(), "other/*") {
+		t.Fatalf("want error naming other/*, got %v", err)
+	}
+	if err := RequireDeclaredSelections(ctx, m, clients, []string{"acme/api", "*/nope"}); err == nil {
+		t.Fatal("want error for a glob selector that matches no resolved repository")
 	}
 }
 

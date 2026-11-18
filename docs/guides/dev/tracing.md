@@ -128,7 +128,10 @@ is present, the W3C propagator extracts a remote span context and the root
 span is `SpanKindConsumer`. Otherwise it is `SpanKindInternal`.
 
 Start attributes include: `fullsend.agent`, `fullsend.work_item_id`,
-`gen_ai.operation.name`, `gen_ai.agent.name`.
+`gen_ai.operation.name`, `gen_ai.agent.name`. The harness identity
+(`fullsend.harness.*`, `harnessIdentityAttrs()`) and the forge and CI pointers
+(`vcs.*`, `cicd.*`, `forgePointerAttrs()`) are set right after the root span
+starts.
 
 End attributes (set in a deferred cleanup): `exit_code`,
 `fullsend.cost_usd`, `fullsend.num_turns`, `fullsend.tool_calls`,
@@ -158,20 +161,23 @@ effective model via `runtime.GenAISystemFor`; `System()` is only the fallback.
 
 ### execute_tool spans
 
-One per id-bearing tool call the runtime reports (Claude Code today), up to
+One per id-bearing tool call the runtime reports (Claude Code and pi), up to
 1,024 per iteration, a child of that iteration's agent span, named
 `execute_tool <tool name>`. `toolSpanTracker`
 (`internal/cli/tool_spans.go`) starts the span when it handles the
-`ToolUseEvent` and ends it when it handles the matching `ToolResultEvent`.
+`ToolUseEvent`, or at the event's `StartedAt` on pi (when the parser read
+`tool_execution_start`), and ends it when it handles the matching
+`ToolResultEvent`.
 `iterationEventHandler` runs the console renderer first, then the tracker,
-then the Level 3 collector, so both timestamps are runner-side receipt
+then the Level 3 collector, so both timestamps are runner-side
 instants on one clock, each trailing the sandbox by the pipe latency and the
 parser's decode of the line: the start also trails receipt by the renderer's output for
 the call (the renderer prints nothing for a result), and neither waits on
 the collector's redaction pass over its own event (events are handled one
 at a time, so with several calls open an instant can still trail the
 collector's pass over an earlier event, such as another call's large
-result) — the start is arguments-complete, not execution start. Attributes:
+result) — on Claude Code the start is arguments-complete, not execution
+start. Attributes:
 `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`,
 `gen_ai.tool.call.id`; a result flagged `is_error` sets
 `error.type=tool_error` and status Error. A result whose stream line
@@ -182,18 +188,21 @@ and no `error.type`, since `is_error` was never decoded. A call still open
 when the stream ends — the runtime was stopped, or an over-long result
 line showed no id in that prefix — is closed as `error.type=unanswered` by
 `Finish()`, which `runAgent` calls once `rt.Run` returns, before content
-assembly; a
+assembly (the pi parser holds a call's `ToolUseEvent` until
+`tool_execution_end`, because a failed call's summary needs the result, and
+emits it when the stream stops for a call cut off by a kill or timeout); a
 call superseded by a second `tool_use` with the same id is ended the same
-way at the reuse; a result with no matching call (its `tool_use` line was skipped) becomes a
+way at the reuse; a result with no matching call (its `tool_use` or, on pi,
+`tool_execution_start` line was skipped) becomes a
 near-zero-duration span marked `fullsend.tool.unmatched=true`. Events without
-an id — pi and codex emit none — produce no span, so the child count can be
+an id — codex emits none — produce no span, so the child count can be
 below `fullsend.tool_calls`, which counts every reported call, id or not; a
 `server_tool_use` block on an `assistant` line produces no event at all (its
-result never arrives as a `tool_result`), so it appears in neither count. The name passes through `security.OutputPipeline()`
-— Unicode normalization, then secret redaction, the same pipeline as span
-content — and is bounded to 256 bytes before it becomes the attribute; the
-span name keeps at most 128 bytes of it. The call id is scanned through the
-same pipeline and dropped from the span on any finding — never substituted,
+result never arrives as a `tool_result`), so it appears in neither count. The name passes through `redactText`
+— the runner env literal pass on both sides of `security.OutputPipeline()`,
+the redaction span content gets — and is bounded to 256 bytes before it becomes the attribute; the
+span name keeps at most 128 bytes of it. The call id goes through the
+same `redactText` and is dropped from the span on any finding — never substituted,
 since a masked id could collide with another call's — while the raw bounded
 id still keys the open-call map, so correlation is unaffected.
 The tracker records at most `maxToolSpansPerIteration` (1,024) spans per
@@ -224,23 +233,40 @@ renderer path.
 
 The collector (`internal/cli/content_collector.go`) coalesces contiguous
 text/reasoning deltas, maps tool use to `tool_call` parts and tool
-results to `tool_call_response` parts (only the Claude parser emits
-`ToolResultEvent` and call ids today — pi and codex emit neither,
+results to `tool_call_response` parts (only the Claude and pi parsers emit
+`ToolResultEvent`, call ids and `ToolUseEvent.Arguments` today — codex
+emits none of them,
 [#7414](https://github.com/fullsend-ai/fullsend/issues/7414); the schema's
 required result field is `response`), redacts every
-part through `security.OutputPipeline()` at assembly (redaction runs
+part — `security.OutputPipeline()`, with `replaceEnvSecrets` for the values
+of sensitive runner env keys and of `providerOnlyKeys`, in one pass, on both
+sides of it (`redactText`; a string the normalizer stripped an escape
+sequence or tag characters from is masked `***` whole — a colour code
+ends at the next letter, so it can take a token's first letter, and a
+title code's payload is text no pattern sees, so nothing cut from such a
+string can be trusted, and no scan of it as written can stand in; so is a
+string holding invalid UTF-8, since the span and attribute writers would
+join the halves of a value such a byte splits, or the replacement
+character a lossy decode leaves in its place, which splits a value the
+same way; last, every URL's userinfo, query and fragment are masked,
+`maskURLs`, on text the normalizer has folded and the patterns masked) —
+at assembly (redaction runs
 before the size budget — truncating first could split a secret past
 recognition), enforces a 256 KiB ordered-suffix budget (the ending survives — the
 final answer is what consumers judge) plus an 8 KiB per-tool-result
 bound (tail-kept, redacted before the cut, the part marked
-`fullsend.truncated`), with exact dropped-byte
-accounting across content, tool names, summaries, responses, and part
-ids, then holds the marshaled string to `maxEncodedContentBytes`
+`fullsend.truncated`) and an 8 KiB per-call arguments bound (over it the
+arguments are dropped whole and the part marked, since a cut object is not
+JSON), with exact dropped-byte
+accounting across content, tool names, summaries, responses, part
+ids, and arguments dropped whole (charged as the kept encoding when the
+bound drops them, otherwise as the redacted text they were scanned as; a
+member the recorded list leaves out is not charged), then holds the marshaled string to `maxEncodedContentBytes`
 (255,000 — just under the one size the pilot backend is proven to accept)
 by trimming the oldest content again, measured on the encoding itself and
 still charged in raw bytes (a separate, earlier boundary — the parser's 1 MiB
 stream-line cap — skips oversized lines; an oversized `tool_result` line
-still yields an empty part marked `fullsend.truncated`). None of the three
+still yields an empty part marked `fullsend.truncated`). None of the four
 content bounds is a measured backend limit; the constants' comments and
 [Size limits](../infrastructure/distributed-tracing.md#content-capture-level-3)
 name what blocks raising them. The collector emits
@@ -250,11 +276,113 @@ content and its marker attributes on the span before either
 `finalizeAgentSpan` path can end it, so failed iterations keep their
 content.
 
+**Guarantee and limits.** For every string the record or an `execute_tool`
+span exports, no 12-byte run of a known secret's body appears, read as raw
+bytes, after the normalizer, or after decoding the record's JSON with every
+string walked; a known secret is one a `SecretRedactor` pattern matches,
+a runner env or provider-only env value the literal pass holds, or a
+URL's userinfo, query or fragment.
+`TestRedaction_NoSecretSurvivesAnyWrapping` (`internal/cli`) states it and
+checks it over every surface (text, names, summaries, arguments on each
+path, results, the input message, span names and ids, and a Claude call
+with the summary the parser derives from it) and every wrapping a review
+has constructed so far — terminal escapes before, around and inside a
+secret, repeated and paired secrets, zero-width, bidi, tag, NUL and
+variation-selector characters inside it, a URL's delimiters in
+compatibility forms, separators escaped for the shell or JSON, a URL
+percent-encoded whole or in part (its separator's colon or slashes, its
+`@`, `?` or `#`), a
+password quoted for the shell, a URL nested in another's path, an
+invalid byte or the
+replacement character inside it, an invalid byte after it with the
+secret straddling the parser's summary cut, compatibility forms, and
+noise, inside the record and across the feedback cut, in compatibility
+forms or plain with 12 bytes before the cut.
+Four limits are named there and here, and nowhere else: an env value
+written in compatibility (fullwidth) forms, since the normalizer rewrites
+it and the literal pass matches only what the env has; a secret split
+across two parts or events; a secret that matches no pattern and is in no
+env, among them a token in a URL's path, in a URL holding a double quote
+that ends it (one that could close a JSON string, so a URL inside JSON
+ends with its string), what follows the quote and userinfo whose `@`
+follows it; a summary a pi or codex parser cut before the collector saw it, since
+that cut can split a value the parser's own scan did not see joined (a
+Claude summary is cut from a member the collector scans whole). A finding
+inside the guarantee is a defect; one on this list is a documented limit.
+
+`toolArguments` records the members of a call's input that
+`recordedArguments` names for the tool — paths, patterns, commands, modes
+and bounds; the reference lists them tool by tool — and nothing else: a
+file body, an edit, a prompt, a notebook source or a todo list, any member
+whose value is an object or an array, and the whole input of a tool the
+list does not name (every `mcp__` tool) is dropped: scanned as text so a
+secret in it still counts, then left out, neither charged nor marked,
+since the list is the documented policy and the markers mean loss. A
+`Bash` `command` is kept whole, so a heredoc or an inline script records
+what it writes. A URL's userinfo, query and fragment are masked in every
+recorded string (`maskURLs`, above), with a finding that costs a call its
+summary. The guarantee is one sentence: the record holds these members of these tools,
+each redacted as text, and nothing else of any call's input. The input is decoded
+(one JSON object, white space at most after it) and each kept string, and
+each kept number as its digits, goes through the text
+pipeline on its own, since the redactor's patterns are written for plain
+text and over serialised JSON miss an assignment that opens a string or
+follows an escaped newline, and a value behind escaped quotes; the result
+is encoded again, so key order, spacing and escapes are the encoder's. A
+string the normalizer stripped from is masked `***` whole, as every
+string is (above). Discarded content is redacted
+first, here as everywhere: a dropped member is scanned as text — the
+decoded string, or the compact encoding of an object or an array — so a
+secret in a file body still counts, and costs the summary as a secret
+found anywhere in the arguments does; so do arguments that could not be
+judged at all — stripped, or holding invalid UTF-8 or the replacement
+character — since the summary was cut from a member no scan saw whole.
+Arguments that are not one JSON
+object are scanned as text and dropped whole, charged; so are kept
+members whose encoding exceeds `maxToolArgumentsBytes`, charged as
+encoded. A call the stream reports without a name carries no arguments.
+This happens once, when the event is handled; eviction and `Result` do
+not rescan it. Arguments are kept only under a tool's exact name, plain
+words no scan touches, so a name that redacts to nothing never had any.
+
+The input message does not come from the stream. When `runAgent` composes
+a retry prompt (`buildFeedbackPrompt`, under `feedback_mode: append`),
+`attachInput` redacts it with the collector's pipeline — `redactFeedback`
+ran before the feedback was sanitized and framed, and sanitizing can join
+a token that scan saw split, so the recorded copy is pattern-scanned
+again; a prompt the composition altered in a way that pass cannot see —
+sanitized, or cut at `maxFeedbackBytes` while holding compatibility
+characters or a URL `maskURLs` would mask, since the cut can take the `@`
+that marks a password (`promptHidesAlterations`) — is recorded `***` whole; the
+prompt the agent is sent is not changed, and the mask the first
+scan leaves for a connection-string password of ten or more bytes matches
+its own pattern and counts a finding —
+and sets `gen_ai.input.messages` on the span
+before the runtime starts, so each finalize path carries it. Its findings
+join the iteration's, and its encoded size is charged against
+`maxEncodedContentBytes`: the two content attributes of one span together
+stay within the proven size.
+
 **Consumer contract** (for eval scorers and other readers of
 `run-telemetry.jsonl`): parse the `gen_ai.output.messages` attribute as
 JSON; check `fullsend.content.truncated` / `fullsend.content.dropped_bytes`
 before treating content as complete; masked secrets appear as the
-redactor's mask tokens and are counted in `fullsend.content.redactions`.
+redactor's mask tokens, or as `[REDACTED:<key>]` for a runner env or
+provider-only value, and are counted in `fullsend.content.redactions`;
+what was masked or rewritten for its shape — the normalizer's folds,
+removals, strippings and invalid UTF-8, a retry prompt altered upstream,
+a URL's userinfo, query or fragment — is counted apart in
+`fullsend.content.sanitizations`.
+A `tool_call` part's `arguments`, when present, is a JSON value (an object
+for the tools seen so far); a `tool_call` part marked `fullsend.truncated`
+had arguments that were dropped whole — on that part type the marker
+never means a partial value, as it does on a tool result. `gen_ai.input.messages` is absent unless
+the iteration is a retry that carried validation feedback — absence is
+the normal case, not a gap. Masks `redactFeedback` left in the feedback
+(`abcd...`, `***`, `[REDACTED:<ENV_KEY>]`) are in `gen_ai.input.messages`
+too, but that function discards its findings, so they are not counted in
+`fullsend.content.redactions`; the connection-string mask described above
+is the known exception.
 The attribute names and shapes above are the consumption contract — see the
 [Tracing reference](../infrastructure/distributed-tracing.md#content-capture-level-3).
 

@@ -28,6 +28,6 @@ not have Markdown files.
 - [Prioritize Agent](https://fullsend.sh/docs/agents/prioritize)
 - [Configuring Agent Behavior](https://fullsend.sh/docs/guides/user/customizing-agents)
 - [Configuring with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md)
-- [Building Custom Agents](https://fullsend.sh/docs/guides/user/building-custom-agents)
+- [Bring Your Own Agent](https://fullsend.sh/docs/guides/user/bring-your-own-agent)
 - [Architecture](https://fullsend.sh/docs/architecture)
 - [CLI Reference](https://fullsend.sh/docs/cli/)

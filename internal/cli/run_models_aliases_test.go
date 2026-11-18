@@ -81,7 +81,8 @@ func TestRunAgent_ModelsAliases_FallbackChainEchoedRemapped(t *testing.T) {
 		"aliased fallback entry is shown remapped, literal id as written")
 }
 
-// An alias that is not remapped keeps the pre-#6882 plan line exactly.
+// An alias that is not remapped shows no models.aliases remap, only the
+// built-in default it resolves to (#8443).
 func TestRunAgent_ModelsAliases_UnrelatedAliasUnchanged(t *testing.T) {
 	usePreScriptStub(t)
 	dir := newSkipHarnessDir(t, "")
@@ -95,6 +96,23 @@ func TestRunAgent_ModelsAliases_UnrelatedAliasUnchanged(t *testing.T) {
 	assert.Contains(t, err.Error(), "creating sandbox")
 	assert.NotContains(t, buf.String(), "opus →", "no remap for an alias without an entry")
 	assert.NotContains(t, buf.String(), "models.aliases")
+	assert.Contains(t, buf.String(), "opus (from --model flag) → claude-opus-5-5 (built-in default)",
+		"plan block shows what the alias resolves to today")
+}
+
+// A retargeted alias shows only the models.aliases remap, not the built-in
+// default it no longer uses.
+func TestRunAgent_ModelsAliases_RemapHidesBuiltinDefault(t *testing.T) {
+	usePreScriptStub(t)
+	dir := newSkipHarnessDir(t, "")
+	writeModelsAliasesConfig(t, dir, "    sonnet: claude-sonnet-5\n")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(&buf), false, runOverrideFlags{model: "sonnet"})
+	require.Error(t, err)
+	assert.NotContains(t, buf.String(), "built-in default")
 }
 
 // A rejected org-shaped config.yaml that carries an explicit deny-all

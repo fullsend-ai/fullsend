@@ -2,12 +2,18 @@ package scaffold
 
 import (
 	"io"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 const (
@@ -96,6 +102,143 @@ func TestGitLabGitignoreExcludesOutput(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "output/")
+	assert.Contains(t, s, "fullsend-artifact/")
+}
+
+// The GitLab job uploads only the prepared copy (ADR 0161): the artifact
+// path is fullsend-artifact/, never output/, and the job script builds it
+// after eval-measure from the event file fullsend run received, before
+// that file is removed.
+func TestGitLabAgentArtifactIsPreparedCopy(t *testing.T) {
+	tmpl := gitlabPerRepoText(t, ".gitlab/ci/fullsend-agent.yml")
+	assert.Contains(t, tmpl, "    paths:\n      - fullsend-artifact/\n")
+	assert.NotContains(t, tmpl, "      - output/\n")
+
+	s := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+	measureIdx := strings.Index(s, `fullsend eval-measure "${MEASURE_ARGS[@]}"`)
+	prepareIdx := strings.Index(s, "fullsend prepare-artifacts")
+	exitIdx := strings.LastIndex(s, `exit "${RUN_STATUS}"`)
+	require.Greater(t, measureIdx, 0)
+	require.Greater(t, prepareIdx, measureIdx, "prepare runs after eval-measure")
+	require.Greater(t, exitIdx, prepareIdx)
+	prepare := s[prepareIdx:exitIdx]
+	assert.Contains(t, prepare, `--output-dir "${CI_PROJECT_DIR}/output"`)
+	assert.Contains(t, prepare, `--artifact-dir "${_FS_ARTIFACT_DIR}"`)
+	assert.Contains(t, prepare, "--fullsend-dir .fullsend")
+	assert.NotContains(t, prepare, "--forge", "the source never falls back to the forge platform")
+	assert.Contains(t, prepare, `${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}`)
+	assert.Contains(t, prepare, `rm -rf -- "${_FS_ARTIFACT_DIR}"`, "a failed resolution leaves no artifact directory")
+	// The EXIT trap removes the event file after prepare; no manual rm.
+	assert.NotContains(t, prepare, `rm -f "${GITLAB_EVENT_FILE}"`)
+	missingIdx := strings.Index(prepare, "if ! command -v fullsend >/dev/null 2>&1; then")
+	probeIdx := strings.Index(prepare, "elif ! fullsend prepare-artifacts --help >/dev/null 2>&1; then")
+	require.Greater(t, missingIdx, 0)
+	require.Greater(t, probeIdx, missingIdx, "a missing binary is told apart before the version probe")
+	assert.Contains(t, prepare, "WARNING: the fullsend CLI is not installed")
+	assert.Contains(t, prepare, "WARNING: the installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded")
+	assert.Contains(t, s, `_FS_ARTIFACT_DIR="${CI_PROJECT_DIR}/fullsend-artifact"`)
+
+	// The stale artifact directory is cleared at the very top, before the
+	// CI_DEBUG_TRACE guard and every other early exit, only for an
+	// absolute CI_PROJECT_DIR, and again before the sandbox is built.
+	guardIdx := strings.Index(s, `case "${CI_DEBUG_TRACE:-}" in`)
+	firstExit := strings.Index(s, "exit 1")
+	topClear := strings.Index(s, `rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"`)
+	require.Greater(t, guardIdx, 0)
+	require.Greater(t, topClear, 0)
+	assert.Less(t, topClear, guardIdx, "the clear runs before the CI_DEBUG_TRACE guard")
+	assert.Less(t, topClear, firstExit, "the clear runs before any early exit")
+	assert.Contains(t, s[:topClear], `case "${CI_PROJECT_DIR:-}" in`+"\n  /*)")
+	// The directory is removed, not recreated: GitLab archives an empty
+	// directory that matches artifacts: paths.
+	assert.NotContains(t, s, `mkdir -p -- "${CI_PROJECT_DIR}/fullsend-artifact"`)
+	assert.NotContains(t, s, `mkdir -p -- "${_FS_ARTIFACT_DIR}"`)
+	assert.Contains(t, s, `if [ "${_FS_ARTIFACT_LEVEL}" = "none" ]; then`+"\n    rm -rf -- \"${_FS_ARTIFACT_DIR}\"")
+
+	// The job template clears it too, before the installer can fail.
+	tmpl = gitlabPerRepoText(t, ".gitlab/ci/fullsend-agent.yml")
+	clearIdx := strings.Index(tmpl, `- rm -rf -- "${CI_PROJECT_DIR:-.}/fullsend-artifact"`)
+	installIdx := strings.Index(tmpl, "install-fullsend-cli.sh\"")
+	require.Greater(t, clearIdx, 0)
+	assert.Less(t, clearIdx, installIdx, "before_script clears the artifact directory before the installer runs")
+
+	runIdx := strings.Index(s, `fullsend run "${STAGE}"`)
+	laterClear := strings.LastIndex(s[:runIdx], `rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"`)
+	assert.Greater(t, laterClear, topClear, "the artifact directory is cleared again before the sandbox is built")
+
+	// Event files and credential temp files go through one EXIT trap.
+	trapIdx := strings.Index(s, "trap '_fs_exit_cleanup' EXIT")
+	assert.Less(t, trapIdx, firstExit, "the cleanup trap is installed before any early exit")
+	assert.Equal(t, 1, strings.Count(s, "' EXIT"), "no second EXIT trap replaces the cleanup trap")
+	for _, file := range []string{"JIRA_EVENT_FILE", "GITLAB_EVENT_FILE"} {
+		assert.Contains(t, s, `_FS_EXIT_CLEANUP+=("${`+file+`}"`, file)
+	}
+}
+
+// A job that exits early still runs the cleanup trap: the event file is
+// removed and the previous job's artifact directory does not survive for upload.
+func TestRunAgentJobScript_EarlyExitClearsArtifactDirAndEventFile(t *testing.T) {
+	root := t.TempDir()
+	stale := filepath.Join(root, "fullsend-artifact", "fs-cod-old", "iteration-1", "output.jsonl")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, []byte("previous job"), 0o644))
+	runnerTemp := t.TempDir()
+	eventFile := filepath.Join(runnerTemp, "fullsend-jira-event.test")
+	require.NoError(t, os.WriteFile(eventFile, []byte("{}"), 0o600))
+
+	// Run the top of the script (through the trap and the clear), register
+	// a file the way the event-file code does, then fail under set -e.
+	s := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+	cut := strings.Index(s, "# Clear the webhook")
+	require.Greater(t, cut, 0)
+	script := filepath.Join(t.TempDir(), "top.sh")
+	require.NoError(t, os.WriteFile(script, []byte(s[:cut]+"_FS_EXIT_CLEANUP+=(\"${EVENT}\")\nfalse\necho unreachable\n"), 0o644))
+
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"`)
+	cmd.Env = []string{
+		"SCRIPT=" + script,
+		"EVENT=" + eventFile,
+		"PATH=" + os.Getenv("PATH"),
+		"CI_PROJECT_DIR=" + root,
+		"RUNNER_TEMP=" + runnerTemp,
+	}
+	out, err := cmd.CombinedOutput()
+	assert.NotContains(t, string(out), "unreachable")
+	require.Error(t, err, "the job fails under set -e: %s", out)
+
+	_, err = os.Stat(filepath.Join(root, "fullsend-artifact"))
+	assert.True(t, os.IsNotExist(err), "the previous job's artifact directory is gone")
+	_, err = os.Stat(eventFile)
+	assert.True(t, os.IsNotExist(err), "the EXIT trap removed the event file")
+}
+
+// The CI_DEBUG_TRACE abort is an early exit too: the previous job's
+// artifact directory must already be gone when it fires.
+func TestRunAgentJobScript_DebugTraceAbortClearsArtifactDir(t *testing.T) {
+	root := t.TempDir()
+	stale := filepath.Join(root, "fullsend-artifact", "old.jsonl")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, []byte("previous job"), 0o644))
+
+	s := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+	cut := strings.Index(s, "# Clear the webhook")
+	require.Greater(t, cut, 0)
+	script := filepath.Join(t.TempDir(), "top.sh")
+	require.NoError(t, os.WriteFile(script, []byte(s[:cut]+"echo unreachable\n"), 0o644))
+
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"`)
+	cmd.Env = []string{
+		"SCRIPT=" + script,
+		"PATH=" + os.Getenv("PATH"),
+		"CI_PROJECT_DIR=" + root,
+		"CI_DEBUG_TRACE=true",
+	}
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "%s", out)
+	assert.Contains(t, string(out), "CI_DEBUG_TRACE enabled")
+	assert.NotContains(t, string(out), "unreachable")
+	_, err = os.Stat(filepath.Join(root, "fullsend-artifact"))
+	assert.True(t, os.IsNotExist(err), "the previous job's artifact directory is gone")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
@@ -242,15 +385,25 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, `PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}`)
 	// Bot identity verification pins .source from the CI_JOB_TOKEN job
 	// record (deny-by-default, not forgeable CI_PIPELINE_SOURCE env var)
-	// and admits only api — parent_pipeline is no longer an allowlist arm.
+	// and admits only api or pipeline (#8438) — parent_pipeline is no
+	// longer an allowlist arm.
 	assert.Contains(t, s, `jq -r '.source // empty'`)
-	assert.Contains(t, s, "FULLSEND_ADMIT_SOURCE=api")
+	assert.Contains(t, s, `FULLSEND_ADMIT_SOURCE="api pipeline"`)
 	assert.NotRegexp(t, `(?m)^\s+parent_pipeline\)\s*$`, s,
 		"agent job must not admit parent_pipeline as an allowlist arm")
 	assert.Contains(t, s, "disjoint allowlist deny")
 	assert.Contains(t, s, "rejecting forged dispatch")
-	// Generic runner image, not agent-specific
-	assert.Contains(t, s, "fullsend-runner:dev")
+	// source=pipeline agent pipelines (#8438) must be created by the ready
+	// trigger-only account from the protected ledger, never by the Poller,
+	// and still carry a verified dispatch HMAC.
+	assert.Contains(t, s, `EXPECTED_CREATOR_ID=$(fullsend_gitlab_trigger_account_id)`)
+	assert.Contains(t, s, "no ready trigger-only account is recorded")
+	assert.Contains(t, s, "the recorded trigger-only account is the Poller identity")
+	assert.Contains(t, s, `if [ "${PIPELINE_SOURCE}" = "api" ] || [ "${PIPELINE_SOURCE}" = "pipeline" ]; then`)
+	// Generic runner image, not agent-specific; its tag is rendered from
+	// fullsend_ref instead of tracking main (#8865).
+	assert.Contains(t, s, "fullsend-runner:__FULLSEND_RUNNER_IMAGE_TAG__")
+	assert.NotContains(t, s, "fullsend-runner:dev")
 	assert.NotContains(t, s, "fullsend-code:latest")
 	// Resource group parameterized by STAGE
 	assert.Contains(t, s, `fullsend-${STAGE}-${RESOURCE_KEY}`)
@@ -437,9 +590,11 @@ func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
 	assert.Contains(t, s, "note_author_id")
 	// Numeric validation on note_author_id before curl URL interpolation
 	assert.Contains(t, s, `*[!0-9]*`)
-	// Human instruction extracted from /fs-fix note body
+	// Human instruction extracted from the canonical normalized comment
+	// body only — never the legacy note_body field (#8954).
 	assert.Contains(t, s, "/fs-fix")
-	assert.Contains(t, s, "note_body")
+	assert.Contains(t, s, "._normalized_event.transition.comment.body")
+	assert.NotContains(t, s, "'.note_body")
 	// Fix iteration counts prior fix-agent commits
 	assert.Contains(t, s, "fullsend-fix")
 	assert.Contains(t, s, "author_name")
@@ -666,16 +821,6 @@ func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
 	assert.Contains(t, s, "yaml.safe_load")
 }
 
-func TestGitLabAgentTemplateRoleEnablement(t *testing.T) {
-	s := gitlabAgentScaffold(t)
-	assert.Contains(t, s, "STAGE_ROLE")
-	assert.Contains(t, s, `code|fix) STAGE_ROLE="coder"`)
-	assert.Contains(t, s, "not in configured roles")
-	// Backward compat: "fullsend" role implies retro + prioritize
-	assert.Contains(t, s, `"fullsend"`)
-	assert.Contains(t, s, "retro|prioritize")
-}
-
 func TestGitLabAgentTemplateForkProtection(t *testing.T) {
 	s := gitlabAgentScaffold(t)
 	assert.Contains(t, s, "Fork MR detected")
@@ -702,12 +847,16 @@ func TestGitLabAgentTemplateAuthorizationGate(t *testing.T) {
 	assert.Contains(t, s, "Developer access")
 	// Fail-closed on API failure
 	assert.Contains(t, s, "fail-closed")
-	// ACTOR_ID fallback to MR_AUTHOR_ID for backward compatibility
+	// MR_AUTHOR_ID fallback is limited to opened/synchronized MRs, where
+	// the MR author is also the event actor.
 	assert.Contains(t, s, "ACTOR_ID")
 	assert.Contains(t, s, "MR_AUTHOR_ID")
+	assert.Contains(t, s, "opened|synchronized)")
 	// Distinct warning when no actor identity is available
 	assert.Contains(t, s, "No actor identity available")
-	// Read-only stages exempt from Developer-access gate
+	// Prioritize is the only stage exempt from this gate; retro requires
+	// Developer access like other mutation-capable stages.
+	assert.Contains(t, s, `elif [ "${STAGE}" != "prioritize" ]; then`)
 	assert.Contains(t, s, `"retro"`)
 	assert.Contains(t, s, `"prioritize"`)
 }
@@ -1022,6 +1171,81 @@ func TestResolveFullsendVersion(t *testing.T) {
 	assert.Equal(t, "abc123", ResolveFullsendVersion("abc123", ""))
 }
 
+func TestResolveRunnerImageTag(t *testing.T) {
+	tests := []struct {
+		name, ref, tag, want string
+	}{
+		{"release SHA with tag", "abc123def", "v0.42.0", "0.42.0"},
+		{"release tag only", "", "v0.42.0", "0.42.0"},
+		{"release tag as ref", "v0.42.0", "", "0.42.0"},
+		{"prerelease", "abc123def", "v0.42.0-rc.1", "0.42.0-rc.1"},
+		{"no ref tracks releases", "", "", RunnerImageLatestTag},
+		{"untagged SHA", "abc123def", "", RunnerImageDevTag},
+		{"main branch", "main", "", RunnerImageDevTag},
+		{"incomplete version", "v0.42", "", RunnerImageDevTag},
+		{"build metadata", "v0.42.0+meta", "", RunnerImageDevTag},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ResolveRunnerImageTag(tt.ref, tt.tag))
+		})
+	}
+}
+
+func TestIsRunnerImageTag(t *testing.T) {
+	for _, tag := range []string{"0.42.0", "1.2.3-rc.1", "latest", "dev"} {
+		assert.True(t, IsRunnerImageTag(tag), tag)
+	}
+	for _, tag := range []string{"", "v0.42.0", "0.42", "abc1234", "dev-abc1234", "0.42.0+meta", "latest\n"} {
+		assert.False(t, IsRunnerImageTag(tag), tag)
+	}
+}
+
+func TestRenderRunnerImageTag_RewritesPlaceholderAndLegacyDev(t *testing.T) {
+	in := "a: " + RunnerImageRepository + ":__FULLSEND_RUNNER_IMAGE_TAG__\nb: " + RunnerImageRepository + ":dev\nc: other/image:dev\n"
+	got := RenderRunnerImageTag(in, "0.42.0")
+	assert.Equal(t, "a: "+RunnerImageRepository+":0.42.0\nb: "+RunnerImageRepository+":0.42.0\nc: other/image:dev\n", got)
+}
+
+// gitlabRunnerImageTemplates are the GitLab CI templates whose jobs run in
+// the fullsend-runner image.
+var gitlabRunnerImageTemplates = []string{
+	".gitlab/ci/fullsend-agent.yml",
+	".gitlab/ci/fullsend-dispatcher.yml",
+	".gitlab/ci/fullsend-poll.yml",
+}
+
+func TestCollectGitLabPerRepoInstallFiles_RunnerImageFollowsRef(t *testing.T) {
+	tests := []struct {
+		name, ref, tag, wantTag string
+	}{
+		{"release", "abc123def", "v0.42.0", "0.42.0"},
+		{"no ref", "", "", "latest"},
+		{"main opt-in", "main", "", "dev"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files, err := CollectGitLabPerRepoInstallFiles(nil, nil, tt.ref, tt.tag)
+			require.NoError(t, err)
+			byPath := map[string]string{}
+			for _, f := range files {
+				s := string(f.Content)
+				assert.NotContains(t, s, "__FULLSEND_RUNNER_IMAGE_TAG__",
+					"%s should have the runner image tag rendered", f.Path)
+				byPath[f.Path] = s
+			}
+			for _, path := range gitlabRunnerImageTemplates {
+				s, ok := byPath[path]
+				require.True(t, ok, "%s not collected", path)
+				assert.Contains(t, s, "name: "+RunnerImageRepository+":"+tt.wantTag+"\n", path)
+				if tt.wantTag != "dev" {
+					assert.NotContains(t, s, RunnerImageRepository+":dev", path)
+				}
+			}
+		})
+	}
+}
+
 func TestCollectGitLabPerRepoInstallFiles_VersionPlaceholderReplaced(t *testing.T) {
 	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "abc123def", "v0.42.0")
 	require.NoError(t, err)
@@ -1173,6 +1397,65 @@ func TestGitLabGeneratedCIYAMLRemainsValid(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
+}
+
+// gitlabCINonJobKeys are the top-level keys of a GitLab CI file that do not
+// define a job: the spec: header of a file with inputs, the global keywords
+// and the deprecated top-level job defaults. internal/repos keeps the same
+// keywords as nonJobTopLevelKeys. Any other key that does not start with "."
+// (a hidden job) is a job.
+var gitlabCINonJobKeys = map[string]bool{
+	"spec": true, "default": true, "include": true, "stages": true,
+	"variables": true, "workflow": true, "image": true, "services": true,
+	"cache": true, "before_script": true, "after_script": true,
+}
+
+// TestGitLabJobsUnsetTraceSigningKeyFirst checks that every job in the GitLab
+// CI templates clears FULLSEND_TRACE_SIGNING_KEY on the first line of its
+// before_script. A protected, wildcard-scoped variable reaches every job on a
+// protected ref, and before_script sources install-fullsend-cli.sh (curl, tar,
+// possibly go build) before the job script starts, so an unset in a job
+// script comes too late. An after_script runs in a new shell that receives the
+// variable again, so it must clear it first too. The jobs are read from the
+// YAML rather than a fixed list, so a new job fails here until it complies.
+func TestGitLabJobsUnsetTraceSigningKeyFirst(t *testing.T) {
+	const unset = "unset " + forge.SecretTraceSigningKey
+	var jobs []string
+	err := WalkGitLabPerRepo(func(p string, content []byte) error {
+		if ciFile, _ := path.Match(".gitlab/ci/*.yml", p); !ciFile && p != ".gitlab-ci.yml" {
+			return nil
+		}
+		dec := yaml.NewDecoder(strings.NewReader(string(content)))
+		for {
+			var doc map[string]any
+			err := dec.Decode(&doc)
+			if err == io.EOF {
+				return nil
+			}
+			require.NoError(t, err, "%s must be valid YAML", p)
+			for name, body := range doc {
+				if gitlabCINonJobKeys[name] || strings.HasPrefix(name, ".") {
+					continue
+				}
+				jobs = append(jobs, p+": "+name)
+				job, _ := body.(map[string]any)
+				for _, key := range []string{"before_script", "after_script"} {
+					value, present := job[key]
+					if !present && key == "after_script" {
+						continue
+					}
+					lines, _ := value.([]any)
+					if assert.NotEmpty(t, lines, "%s: job %q needs a %s list", p, name, key) {
+						assert.Equal(t, unset, lines[0], "%s: job %q must clear %s on the first %s line", p, name, forge.SecretTraceSigningKey, key)
+					}
+				}
+			}
+		}
+	})
+	require.NoError(t, err)
+	// The poll, dispatcher and agent jobs exist today; the floor keeps a
+	// broken file filter from passing with nothing scanned.
+	require.GreaterOrEqual(t, len(jobs), 3, "found only these GitLab jobs: %v", jobs)
 }
 
 func TestGitLabJobsSourceExtractedScripts(t *testing.T) {

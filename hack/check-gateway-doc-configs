@@ -58,12 +58,13 @@ IMAGE = "ghcr.io/agentgateway/agentgateway"
 # `skopeo inspect --raw docker://ghcr.io/agentgateway/agentgateway:<v> | shasum -a 256`.
 IMAGE_DIGESTS = {
     "v1.6.0": "sha256:9d3e6044ddcdc0878b1787f77bd401252b95e22684203fb5e874c4c42d2ed90c",
+    "v1.7.0": "sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b",
 }
 
 MARKER_RE = re.compile(r"^<!--\s*gateway-doc-check:\s*(.+?)\s*-->\s*$")
 FENCE_RE = re.compile(r"^(```+|~~~+)\s*([^\s`]*)")
 # Every agentgateway version the page names: image tags, the source tree it
-# links to, and prose such as "agentgateway v1.6.0". They must all agree.
+# links to, and prose such as "agentgateway v1.7.0". They must all agree.
 VERSION_RE = re.compile(
     r"agentgateway(?::|/blob/|\s+)(v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)"
 )
@@ -165,7 +166,7 @@ def parse_blocks(page_text: str) -> list[Block]:
 def page_version(page_text: str) -> str:
     versions = sorted(set(VERSION_RE.findall(page_text)))
     if not versions:
-        raise CheckError("the page names no agentgateway version (such as agentgateway:v1.6.0)")
+        raise CheckError("the page names no agentgateway version (such as agentgateway:v1.7.0)")
     if len(versions) > 1:
         raise CheckError(
             f"the page names more than one agentgateway version: {', '.join(versions)}"

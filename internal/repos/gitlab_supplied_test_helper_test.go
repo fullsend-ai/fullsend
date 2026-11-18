@@ -13,7 +13,7 @@ import (
 
 // suppliedCoderEnrolledState records an enrolled, idle and distributed
 // supplied coder credential whose owner and token are known.
-const suppliedCoderEnrolledState = `{"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777]}}}`
+const suppliedCoderEnrolledState = `{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777]}}}`
 
 // describedCoderIdentity is the identity of a supplied Coder credential that
 // satisfies the role's credential policy for tests that run at a fixed clock in

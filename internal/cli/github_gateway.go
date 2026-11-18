@@ -133,7 +133,7 @@ func validateEffectiveGateway(cfg githubSetupConfig, effective config.PerRepoCon
 	// The inherited layer is not validated when it is parsed, so check the
 	// composed block as a whole: an inherited http url or bad model entry
 	// must not pass because only the overlay's own fields were checked.
-	if err := g.Validate(); err != nil {
+	if err := g.ValidateEffective(); err != nil {
 		return fmt.Errorf("composed config: %w", err)
 	}
 	return nil

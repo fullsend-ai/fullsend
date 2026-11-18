@@ -454,26 +454,14 @@ func TestLockOneAgent_DualExtensionWarning(t *testing.T) {
 }
 
 func TestLockAll_CorruptLockFile(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	garbage := []byte("{{corrupt yaml")
+	dir, lockPath, before := setupLockedRemoteHarness(t, garbage)
 
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\nrole: test\n"),
-		0o644,
-	))
-
-	// Write a corrupt lock file.
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "lock.yaml"),
-		[]byte("{{corrupt yaml"),
-		0o644,
-	))
-
-	printer := ui.New(os.Stdout)
-	err := runLockAll(context.Background(), dir, "", false, resolveFlags{}, printer)
-	// Should not error — corrupt lock file is handled gracefully (reset to nil).
-	require.NoError(t, err)
+	err := runLockAll(context.Background(), dir, "", false, resolveFlags{}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be parsed")
+	assert.Contains(t, err.Error(), "Delete")
+	assertLockUnchanged(t, lockPath, before)
 }
 
 func TestLockAll_CobraDispatch(t *testing.T) {
@@ -572,7 +560,7 @@ func TestLockOneAgent_StatError(t *testing.T) {
 	assert.Contains(t, err.Error(), "checking harness file")
 }
 
-func TestRunLock_SaveError(t *testing.T) {
+func TestRunLock_LockPathIsDirectoryAborts(t *testing.T) {
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -597,7 +585,8 @@ allowed_remote_resources:
 	orgConfig := fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
 
-	// Create lock.yaml as a directory so Save fails.
+	// A directory at lock.yaml cannot be parsed as a lock file; abort
+	// rather than trying to write through it.
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "lock.yaml"), 0o755))
 
 	fetch.DefaultPolicy = policy
@@ -606,10 +595,13 @@ allowed_remote_resources:
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "saving lock file")
+	assert.Contains(t, err.Error(), "could not read lock file")
+	info, statErr := os.Stat(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir(), "directory at lock.yaml must be left in place")
 }
 
-func TestLockAll_SaveError(t *testing.T) {
+func TestLockAll_LockPathIsDirectoryAborts(t *testing.T) {
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -634,7 +626,6 @@ allowed_remote_resources:
 	orgConfig := fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
 
-	// Create lock.yaml as a directory so Save fails.
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "lock.yaml"), 0o755))
 
 	fetch.DefaultPolicy = policy
@@ -643,7 +634,10 @@ allowed_remote_resources:
 	printer := ui.New(os.Stdout)
 	err := runLockAll(context.Background(), dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "saving lock file")
+	assert.Contains(t, err.Error(), "could not read lock file")
+	info, statErr := os.Stat(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir(), "directory at lock.yaml must be left in place")
 }
 
 func TestLockAll_WithUpdateFlag(t *testing.T) {

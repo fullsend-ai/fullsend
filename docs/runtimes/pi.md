@@ -13,12 +13,15 @@ is what changes once you are on it.
 ## Models and providers
 
 A model on pi is `provider/id`. Aliases and bare ids still work — `opus`/`sonnet`/`haiku`/`fable`
-resolve through fullsend's pinned alias table, and a bare id gets the provider from
+resolve through fullsend's pinned alias table (`opus` → `claude-opus-5-5`, `sonnet` →
+`claude-sonnet-5-5`, `haiku` → `claude-haiku-5-5`, each falling back to the previous default when
+your project does not serve it; `fable` → `claude-fable-5-1`, with no built-in fallback; see
+[Per-repo alias overrides](#per-repo-alias-overrides)), and a bare id gets the provider from
 `FULLSEND_PI_PROVIDER` (default `anthropic-vertex`).
 
 | Model | Spec | Provider |
 |---|---|---|
-| Claude | `anthropic-vertex/claude-opus-4-6` | vendored extension |
+| Claude | `anthropic-vertex/claude-opus-5-5` | vendored extension |
 | Gemini | `google-vertex/gemini-3.8-flash` | pi built-in |
 | Grok | `xai-vertex/xai/grok-4.6` | vendored extension |
 | GPT | `openai/gpt-5.6-luna` | pi built-in |
@@ -78,8 +81,19 @@ Harness `model:` and `agents:` entry `model:` values accept the `provider/id` fo
 
 ### Per-repo alias overrides
 
-fullsend pins what each alias means. Vertex enables models per project, so your project may be
-able to run a newer one than the pin — point the alias at it in `.fullsend/config.yaml`:
+fullsend pins what each alias means, and gives `opus`, `sonnet` and `haiku` a built-in fallback
+chain to the previous default:
+
+| Alias | Default | Built-in fallback chain |
+|---|---|---|
+| `opus` | `claude-opus-5-5` | `claude-opus-4-6` |
+| `sonnet` | `claude-sonnet-5-5` | `claude-sonnet-4-6` |
+| `haiku` | `claude-haiku-5-5` | `claude-haiku-4-5` |
+| `fable` | `claude-fable-5-1` | none |
+
+Vertex enables models per project, so a project that has not enabled the 5.5 models runs on the
+fallback without any config change. To run a different model, point the alias at it in
+`.fullsend/config.yaml`:
 
 ```yaml
 models:
@@ -101,13 +115,22 @@ models:
 
 **If it goes wrong.** A key or value the block does not accept stops `fullsend run` before the
 sandbox is created, naming the key (`models.aliases: unknown alias key "grok"`). A model your
-project cannot serve is not caught here: aliased models (opus, sonnet, etc.) fall back through
-`FULLSEND_FALLBACK_MODELS` when Vertex answers that it does not serve the model: the 404
-`Publisher model ... not found` or the 403 `... data sharing to be enabled for publisher ...`. Any
-other error, including a 403 `PERMISSION_DENIED`, fails the run. Pinned ids fail at the first
-model call. A fallback
-must resolve to the same pi provider as the primary model; others are ignored with a warning.
-Sub-agent children get no fallback: each is launched with the one model its alias maps to.
+project cannot serve is not caught here; at run time:
+
+- **Alias on its default:** falls back along the built-in chain above when Vertex answers that it
+  does not serve the model. `FULLSEND_FALLBACK_MODELS`, when set, replaces the chain.
+- **Retargeted alias, pinned id or `provider/id`:** no fallback (unless `FULLSEND_FALLBACK_MODELS`
+  is set for a retargeted alias); the run fails at the first model call.
+- **Any other error** (auth, quota, `PERMISSION_DENIED`): fails the run.
+- **A fallback on another pi provider** is ignored with a warning.
+- **What you see:** the plan block lists the chain, the run prints `model claude-opus-5-5 is not
+  available (not served in this project); falling back to claude-opus-4-6`, and `metrics.json`
+  records `fallback_from` with `fallback_reasons: ["not_served"]`.
+
+**Sub-agent children** that ask for an alias (directly, through a persona, or through
+`subagents.default`) fall back along the same built-in chain; the `[fullsend-agent]` log line names
+both models. A child that pins an id or inherits the parent's live model does not.
+`FULLSEND_FALLBACK_MODELS` applies to the parent run only.
 
 ### Each provider has its own GCP project
 
@@ -160,7 +183,7 @@ cache-eligible Claude coder. One 98-turn `code` run on `xai-vertex/xai/grok-4.6`
 | Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce`, `FULLSEND_PI_SUBAGENT_THINKING` |
 | Plugins | The pi-format entries of the harness's `plugins:` list, uploaded and loaded with `-e` after a tree-hash preflight ([Plugins](#plugins-pi-extensions)) |
 | Sub-agents | `Agent` (alias `Task`) via a fullsend extension: children are `pi` processes with the same hooks, providers and tool allowlist ([Sub-agents](#sub-agents)) |
-| Fallback chains | Top-level run only: alias requests tried in order when Vertex does not serve the model (404/403, two messages only), same provider only; pinned ids and sub-agent children fail loudly |
+| Fallback chains | Alias requests tried in order when Vertex does not serve the model (404/403, two messages only): `FULLSEND_FALLBACK_MODELS`, else the alias's built-in chain; same provider only; sub-agent children asking for an alias use its built-in chain; pinned ids and `models.aliases` retargets fail loudly |
 | Not supported | Claude-format plugins (named and skipped), Bedrock/Azure providers, [prompt caching for Grok on Vertex](#prompt-caching) |
 
 ## Running it locally
@@ -184,7 +207,7 @@ print bare — and `metrics.json` records the same (`runtime`, `runtime_source`,
 `override_source`):
 
 ```
-    Model: opus
+    Model: opus → claude-opus-5-5 (built-in default)
     Effort: high
     Runtime: pi (from --runtime flag)
 ...
@@ -212,6 +235,25 @@ What a local pi run needs, beyond the guide:
 - **A sandbox image that includes pi** — `ghcr.io/fullsend-ai/fullsend-sandbox` v0.37.0+ (the image
   bakes `PI_VERSION`). A stale image fails preflight with `pi preflight: pi --version exited 127`;
   `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
+- **`python3` in the sandbox image** — the launch reads `.env` as data with a pinned `python3`
+  (`-I -S`), taken from a `PATH` directory the sandbox user neither owns nor can write; without
+  one it fails with `python3 not found in a PATH directory the agent cannot write` (exit 127).
+  It also needs `readlink` there as a regular file, not a symlink; without one the launch also
+  prints `no readlink that is a regular file in a PATH directory the agent cannot write`. The
+  fullsend sandbox image ships both.
+- **`pi` and `node` in directories the agent cannot write** — the launch pins
+  the first `pi` in a `PATH` directory the sandbox user neither owns nor can
+  write, judged by the file it resolves to and every directory above that
+  file. pi's CLI is a `#!/usr/bin/env node` script, so the launch also pins
+  `node` by the same rule and starts pi with it. It does not let `env` look
+  `node` up on the `PATH` left after `.env` is read. A `pi` or `node` found
+  only through an agent-writable directory, or a symlink into one, fails the
+  launch with `pi not found in a PATH directory the agent cannot write` or
+  `node not found in a PATH directory the agent cannot write` (exit 127). The
+  Agent tool starts its sub-agents with the same pinned `pi` and `node`. The
+  first line must be exactly `#!/usr/bin/env node`: any other line that starts
+  pi through `env` fails the launch with
+  `starts through env with a first line other than '#!/usr/bin/env node'`.
 - **Platforms** — verified end to end on macOS Apple Silicon (podman machine, Homebrew `openshell`)
   and Fedora with rootless Podman; the guide's platform notes apply unchanged.
 - **`review` and `retro`** run their real sub-agent roster through the `Agent` tool; the children
@@ -230,6 +272,13 @@ What a local pi run needs, beyond the guide:
 - **No permission system.** pi's posture is "run in a container". The sandbox, its egress policy and
   credential placeholders are the boundary ([ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md));
   fullsend's hook adapter is defense-in-depth on top.
+- **Sandbox hook settings come from the harness, not `.env`.** With sandbox
+  hooks on, `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, `FULLSEND_EGRESS_ALLOWLIST`,
+  `FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are taken from the
+  harness configuration at Bootstrap, before the first iteration. The launch
+  sets them again after it reads `.env`, and unsets any of them the harness did
+  not set. A value in `.env`, including one the agent wrote there, cannot change
+  them. The hook adapter and every sub-agent inherit those values.
 - **Reads `AGENTS.md` natively** — no `CLAUDE.md` bridge is injected.
 - **The agent body is appended** to pi's own system prompt rather than replacing it, so pi's default
   tool guidance stays. Claude Code's `--agent` replaces it.
@@ -241,7 +290,7 @@ What a local pi run needs, beyond the guide:
   pinned exactly and the stream-parser fixtures are tied to the pinned version.
 - **Malformed `edit` calls are repaired.** Some models send the `edit` tool's `edits` as a JSON
   string holding raw newlines, or as an array of JSON strings; the pinned pi rejects both with
-  `edits.0: must be object` and the model has to redo the call
+  `edits.0: expected object, got string` and the model has to redo the call
   ([earendil-works/pi#8521](https://github.com/earendil-works/pi/issues/8521),
   [#8962](https://github.com/earendil-works/pi/issues/8962)). When the agent has `edit`, the runner
   loads `fullsend-edit-repair.js`, which parses the argument before pi validates it and logs each
@@ -339,6 +388,67 @@ under it — that is what a declared `tools:` means. An agent whose `tools:` map
 provides gets `--no-builtin-tools`, and its extensions still load: `-e` is independent of `--tools`.
 An agent without `tools:` gets pi's default set plus whatever its extensions register.
 
+MCP tool names such as `mcp__docs__search` and patterns such as
+`mcp__docs__*` pass through the pi tool mapping. A bare server selector
+`mcp__docs` expands to `mcp__docs__*` in both parent and persona lists; exact
+tool names and existing patterns are unchanged. Selectors must start with
+`mcp__` and contain only ASCII letters, digits, underscores, hyphens and `*`,
+with a nonempty suffix. Invalid selectors (including commas and whitespace)
+are reported as unsupported rather than passed to pi's comma-delimited CLI.
+Names must match what the declared harness extension registers. Fullsend does
+not normalize server or tool names: Claude-style hyphenated names are preserved.
+Pi's built-in MCP naming rules do not apply automatically, because fullsend
+uses `--no-extensions`. Definitions shared with Claude Code need matching
+registered names on both runtimes; underscore-only names can avoid differences
+between extensions that normalize hyphens and those that preserve them.
+In parent and persona tool lists, Claude's `ListMcpResourcesTool` maps to
+`list_mcp_resources` and `list_mcp_resource_templates`; `ReadMcpResourceTool` maps to
+`read_mcp_resource`. Use the Claude names for definitions shared with Claude
+Code. The hook adapter translates both list operations back to
+`ListMcpResourcesTool` and reads back to `ReadMcpResourceTool`, so Claude-named
+hook matchers and `FULLSEND_TOOL_ALLOWLIST` entries apply to resource calls.
+Pi-native resource names and scoped patterns such as `list_mcp_*` or
+`read_mcp_*` also pass through, but those spellings are pi-only.
+Sub-agents load the same
+declared extensions, with their directory hashes checked before each launch.
+A persona's tools are intersected with the parent's permissions using the
+parent's callable permissions before each child launch: active names from
+`pi.getActiveTools()`, plus registered tools whose `pi.getAllTools()` exposure
+is `codemode` or `deferred`. Pi permits nested calls to those tools even when
+inactive. Inactive direct tools (including `defaultActive: false` direct tools)
+and other inactive registrations are not added. Explicit parent selections
+and persona patterns still restrict this union; registration alone is not a grant.
+The child registration allowlist retains the callable union, but a child-only
+loadout guard restores the inherited active subset before the first model
+request and again at agent/turn boundaries after MCP startup handlers. Inherited
+names not yet registered may remain pending; any active name outside the
+inherited subset terminates the child, as do parse, validation or setter
+failures. A thrown extension error alone would let pi continue. Inactive
+codemode/deferred tools remain nested-call permissions rather than becoming
+directly available to the model. The guard script is digest-checked before
+dispatch. An empty child allowlist hides both built-in and extension tools. Explicit
+nonempty parent and child selections without `mcp__` entries also get
+`--exclude-tools`: `mcp__*` plus each unselected MCP resource tool
+(`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`).
+Selected resource names/patterns remain available. Pi otherwise retains these
+registrations, which can leave tools callable through codemode or deferred
+exposure even when inactive. Parents without `tools:` keep their defaults.
+Parents whose tools map to an empty list still use `--no-builtin-tools`, but
+cannot dispatch children: they have no `Agent` or `Task` tool.
+Direct-exposure MCP tools can reach the model through these tool lists.
+`codemode` and `deferred` tools need a separately reachable executor for nested
+calls. Fullsend uses `--no-extensions`, so pi's built-in MCP, codemode, and
+search extensions do not load automatically. The tool mapper does not accept
+`codemode` or `tool_search` in explicit frontmatter. The nested-call fixtures
+exercise pi's execution API; they are not examples of supported frontmatter.
+
+Parent and child resource exclusions originate from `mcp-resource-tools.json`.
+Bootstrap copies the names into the integrity-checked manifest; the child
+dispatcher never rereads a writable resource-list file. A parity
+test reads the complete upstream resource category and fails on drift.
+CI runs the offline real-pi regressions against `PI_VERSION` from
+`images/sandbox/Containerfile`, including nested execution and selected resources.
+
 The hook adapter treats an extension tool like any other — every PreToolUse and PostToolUse hook
 runs on it, with no bypass. If your org enables the optional `tool_allowlist_pretool.py` hook, list
 the extension's tool names in `FULLSEND_TOOL_ALLOWLIST` the same way `mcp__*` names are listed.
@@ -393,13 +503,14 @@ For a run that reaches all three Vertex providers:
 | `model` | The child runs on |
 |---|---|
 | `sonnet` (also `opus`, `haiku`) | Claude on Vertex, whatever provider the parent runs on |
-| `claude-sonnet-4-6` | the same — a bare Claude id resolves through that alias table, and a persona-style `@default` suffix is dropped |
+| `claude-sonnet-5-5`, `claude-sonnet-4-6` | the same — a bare Claude id resolves through the alias table or, for a previous default, the alias's built-in fallback chain; a persona-style `@default` suffix is dropped |
 | `google-vertex/gemini-3.8-flash` | Gemini, on pi's built-in provider |
 | `xai/grok-4.6` | Grok on Vertex — normalized to `xai-vertex/xai/grok-4.6`, as the runner does for the parent |
 
 Anything else is **rejected, with the accepted forms listed in the error**, so the orchestrator can
 correct itself instead of losing the dispatch. The accepted set is closed — the run's model table,
-the parent's own spec, and the ids registered for a provider that has no table entry — rather than a
+the built-in fallback chains of the aliases the repo does not retarget, the parent's own spec, and
+the ids registered for a provider that has no table entry — rather than a
 provider-prefix check, so an id the model invented (`google-vertex/gemini-9`,
 `anthropic-vertex/claude-sonnet-4-20250514`) is refused even under a provider the run can reach. A
 trailing `:<thinking level>` is dropped rather than passed through.
@@ -706,19 +817,31 @@ agent's system prompt says so, so a skill that asks for "dispatch these in paral
 
 ### What a child inherits, and what it does not
 
+A missing `toolMode` keeps explicit-list tool selection, not general compatibility
+with older manifests. Missing or malformed `mcpResourceTools` returns a structured
+`rejected` result before launch; the dispatcher does not infer resource permissions.
+
 A child starts with the parent's posture — `--no-approve`, `--no-extensions` with an explicit `-e`
 list, no prompt templates or themes, its own session dir, and a `--tools` allowlist
-(`--no-builtin-tools` when that allowlist is empty). It inherits:
+(`--tools ''` when that allowlist is empty, disabling extension tools too). It inherits:
 
 - **The sandbox hooks.** Its `-e` list carries the vendored provider extensions and the hook adapter,
   so PreToolUse/PostToolUse hooks and the Bash allowlist apply inside sub-agents too — as they do on
   Claude Code, where the same hooks run on `Agent` calls.
 - **The parent's tool set**, minus `Agent`/`Task`: a child cannot dispatch children of its own.
+  Each launch starts from the parent's active tools plus registered tools with
+  `codemode`/`deferred` exposure, which pi permits in nested calls even when
+  inactive. Other inactive registrations stay unavailable. Omitted parent
+  `tools:` retains these callable permissions;
+  explicit parent lists restrict them further. Persona patterns intersect
+  concrete names; Explore remains limited to read-only built-ins.
+- **Harness pi plugins.** Children load the same host-vetted declared extensions and arguments.
+  Before each launch (including retries), the dispatcher asynchronously re-hashes their trees and
+  refuses changed or unverifiable content. This detects drift, not concurrent tampering: a same-user
+  writer can still change a path between verification and the child's load.
 
 It does not inherit:
 
-- **Harness pi plugins.** A child's `-e` list is fixed at bootstrap, so a tool one of your
-  declared pi extensions (the pi-format `plugins:` entries) registers is not available inside a sub-agent.
 - **The parent's system prompt.** Children get a short sub-agent role note instead of the
   orchestrator persona, whose "make several `Agent` calls in one message" advice a child cannot act
   on.
@@ -790,8 +913,10 @@ that project's Model Garden, or the provider resolved a different project than y
 
 **`[pi-anthropic-vertex] disabled: set GOOGLE_CLOUD_PROJECT ...`.** The sandbox environment comes
 from the harness (`host_files`, `env.sandbox`), not from `--env-file`, which only reaches the runner
-process (ADR 0055). Files sourced from `.env.d/` need `export` on each line. The fleet harnesses
-already wire this; a custom harness must too.
+process (ADR 0055). Files read from `.env.d/` need `export` on each line. The fleet harnesses
+already wire this; a custom harness must too. What the runner itself injects — pi's
+runtime-specific exports included, `INFERENCE_GATEWAY_*` on gateway runs — and the keys it reserves from harness override are published
+in the generated [sandbox environment contract](../normative/sandbox-env/v1/README.md).
 
 **The run used Claude instead of pi.** The runtime falls back to `claude` when neither the config's
 `runtime:` (repo-wide or on the agent's `agents:` entry) nor `--runtime`/`FULLSEND_RUNTIME` selects

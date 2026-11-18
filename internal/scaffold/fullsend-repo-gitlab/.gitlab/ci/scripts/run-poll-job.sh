@@ -20,12 +20,22 @@ case "${CI_DEBUG_TRACE:-}" in
     ;;
 esac
 
-# Clear the webhook fast-path credentials. GitLab injects the protected
-# FULLSEND_TRIGGER_TOKEN (a bearer that starts default-branch pipelines)
-# and FULLSEND_WEBHOOK_SECRET into every protected-branch job, and no
-# poller step needs either: they exist only for the webhook and its
-# provisioning. Unset them before any later code can read them.
-unset FULLSEND_TRIGGER_TOKEN FULLSEND_WEBHOOK_SECRET
+# Clear the webhook fast-path credentials. GitLab injects
+# FULLSEND_TRIGGER_TOKEN, FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN, and
+# FULLSEND_WEBHOOK_SECRET into every protected-branch job. Both trigger tokens
+# can start pipelines; the poller needs none of these values. Unset them
+# before any later code can read them.
+unset FULLSEND_TRIGGER_TOKEN FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN FULLSEND_WEBHOOK_SECRET
+
+# Clear the Jira credentials. `repos install` writes FULLSEND_JIRA_TOKEN and
+# FULLSEND_JIRA_EMAIL, or FULLSEND_JIRA_CLIENT_ID and
+# FULLSEND_JIRA_CLIENT_SECRET, as project-wide variables, so GitLab injects
+# them into every protected-branch job. Only the Jira poller and the agent jobs consume
+# them; the slash/events poller needs neither value. The Jira poll mode is
+# selected by the job rules from the "fullsend jira poll" schedule identity.
+if [ "${FULLSEND_POLL_MODE:-events}" != "jira" ]; then
+  unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
+fi
 
 # Pin job/pipeline/project identity to the CI_JOB_TOKEN job record
 # and admit only source=schedule. Disjoint from the agent (api) and
@@ -54,6 +64,13 @@ FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 FULLSEND_JOB_KIND=poller
 . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"
 
+# Export the registered Analyst's numeric user ID while its credential is
+# still present, so `fullsend poll` can retain the Analyst's
+# changes-requested markers for the fix stage (#8807). Only the ID
+# outlives this step. See fullsend_resolve_gitlab_analyst_user_id in
+# pin-ci-job-identity.sh.
+fullsend_resolve_gitlab_analyst_user_id
+
 # Blank sibling role secrets for the rest of the poller job's
 # lifetime. GitLab injects every registered role secret
 # (FULLSEND_GITLAB_ANALYST_TOKEN, FULLSEND_GITLAB_CODER_TOKEN, any
@@ -79,11 +96,17 @@ for _fs_sibling in $(compgen -v | grep -E '^FULLSEND_(GITLAB_(ANALYST|CODER|POLL
 done
 unset _fs_sibling
 
+# Select the agent dispatch route (#8438): the CI_JOB_TOKEN child-pipeline
+# route when this pipeline was created by the ready trigger-only account,
+# otherwise the Poller-credential pipelines API route. See
+# fullsend_select_gitlab_dispatch_route in pin-ci-job-identity.sh.
+fullsend_select_gitlab_dispatch_route
+
 # Validate FULLSEND_POLL_MODE before use in URLs and commands.
 case "${FULLSEND_POLL_MODE:-events}" in
-  slash|events) ;;
+  slash|events|jira) ;;
   *)
-    echo "ERROR: FULLSEND_POLL_MODE must be 'slash' or 'events', got '${FULLSEND_POLL_MODE:-}'" >&2
+    echo "ERROR: FULLSEND_POLL_MODE must be 'slash', 'events' or 'jira', got '${FULLSEND_POLL_MODE:-}'" >&2
     exit 1
     ;;
 esac
@@ -92,6 +115,7 @@ esac
 # cancelled/deleted pipelines are preempted by new jobs.
 # slash mode: newest_first (latest command wins)
 # events mode: oldest_first (complete long-running discovery)
+# jira mode: newest_first (each cycle resumes from Jira checkpoints)
 # Best-effort: failures don't block the job. Routed through
 # fullsend_gate_curl (not plain curl) so a trigger-supplied
 # HTTP_PROXY/HTTPS_PROXY cannot intercept this PAT-bearing call. Uses
@@ -123,9 +147,22 @@ fullsend_gate_curl \
 # pre-hardening) ref while this poller job itself stays correctly
 # pinned. Export the pinned ref so the CLI picks it up instead.
 export CI_COMMIT_REF_NAME="${FULLSEND_PINNED_REF}"
-fullsend poll \
-  --forge gitlab \
-  --project "${FULLSEND_PINNED_PROJECT_PATH}" \
-  --gitlab-url "${FULLSEND_PINNED_GITLAB_URL}" \
-  --fullsend-dir .fullsend \
-  --mode "${FULLSEND_POLL_MODE:-events}"
+if [ "${FULLSEND_POLL_MODE:-events}" = "jira" ]; then
+  # Jira poll (#9108): the Jira site, project and query come only from
+  # tracker.jira in .fullsend/config.yaml; the credentials from
+  # FULLSEND_JIRA_TOKEN and the optional FULLSEND_JIRA_EMAIL, or from a
+  # service account's FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET.
+  fullsend poll \
+    --input-driver jira-poll \
+    --target-forge gitlab \
+    --project "${FULLSEND_PINNED_PROJECT_PATH}" \
+    --gitlab-url "${FULLSEND_PINNED_GITLAB_URL}" \
+    --fullsend-dir .fullsend
+else
+  fullsend poll \
+    --forge gitlab \
+    --project "${FULLSEND_PINNED_PROJECT_PATH}" \
+    --gitlab-url "${FULLSEND_PINNED_GITLAB_URL}" \
+    --fullsend-dir .fullsend \
+    --mode "${FULLSEND_POLL_MODE:-events}"
+fi

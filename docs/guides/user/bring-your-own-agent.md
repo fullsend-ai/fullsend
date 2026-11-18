@@ -38,8 +38,9 @@ Next:
    [`fullsend github setup`](../getting-started/configuring-github.md) — see
    [Before you begin](#before-you-begin) for the full prerequisite list.
    The generated agent works on GitHub: its harness, prompt and post-script
-   all use GitHub. On GitLab, scaffold with
-   `fullsend repos install --forge gitlab` and adapt those three files; for the
+   all use GitHub. On GitLab, scaffold with `fullsend repos install` (see
+   [Configuring GitLab](../getting-started/configuring-gitlab.md#installing-fullsend))
+   and adapt those three files; for the
    harness `role:` and its credentials, see
    [Custom roles](../getting-started/configuring-gitlab.md#custom-roles) and
    the [role-credential contract](../../contributing/gitlab-role-credentials.md).
@@ -69,8 +70,9 @@ Next:
      ✓ Post-script completed (0.3s)
    ```
 
-   `.env.local` needs `GITHUB_ISSUE_URL`, `ISSUE_NUMBER`, `REPO_FULL_NAME`,
-   `GH_TOKEN`, and whatever the agent's route needs besides those — see
+   `.env.local` needs `FULLSEND_WORK_ITEM_URL`, `ISSUE_NUMBER`,
+   `REPO_FULL_NAME`, `GH_TOKEN`, and whatever the agent's route needs besides
+   those — see
    [Pick a route](#pick-a-route). `GH_TOKEN` must be a real token: a
    connectivity check runs before the agent does. See
    [Running agents locally](running-agents-locally.md).
@@ -81,8 +83,8 @@ Next:
 
 The route — which model, on which credential path — decides what a local
 run needs in `.env.local` beyond the GitHub variables every route uses
-(`GITHUB_ISSUE_URL`, `ISSUE_NUMBER`, `REPO_FULL_NAME`, `GH_TOKEN`). Pick the
-row that matches the agent you want; CI is covered below the table.
+(`FULLSEND_WORK_ITEM_URL`, `ISSUE_NUMBER`, `REPO_FULL_NAME`, `GH_TOKEN`).
+Pick the row that matches the agent you want; CI is covered below the table.
 
 | Route | `agent new` flags | harness `providers:` | Env beyond the GitHub variables |
 |-------|-------------------|-----------------------|----------------------------------|
@@ -179,9 +181,11 @@ sequenceDiagram
 The dispatch workflow matches the comment against the `trigger:` of every
 registered harness and starts `fullsend run` for each match. `fullsend run`
 gets a short-lived GitHub token for the harness's `role:` from the mint (a
-local run without `--mint-url` or `FULLSEND_MINT_URL` skips this and uses
-your `GH_TOKEN`), sets up the providers on the OpenShell gateway, and starts
-the sandbox. For GitHub and OpenAI the agent never holds a real credential:
+local run with no mint URL from `--mint-url`, `config.yaml`/`config.base.yaml`,
+or `FULLSEND_MINT_URL` — or where GitHub Actions OIDC isn't available —
+skips this and uses your `GH_TOKEN`), sets up the providers on the OpenShell
+gateway, and starts the sandbox. For GitHub and OpenAI the agent never holds
+a real credential:
 the gateway gives it a placeholder and swaps in the real value on each
 request a declared provider covers. On the Vertex route the GCP credentials
 file is copied into the sandbox, and the model calls use it directly. After
@@ -249,14 +253,16 @@ in the code block below the table, not in a cell.
 | `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that isn't committed next to it | Commit `policies/base.yaml` with the agent, or point `policy:` at a committed or pinned URL |
 | `host_files[0]: GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file` | pi on `openai/`, Vertex sub-agent block uncommented, no credentials file set | Set `GOOGLE_APPLICATION_CREDENTIALS` — see [Pick a route](#pick-a-route). Don't mark the mount optional |
 | `validating env:` followed by unresolved host variables at `fullsend run` | A `${VAR}` in the harness is unset | Supply it via `--env-file` locally. In CI, the variables a generated harness uses come from the setup commands in [Pick a route](#pick-a-route) |
-| `provider credentials are not declared by profile 'fullsend-github-ro'` (or `'fullsend-github'`) | A stale `profiles/fullsend-github*.yaml` from fullsend v0.44.0 or earlier is still listed alongside the bare `github-ro`/`github` provider | Finish [Upgrading agents generated before built-in providers](#upgrading-agents-generated-before-built-in-providers) |
+| `provider credentials are not declared by profile '<profile-id>'` | The provider supplies credential keys the profile does not declare; stale copies under built-in names or IDs may still use `_NOOP_*` placeholder credentials | For stale built-in overrides, finish [Upgrading agents generated before built-in providers](#upgrading-agents-generated-before-built-in-providers). For custom profiles, align the provider's credential keys with the profile's declarations |
 | The same error on your machine, with bare names and no `fullsend-github*` profile left | The OpenShell gateway still holds an older profile with that id; `fullsend run` cannot replace a profile while a provider uses it | Delete and re-create the providers — see the command below |
 | `provider profile 'fullsend-github-ro' requires static credentials: GH_TOKEN` at `fullsend run` | `GH_TOKEN` is unset or empty on the machine running `fullsend run` | Put a real token in your env file, e.g. `echo "GH_TOKEN=$(gh auth token)" >> .env.local` |
 | `Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file` (or `a regular/non-empty file`) | The variable is unset or points at a missing path, directory, or empty file | Point it at a real file — [Get GCP credentials](running-agents-locally.md#get-google-cloud-platform-credentials) |
+| `Host file credential validation failed`, then `<N> durable credential host file(s) without allow_durable` | A `host_files` source is a long-lived credential, such as a service account key | Prefer short-lived Workload Identity Federation credentials — see [How Fullsend Authenticates](how-fullsend-authenticates.md). To keep the key, add `allow_durable: true` to that entry; see [`host_files[].allow_durable`](../../reference/harness-reference.md) |
 | `reading behaviour script .../behaviour/current-scenario.yaml: ... no such file or directory` | `--runtime dummy` with no scripted result | Write `.fullsend/behaviour/current-scenario.yaml` — see [Testing locally](#testing-locally) |
 | `sub-agent model resolves to Vertex, but GOOGLE_APPLICATION_CREDENTIALS is not set` at `fullsend run`, or `provider "anthropic-vertex" is not available in this run (Vertex sub-agents need GOOGLE_APPLICATION_CREDENTIALS ...` in a sub-agent's result | pi on `openai/` dispatched a Vertex sub-agent with no credentials file in the sandbox: the variable is unset, or the harness has no `host_files` mount for it | Set `GOOGLE_APPLICATION_CREDENTIALS` and use the overlay from [Pick a route](#pick-a-route), or keep sub-agents on `openai/` models; see [pi › Vertex sub-agents under an OpenAI parent](../../runtimes/pi.md#vertex-sub-agents-under-an-openai-parent) |
 | Agent can't find input files | Pre-script output paths don't match `host_files` entries | Align the two |
 | Provider blocks requests | A second profile with the same `fullsend-<name>` id as a built-in provider, or a custom provider whose profile or definition is missing | For a built-in name, remove the other profile with that id. For a custom provider, list its profile in `openshell.profiles:` and commit its definition under `providers/` |
+| A request to an endpoint fails inside the sandbox | No provider profile or inline `network_policies` rule allows the endpoint for that binary | Find the `DENIED` entry with the grep command below, then add a provider or an inline rule — see [Sandbox policy](#sandbox-policy) |
 | Schema validation fails | Compare the sandbox output against the schema in `validation_loop` / `FULLSEND_OUTPUT_SCHEMA` | Re-run with `--keep-sandbox` to inspect |
 | Agent not found | Verify registration | `fullsend agent list` |
 | Agent not triggered by events | Verify the `trigger` expression | See [Verifying your trigger](cel-triggers-reference.md#verifying-your-trigger) |
@@ -332,10 +338,17 @@ scratch.
 4. **Register and deploy** — add your agent to `config.yaml` so dispatch
    discovers it. See [Registering your agent](#registering-your-agent).
 
+The sections after [Minimum viable agent](#minimum-viable-agent) document
+each piece you may write or change: the
+[agent definition](#agent-definitions), [sandbox policy](#sandbox-policy),
+[output schema](#output-schema), [skills](#skills),
+[pre- and post-scripts](#scripts), [dispatch inputs](#dispatch-inputs), and
+[secrets for host-side scripts](#pass-secrets-to-host-side-scripts-github).
+
 ### Before you begin
 
 - **fullsend CLI** installed and available on your PATH.
-- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. It does **not** create `policies/`; [`fullsend agent new`](#quick-start) writes that one, and you commit it with the agent. Writing the harness by hand instead? [Minimum viable agent](#minimum-viable-agent) lists what to supply. GitLab repositories are scaffolded instead with `fullsend repos install --forge gitlab` and use role-specific credentials (project service accounts, or fallback project access tokens) rather than GitHub Apps — see [Configuring GitLab](../getting-started/configuring-gitlab.md).
+- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. It does **not** create `policies/`; [`fullsend agent new`](#quick-start) writes that one, and you commit it with the agent. Writing the harness by hand instead? [Minimum viable agent](#minimum-viable-agent) lists what to supply. GitLab repositories are scaffolded instead by declaring the project in `repos.yaml` and running `fullsend repos install`, and use role-specific credentials (project service accounts, or fallback project access tokens) rather than GitHub Apps — see [Configuring GitLab](../getting-started/configuring-gitlab.md).
 - **Inference set up for CI (CI only).** For agents running in GitHub Actions, on the Vertex route run [`fullsend inference provision`](../../cli/inference.md) to set up Workload Identity Federation, then give the provider it prints to [`fullsend github setup`](../getting-started/configuring-github.md), which stores it with the project and region. On the OpenAI route run [`fullsend inference openai request` and `import`](../../cli/inference.md), or set a `FULLSEND_OPENAI_API_KEY` secret.
 - **GitHub Apps installed (CI only).** Your org needs the fullsend GitHub Apps — see [Configuring GitHub](../getting-started/configuring-github.md).
 
@@ -398,14 +411,15 @@ timeout_minutes: 15
 **`vertex-ai` above is a bare provider name**, not a path. Every provider
 name fullsend ships —
 `vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`,
-`package-registries`, `atlassian-cloud`, `openai` — resolves to the
+`package-registries`, `atlassian-cloud`, `openai`, `jira` — resolves to the
 definition and profile built into the `fullsend` binary: no `providers/`
 file, no `profiles/` file, and no `openshell.profiles` entry to add, so
 nothing to keep in sync. These names are reserved for the built-in copies.
 If a harness still uses its own copy under one (a `providers/<name>.yaml`
 file, a path or URL entry, or an `openshell.profiles` entry with the
 `fullsend-<name>` id), `fullsend run` uses that copy and prints a warning; a
-later release rejects it. To customise a provider, define it under your own
+later release rejects it. `fullsend-openai` is always rejected, and
+`fullsend-jira` is rejected when the run mints the Jira token. To customise a provider, define it under your own
 name — see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles).
 
 > **Note (CI only):** the embedded `vertex-ai` profile controls network access only; real credentials are delivered via `host_files` (see [real-world example](#real-world-example-the-triage-agent)). Make sure you've completed the GCP prerequisites in [Before you begin](#before-you-begin).
@@ -433,10 +447,10 @@ Your only output is the JSON result file.
 The agent's environment also carries its budget: `FULLSEND_TIMEOUT_MINUTES` (the harness's
 `timeout_minutes`) and `FULLSEND_ITERATION_DEADLINE` (Unix seconds at which the iteration is killed),
 and `TRACEPARENT` (this iteration's agent-span W3C trace context, so runtime telemetry joins the
-Fullsend trace; empty when telemetry produced no valid span context). Write the result before the
+fullsend trace; empty when telemetry produced no valid span context). Write the result before the
 deadline — see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline).
 
-Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The eight builtin provider names (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`, `atlassian-cloud`, `openai`) resolve against the definition and profile built into the `fullsend` binary with no `openshell.profiles` entry at all. A fully custom provider type is different: it needs a provider definition (local or remote) together with a matching `openshell.profiles` entry (or one inherited via `base:` composition) to be imported — see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
+Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The nine builtin provider names (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`, `atlassian-cloud`, `openai`, `jira`) resolve against the definition and profile built into the `fullsend` binary with no `openshell.profiles` entry at all. A fully custom provider type is different: it needs a provider definition (local or remote) together with a matching `openshell.profiles` entry (or one inherited via `base:` composition) to be imported — see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
 
 **Next steps:** [Register your agent](#registering-your-agent) so dispatch discovers it, then [write a CEL trigger](cel-triggers-reference.md#writing-cel-triggers) to control when it runs. To iterate on your agent locally before registering, see [Testing locally](#testing-locally).
 
@@ -486,12 +500,21 @@ overlays:
   post_script: scripts/post-triage.sh
   env:
     runner:
-      GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+      ISSUE_URL: ${GITHUB_ISSUE_URL}
       GH_TOKEN: ${GH_TOKEN}
+      FULLSEND_FORGE: github
     sandbox:
-      GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
-      GH_TOKEN: "${GH_TOKEN}"
+      ISSUE_URL: "${GITHUB_ISSUE_URL}"
+      FULLSEND_FORGE: github
 ```
+
+New agents should map `ISSUE_URL` from `FULLSEND_WORK_ITEM_URL`; the example
+above shows the current built-in GitHub overlay before that migration.
+
+The `${GOOGLE_APPLICATION_CREDENTIALS}` mount expects a short-lived
+`external_account` file, as CI provides. With a service account key, add
+`allow_durable: true` to that entry; see
+[`host_files[].allow_durable`](../../reference/harness-reference.md).
 
 Key patterns to note:
 
@@ -499,7 +522,7 @@ Key patterns to note:
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
 - **`overlays`** uses CEL `when` expressions to conditionally apply scripts, skills, providers, openshell, host_files, and env vars. Resolution merges all matching entries in order: every entry whose `when` evaluates to true is applied, with later matches taking precedence over earlier ones. The CEL environment exposes `event` (the triggering event), `runtime.forge` (the effective forge platform), and `config` (per-repo config from config.yaml). When running without an event context (e.g., `fullsend run` or `fullsend lock`), `event` is an empty map — use `has(event.source)` to guard event field access: `has(event.source) && event.source.system == "jira"` instead of just `event.source.system == "jira"` to avoid "no such key" errors.
-- **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Harness Field Reference — Referencing resources](../../reference/harness-reference.md#referencing-resources-local-vs-remote)) or copy it locally.
+- **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Harness Field Reference — Referencing resources](../../reference/harness-reference.md#referencing-resources-local-vs-remote)) or copy it locally. The variables it delivers reach the sandbox through harness configuration rather than runner guarantee — they are catalogued as `harness_delivered` in the [sandbox environment contract](../../normative/sandbox-env/v1/README.md).
 
 For the complete list of harness fields, see the [Harness Field Reference](../../reference/harness-reference.md).
 
@@ -511,15 +534,165 @@ The agent definition is Markdown with YAML frontmatter:
 |-------|---------|
 | `name` | Must match the filename (sans `.md`) |
 | `description` | One-line summary |
-| `tools` | Allowed Bash commands (e.g., `Bash(gh,jq)`) |
-| `model` | LLM model |
-| `skills` | Skill names to mount |
-| `disallowedTools` | Forbidden Bash patterns |
+| `tools` | The tools the agent may use, in Claude Code's names (`Read`, `Grep`, `Glob`, `LS`, `Bash(gh,jq)`, ...). Restrict to what's needed. On pi the names are translated, and two of them surprise people — see [What to write in `tools:`](../../runtimes/pi.md#what-to-write-in-tools) |
+| `model` | LLM model (`opus`, `sonnet`, etc.) |
+| `skills` | [Skill](../../glossary.md#skill) names to load, as uploaded under `skills/`: a skill's declared `SKILL.md` `name:`, or its directory basename when none is declared |
+| `disallowedTools` | Bash patterns the agent is forbidden from running, e.g. `Bash(git push *), Bash(gh issue edit *)` |
 
 When writing the agent body:
-- The agent writes a JSON result file; scripts handle all mutations.
-- Be specific — define scoring dimensions, thresholds, output schemas.
-- Include decision points (branch on confidence, clarity scores, etc.).
+- **The agent writes JSON, scripts do actions.** The agent's only output is a
+  structured JSON file matching the [output schema](#output-schema). All side
+  effects (creating issues, posting comments, calling APIs) happen in
+  [post-scripts](#post-script).
+- **Name specific things.** Don't say "add caching." Say "use `casbin`
+  v2.82.0 from `go.mod` with the RBAC model adapter in
+  `pkg/api/middleware/`." Define scoring dimensions, thresholds, and output
+  fields.
+- **Include decision points.** Have the agent assess its own confidence and
+  branch: act when confident, ask when uncertain.
+- **Name every input.** List each environment variable and file the agent
+  reads. A variable must be passed through `env.sandbox` and a file through
+  `host_files`, or the agent reads an empty value at run time.
+
+### Sandbox policy
+
+The sandbox policy controls filesystem, process, and landlock restrictions.
+Network access is handled separately, through providers (see below). Most
+custom agents can reuse the `policies/base.yaml` that
+[`fullsend agent new`](../../cli/agent.md#agent-new) writes — the same policy
+the fleet agents run under. Write your own only when the agent needs
+different filesystem or process rules, for example
+`.fullsend/policies/my-agent.yaml`:
+
+```yaml
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+```
+
+Point the harness `policy:` field at it. Either way, commit the policy: CI
+does not supply one.
+
+**Network access through providers (recommended).** List providers in the
+harness `providers:` field. The built-in names
+[above](#minimum-viable-agent) need no other file. For a service fullsend does
+not ship, define a provider under your own name and list its profile under
+`openshell.profiles`. The gateway composes only the profiles named there (or
+inherited through `base:`) into the network policy, not every file under
+`profiles/`:
+
+```yaml
+providers:
+  - vertex-ai
+  - github-ro
+  - my-service
+
+openshell:
+  profiles:
+    - profiles/my-service.yaml
+```
+
+See [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles)
+for the provider and profile file formats.
+
+**Network access through inline policies (alternative).** For a one-off
+endpoint specific to a single agent, add `network_policies` to the policy
+YAML:
+
+```yaml
+network_policies:
+  my_service:
+    name: my-service
+    endpoints:
+      - host: "api.example.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - path: "**/curl"
+```
+
+Inline rules and provider-composed rules coexist — composition is additive.
+If both define the same endpoint, the duplicate is harmless.
+
+Policy design principles:
+
+- **The agent needs network access to whichever LLM provider it runs
+  inference through.** Use the `vertex-ai` provider on the Vertex route and
+  `openai` on the OpenAI route (see [Pick a route](#pick-a-route)). On the
+  OpenAI route, the GCP credentials mount (the
+  `${GOOGLE_APPLICATION_CREDENTIALS}` entry under `host_files:`) must be
+  `optional: true` or removed; with `GOOGLE_APPLICATION_CREDENTIALS` unset, a
+  required mount stops the run with
+  `GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file`.
+  A `pi` agent on an OpenAI model whose sub-agents run on Vertex needs both
+  providers and the mount — see
+  [pi › Vertex sub-agents under an OpenAI parent](../../runtimes/pi.md#vertex-sub-agents-under-an-openai-parent).
+- **Add network access only for what the agent needs.** If the agent doesn't
+  need web search, don't allow it.
+- **Use `binaries` to restrict which programs can access each endpoint.**
+  This prevents the agent from using unexpected tools to exfiltrate data.
+- **Prefer providers for shared services.** Use inline policies only for
+  agent-specific endpoints.
+- **Keep writes out of the sandbox.** Where the agent must read from an API,
+  give it read-only access (such as the `github-ro` provider), and perform
+  every write in a post-script.
+
+To test a policy change, see
+[Debugging network policies locally](running-agents-locally.md#debugging-network-policies-locally).
+
+### Output schema
+
+The agent's result file is checked against a JSON Schema, for example
+`.fullsend/schemas/my-agent-result.schema.json`:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "My Agent Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "findings", "error"]
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 280
+    }
+  }
+}
+```
+
+Enforce it with `validation_loop` in the harness (`agent new
+--validation-loop` writes this for you):
+
+```yaml
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/my-agent-result.schema.json
+  max_iterations: 2
+  feedback_mode: append
+```
+
+When the agent's output does not match, the agent is re-invoked with the
+validation error and asked to fix it. This happens only when `feedback_mode`
+is `append`; without it, the retry runs without the error text.
+`max_iterations` is the total number of attempts, including the initial
+invocation, so `max_iterations: 2` allows one re-invocation. Set
+`maxLength` on every string the post-script passes to an external API, and
+enumerate every value the post-script branches on, so the schema rejects
+output the post-script cannot handle.
 
 ### Skills
 
@@ -544,9 +717,395 @@ Pre and post scripts run on the trusted runner outside the sandbox.
 - **Pre-scripts** prepare the environment — fetch data, reset state, write files for `host_files` to copy in.
 - **Post-scripts** act on agent output — apply labels, post comments, create PRs.
 
-**Security:** treat agent output as untrusted input. Validate JSON structure, validate field values against allowlists, quote all variables, and limit string lengths.
-
 Post-scripts act with the role's minted token. Actions that need permissions no role grants (re-running CI jobs, dispatching workflows, deploying) belong in a follow-up workflow you own, chained on the run's artifact — see [Chaining Follow-up Workflows](chaining-follow-up-workflows.md).
+
+Declare both scripts in the harness:
+
+```yaml
+pre_script: scripts/pre-my-agent.sh
+post_script: scripts/post-my-agent.sh
+
+host_files:
+  # Written by the pre-script, copied into the sandbox
+  - src: /tmp/workspace/my-input.json
+    dest: /sandbox/workspace/my-input.json
+    optional: true
+```
+
+Data reaches the sandbox through `host_files`:
+
+1. The **pre-script** runs on the runner and writes files to
+   `/tmp/workspace/`.
+2. The **harness** copies those files into the sandbox through `host_files`.
+3. The **agent** reads them inside the sandbox.
+
+The pre-script uses credentials to fetch data and writes it to a file; the
+harness copies the file, not the credentials, into the sandbox.
+
+#### Pre-script
+
+`.fullsend/scripts/pre-my-agent.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+WORKSPACE="/tmp/workspace"
+mkdir -p "$WORKSPACE"
+
+gh issue view "$ISSUE_NUMBER" --repo "$REPO_FULL_NAME" \
+  --json number,state,labels \
+  > "$WORKSPACE/my-input.json"
+
+echo "Pre-script complete."
+```
+
+`ISSUE_NUMBER` and `REPO_FULL_NAME` are [dispatch inputs](#dispatch-inputs).
+The example stages only structured fields: do not stage issue bodies or
+comments where the agent reads them (see the snapshot note below).
+
+**Skipping the run.** A pre-script can tell `fullsend run` not to start the
+agent at all — useful when an open PR already addresses the issue, or when
+the work is otherwise redundant. `fullsend run` exports
+`FULLSEND_PRESCRIPT_OUTPUT` (a file path); the script appends `skipped=true`
+to it, and the run reports a ⏭️ skipped status and exits 0 **before the
+sandbox is created**:
+
+```bash
+if [[ -n "${FULLSEND_PRESCRIPT_OUTPUT:-}" ]]; then
+  {
+    echo "skipped=true"
+    echo "reason=PR #${EXISTING_PR} already addresses this issue"
+  } >> "${FULLSEND_PRESCRIPT_OUTPUT}"
+  exit 0
+fi
+```
+
+Always guard on the variable being set — older `fullsend` versions do not
+export it, and appending to an empty path would fail the script. Malformed
+content is a hard error rather than a silent proceed, so a mistyped skip
+cannot turn into a duplicate agent run. See the
+[pre-script output v1 contract](../../normative/prescript-output/v1/README.md)
+for the full grammar, error semantics, and CI relay behavior.
+
+**Exit code 78 — neutral skip.** For simple cases, a pre-script can skip the
+run by exiting with code 78 instead of writing to the output file. The last
+non-empty line of stdout becomes the skip reason:
+
+```bash
+# Scheduled agent: check if there's work to do
+PENDING=$(gh api ... --jq 'length')
+if [[ "${PENDING}" -eq 0 ]]; then
+  echo "No issues need scoring"
+  exit 78
+fi
+```
+
+Exit 78 and the output-file protocol can be combined — the output file is
+still parsed for `reason` and other outputs when exit 78 is used, but a parse
+error does not block the skip. See the
+[normative spec](../../normative/prescript-output/v1/README.md#exit-code-78--neutral-skip)
+for full details.
+
+**Hard failures.** A non-zero exit other than 78 fails the run. Print a
+GitHub Actions error annotation so the message appears in the PR status
+comment instead of a bare `exit status 1`:
+
+```bash
+echo "::error::Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+exit 1
+```
+
+Without an annotation, the last non-empty stderr line (then stdout) is used.
+See the [normative spec](../../normative/prescript-output/v1/README.md#hard-failure-diagnostics)
+for the full preference order and sanitization rules.
+
+**Pre-script context is a snapshot.** The pre-script sees the work item as it
+was when the run started. Changes made after that (a new push, an edited title
+or body) arrive only through a later run.
+When a script decides something from the work item, read the head SHA, title
+and body from the forge API (for example
+`gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json headRefOid,title,body`),
+not from the event payload, which can be older still. Do not stage that content
+where the agent reads it: unfiltered source content must never reach the
+model. Forge context for the agent will come from a filtered snapshot that the
+runner stages (not yet implemented).
+
+#### Post-script
+
+`.fullsend/scripts/post-my-agent.sh`, for the schema in
+[Output schema](#output-schema):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Prefer the validated iteration directory set by the harness
+# (FULLSEND_VALIDATED_ITERATION_DIR, always an absolute path) — without
+# it, scanning for the last iteration can pick up output that failed
+# validation. Fall back to scanning for the last iteration for
+# harnesses with no validation_loop.
+if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
+  RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+else
+  RESULT_FILE=""
+  for dir in iteration-*/output; do
+    if [[ -f "${dir}/agent-result.json" ]]; then
+      RESULT_FILE="${dir}/agent-result.json"
+    fi
+  done
+fi
+
+if [[ -z "${RESULT_FILE}" ]] || [[ ! -f "${RESULT_FILE}" ]]; then
+  echo "ERROR: agent-result.json not found"
+  exit 1
+fi
+
+# Validate JSON structure before extracting fields.
+# The agent runs in an untrusted sandbox — treat its output as untrusted input.
+if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
+  echo "ERROR: agent-result.json is not valid JSON"
+  exit 1
+fi
+
+STATUS=$(jq -r '.status // ""' "${RESULT_FILE}")
+SUMMARY=$(jq -r '.summary // ""' "${RESULT_FILE}")
+
+# Validate status against known values before acting on it.
+case "${STATUS}" in
+  ok)
+    echo "Nothing to report"
+    exit 0
+    ;;
+  findings | error)
+    ;;
+  *)
+    # STATUS is model output: flatten CR/LF and cap it before logging, and
+    # use printf, which never expands backslash escapes, so a crafted value
+    # cannot start a new log line (a "::" workflow command).
+    shown="${STATUS//[$'\r\n']/ }"
+    printf '%s\n' "ERROR: Unknown or missing status '${shown:0:40}'"
+    exit 1
+    ;;
+esac
+
+if [[ -n "${SUMMARY}" ]]; then
+  gh issue comment "${ISSUE_NUMBER}" --repo "${REPO_FULL_NAME}" --body "${SUMMARY}"
+fi
+```
+
+**Behavioral exits.** When the agent hits a behavioral limit (turn limit or
+cost limit), the harness sets `FULLSEND_AGENT_EXIT_REASON` to the error
+subtype before running the post-script. Known subtypes: `error_max_turns`,
+`error_max_budget_usd`. Check this variable to distinguish "agent chose not
+to change anything" from "agent was interrupted mid-work":
+
+```bash
+if [[ -n "${FULLSEND_AGENT_EXIT_REASON:-}" ]]; then
+  echo "Agent was interrupted: ${FULLSEND_AGENT_EXIT_REASON}"
+  # Handle partial work — e.g., post a comment explaining the interruption
+fi
+```
+
+Without a `validation_loop`, a behavioral exit runs the post-script and the
+run succeeds. Any other agent failure fails the run, but the post-script
+still runs when the agent left its result file (`FULLSEND_OUTPUT_FILE`,
+default `agent-result.json`) and it parses as a JSON object;
+`FULLSEND_AGENT_EXIT_CODE` is then set. With a loop, validation decides. See
+[How a run ends](../../cli/run.md#how-a-run-ends).
+
+**Security.** The post-script runs on the trusted runner with credentials,
+but reads output produced by the untrusted sandbox. Treat agent output as
+untrusted input:
+
+- **Validate JSON structure** before extracting fields (`jq empty` catches
+  malformed output).
+- **Validate field values against an allowlist** (the `case` statement
+  above) rather than passing them to shell commands or APIs unchecked.
+- **Never interpolate agent output into shell commands** without quoting.
+  Use `jq -r` to extract values into variables, then use `"${VAR}"`
+  (double-quoted) everywhere.
+- **Limit string lengths** in the JSON schema (`maxLength`) to prevent
+  resource exhaustion when posting to external APIs.
+
+### Dispatch inputs
+
+When an event triggers an agent, the dispatch workflow exports these
+variables to the runner:
+
+| Variable | Description |
+|----------|-------------|
+| `FULLSEND_WORK_ITEM_URL` | Canonical, tracker-agnostic work item URL (`https://...`) |
+| `FULLSEND_WORK_ITEM_KEY` | Canonical key (`42` on GitHub, `PROJ-123` on Jira) |
+| `FULLSEND_WORK_ITEM_SOURCE` | Tracker the work item came from (`github`, `gitlab`, `jira`); set by `fullsend run` from `_normalized_event.source.system`, or the detected forge when there is no normalized event |
+| `ISSUE_NUMBER` | Numeric GitHub issue/PR number; empty for Jira work items, where `fullsend run` clears it (use `FULLSEND_WORK_ITEM_KEY` in tracker-independent scripts) |
+| `REPO_FULL_NAME` | Repository slug (`owner/repo`) |
+| `GITHUB_ISSUE_URL` | Deprecated, use `FULLSEND_WORK_ITEM_URL` instead. |
+
+The full event payload is also written to
+`.fullsend/dispatch/event-payload.json`. Detect the tracker from
+`_normalized_event.source.system`, not variable presence.
+
+- **Pre/post scripts** inherit these variables directly from the host
+  environment (`"$FULLSEND_WORK_ITEM_URL"`).
+- **The sandbox** does not inherit runner variables by default. Forward them
+  via `env.sandbox` in your harness, as `agent new` does:
+  ```yaml
+  env:
+    sandbox:
+      FULLSEND_WORK_ITEM_URL: "${FULLSEND_WORK_ITEM_URL}"
+      ISSUE_NUMBER: "${ISSUE_NUMBER}"
+  ```
+  Alternatively, have your `pre_script` fetch details and write them into
+  the workspace or `agent_input` directory.
+
+Every `${VAR}` that `env.runner` references must be set on the runner. For a
+secret, use the stored `FULLSEND_GITHUB_RUNNER_SECRETS` object (next
+section).
+
+### Pass secrets to host-side scripts (GitHub)
+
+A pre-script that calls Jira, CodeRabbit or another service needs a token. This
+channel is an interim one for your own tools on GitHub: external secret manager
+support, read with the job's OIDC token, is the expected successor (long-term
+design in [#6359](https://github.com/fullsend-ai/fullsend/issues/6359)), and
+this secret stays as the fallback when your workflow cannot use GitHub OIDC or a
+WIF provider with your secret manager. Integrations fullsend owns, such as the
+inference gateway, keep their own named secrets. If your repository has the
+Jira secrets `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL`
+([Jira integration](jira-integration.md)), the reusable workflow passes them
+to Jira-sourced runs only. Declare them in `env.runner` of an overlay
+guarded on `event.source.system == "jira"`
+(`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`) and your `harness-run`
+scripts receive them. Do not declare them at the top level: on every other
+run they are unset, so the reference fails the run.
+
+For every other secret and every other stage, use runner secrets. On GitHub, store
+all such tokens in one secret, `FULLSEND_GITHUB_RUNNER_SECRETS`, as a JSON
+object of name → value. The installed shim forwards it, and the reusable
+workflow hands it to each stage's composite action. The action writes it to a
+file that only the job user can read and passes `fullsend run` the path, never
+the value. `fullsend run` deletes the file as soon as it has read it, so the
+object is never in the environment of `fullsend run` or of any process it
+starts. A host-side script receives only the names its harness references in
+`env.runner`, as ordinary environment variables. The values never enter the
+sandbox.
+
+The example below is a review harness whose pre-script fetches the Jira issue
+named in the pull request title.
+
+1. Store the object on the repository, or on the organization for every repository the agent serves:
+
+   ```bash
+   gh secret set FULLSEND_GITHUB_RUNNER_SECRETS --repo OWNER/REPO \
+     --body '{"JIRA_API_TOKEN":"...","JIRA_API_EMAIL":"..."}'
+
+   gh secret set FULLSEND_GITHUB_RUNNER_SECRETS --org OWNER --visibility selected \
+     --repos REPO_A,REPO_B --body '{"JIRA_API_TOKEN":"...","JIRA_API_EMAIL":"..."}'
+   ```
+
+   The object holds literal values: GitHub never expands a reference such as
+   `${{ secrets.MY_API_TOKEN }}` inside a stored secret, so a token you already
+   keep as its own secret must be copied into the object too. A secret holds one
+   value, so adding or rotating a key means setting the whole object again. Keep
+   the JSON in a file outside the repository and run
+   `gh secret set FULLSEND_GITHUB_RUNNER_SECRETS --repo OWNER/REPO < runner-secrets.json`.
+   Each value must be a string of at least 8 characters (the redactor's current
+   minimum), so that `fullsend run` can redact it; keys may not repeat. Every
+   agent run that receives the secret validates the whole object, so one invalid
+   key fails every agent in every repository that gets it, not only your custom
+   agent.
+
+2. Reference each name from `env.runner` in `.fullsend/harness/my-agent.yaml`:
+
+   ```yaml
+   env:
+     runner:
+       JIRA_API_TOKEN: "${JIRA_API_TOKEN}"
+       JIRA_API_EMAIL: "${JIRA_API_EMAIL}"
+       JIRA_BASE_URL: "https://example.atlassian.net"
+   ```
+
+   A name the harness does not reference reaches no script. The name may not be
+   runner-owned (`GH_TOKEN`, `GITHUB_*`, `FULLSEND_*`, `OTEL_*`, `PATH`, ...) or
+   one fullsend reserves, such as `JIRA_BASE_URL` or `ISSUE_NUMBER`, so pick
+   your own names, and it may appear only in
+   `env.runner`. A reference from `env.sandbox`, a provider credential, an
+   expanded `host_files` entry, or an overlay guarded by anything other than
+   `runtime.forge` or `config` fails the run. The full rules are in the
+   [harness reference](../../reference/harness-reference.md#field-details).
+
+3. Read the variables in the pre-script as usual. `JIRA_API_TOKEN`,
+   `JIRA_API_EMAIL` and `JIRA_BASE_URL` come from `env.runner`.
+   `REPO_FULL_NAME` and `PR_NUMBER` are set by the review stage of the reusable
+   workflow, and `GH_TOKEN` is the token `fullsend run` mints for the agent.
+   This example uses the token for a decision: it skips the review when the
+   Jira issue named in the pull request title (for example
+   `PROJ-123: fix login`) is already done. It hands the agent nothing, because
+   raw forge or Jira content must not reach the model:
+
+   ```bash
+   #!/usr/bin/env bash
+   set -euo pipefail
+
+   TITLE=$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json title --jq .title)
+   JIRA_KEY=$(grep -oE '[A-Z][A-Z0-9]+-[0-9]+' <<<"$TITLE" | head -n 1 || true)
+   [[ -n "$JIRA_KEY" ]] || exit 0
+
+   STATUS=$(curl --fail-with-body --silent \
+     --user "${JIRA_API_EMAIL}:${JIRA_API_TOKEN}" \
+     "${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}?fields=status" |
+     jq -r '.fields.status.statusCategory.key')
+   if [[ "$STATUS" == "done" ]]; then
+     echo "reason=${JIRA_KEY} is already done" >> "$FULLSEND_PRESCRIPT_OUTPUT"
+     echo "skipped=true" >> "$FULLSEND_PRESCRIPT_OUTPUT"
+   fi
+   ```
+
+4. Trigger the agent and check the run log. The `Run fullsend` step prints
+   `Runner secrets` followed by the names the harness references, and GitHub
+   shows each value as `***`:
+
+   ```bash
+   gh run list --repo OWNER/REPO --workflow fullsend.yaml --limit 1
+   gh run view RUN_ID --repo OWNER/REPO --log | grep -E 'Runner secrets|Pre-script'
+   ```
+
+`fullsend run` masks each value, and each line of a multi-line value, in the
+log, and redacts them from pre-script failure detail and validation feedback.
+Masking matches exact strings: a value your script transforms (base64,
+URL-encoded, a substring) is printed as is, so never echo a secret or anything
+derived from it.
+
+The shim always passes `FULLSEND_GITHUB_RUNNER_SECRETS`, and GitHub rejects a
+call that passes a secret the called workflow does not declare. If you set up a
+repository with `--fullsend-ref` pointing at a release older than this channel,
+render the shim with the CLI from that same release.
+
+If you run `fullsend run` from your own workflow instead of the installed shim,
+use the composite action and pass
+`with: runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}`; the
+action stages the file for you. The `FULLSEND_GITHUB_RUNNER_SECRETS`
+environment variable also works, but only for local runs: in CI the value would
+stay readable in `/proc/<pid>/environ` for the whole run. See
+[`fullsend run` § Runner secrets](../../cli/run.md#runner-secrets).
+
+On GitLab, skip the object. Add each secret as its own masked CI/CD variable
+(for example `JIRA_API_TOKEN`) and reference it from `env.runner` the same way.
+The rules above (refused names, host side only, overlays) apply to names in the
+GitHub object only. `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+`FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` are not
+inherited by host-side scripts; declare the ones a trusted script needs in
+`env.runner`. This is the same host-script rule on GitHub and
+GitLab. On every forge, references to these values in `env.sandbox`, expanded
+`host_files`, `FULLSEND_OUTPUT_FILE`, and provider config values resolve
+empty. Provider credential values resolve empty too, except
+`${FULLSEND_JIRA_TOKEN}`, which the provider proxy holds. See
+[Jira integration](jira-integration.md#jira-repository-secrets-in-agent-runs)
+for details. Other CI/CD variables still reach host-side scripts, except the
+Jira credentials (`FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+`FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`), the reserved names
+`JIRA_TOKEN` and `JIRA_USER_EMAIL`, and the OTLP headers.
 
 ### Harness composition with `base`
 
@@ -566,9 +1125,9 @@ Base chains support up to 5 levels (`MaxBaseDepth` in `internal/harness/compose.
 
 > **Overlay precedence with `base:`:** Overlays are concatenated base-first, child-appended — the same ordering as `plugins`, `providers`, and `api_servers`. Because `ResolveOverlays` merges all matching entries in order (later matches take precedence), child overlay entries override base overlay entries with the same condition. This follows the child-overrides-base convention used by scalar and map merges.
 
-> **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
+> **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches`, and `allow_ci_variable_credential` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes, enabling runtime fetching, or silencing the GitLab CI/CD-variable credential warning in the child.
 
-> **Config-level fallback:** Separately from base-harness inheritance, the `allowed_remote_resources` from the repository-local configuration acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. This is a distinct trust layer from base composition — the config-level list is set by repository administrators, not by base harness authors.
+> **Config-level fallback:** Separately from base-harness inheritance, the `allowed_remote_resources` from the repository-local configuration acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. It is also the ceiling for the harness-level list: whenever the harness's runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration), every harness-level prefix must be covered by the config-level allowlist (the config-level list plus the built-in default prefixes; an explicit `allowed_remote_resources: []` in the config stays deny-all and excludes the defaults), and `fullsend run`, `fullsend lint` and `fullsend lock` fail naming an uncovered prefix and fail closed without a repository config (`config.yaml` or `config.base.yaml`). This is a distinct trust layer from base composition — the config-level list is set by repository administrators, not by base harness authors.
 
 To configure an existing agent without building from scratch, see [Configuring Agent Behavior](customizing-agents.md#configuration-with-base-composition).
 
@@ -583,6 +1142,8 @@ fullsend run my-agent \
 ```
 
 The `--env-file` supplies variables your harness references: `GH_TOKEN` and the GitHub variables on every route, plus `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and `GOOGLE_APPLICATION_CREDENTIALS` on the Vertex route or `OPENAI_API_KEY` on the OpenAI route (see [Pick a route](#pick-a-route)). See [Running agents locally](running-agents-locally.md) for prerequisites and troubleshooting.
+
+If `GOOGLE_APPLICATION_CREDENTIALS` points at a service account key, add `allow_durable: true` to the generated `${GOOGLE_APPLICATION_CREDENTIALS}` entry under `host_files:`; otherwise the run stops with `Host file credential validation failed`. See [`host_files[].allow_durable`](../../reference/harness-reference.md).
 
 Most agents need additional flags for credentials and target repo — see [Running agents locally](running-agents-locally.md) for the full list.
 
@@ -607,7 +1168,7 @@ ops:
 
 ```bash
 POST_LINT_DOCS_DRY_RUN=1 \
-  GITHUB_ISSUE_URL="https://github.com/OWNER/REPO/pull/99" \
+  FULLSEND_WORK_ITEM_URL="https://github.com/OWNER/REPO/pull/99" \
   ISSUE_NUMBER=99 \
   REPO_FULL_NAME=OWNER/REPO \
   GH_TOKEN="$(gh auth token)" \
@@ -647,7 +1208,6 @@ fullsend agent remove triage
 
 ```yaml
 version: "1"
-roles: [triage, coder, review]
 agents:
   - https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=abc...
   - name: my-cool-agent
@@ -658,7 +1218,6 @@ allowed_remote_resources:
 ```
 
 **Notes:**
-- `roles` controls which built-in agent roles are enabled. Valid values: `fullsend`, `triage`, `coder`, `review`, `fix`, `retro`, `prioritize`. Custom agents registered via `agents:` do not need to appear in this list.
 - URL entries are automatically pinned with `#sha256=...` by `fullsend agent add`.
 - URLs must be covered by `allowed_remote_resources` in the same config.
 - On name collision, config-registered agents take precedence over built-in agents.

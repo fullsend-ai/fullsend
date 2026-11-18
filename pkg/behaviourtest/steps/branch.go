@@ -33,6 +33,9 @@ func registerBranchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^branch "([^"]+)" is unchanged$`, func(ctx context.Context, branch string) (context.Context, error) {
 		return ctx, thenBranchUnchanged(world.FromContext(ctx), branch)
 	})
+	sc.Step(`^branch "([^"]+)" has advanced$`, func(ctx context.Context, branch string) (context.Context, error) {
+		return ctx, thenBranchAdvanced(world.FromContext(ctx), branch)
+	})
 	sc.Step(`^the pull request head branch matches "([^"]+)"$`, func(ctx context.Context, pattern string) (context.Context, error) {
 		return ctx, thenPullRequestHeadBranchMatches(world.FromContext(ctx), pattern)
 	})
@@ -146,21 +149,37 @@ func givenBranchTipRecorded(w *world.World, branch string) error {
 	return nil
 }
 
-func thenBranchUnchanged(w *world.World, branch string) error {
+// recordedAndCurrentTip returns the expanded branch name, the tip
+// recorded by "the tip of branch ... is recorded", and the branch's
+// current tip. It is the lookup shared by the unchanged and advanced
+// assertions.
+func recordedAndCurrentTip(w *world.World, branch string) (name, recorded, current string, err error) {
 	if err := ensureScenarioRepo(w); err != nil {
-		return err
+		return "", "", "", err
 	}
-	branch, err := expandIssuePlaceholder(w, branch)
+	branch, err = expandIssuePlaceholder(w, branch)
 	if err != nil {
-		return err
+		return "", "", "", err
 	}
 	recorded, ok := w.RecordedBranchSHAs[branch]
 	if !ok {
-		return fmt.Errorf("branch %q was never recorded — add a \"the tip of branch ... is recorded\" step before the run", branch)
+		return "", "", "", fmt.Errorf("branch %q was never recorded — add a \"the tip of branch ... is recorded\" step before the run", branch)
 	}
-	current, err := w.SCM.GetBranchRef(context.Background(), w.RepoOwner, w.RepoName, branch)
+	err = cleanupRetry(w.Logf, fmt.Sprintf("re-check tip of %s", branch), func() error {
+		var refErr error
+		current, refErr = w.SCM.GetBranchRef(context.Background(), w.RepoOwner, w.RepoName, branch)
+		return refErr
+	})
 	if err != nil {
-		return fmt.Errorf("re-checking tip of %s: %w", branch, err)
+		return "", "", "", fmt.Errorf("re-checking tip of %s: %w", branch, err)
+	}
+	return branch, recorded, current, nil
+}
+
+func thenBranchUnchanged(w *world.World, branch string) error {
+	branch, recorded, current, err := recordedAndCurrentTip(w, branch)
+	if err != nil {
+		return err
 	}
 	if current != recorded {
 		return fmt.Errorf("branch %s moved: recorded %s, now %s", branch, recorded, current)
@@ -168,10 +187,25 @@ func thenBranchUnchanged(w *world.World, branch string) error {
 	return nil
 }
 
+// thenBranchAdvanced asserts that the branch tip moved since it was
+// recorded, e.g. because an agent pushed to it.
+func thenBranchAdvanced(w *world.World, branch string) error {
+	branch, recorded, current, err := recordedAndCurrentTip(w, branch)
+	if err != nil {
+		return err
+	}
+	if current == recorded {
+		return fmt.Errorf("branch %s has not advanced: tip is still %s", branch, recorded)
+	}
+	return nil
+}
+
 // thenPullRequestHeadBranchMatches asserts that exactly one open pull
-// request has a head branch matching the anchored pattern, and tracks
-// the match for scenario cleanup. Patterns support the <issue>
-// placeholder so features can assert the agent/<issue>-* namespace.
+// request has a head branch matching the anchored pattern, makes the
+// match the scenario's pull request (so later "the pull request ..."
+// assertions read the agent's PR), and tracks it for scenario cleanup.
+// Patterns support the <issue> placeholder so features can assert the
+// agent/<issue>-* namespace.
 func thenPullRequestHeadBranchMatches(w *world.World, pattern string) error {
 	pattern, err := expandIssuePlaceholder(w, pattern)
 	if err != nil {
@@ -199,6 +233,7 @@ func thenPullRequestHeadBranchMatches(w *world.World, pattern string) error {
 	if len(matched) > 1 {
 		return fmt.Errorf("%d open PR head branches match %q, want exactly 1 (open heads: %s)", len(matched), pattern, strings.Join(heads, ", "))
 	}
+	w.PRNumber = matched[0].Number
 	w.CreatedPRNumbers = append(w.CreatedPRNumbers, matched[0].Number)
 	w.CreatedBranches = append(w.CreatedBranches, matched[0].Head)
 	return nil
@@ -232,10 +267,7 @@ var failureCommentPollInterval = 5 * time.Second
 // stable fragment of the failure-comment contract (the category label
 // headline or a fixed detail phrase), not incidental prose.
 //
-// No shipped scenario uses this step yet: the fix stage's only dispatch
-// route is a changes_requested review from the org review bot, which the
-// behaviour suite cannot produce. The step is exercised by unit tests
-// and ready for when a suite-reachable fail-closed path exists.
+// No shipped scenario uses this step yet; it is exercised by unit tests.
 func thenHarnessWorkflowFailsReporting(ctx context.Context, w *world.World, agent, report string) error {
 	agent = strings.TrimSpace(agent)
 	if w.ScenarioStart.IsZero() {

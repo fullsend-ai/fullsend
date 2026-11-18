@@ -1,21 +1,27 @@
 package poll
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"os/exec"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -35,7 +41,7 @@ func TestDispatch_CreatesAPIpipelineAndAppendsRecord(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,10 +124,10 @@ func TestDispatch_CreatesAPIpipelineAndAppendsRecord(t *testing.T) {
 // breaking-config bug where dispatch() called CreatePipelineWithInputs
 // unconditionally regardless of the target repository's own installed
 // contract. A poller binary is not upgraded in lockstep with every
-// repository's scaffold migration (the CLI installer this job's wrapper
-// script builds fetches and rebuilds a non-pinned ref on every poll run),
-// so dispatch() must read the committed wrapper and select the transport
-// that repository actually declares.
+// repository's scaffold (the CLI installer this job's wrapper script
+// builds fetches and rebuilds a non-pinned ref on every poll run), so
+// dispatch() must read the committed wrapper and refuse a repository that
+// does not declare the typed contract.
 func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 	event := RoutableEvent{
 		Type:      "issue_note",
@@ -133,7 +139,7 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 	t.Run("typed wrapper uses pipeline inputs", func(t *testing.T) {
 		mc := newMockClient() // default wrapper fixture declares the full typed contract
 		p := newTestPoller(mc, Options{})
-		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if len(mc.pipelineCalls) != 1 || !mc.pipelineCalls[0].ViaInputs {
@@ -141,38 +147,41 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 		}
 	})
 
-	t.Run("missing wrapper falls back to variables-based pipeline", func(t *testing.T) {
-		mc := newMockClient()
-		mc.wrapperNotFound = true // simulates a legacy, not-yet-migrated installation
-		p := newTestPoller(mc, Options{})
-		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(mc.pipelineCalls) != 1 || mc.pipelineCalls[0].ViaInputs {
-			t.Fatalf("expected one CreatePipeline (variables) call, got %+v", mc.pipelineCalls)
-		}
-		if mc.pipelineCalls[0].Variables["STAGE"] != "triage" {
-			t.Errorf("STAGE variable: got %q, want triage", mc.pipelineCalls[0].Variables["STAGE"])
-		}
-	})
-
-	t.Run("incomplete wrapper falls back to variables-based pipeline", func(t *testing.T) {
-		mc := newMockClient()
-		mc.wrapperContent = []byte("spec:\n  inputs:\n    stage: {}\n---\n{}\n") // declares some, not all, inputs
-		p := newTestPoller(mc, Options{})
-		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(mc.pipelineCalls) != 1 || mc.pipelineCalls[0].ViaInputs {
-			t.Fatalf("expected one CreatePipeline (variables) call, got %+v", mc.pipelineCalls)
-		}
-	})
+	// The former variable-based dispatch path has been removed: a
+	// repository without the full typed contract is refused, and no
+	// pipeline is ever created with user-defined variables.
+	for name, setup := range map[string]func(*mockClient){
+		"missing wrapper is refused": func(mc *mockClient) { mc.wrapperNotFound = true },
+		"legacy wrapper is refused": func(mc *mockClient) {
+			mc.wrapperContent = []byte("include:\n  - local: .gitlab/ci/fullsend-agent.yml\n")
+		},
+		"incomplete wrapper is refused": func(mc *mockClient) { mc.wrapperContent = []byte("spec:\n  inputs:\n    stage: {}\n---\n{}\n") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			mc := newMockClient()
+			setup(mc)
+			p := newTestPoller(mc, Options{})
+			err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
+			if err == nil || !strings.Contains(err.Error(), "legacy pipeline-variable dispatch path is no longer supported") {
+				t.Fatalf("expected a typed-contract refusal, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "fullsend_ref to "+firstTypedDispatchRelease) {
+				t.Fatalf("expected the refusal to name fullsend_ref and the minimum release, got %v", err)
+			}
+			if len(mc.pipelineCalls) != 0 {
+				t.Fatalf("expected no pipeline call, got %+v", mc.pipelineCalls)
+			}
+			if len(p.dispatches) != 0 {
+				t.Fatalf("expected no recorded dispatch, got %+v", p.dispatches)
+			}
+		})
+	}
 
 	t.Run("wrapper read error propagates without dispatching", func(t *testing.T) {
 		mc := newMockClient()
 		mc.wrapperErr = fmt.Errorf("permission denied")
 		p := newTestPoller(mc, Options{})
-		err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 		if err == nil || !strings.Contains(err.Error(), "permission denied") {
 			t.Fatalf("expected a wrapped permission-denied error, got %v", err)
 		}
@@ -187,13 +196,13 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 	// CreatePipelineWithInputs targeted p.opts.PipelineRef. When the
 	// dispatch ref's wrapper contract differs from the default branch's
 	// (e.g. a legacy release branch still pinned to variable-based
-	// dispatch while main has migrated to typed inputs, or vice versa),
-	// the poller must select the transport the *dispatch ref* actually
+	// dispatch while main has moved to typed inputs, or vice versa), the
+	// poller must check the contract the *dispatch ref* actually
 	// declares, not the default branch's.
 	t.Run("reads the wrapper at the dispatch ref, not the default branch", func(t *testing.T) {
 		mc := newMockClient()
 		p := newTestPoller(mc, Options{PipelineRef: "legacy-release"})
-		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if len(mc.wrapperContentRefs) != 1 || mc.wrapperContentRefs[0] != "legacy-release" {
@@ -201,18 +210,16 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy wrapper at the dispatch ref falls back to variables even when default branch is typed", func(t *testing.T) {
+	t.Run("legacy wrapper at the dispatch ref is refused even when default branch is typed", func(t *testing.T) {
 		mc := newMockClient() // default-branch wrapper fixture declares the full typed contract
 		mc.wrapperNotFound = true
 		p := newTestPoller(mc, Options{PipelineRef: "legacy-release"})
-		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
+		if err == nil || !strings.Contains(err.Error(), `at ref "legacy-release"`) {
+			t.Fatalf("expected a typed-contract refusal naming the dispatch ref, got %v", err)
 		}
-		if len(mc.pipelineCalls) != 1 || mc.pipelineCalls[0].ViaInputs {
-			t.Fatalf("expected one CreatePipeline (variables) call reflecting the dispatch ref's legacy contract, got %+v", mc.pipelineCalls)
-		}
-		if mc.pipelineCalls[0].Ref != "legacy-release" {
-			t.Errorf("pipeline ref: got %q, want legacy-release", mc.pipelineCalls[0].Ref)
+		if len(mc.pipelineCalls) != 0 {
+			t.Fatalf("expected no pipeline call, got %+v", mc.pipelineCalls)
 		}
 	})
 }
@@ -230,7 +237,7 @@ func TestDispatch_PropagatesMRAuthorAndFork(t *testing.T) {
 		MRTarget:   200,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -270,7 +277,7 @@ func TestDispatch_ActorID_MREvent(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -296,7 +303,7 @@ func TestDispatch_OpenedMRIncludesActionInPayload(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -327,7 +334,7 @@ func TestDispatch_ActorID_IssueNoteEvent(t *testing.T) {
 		NoteAuthorID: 99,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -357,7 +364,7 @@ func TestDispatch_ActorID_MRNoteUsesCommenter(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -381,7 +388,7 @@ func TestDispatch_ActorID_ZeroWhenNeitherSet(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -403,7 +410,7 @@ func TestDispatch_ActorID_IssueLabelEvent(t *testing.T) {
 		NoteAuthorID: 77,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -426,7 +433,7 @@ func TestDispatch_SameProjectIsNotFork(t *testing.T) {
 		MRTarget:  100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -446,7 +453,7 @@ func TestDispatch_PropagatesPollJobURL(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -467,7 +474,7 @@ func TestDispatch_UsesPipelineRefOption(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -490,7 +497,7 @@ func TestDispatch_CreatePipelineErrorPropagates(t *testing.T) {
 		NoteID:    100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err == nil {
 		t.Fatal("expected error from dispatch when CreatePipeline fails")
 	}
@@ -601,7 +608,7 @@ func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
 		MRTarget:     200,
 	}
 
-	data, err := buildEventPayload(event)
+	data, err := buildEventPayload(event, nil)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
@@ -613,7 +620,6 @@ func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
 	checks := map[string]interface{}{
 		"type":                 "issue_note",
 		"iid":                  float64(7),
-		"note_body":            "/fs-triage",
 		"note_id":              float64(200),
 		"note_author_id":       float64(55),
 		"mr_source_project_id": float64(100),
@@ -628,6 +634,13 @@ func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: got %v, want %v", key, got, want)
 		}
+	}
+
+	if got, ok := payloadCommentBody(t, data); !ok || got != "/fs-triage" {
+		t.Errorf("canonical comment body = %q (present %v), want %q", got, ok, "/fs-triage")
+	}
+	if _, ok := m["note_body"]; ok {
+		t.Errorf("payload still emits the legacy note_body field: %v", m["note_body"])
 	}
 
 	// Check updated_at.
@@ -654,7 +667,7 @@ func TestBuildEventPayload_OmitsZeroOptionalFields(t *testing.T) {
 		// All optional fields are zero values.
 	}
 
-	data, err := buildEventPayload(event)
+	data, err := buildEventPayload(event, nil)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
@@ -671,7 +684,7 @@ func TestBuildEventPayload_OmitsZeroOptionalFields(t *testing.T) {
 	}
 
 	// Must NOT have optional fields when zero.
-	optionals := []string{"note_body", "note_id", "note_author_id", "labels", "mr_source_project_id", "mr_target_project_id"}
+	optionals := []string{"note_body", "_normalized_event", "note_id", "note_author_id", "labels", "mr_source_project_id", "mr_target_project_id"}
 	for _, key := range optionals {
 		if _, ok := m[key]; ok {
 			t.Errorf("expected optional key %q to be omitted, but it was present", key)
@@ -679,57 +692,150 @@ func TestBuildEventPayload_OmitsZeroOptionalFields(t *testing.T) {
 	}
 }
 
-func TestBuildEventPayload_NoteBodyUnderLimitUntouched(t *testing.T) {
-	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	body := "/fs-fix make it faster"
-	event := RoutableEvent{Type: "issue_note", IID: 1, UpdatedAt: ts, NoteBody: body}
-
-	data, err := buildEventPayload(event)
-	if err != nil {
-		t.Fatalf("buildEventPayload: %v", err)
+// payloadCommentBody returns the canonical normalized comment body,
+// _normalized_event.transition.comment.body, from a buildEventPayload
+// result — the only field run-agent-job.sh reads it from.
+func payloadCommentBody(t *testing.T, data []byte) (string, bool) {
+	t.Helper()
+	var p struct {
+		Norm *struct {
+			Transition struct {
+				Kind    string `json:"kind"`
+				Comment *struct {
+					Body *string `json:"body"`
+				} `json:"comment"`
+			} `json:"transition"`
+		} `json:"_normalized_event"`
 	}
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := json.Unmarshal(data, &p); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got := m["note_body"]; got != body {
-		t.Errorf("note_body = %q, want unchanged %q", got, body)
+	if p.Norm == nil || p.Norm.Transition.Comment == nil || p.Norm.Transition.Comment.Body == nil {
+		return "", false
+	}
+	if p.Norm.Transition.Kind != string(normevent.TransitionCommentAdded) {
+		t.Errorf("transition.kind = %q, want %q", p.Norm.Transition.Kind, normevent.TransitionCommentAdded)
+	}
+	return *p.Norm.Transition.Comment.Body, true
+}
+
+// multilineFixBody is a /fs-fix command whose instruction spans lines;
+// the instruction run-agent-job.sh derives from it must keep them.
+const multilineFixBody = "/fs-fix only address the nil check\n\n- keep the public API\n- add a regression test"
+
+func TestBuildEventPayload_CommandBodyAtCanonicalPath(t *testing.T) {
+	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	for _, eventType := range []string{"issue_note", "mr_note"} {
+		t.Run(eventType, func(t *testing.T) {
+			event := RoutableEvent{Type: eventType, IID: 1, UpdatedAt: ts, NoteBody: multilineFixBody, NoteID: 9, NoteAuthorID: 3}
+
+			data, err := buildEventPayload(event, nil)
+			if err != nil {
+				t.Fatalf("buildEventPayload: %v", err)
+			}
+			got, ok := payloadCommentBody(t, data)
+			if !ok || got != multilineFixBody {
+				t.Errorf("canonical comment body = %q (present %v), want %q", got, ok, multilineFixBody)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			for _, legacy := range []string{"note_body", "comment", "instruction", "object_attributes"} {
+				if _, ok := m[legacy]; ok {
+					t.Errorf("payload emits non-canonical field %q: %v", legacy, m[legacy])
+				}
+			}
+		})
 	}
 }
 
-func TestBuildEventPayload_NoteBodyOverLimitTruncatedWithNotice(t *testing.T) {
-	// Consumer-contract test: run-agent-job.sh derives /fs-fix instructions
-	// and retro comments straight from this dispatched note_body. A note
-	// over the 800-character dispatch limit must still carry an in-band
-	// signal that it was cut, not just silently end mid-sentence.
+func TestBuildEventPayload_CommandBodyOverNoteLimitNotTruncated(t *testing.T) {
+	// run-agent-job.sh derives the /fs-fix instruction from this body, so
+	// a command must never be shortened in transport.
 	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	body := "/fs-fix " + strings.Repeat("x", 900)
-	event := RoutableEvent{Type: "issue_note", IID: 1, UpdatedAt: ts, NoteBody: body}
+	body := "/fs-fix " + strings.Repeat("x", 2*noteBodyTransportLimit)
+	event := RoutableEvent{Type: "mr_note", IID: 1, UpdatedAt: ts, NoteBody: body}
 
-	data, err := buildEventPayload(event)
+	data, err := buildEventPayload(event, nil)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if got, ok := payloadCommentBody(t, data); !ok || got != body {
+		t.Errorf("canonical comment body has %d runes (present %v), want the intact %d-rune command", len([]rune(got)), ok, len([]rune(body)))
 	}
-	got, ok := m["note_body"].(string)
+}
+
+func TestBuildEventPayload_NonCommandBodyOverLimitTruncatedWithNotice(t *testing.T) {
+	// A non-command body (such as a bot review note) is bounded for
+	// transport and carries an in-band signal that it was cut.
+	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	body := "Changes requested\n" + strings.Repeat("x", 900)
+	event := RoutableEvent{Type: "mr_note", IID: 1, UpdatedAt: ts, NoteBody: body, IsBot: true}
+
+	data, err := buildEventPayload(event, nil)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	got, ok := payloadCommentBody(t, data)
 	if !ok {
-		t.Fatalf("note_body missing or not a string: %v", m["note_body"])
+		t.Fatal("canonical comment body missing")
 	}
-	if len([]rune(got)) > 800 {
-		t.Errorf("note_body has %d runes, want at most 800", len([]rune(got)))
+	if n := len([]rune(got)); n > noteBodyTransportLimit {
+		t.Errorf("comment body has %d runes, want at most %d", n, noteBodyTransportLimit)
 	}
 	if !strings.HasSuffix(got, noteBodyTruncationNotice) {
-		t.Errorf("note_body = %q, want it to end with the truncation notice %q", got, noteBodyTruncationNotice)
+		t.Errorf("comment body = %q, want it to end with the truncation notice %q", got, noteBodyTruncationNotice)
 	}
-	if strings.HasPrefix(got, "/fs-fix") {
-		// Sanity: the instruction prefix a human typed must survive
-		// truncation (truncation cuts from the end), so the shell's
-		// `/fs-fix*` match in run-agent-job.sh still fires.
-	} else {
-		t.Errorf("note_body = %q, want it to still start with the original /fs-fix prefix", got)
+	if !strings.HasPrefix(got, "Changes requested\n") {
+		t.Errorf("comment body = %q, want truncation to cut from the end", got)
+	}
+}
+
+func TestDispatch_RejectsCommandTooLargeToTransportIntact(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_note",
+		IID:          10,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     "/fs-fix " + strings.Repeat("y", maxEventPayloadChunks*dispatchPayloadChunkSize),
+		NoteID:       5,
+		NoteAuthorID: 3,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "fix", event, nil)
+	if err == nil || !strings.Contains(err.Error(), "refusing to dispatch a truncated note body") {
+		t.Fatalf("dispatch error = %v, want a refusal to dispatch a truncated note body", err)
+	}
+	if len(mc.pipelineCalls) != 0 || len(p.dispatches) != 0 {
+		t.Errorf("pipeline calls = %d, dispatches = %d, want none", len(mc.pipelineCalls), len(p.dispatches))
+	}
+}
+
+func TestDispatch_MultilineCommandCarriedIntact(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_note",
+		IID:          10,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     multilineFixBody,
+		NoteID:       5,
+		NoteAuthorID: 3,
+	}
+
+	if err := p.dispatch(context.Background(), "owner", "repo", "fix", event, nil); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	payload, err := base64.StdEncoding.DecodeString(p.dispatches[0].EventPayloadB64)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, ok := payloadCommentBody(t, payload); !ok || got != multilineFixBody {
+		t.Errorf("dispatched canonical comment body = %q (present %v), want %q", got, ok, multilineFixBody)
 	}
 }
 
@@ -751,7 +857,7 @@ func TestDispatch_UnknownProjectIDsAreForkFailClosed(t *testing.T) {
 		// MRSource and MRTarget both zero (unknown)
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -771,7 +877,7 @@ func TestDispatch_IssueEventIsNotFork(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -793,7 +899,7 @@ func TestDispatch_MREventOneZeroProjectIDIsFork(t *testing.T) {
 		MRTarget:  0,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -895,7 +1001,7 @@ func TestDispatch_IncludesHMACWhenSecretSet(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -935,7 +1041,7 @@ func TestDispatch_HMACCoversAllSignedKeysForMREvent(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -972,7 +1078,7 @@ func TestDispatch_NoHMACWhenSecretEmpty(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1081,7 +1187,7 @@ func TestDispatch_IncludesOriginatingURLForIssueEvent(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1108,7 +1214,7 @@ func TestDispatch_IncludesOriginatingURLForMREvent(t *testing.T) {
 		MRTarget:  100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1141,7 +1247,7 @@ func TestDispatch_OriginatingURLWithSubgroup(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1158,15 +1264,16 @@ func TestDispatch_OriginatingURLWithSubgroup(t *testing.T) {
 
 // --- pipeline-inputs transport tests (#7850) ---
 
-// TestEventPayloadChunks_ChunksUnderGitLabInputLimit verifies a payload
+// TestEventPayloadChunks_ChunksUnderScaffoldInputPattern verifies a payload
 // long enough to need multiple chunks (a 4096-byte note body
 // base64-encodes to ~5.6 KB) is split into several pieces, each
-// comfortably under GitLab's ~1 KB per-pipeline-input-string-value limit
-// (https://docs.gitlab.com/ci/inputs/), and that the chunks round-trip
+// comfortably under the 1000-character chunk-input pattern the scaffold's
+// own configuration enforces (dispatchPayloadChunkSize; GitLab's
+// documented input limits are far larger), and that the chunks round-trip
 // back to the original string by plain concatenation (#7850 injection-vuln
 // fix: chunks are raw data, not shell statements, so no parsing step is
 // needed to recover them).
-func TestEventPayloadChunks_ChunksUnderGitLabInputLimit(t *testing.T) {
+func TestEventPayloadChunks_ChunksUnderScaffoldInputPattern(t *testing.T) {
 	payload := strings.Repeat("A", 5600)
 	chunks, err := eventPayloadChunks(payload)
 	if err != nil {
@@ -1180,7 +1287,7 @@ func TestEventPayloadChunks_ChunksUnderGitLabInputLimit(t *testing.T) {
 	var rebuilt strings.Builder
 	for _, chunk := range chunks {
 		if len(chunk) >= 1024 {
-			t.Errorf("chunk is %d bytes, want < 1024 (GitLab's per-input-string limit): %q", len(chunk), chunk)
+			t.Errorf("chunk is %d bytes, want < 1024 (the scaffold's chunk-input pattern bound): %q", len(chunk), chunk)
 		}
 		rebuilt.WriteString(chunk)
 	}
@@ -1407,5 +1514,622 @@ func TestResourceKey_EntityBased(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("resourceKey(%s, IID=%d) = %q, want %q", tt.event.Type, tt.event.IID, got, tt.want)
 		}
+	}
+}
+
+// TestDispatch_ChildPipelineRoute covers the CI_JOB_TOKEN child-pipeline
+// route (#8438): with ChildDispatchJobToken set, a typed repository's agent
+// pipeline is started through the trigger API with that job token and the
+// same signed typed inputs as the Poller API route; without it, the Poller
+// API route is unchanged; and a legacy (variable-based) repository is
+// refused rather than dispatched through variables.
+func TestDispatch_ChildPipelineRoute(t *testing.T) {
+	event := RoutableEvent{
+		Type:      "issue_note",
+		IID:       42,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:  "/fs-triage",
+	}
+
+	t.Run("typed wrapper dispatches a child pipeline with the job token", func(t *testing.T) {
+		mc := newMockClient()
+		p := newTestPoller(mc, Options{DispatchSecret: "s3cret", ChildDispatchJobToken: "job-token-value"})
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mc.pipelineCalls) != 1 {
+			t.Fatalf("expected one pipeline call, got %+v", mc.pipelineCalls)
+		}
+		call := mc.pipelineCalls[0]
+		if !call.ViaInputs || call.JobToken != "job-token-value" {
+			t.Fatalf("expected a typed child-pipeline call with the job token, got %+v", call)
+		}
+		if call.Variables["STAGE"] != "triage" {
+			t.Errorf("STAGE input: got %q, want triage", call.Variables["STAGE"])
+		}
+		want := computeDispatchHMAC("s3cret", withoutKey(call.Variables, forge.VarDispatchHMAC))
+		if call.Variables[forge.VarDispatchHMAC] != want {
+			t.Errorf("dispatch HMAC: got %q, want %q", call.Variables[forge.VarDispatchHMAC], want)
+		}
+	})
+
+	t.Run("no job token keeps the Poller API route", func(t *testing.T) {
+		mc := newMockClient()
+		p := newTestPoller(mc, Options{})
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mc.pipelineCalls) != 1 || !mc.pipelineCalls[0].ViaInputs || mc.pipelineCalls[0].JobToken != "" {
+			t.Fatalf("expected one Poller API typed-input call, got %+v", mc.pipelineCalls)
+		}
+	})
+
+	t.Run("legacy wrapper is refused on the child route", func(t *testing.T) {
+		mc := newMockClient()
+		mc.wrapperNotFound = true
+		p := newTestPoller(mc, Options{ChildDispatchJobToken: "job-token-value"})
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
+		if err == nil || !strings.Contains(err.Error(), "requires the typed pipeline-input contract") {
+			t.Fatalf("expected a typed-contract error, got %v", err)
+		}
+		if len(p.dispatches) != 0 {
+			t.Fatalf("expected no recorded dispatch, got %+v", p.dispatches)
+		}
+		if len(mc.pipelineCalls) != 0 {
+			t.Fatalf("expected no pipeline call, got %+v", mc.pipelineCalls)
+		}
+	})
+
+	t.Run("child pipeline failure is reported", func(t *testing.T) {
+		mc := newMockClient()
+		mc.pipelineErr = fmt.Errorf("403 forbidden")
+		p := newTestPoller(mc, Options{ChildDispatchJobToken: "job-token-value"})
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
+		if err == nil || !strings.Contains(err.Error(), "403 forbidden") {
+			t.Fatalf("expected the child-pipeline error, got %v", err)
+		}
+		if len(p.dispatches) != 0 {
+			t.Fatalf("expected no recorded dispatch after a failed child pipeline, got %+v", p.dispatches)
+		}
+	})
+}
+
+// withoutKey returns a copy of vars without key.
+func withoutKey(vars map[string]string, key string) map[string]string {
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if k != key {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// worstCaseAttackerEvent builds the worst attacker-shaped event the
+// transport bounds have to contain: an escape-heavy note body at
+// noteBodyTransportLimit, state.labels at the labels bound, maximal
+// escape-heavy branch refs and logins, the config-derived repo and URLs at
+// the documented plausible config (they travel whole; a schema-max config
+// fails closed instead — TestBuildEventPayload_SchemaMaxConfigFailsClosed),
+// the linked change proposal, a review — and the maximal
+// transition.label.name a work item can carry beside its comment
+// (TestBuildEventPayload_WorstCaseFitsTransportBudget, the frozen pin of
+// this shape, predates the label name; this helper includes it so the
+// non-frozen worst-case tests pay for it too).
+func worstCaseAttackerEvent() (RoutableEvent, dispatch.NormalizedEvent) {
+	event, ne := mrNote(strings.Repeat("<", noteBodyTransportLimit))
+	labels := make([]string, 2000)
+	for i := range labels {
+		labels[i] = "label-number-" + strings.Repeat("z", 5)
+	}
+	ne.State.Labels = labels
+	event.Labels = labels
+	event.SourceBranch = strings.Repeat("<", 255)
+	event.TargetBranch = strings.Repeat("<", 255)
+	if cp := ne.State.ChangeProposal; cp != nil {
+		cp.HeadRef = strings.Repeat("<", 255)
+		cp.BaseRef = strings.Repeat("<", 255)
+		cp.AuthorID = strings.Repeat("<", 255)
+		cp.HeadRepo = strings.Repeat("<", 512)
+		cp.BaseRepo = strings.Repeat("<", 512)
+	}
+	ne.Repo = strings.Repeat("p", 120)
+	ne.Actor.ID = strings.Repeat("<", 255)
+	ne.Entity.Kind = "work_item"
+	ne.Entity.URL = strings.Repeat("u", 160)
+	ne.Entity.LinkedChangeProposal = &dispatch.LinkedChangeProposal{
+		ID:  12,
+		URL: strings.Repeat("l", 160),
+	}
+	ne.Transition.Review = &dispatch.TransitionReview{
+		State:      "approved",
+		ReviewerID: strings.Repeat("<", 255),
+	}
+	ne.Transition.Label = &dispatch.TransitionLabel{Action: "added", Name: strings.Repeat("<", 255)}
+	return event, ne
+}
+
+// TestBuildEventPayload_WorstCaseWithLabelNameFitsBudget pins the worst-case
+// budget arithmetic the three transport bounds exist for, including the
+// maximal transition.label.name the frozen worst-case test predates: with
+// every bounded attacker-shaped field at its transported bound
+// simultaneously — label name included — the complete form must still fit
+// the chunk budget, so a bound raise, or a newly classified bounded field
+// that consumes the remaining margin, reopens the comment-only fallback
+// (the attacker-chosen "no event" routing channel) here instead of silently.
+func TestBuildEventPayload_WorstCaseWithLabelNameFitsBudget(t *testing.T) {
+	event, ne := worstCaseAttackerEvent()
+
+	data, err := buildEventPayload(event, &ne)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	// The complete form, not the comment-only fallback: it validates as a
+	// normalized event and carries the bounded label name.
+	ev := payloadEvent(t, data)
+	if label := ev.Transition.Label; label == nil || len(label.Name) != (transportStringRefLimit-2)/6 {
+		t.Errorf("transported label = %+v, want the %d-rune bounded label name carried", ev.Transition.Label, (transportStringRefLimit-2)/6)
+	}
+	if n := base64.StdEncoding.EncodedLen(len(data)); n > maxEventPayloadChunks*dispatchPayloadChunkSize {
+		t.Errorf("worst-case payload with label name is %d base64 characters, over the %d budget", n, maxEventPayloadChunks*dispatchPayloadChunkSize)
+	}
+}
+
+// TestBuildEventPayload_OverBudgetNonCommandFallsBackBounded covers the
+// comment-only fallback's over-budget branch: a valid complete normalized
+// event that does not fit the transport budget with a non-command body must
+// return the comment-only payload — never a partial _normalized_event — and
+// the fallback's flat labels copy must be bounded like state.labels. The
+// attacker-shaped bounds keep every attacker-shaped worst case inside the
+// budget (TestBuildEventPayload_WorstCaseFitsTransportBudget and
+// TestBuildEventPayload_WorstCaseWithLabelNameFitsBudget pin that), so
+// the branch is forced here the way it can still be forced: a forge-assigned
+// string no transport bound owns (entity.key, classified by the drift
+// guards) padded past the budget. The branch is the payload path dispatch()'s
+// outer budget check guards, so a future field or bound drift that reopens
+// it fails here instead of shipping an untested fallback.
+func TestBuildEventPayload_OverBudgetNonCommandFallsBackBounded(t *testing.T) {
+	// The worst attacker-shaped shape, so only the padded forge-assigned
+	// key decides whether the complete form fits.
+	event, ne := worstCaseAttackerEvent()
+	// entity.key is forge-assigned (the forge, not the event author, picks
+	// it), so no transport bound owns it; padded past the budget it makes
+	// the valid complete form untransportable.
+	ne.Entity.Key = strings.Repeat("k", 2000)
+
+	data, err := buildEventPayload(event, &ne)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	// The fallback is the comment-only payload, byte for byte: the same
+	// event without a normalized event marshals the same map.
+	want, err := buildEventPayload(event, nil)
+	if err != nil {
+		t.Fatalf("buildEventPayload without event: %v", err)
+	}
+	if !bytes.Equal(data, want) {
+		t.Errorf("payload = %s\nwant the comment-only payload %s", data, want)
+	}
+	// The fallback's flat labels copy is bounded like state.labels: a
+	// strict prefix of the event's labels whose JSON fits
+	// dispatch.TransportLabelsLimit, so the fallback itself always fits the budget.
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	raw, ok := m["labels"].([]any)
+	if !ok || len(raw) == 0 || len(raw) == len(event.Labels) {
+		t.Fatalf("flat labels = %v, want a strict non-empty prefix of %d labels", raw, len(event.Labels))
+	}
+	got := make([]string, len(raw))
+	for i, v := range raw {
+		got[i], ok = v.(string)
+		if !ok {
+			t.Fatalf("flat label %d = %T, want a string", i, v)
+		}
+	}
+	if !slices.Equal(got, event.Labels[:len(got)]) {
+		t.Errorf("flat labels are not a prefix of the event's labels")
+	}
+	if enc, err := json.Marshal(got); err != nil || len(enc) > dispatch.TransportLabelsLimit {
+		t.Errorf("flat labels are %d JSON bytes (err %v), want at most %d", len(enc), err, dispatch.TransportLabelsLimit)
+	}
+	if n := base64.StdEncoding.EncodedLen(len(data)); n > maxEventPayloadChunks*dispatchPayloadChunkSize {
+		t.Errorf("fallback payload is %d base64 characters, over the %d budget", n, maxEventPayloadChunks*dispatchPayloadChunkSize)
+	}
+}
+
+// jiraBoundedFields are the string paths encodeJiraEventPayload bounds on
+// the Jira door: state.labels through dispatch.BoundTransportLabels (exactly like the
+// GitLab door), and the comment body and instruction through the
+// jiraCommentLimits shortening ladder (a /fs-* command body is exempt and
+// fails the dispatch closed when it does not fit).
+var jiraBoundedFields = map[string]bool{
+	"state.labels":                   true,
+	"transition.comment.body":        true,
+	"transition.comment.instruction": true,
+}
+
+// jiraCarriedAsIs are the attacker-shaped single strings the Jira door
+// carries as-is — the recorded deliberate divergence from the GitLab door's
+// boundTransportEventStrings: this door has no comment-only fallback whose
+// no-event shape a truncated string could shape, so an oversized one fails
+// the budget check and the dispatch errors before a pipeline is created
+// (frozen TestEncodeJiraEventPayload_TooLargeWithoutComment pins that).
+// Keep any change to transportStringRefLimit or this list mirrored on both
+// doors, the way the GitLab door's drift guard
+// (TestBoundTransportEventStrings_CoversEveryStringField) enforces its side.
+var jiraCarriedAsIs = map[string]bool{
+	"repo":                              true,
+	"entity.url":                        true,
+	"entity.linked_change_proposal.url": true,
+	"transition.label.name":             true,
+	"transition.review.reviewer_id":     true,
+	"actor.id":                          true,
+	"state.change_proposal.head_repo":   true,
+	"state.change_proposal.base_repo":   true,
+	"state.change_proposal.head_ref":    true,
+	"state.change_proposal.base_ref":    true,
+	"state.change_proposal.author_id":   true,
+}
+
+// jiraForgeOrEnum are the strings the forge, a closed schema enum or a
+// derived token picks; the Jira event author cannot pad them.
+var jiraForgeOrEnum = map[string]bool{
+	"entity.kind":             true,
+	"entity.key":              true,
+	"transition.kind":         true,
+	"transition.label.action": true,
+	// extractCommand derives command from the comment body: empty or a
+	// short /fs-* token.
+	"transition.comment.command": true,
+	// backend-native message ids (ADR 0086).
+	"transition.comment.id":              true,
+	"transition.comment.parent_id":       true,
+	"transition.review.state":            true,
+	"actor.kind":                         true,
+	"actor.role":                         true,
+	"actor.bot_role":                     true,
+	"state.change_proposal.head_sha":     true,
+	"state.conversation.category.id":     true,
+	"state.conversation.category.name":   true,
+	"state.conversation.category.slug":   true,
+	"state.conversation.category.format": true,
+	"source.system":                      true,
+	"source.raw_type":                    true,
+	"source.raw_action":                  true,
+	// Jira assigns the type id and a Jira admin's issue type scheme
+	// defines the name; toNormalizedEvent also drops the object unless
+	// both are 1–255 code points.
+	"state.issue_type.id":   true,
+	"state.issue_type.name": true,
+}
+
+// TestEncodeJiraEventPayload_ClassifiesEveryStringField is the Jira door's
+// drift guard, mirroring the GitLab door's
+// TestBoundTransportEventStrings_CoversEveryStringField over normevent.Event
+// (the struct the Jira door transports). A string field added to
+// normevent.Event or one of its nested structs fails this test until it is
+// classified: bounded in encodeJiraEventPayload, carried as-is under the
+// recorded fail-closed divergence, or forge-assigned/enum — so a new
+// attacker-shaped field cannot ship unbounded on one door unnoticed.
+func TestEncodeJiraEventPayload_ClassifiesEveryStringField(t *testing.T) {
+	seen := map[string]bool{}
+	collectStringFieldPaths(reflect.TypeOf(normevent.Event{}), "", seen)
+	for _, path := range slices.Sorted(maps.Keys(seen)) {
+		if jiraBoundedFields[path] || jiraCarriedAsIs[path] || jiraForgeOrEnum[path] {
+			continue
+		}
+		t.Errorf("unclassified string field %q: bound it in encodeJiraEventPayload, classify it as carried as-is under the recorded GitLab-door divergence, or as forge-assigned/enum", path)
+	}
+	for _, classified := range []map[string]bool{jiraBoundedFields, jiraCarriedAsIs, jiraForgeOrEnum} {
+		for path := range classified {
+			if !seen[path] {
+				t.Errorf("classified string field %q no longer exists on normevent.Event", path)
+			}
+		}
+	}
+}
+
+// TestBoundTransportStringQuoteAndControlRunesFitRefLimit covers
+// jsonRuneLen's default arm — the quote, the backslash and ASCII control
+// characters such as newline — which TestBoundTransportString's escape-heavy
+// and invalid-UTF-8 cases do not reach. The arm is load-bearing for the
+// "never estimate longer than the encoder writes" invariant: if it were
+// simplified to utf8.RuneLen(r), a quote- or control-heavy branch name or
+// label would silently exceed transportStringRefLimit and eat the worst-case
+// budget margin.
+func TestBoundTransportStringQuoteAndControlRunesFitRefLimit(t *testing.T) {
+	s := strings.Repeat("\"\\\n", 128)
+	got := boundTransportString(s)
+	if want := (transportStringRefLimit - 2) / 6; len(got) != want {
+		t.Errorf("boundTransportString(quote/control-heavy) = %d runes, want the %d-rune prefix", len(got), want)
+	}
+	if enc, err := json.Marshal(got); err != nil || len(enc) > transportStringRefLimit {
+		t.Errorf("bounded string is %d JSON bytes (err %v), want at most %d", len(enc), err, transportStringRefLimit)
+	}
+}
+
+// TestBoundTransportLabelsSingleOverBoundLabelDropsAll covers
+// dispatch.BoundTransportLabels' kept==0 arm: when the first label alone exceeds
+// dispatch.TransportLabelsLimit, nothing fits and the bound returns an empty,
+// non-nil slice — the payload travels with state.labels: [] rather than a
+// nil list or a cut single label. TestBoundTransportLabels (in
+// dispatch_normalized_test.go) covers the fitting, nil and many-labels
+// cases but never this one.
+func TestBoundTransportLabelsSingleOverBoundLabelDropsAll(t *testing.T) {
+	got := dispatch.BoundTransportLabels([]string{strings.Repeat("x", 1500)})
+	if got == nil || len(got) != 0 {
+		t.Errorf("dispatch.BoundTransportLabels(single over-bound label) = %v (len %d), want an empty non-nil slice", got, len(got))
+	}
+}
+
+// TestBoundTransportLabels_KeepsControlLabels pins the labels bound's
+// control-label keep (dispatch.IsControlLabel): fullsend-no-fix and
+// fullsend-fix survive the byte cap however much padding sorts ahead of
+// them, so the router's no-fix gate — which evaluates the bounded list
+// both doors hand it — can never fail open on its own kill switch, and
+// the worst-case payload with them kept still fits the chunk budget.
+func TestBoundTransportLabels_KeepsControlLabels(t *testing.T) {
+	// Twenty-four forty-character pad labels overflow the 1024-byte JSON
+	// bound (2 + 24*42 + 23 = 1033 bytes with quotes and commas), pushing
+	// both control labels past it.
+	pad := strings.Repeat("p", 40)
+	labels := make([]string, 0, 26)
+	for i := 0; i < 24; i++ {
+		labels = append(labels, pad)
+	}
+	labels = append(labels, "fullsend-fix", "fullsend-no-fix")
+	bounded := dispatch.LogBoundTransportLabels("test control labels", labels)
+	if !slices.Contains(bounded, "fullsend-no-fix") || !slices.Contains(bounded, "fullsend-fix") {
+		t.Fatalf("bounded labels = %v, want both control labels kept past the byte cap", bounded)
+	}
+	if enc, err := json.Marshal(bounded); err != nil || len(enc) > dispatch.TransportLabelsLimit+40 {
+		t.Errorf("bounded labels with the control labels kept are %d JSON bytes (err %v), want at most the bound plus the control labels' ~32 bytes", len(enc), err)
+	}
+
+	// The router's no-fix gate evaluates the bounded list: a bot
+	// changes-requested marker on a non-fork change proposal whose padding
+	// labels pushed fullsend-no-fix past the byte cap routes to no stage.
+	markerEvent := func(labels []string) dispatch.NormalizedEvent {
+		return dispatch.NormalizedEvent{
+			Transition: dispatch.Transition{
+				Kind:    "comment_added",
+				Comment: &dispatch.TransitionComment{Body: "review " + forge.ChangesRequestedMarker},
+			},
+			Entity: dispatch.Entity{Kind: "change_proposal"},
+			Actor:  dispatch.Actor{Kind: "bot"},
+			State: dispatch.State{
+				Labels:         labels,
+				ChangeProposal: &dispatch.ChangeProposalState{IsFork: false},
+			},
+		}
+	}
+	ne := markerEvent(bounded)
+	stages, err := dispatch.NewHarnessRouter([]string{"fix"}).Route(&ne)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(stages) != 0 {
+		t.Errorf("routed %v, want no stage: the kept fullsend-no-fix label must suppress the fix gate", stages)
+	}
+
+	// Without the stop label the same marker routes to fix, proving the
+	// gate — not the event's shape — decided.
+	withoutStop := make([]string, 0, len(bounded))
+	for _, l := range bounded {
+		if l != "fullsend-no-fix" {
+			withoutStop = append(withoutStop, l)
+		}
+	}
+	ne = markerEvent(withoutStop)
+	stages, err = dispatch.NewHarnessRouter([]string{"fix"}).Route(&ne)
+	if err != nil {
+		t.Fatalf("Route without the stop label: %v", err)
+	}
+	if len(stages) != 1 || stages[0] != "fix" {
+		t.Errorf("routed %v without fullsend-no-fix, want [fix]", stages)
+	}
+
+	// The kept control labels ride inside the worst-case budget: the
+	// maximal attacker shape with both control labels sorted past the
+	// bound still transports as the complete form within the chunk
+	// budget, control labels carried.
+	event, worst := worstCaseAttackerEvent()
+	withControl := append(append([]string{}, worst.State.Labels...), "fullsend-fix", "fullsend-no-fix")
+	worst.State.Labels = withControl
+	event.Labels = withControl
+	data, err := buildEventPayload(event, &worst)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	if n := base64.StdEncoding.EncodedLen(len(data)); n > maxEventPayloadChunks*dispatchPayloadChunkSize {
+		t.Errorf("worst-case payload with control labels kept is %d base64 characters, over the %d budget", n, maxEventPayloadChunks*dispatchPayloadChunkSize)
+	}
+	ev := payloadEvent(t, data)
+	if !slices.Contains(ev.State.Labels, "fullsend-no-fix") || !slices.Contains(ev.State.Labels, "fullsend-fix") {
+		t.Errorf("transported labels = %d entries, want the control labels carried in the complete form", len(ev.State.Labels))
+	}
+}
+
+// TestEncodeJiraEventPayload_LastLadderStepCarriesNoCommentText pins the
+// ladder's 0 step: at the largest comment ballast that still
+// dispatches, the ladder has walked to its last step, and the dispatched
+// comment body must be empty — not the 13-rune truncation notice. The
+// ballast is the comment's id and parent_id (carried as-is, escape-heavy);
+// one more ballast rune pair costs 12 JSON bytes, less than the notice's
+// ~15, so a notice-carrying last step would fail this dispatch instead of
+// fitting: a step-100 body costs far more than that, so the maximal
+// fitting ballast always lands on step 0.
+func TestEncodeJiraEventPayload_LastLadderStepCarriesNoCommentText(t *testing.T) {
+	base := jiraTestEvent("group/sub/project")
+	base.Transition.Comment.Body = "please review " + strings.Repeat("<", 900)
+	base.Transition.Comment.Command = ""
+	fits := func(n int) bool {
+		ev := *base
+		c := *ev.Transition.Comment
+		c.ID = strings.Repeat("<", n)
+		c.ParentID = strings.Repeat("<", n)
+		ev.Transition.Comment = &c
+		encoded, err := encodeJiraEventPayload("jira_comment", &ev)
+		return err == nil && len(encoded) <= maxEventPayloadChunks*dispatchPayloadChunkSize
+	}
+	lo, hi := 0, 4096
+	if !fits(lo) {
+		t.Fatal("the unpadded event does not dispatch")
+	}
+	if fits(hi) {
+		t.Fatal("the maximally padded event still dispatches; the search range is wrong")
+	}
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if fits(mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	ev := *base
+	c := *ev.Transition.Comment
+	c.ID = strings.Repeat("<", lo)
+	c.ParentID = strings.Repeat("<", lo)
+	ev.Transition.Comment = &c
+	encoded, err := encodeJiraEventPayload("jira_comment", &ev)
+	if err != nil {
+		t.Fatalf("encodeJiraEventPayload at the largest fitting ballast %d: %v", lo, err)
+	}
+	_, got := decodeJiraPayload(t, encoded)
+	if got.Transition.Comment.Body != "" || got.Transition.Comment.Instruction != "" {
+		t.Errorf("last ladder step body = %q, instruction = %q, want both empty (no truncation notice)",
+			got.Transition.Comment.Body, got.Transition.Comment.Instruction)
+	}
+}
+
+// TestEncodeJiraEventPayload_OversizedCommandBodyFailsClosed pins the Jira
+// door's command fail-closed for the body shape only the complete form
+// refuses: a multiline ASCII /fs-* command past the adapter's 4096-code-point
+// cap whose 4096-rune prefix fits the 9x1000-character budget. The jirapoll
+// adapter now carries a command body untruncated (convert.go), so this door
+// measures the complete body and must refuse it with ErrTransportBudget
+// instead of dispatching a silently shortened instruction — the defect open
+// threads 4532843765 and 4532950230 name (before that fix the adapter cut
+// the body to 4096 runes first and the prefix dispatched).
+func TestEncodeJiraEventPayload_OversizedCommandBodyFailsClosed(t *testing.T) {
+	body := "/fs-triage review the acceptance criteria\n" +
+		strings.Repeat("plain ascii review notes, one line at a time\n", 200)
+	if got := len([]rune(body)); got <= 4096 {
+		t.Fatalf("test body is %d runes, want more than the 4096-rune adapter cap", got)
+	}
+	ev := jiraTestEvent("group/sub/project")
+	ev.Transition.Comment.Body = body
+	ev.Transition.Comment.Command = "/fs-triage"
+	ev.Transition.Comment.Instruction = "review the acceptance criteria"
+
+	_, err := encodeJiraEventPayload("jira_comment", ev)
+	if !errors.Is(err, dispatch.ErrTransportBudget) {
+		t.Fatalf("encodeJiraEventPayload(oversized command body) error = %v, want dispatch.ErrTransportBudget", err)
+	}
+
+	// Control: the 4096-rune prefix the adapter used to cut command bodies
+	// to fits the budget, so the refusal above is the complete command
+	// body's, not an event too big on its own — exactly the silently
+	// shortened dispatch the fail-closed exists to prevent.
+	cut := *ev
+	c := *ev.Transition.Comment
+	c.Body = truncate(body, 4096)
+	cut.Transition.Comment = &c
+	if _, err := encodeJiraEventPayload("jira_comment", &cut); err != nil {
+		t.Fatalf("encodeJiraEventPayload(4096-rune command prefix) error = %v, want none: the prefix fits the budget", err)
+	}
+}
+
+// TestEncodeJiraEventPayload_CommandBudgetBoundary pins the largest
+// /fs-* command the Jira dispatch door can carry: the complete event
+// holds the command text twice (comment.body and the re-derived
+// comment.instruction), so with plain ASCII text the boundary sits near
+// 3,000 characters — far under both the 4096-rune adapter cap and the
+// roughly 6,550-character comment-only-fallback ceiling that carried
+// command bodies whole before the carried-whole fix — and one character
+// past the boundary is refused with dispatch.ErrTransportBudget, never
+// dispatched shortened. jira-integration.md documents this boundary
+// ("about 3,000 ASCII characters, fewer when escape-heavy"), so the
+// ballpark assertion below also fails when that doc drifts from the
+// code; the GitLab door has its own pin,
+// TestBuildEventPayload_CommandBudgetBoundary.
+func TestEncodeJiraEventPayload_CommandBudgetBoundary(t *testing.T) {
+	commandBody := func(total int) *normevent.Event {
+		ev := jiraTestEvent("group/sub/project")
+		body := "/fs-triage " + strings.Repeat("a", total)
+		ev.Transition.Comment.Body = body
+		ev.Transition.Comment.Command = "/fs-triage"
+		ev.Transition.Comment.Instruction = strings.TrimPrefix(body, "/fs-triage ")
+		return ev
+	}
+	fits := func(total int) bool {
+		_, err := encodeJiraEventPayload("jira_comment", commandBody(total))
+		return err == nil
+	}
+
+	// Binary search for the largest body the nine-chunk budget carries:
+	// the payload grows monotonically with the body length, so the
+	// boundary is a single length, found deterministically.
+	lo, hi := 0, 4096
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if fits(mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if !fits(lo) {
+		t.Fatalf("binary search found no fitting command body")
+	}
+	if lo < 2800 || lo > 3400 {
+		t.Errorf("largest dispatchable /fs-* command body is %d ASCII characters, want the documented ~3,000 (2800-3400): update jira-integration.md with the real boundary", lo)
+	}
+	if _, err := encodeJiraEventPayload("jira_comment", commandBody(lo+1)); !errors.Is(err, dispatch.ErrTransportBudget) {
+		t.Fatalf("encodeJiraEventPayload(command body one character past the boundary) error = %v, want dispatch.ErrTransportBudget", err)
+	}
+}
+
+// TestBuildEventPayload_CommandBudgetBoundary pins the largest /fs-*
+// command the GitLab dispatch door can carry — the door thread 4551012532
+// measured (2,975 ASCII characters at head 8c21e5b8) and
+// configuring-gitlab.md documents ("about 3,000 ASCII characters, fewer
+// when escape-heavy"). Like the Jira door, the complete event carries the
+// command text twice (comment.body and the re-derived
+// comment.instruction), but this door's payload also carries the flat
+// event fields, so its boundary drifts independently of the Jira door's;
+// one character past the boundary is refused with
+// dispatch.ErrTransportBudget, never dispatched shortened.
+func TestBuildEventPayload_CommandBudgetBoundary(t *testing.T) {
+	fits := func(total int) bool {
+		event, ne := mrNote("/fs-code " + strings.Repeat("a", total))
+		_, err := buildEventPayload(event, &ne)
+		return err == nil
+	}
+
+	// Binary search for the largest body the nine-chunk budget carries:
+	// the payload grows monotonically with the body length, so the
+	// boundary is a single length, found deterministically.
+	lo, hi := 0, 4096
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if fits(mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if !fits(lo) {
+		t.Fatalf("binary search found no fitting command body")
+	}
+	if lo < 2800 || lo > 3400 {
+		t.Errorf("largest dispatchable /fs-* command body is %d ASCII characters, want the documented ~3,000 (2800-3400): update configuring-gitlab.md with the real boundary", lo)
+	}
+	event, ne := mrNote("/fs-code " + strings.Repeat("a", lo+1))
+	if _, err := buildEventPayload(event, &ne); !errors.Is(err, dispatch.ErrTransportBudget) {
+		t.Fatalf("buildEventPayload(command body one character past the boundary) error = %v, want dispatch.ErrTransportBudget", err)
 	}
 }

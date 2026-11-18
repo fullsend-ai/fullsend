@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/netutil"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // FetchPolicy controls the security constraints applied when fetching a URL.
@@ -374,7 +374,7 @@ func retryBackoff(base time.Duration, attempt int) time.Duration {
 		backoff = maxBackoff
 	}
 	half := backoff / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 // ComputeSHA256 returns the lowercase hex-encoded SHA-256 digest of data.

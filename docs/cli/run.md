@@ -12,13 +12,15 @@ Execute an agent locally in a sandbox. `fullsend run` resolves the agent harness
 fullsend run <agent-name> [flags]
 ```
 
+A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration) must have every harness-level `allowed_remote_resources` prefix covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes (the defaults are included when the list is omitted or non-empty; an explicit `allowed_remote_resources: []` stays deny-all and excludes them); `fullsend run` fails naming an uncovered prefix, and fails closed when no repository config (`config.yaml` or `config.base.yaml`) exists. See the [`allow_runtime_fetch` entry](../reference/harness-reference.md) in the harness reference.
+
 ## Flags
 
 | Flag | Description |
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`; when omitted and `.fullsend` does not exist in the current directory, the command stops and names the flag) |
-| `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`); also `FULLSEND_RUNTIME` |
-| `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi and codex — codex takes OpenAI ids and `gateway/<model>` only); also `FULLSEND_MODEL` |
+| `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `codex`, `opencode`, `dummy` or `dummy-playback`); also `FULLSEND_RUNTIME` |
+| `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi, codex, and opencode — codex takes OpenAI ids and `gateway/<model>` only); also `FULLSEND_MODEL` |
 | `--effort` | Override the harness effort level for this run (`low`…`max`); also `FULLSEND_EFFORT` |
 | `--output-dir` | Base directory for run output (default: `/tmp/fullsend`) |
 | `--target-repo` | Path to the target repository |
@@ -28,8 +30,19 @@ fullsend run <agent-name> [flags]
 | `--keep-sandbox` | Skip sandbox deletion after the run |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
-| `--offline` | Reject network fetches; only use cached remote resources |
+| `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run, or a run that mints a Jira token, stops, because resolving the Jira API gateway address needs a network lookup |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
+
+`--target-repo` accepts a plain directory or a valid checkout with a real root
+`.git` directory. `.git` files (linked worktrees and submodules), symlinked
+`.git` entries, and bare repositories are unsupported. Fullsend validates the
+target after the pre-script and before upload, and sanitizes and validates the
+returned tree before publication; a plain directory may come back as a plain
+directory or a valid checkout, while a checkout must come back as a checkout.
+Reftable ref storage requires Git 2.53 or newer on the host running Fullsend.
+Fullsend rejects a downloaded `.git/packed-refs` larger than 32 MiB and a
+downloaded `.git/shallow` larger than 4 MiB.
+See [SafeDownload](../guides/dev/cli-internals.md#security-sanitizedownload).
 
 ## Plan block
 
@@ -38,7 +51,7 @@ At startup, `fullsend run` prints a plan block summarizing the resolved configur
 ```
 Agent:     code
 Role:      code
-Model:     sonnet
+Model:     sonnet → claude-sonnet-5-5 (built-in default)
 Effort:    high
 Runtime:   claude (from /path/to/.fullsend/config.yaml)
 Image:     fullsend-sandbox:latest
@@ -50,7 +63,7 @@ The **Runtime** line shows which runtime was selected and the config source it w
 
 The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi uses it for aliased models on the top-level run when Vertex does not serve the model (two specific 404/403 messages, same provider only; sub-agent children get none); codex ignores it with a warning.
 
-The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. A value from the config file is labelled with the file path, suffixed ` agents.<name>` when the agent's entry decided. When `models.aliases` in `.fullsend/config.yaml` remaps the alias, the line keeps the alias and its source and adds the remap: `Model: sonnet (from <source>) → claude-sonnet-5 (from <config path> models.aliases)`, with `model: alias "sonnet" remapped to "claude-sonnet-5" from <config path> models.aliases` on stderr. Aliased entries in the `Fallback models` line show as `alias → id` (`sonnet → claude-sonnet-5, claude-opus-4-6 (from FULLSEND_FALLBACK_MODELS)`); literal ids print as written; pi uses the chain for aliased models when Vertex does not serve the model and ignores it for pinned ids. An invalid override — unknown runtime, unknown effort level, an `agents:` entry that names no agent, or a `models.aliases` key or value the block does not accept — fails before the sandbox is created.
+The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. A value from the config file is labelled with the file path, suffixed ` agents.<name>` when the agent's entry decided. When `models.aliases` in `.fullsend/config.yaml` remaps the alias, the line keeps the alias and its source and adds the remap: `Model: sonnet (from <source>) → claude-sonnet-5 (from <config path> models.aliases)`, with `model: alias "sonnet" remapped to "claude-sonnet-5" from <config path> models.aliases` on stderr. An alias that is not remapped shows the id it resolves to through the runtime's built-in table instead: `Model: haiku (from FULLSEND_MODEL) → claude-haiku-5-5 (built-in default)` on `claude` (`opus`, `sonnet`, `haiku`) and `pi` (those three plus `fable`). Aliased entries in the `Fallback models` line show as `alias → id` (`sonnet → claude-sonnet-5, claude-opus-4-6 (from FULLSEND_FALLBACK_MODELS)`); literal ids print as written; Claude Code and pi use the chain for aliased models when Vertex does not serve the model and ignore it for pinned ids. With no `FULLSEND_FALLBACK_MODELS`, a `claude` or `pi` run on `opus`, `sonnet` or `haiku` (not retargeted) prints the alias's built-in chain instead: `Fallback models: claude-opus-4-6 (built-in for opus, when not served)`. An invalid override — unknown runtime, unknown effort level, an `agents:` entry that names no agent, or a `models.aliases` key or value the block does not accept — fails before the sandbox is created.
 
 Each run then selects its inference provider from the resolved runtime and model, so different
 agents in one repository can use different providers. On GitHub Actions, a Vertex run picks its
@@ -91,6 +104,9 @@ subagents: correctness → anthropic-vertex/claude-opus-4-6 (from frontmatter)
 subagents: docs-currency → google-vertex/gemini-3.8-flash (from subagents.docs-currency)
 ```
 
+On codex a delegating agent prints the run-level default and one line per persona with its own
+`subagents` entry; see [Codex › Child models](../runtimes/codex.md#child-models).
+
 A malformed `subagents` key or model reference is rejected by config validation, before the
 sandbox is created, like the other invalid overrides above. A key that names no discovered
 persona, or a model this run cannot serve, is caught slightly later — at Bootstrap, once the
@@ -108,6 +124,24 @@ cases fail earlier:
 See
 [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration).
 
+## Live progress
+
+Use `progress` in `.fullsend/config.yaml` to control how much the job log
+shows while an agent runs. The default, `full`, prints everything. `tools`
+hides the model's reasoning and replies. `quiet` prints only lines fullsend
+writes from its own fields, and leaves out text from the agent or the source.
+Set one level for every run with `progress.verbosity`. Set a level for one run
+source with `progress.by_source` (for example `jira: quiet`). If both apply,
+the stricter level wins. When the level isn't `full`, the run prints one line
+near the top, such as
+`Progress log: quiet (run source "jira" from the normalized event)`. See
+[`progress`](../reference/config-reference.md#progress) for what each level
+shows.
+
+Progress display depends on the selected runtime. See
+[Claude Workflow progress](../runtimes/claude.md#live-claude-workflow-progress)
+for Claude background tasks, agent lifecycle metadata and display limits.
+
 ## Output artifacts
 
 Each run produces artifacts in the output directory. Relative `--output-dir`
@@ -119,30 +153,39 @@ depend on the process cwd.
 |------|-------------|
 | `metrics.json` | Behavioral metrics: tokens, cost, model, runtime, iterations |
 | `transcripts/` | Agent conversation transcripts |
+| `iteration-<n>/agent-stderr.log` | The agent CLI's stderr, written instead of the job log only at progress level `quiet` |
+| `personas.json` | Persona manifest of the personas found in the staged skills (by the rules the `pi` and `codex` runtimes use to discover them), written every run; its path is exported as `FULLSEND_PERSONAS_FILE` to the pre-script, post-script and validation script (see [Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file)) |
+| `skills/<index>/<name>/` | Per-run copies of skills that have per-file overrides, with the overrides applied (see [Overriding single files in a skill](../guides/user/customizing-with-skills.md#overriding-single-files-in-a-skill)) |
 | `claude-debug.log`, `pi-debug.log` or `codex-debug.log` | Debug log (when `--debug` is set) |
 
 ### metrics.json fields
 
 | Field | Description |
 |-------|-------------|
-| `runtime` | Runtime that executed the run (e.g. `claude`, `pi`, `codex`) |
+| `runtime` | Runtime that executed the run (e.g. `claude`, `pi`, `codex`, `opencode`) |
 | `model` | Model the provider reported using |
 | `requested_runtime` | Runtime selected for the run (config file, or a `--runtime`/`FULLSEND_RUNTIME` override) |
 | `requested_model` | Model the harness/agent requested |
 | `override_source` | Where `requested_model` came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `FULLSEND_CODEX_MODEL`, `<config path> agents.<name>`, `harness`, `default`), suffixed `, remapped by <config path> models.aliases` when a per-repo alias override applied to it |
 | `runtime_source` | Where `requested_runtime` came from (`--runtime flag`, `FULLSEND_RUNTIME`, the config file path — suffixed ` agents.<name>` when the agent's entry decided — or `default (config not found)`) |
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
+| `token_usage` | Run-level token counts: `input`, `output`, `cache_creation`, `cache_read`, and `reasoning` (always serialized, `0` when none). Reasoning is separate from output for Codex and included in output for Claude and the pinned pi version. Counts can survive interruption even when reported cost is zero. Prefer per-iteration `run-telemetry.jsonl` for pricing; see [Computing dollar cost from token telemetry](../guides/infrastructure/distributed-tracing.md#computing-dollar-cost-from-token-telemetry). |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
-| `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, and `claude` when Claude Code's result carries `modelUsage`). See below |
+| `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, `claude` when Claude Code's result carries `modelUsage`, and `codex` for an agent with registered sub-agent roles or a spawn in its stream). See below |
+| `fallback_from` | Models the run moved off, in the order tried, before `model` took over: models the Vertex project did not serve, and on `claude` any model Claude Code's own `--fallback-model` handling left, for example on overload (`claude` and `pi`; see [Claude Code](../runtimes/claude.md#models)). Absent when the first model ran |
+| `fallback_reasons` | Why the run moved off each `fallback_from` entry, at the same index: `not_served` when the runner retried because the Vertex project does not serve the model, `claude_code:<trigger>` when Claude Code switched models itself (its `model_fallback` trigger, for example `claude_code:last_resort`). Absent when the first model ran |
 
 #### Per-model usage
 
 A map from model spec to
 `{requests, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd}`.
-On `pi` the key is the pi model spec (`anthropic-vertex/claude-opus-4-6`). It exists because a pi
-sub-agent is a separate `pi` process whose tokens never appear in the parent's stream, so without it
-`total_cost_usd` would grow with no way to attribute it.
+On `pi` the key is the pi model spec (`anthropic-vertex/claude-opus-4-6`); on `codex` it is the
+model id codex ran (`gpt-5.6-luna`, or the id after `gateway/`). It exists because a sub-agent's tokens never appear in the parent's
+stream: a pi sub-agent is a separate `pi` process, and a codex sub-agent is a separate thread whose
+usage codex records only in that thread's rollout. Without it `total_cost_usd` would grow with no
+way to attribute it on pi, and the child tokens the runner adds to the totals on codex could not be
+attributed to a model.
 
 On `claude` the key is the model id Claude Code reports (`claude-haiku-4-5@20251001`), with one
 entry per model that ran, sub-agents included. The token totals come from the result event's
@@ -153,7 +196,8 @@ records its last value rather than adding each result's. `requests` has no count
 Code's result and stays `0`. A result without `modelUsage` keeps the parent-only `usage` totals and
 records no breakdown, and an iteration that ends without a result (cancelled at the budget)
 contributes to the totals but not to the breakdown, so the invariant below can fall short in those
-two cases. The rest of this section describes the `pi` breakdown.
+two cases. The rest of this section describes the `pi` breakdown; `codex` follows it, with the
+differences in the last bullet.
 
 - **What folds.** Tokens and cost, from both the parent and every child, summed across retry
   iterations. Each iteration contributes one `requests` for the parent plus one per sub-agent call,
@@ -166,10 +210,18 @@ two cases. The rest of this section describes the `pi` breakdown.
   sub-agent, which is what keeps the invariant true across a retry.
 - **What stays parent-only.** `num_turns` and `tool_calls` are read from the parent's stream and are
   not broken down or added to per model — a child's turns and tool calls are recorded in its own
-  session transcript (`transcripts/<agent>-sub<seq>-*.jsonl`) instead.
-- A model spec of `unknown` is a usage record that carries no model spec at all; its cost is
-  bucketed there rather than dropped. A dispatch rejected *before* a model was resolved writes
-  no record, so it never reaches the breakdown.
+  session transcript (`transcripts/<agent>-sub<seq>-*.jsonl`; on codex
+  `transcripts/<agent>-sub<seq>-<role>.jsonl`, see [Codex › At a glance](../runtimes/codex.md#at-a-glance)) instead.
+- A model spec of `unknown` is a pi usage record, or a codex child rollout, that carries no model
+  at all; its usage is bucketed there rather than dropped. A dispatch rejected *before* a model was
+  resolved writes no record, so it never reaches the breakdown.
+- **On codex.** `cost_usd` is `0` in every entry: codex reports no dollar cost, so compare tokens
+  there. `requests` counts one per child rollout that reported usage (codex writes one per thread);
+  `wait`, `send_input` and `close_agent` calls add none, and a child that errored before its first
+  response has no usage and adds no `requests`. A codex iteration that exits non-zero, after a
+  failed or interrupted turn, a cancel or a timeout, still counts what its children had recorded
+  when the runner read them: codex writes a child's usage as each response completes. After a
+  cancel or a timeout the run warns that usage recorded after the read is not counted.
 
 ## Budget and deadline
 
@@ -177,13 +229,18 @@ Each agent iteration gets the harness's `timeout_minutes` (30 when it sets none)
 is spent the runner ends the iteration and sweeps the processes the agent left running in the
 sandbox, best effort. Before every iteration the runner rewrites `.fullsend/iteration.env` (sourced
 last by the sandbox `.env`) with the budget, the kill time, and this iteration's W3C trace context,
-on every runtime (claude, pi, codex):
+on every runtime (claude, pi, codex, opencode):
 
 | Variable | Value |
 |---|---|
 | `FULLSEND_TIMEOUT_MINUTES` | The budget: the harness's `timeout_minutes`, or `30` when it sets none |
 | `FULLSEND_ITERATION_DEADLINE` | Unix time (seconds) at which the running iteration is killed |
-| `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join Fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
+| `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
+
+The full inventory of what the runner injects into the sandbox — these names
+included — and of the keys it reserves from `env.sandbox` override is
+published as the generated [sandbox environment
+contract](../normative/sandbox-env/v1/README.md).
 
 **Example.** A probe that shows both, and what a kill looks like. The agent prints the variables
 with its own clock, then sleeps past the budget:
@@ -291,7 +348,8 @@ For comparison:
 - Child processes inherit both variables. In a pi sub-agent read the deadline, not the budget: the
   deadline is the same wall-clock limit the parent has, while `FULLSEND_TIMEOUT_MINUTES` is the
   parent iteration's whole budget, not the time the child has left.
-- Both names are reserved: an `env.sandbox` entry with either name is dropped. Pre-, post- and
+- Both names are reserved: an `env.sandbox` entry with either name is dropped
+  (see [Reserved `env.sandbox` keys](#reserved-envsandbox-keys)). Pre-, post- and
   validation scripts run on the host and do not see them.
 
 **Pacing from a skill.** Read the deadline, not the budget, and keep the arithmetic in two steps —
@@ -322,7 +380,7 @@ variables is deployed.
 | `validation failed after 2 iteration(s)` with `Agent exited with code 0` above it | The agent finished in time; its output failed validation on every iteration. | Read the `Validation failed:` lines and fix the output, not the budget. |
 | `Could not export the iteration deadline: exit 1: ...` | The runner could not write the variables into the sandbox. The iteration runs without them; the runner still kills it at the budget. | Usually a non-writable sandbox workspace; a sandbox that died mid-run looks the same. Check the sandbox logs and the image. |
 | `clearing stale iteration deadline (iteration N): ...` | The write failed and the previous iteration's file could not be removed either. The run stops rather than let the agent read a stale deadline. | Same as above. |
-| `FULLSEND_ITERATION_DEADLINE` unset inside the agent | The agent's shell was started without sourcing `/sandbox/workspace/.env`. | Runtimes that fullsend ships always source it; a custom command must do the same. |
+| `FULLSEND_ITERATION_DEADLINE` unset inside the agent | The agent's shell was started without sourcing `/sandbox/workspace/.env`. | Runtimes that fullsend ships always load it; a custom command must do the same. |
 
 ## How a run ends
 
@@ -347,6 +405,33 @@ After the last iteration, `fullsend run` returns an error, and so exits non-zero
 - `<code>` is the `Agent exit code` value in the Results block. It is `1` when the agent exited 0
   but its transcript reported an error.
 
+## Provider profiles in run output
+
+Once the providers exist, the run prints one line per provider the harness uses; a provider the
+run skips (for example `openai` when no model needs it) gets no line. Each line names the
+profile the provider uses and where it came from: `embedded` for the copy built into fullsend, or
+`harness` for a copy listed in `openshell.profiles`. It then lists what that profile permits: each
+endpoint's host, protocol and `access` (or the methods its allow rules list), and the binaries
+allowlist: a `**/` glob by its base name (`**/gh` as `gh`), an absolute path as written. A profile with more than three endpoints is summarised as
+`<n> endpoints: <hosts> (<access values>)`.
+
+```text
+    provider github: profile fullsend-github (embedded) -> api.github.com rest read-write, github.com rest read-write; binaries gh, git, node, pre-commit
+    provider github-ro: profile fullsend-github-ro (embedded) -> api.github.com rest read-only, api.github.com graphql read-only, github.com rest read-only; binaries gh, node
+```
+
+When the run cannot say what a profile permits, the line says so instead:
+
+- `provider <name>: profile <id> (not imported by this run; what it permits is not known to the runner)`
+  when the profile is neither built into fullsend nor listed by the harness.
+- `provider <name>: profile <id> (harness) could not be read: <error>` when the listed file cannot
+  be read or parsed.
+
+A profile is a declaration of what the gateway should allow. Whether the gateway enforces it
+depends on the deployment, and the run does not check that. If the harness also mounts a durable
+credential file, the run may print a warning before the sandbox starts; see
+[durable credentials next to write-capable providers](../reference/harness-reference.md#durable-credentials-next-to-write-capable-providers).
+
 ## OpenAI credentials on pi and codex
 
 A `fullsend-openai` provider (`providers: [openai]` on the harness, `openai/<id>` models on pi or codex)
@@ -355,17 +440,33 @@ gets its credential from the runner, never from the harness or the sandbox:
 | Runner environment | Effect |
 |---|---|
 | `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID`, `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` | Workload Identity Federation (GitHub Actions only): the run exchanges the job's OIDC token for a short-lived OpenAI token, refreshes it before expiry, and refuses a token whose mapping grants more than model access. All three must be set together; when unset, the `inference.openai` block of `config.yaml` (written by `fullsend github setup --openai-*`) supplies them — except on a machine without a GitHub OIDC endpoint where `OPENAI_API_KEY` is set, which then wins. |
-| `OPENAI_API_KEY` | Static key for local runs, or CI when supplied by the `FULLSEND_OPENAI_API_KEY` repository secret (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. In CI the runner warns and WIF remains preferred. |
+| `OPENAI_API_KEY` | Static key for local runs, or CI when supplied by the `FULLSEND_OPENAI_API_KEY` repository secret (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. On GitHub Actions the runner warns about the static key and recommends WIF. In a GitLab CI job it reports the key as a [CI/CD-variable credential](../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables). |
 
 A bare provider name that fullsend ships (`openai`, `github-ro`, `vertex-ai`, and the others listed
 in [`agent new`](agent.md#what-gets-written)) resolves to the
 definition and profile built into fullsend, locally and in CI, with nothing on disk. These names
 and their `fullsend-<name>` profile ids are reserved: a harness that still uses its own copy under
-one gets a warning and keeps the copy for now, and a later release rejects it (`fullsend-openai`
-is already rejected). Give repository-specific providers and profiles their own names.
+one gets a warning and keeps the copy for now, and a later release rejects it. `fullsend-openai` is
+already rejected, and so is `fullsend-jira` when the run mints the Jira token. A profile id made of
+`fullsend-jira-` and 12 hex digits is reserved for the per-site copy `fullsend run` renders, and is
+rejected in every mode. Give repository-specific providers and profiles their own names.
 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+
+## Jira access token in the sandbox
+
+The builtin `jira` provider (`providers: [jira]`, profile `fullsend-jira`) gives the sandbox
+read-only Jira access as `JIRA_TOKEN`. The runner environment picks the mode:
+
+| Runner environment | What `fullsend run` does |
+|---|---|
+| `FULLSEND_JIRA_TOKEN` set | Creates the provider from that static token, like any provider. No minting or refresh. |
+| `FULLSEND_JIRA_TOKEN` unset or empty, `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` both set | Mints a service account's OAuth 2.0 access token, gives it to a provider named after the run, refreshes it before it expires, keeps the current placeholder in `/sandbox/fullsend-jira/token`, and deletes the provider when the run ends. Through the API gateway (`api.atlassian.com`), the provider reaches only the site in `tracker.jira.base_url`. The run fails before minting when it cannot resolve that site's cloud ID: no `tracker.jira.base_url` or `project`, `--offline`, a failed lookup, or a custom `tracker.jira.api_url`. The client secret never reaches a provider value or the sandbox. |
+| Only one of the two client variables set | Fails the run. |
+
+See
+[Read-only Jira access from the sandbox](../guides/user/jira-integration.md#read-only-jira-access-from-the-sandbox-jira-provider).
 
 <a id="inference-gateway-credentials-on-pi"></a>
 <a id="inference-gateway-credentials-on-pi-and-codex"></a>
@@ -384,7 +485,7 @@ run has a forge OIDC endpoint (a GitHub Actions job with `id-token: write`), the
 - checks after sandbox creation that the sandbox policy reaches the gateway host only through an
   inspected route, and deletes the sandbox if it does not;
 - seeds the provider's placeholder into a runner-owned token file before the agent-writable `.env`
-  is sourced, and refreshes the assertion before each token's own `exp`, re-seeding the file;
+  is loaded, and refreshes the assertion before each token's own `exp`, re-seeding the file;
 - removes the provider when the run ends (or expires it in place under `--keep-sandbox`).
 
 A failure at any step fails the run; the route never falls back to another credential. With no
@@ -411,7 +512,10 @@ and refresh. The runner exports the gateway URL (the origin plus its path prefix
 `--model`, and skips the Vertex credential checks. The credential reaches Claude Code through an
 `apiKeyHelper` that re-reads the re-seeded token file in the `oidc` mode, or as an
 `ANTHROPIC_AUTH_TOKEN` placeholder in the `api-key` mode. Both are sent as `Authorization: Bearer`,
-as on pi. The per-host egress profile is a Claude Code rendering that admits only
+as on pi. An `api-key` block that sets `messages_auth_header: x-api-key`
+([ADR 0142](../ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md)) instead gets an
+`ANTHROPIC_API_KEY` placeholder, sent as `x-api-key` only, and pi `anthropic-messages` models send
+`x-api-key` too. The per-host egress profile is a Claude Code rendering that admits only
 `POST <prefix>/v1/messages` and `POST <prefix>/v1/messages/count_tokens` (`<prefix>` is empty for a
 bare origin). Claude Code has no plugin-carried
 setup, so a `gateway/` model without a block that applies (no block, or an `oidc` block on a run
@@ -422,25 +526,107 @@ without an OIDC endpoint) is an error. Details:
 
 On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a GitHub App token. It selects a registered GitLab role credential via `gitlabroles.SelectAgent` and exports `GITLAB_TOKEN` from that CI/CD variable. Poller/Analyst/Coder (or a registered custom role) is required unconditionally. A missing role secret fails closed; there is no shared-token fallback and no fallback to a directly-set `GITLAB_TOKEN`. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request.
 
-See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
+The GitLab URL is the first one set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`. A *provider profile* is an OpenShell file that names a credential and the hosts it may be sent to. The GitLab credential profile is bound only to the GitLab host and port: every imported provider profile that issues `GITLAB_TOKEN` is limited to the host and port of that URL. In scaffolded GitLab CI agent jobs, the job script sets `FULLSEND_GITLAB_URL` from `CI_API_V4_URL` before `fullsend run`, so a value you set there is not used.
+
+**Upgrading.** These GitLab setups need a change:
+
+| Who is affected | What you see | What to do |
+|-----------------|--------------|------------|
+| Local `--forge gitlab` runs that set none of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` or `CI_SERVER_URL` | The run stops: `cannot determine the GitLab forge host: ...` | `export FULLSEND_GITLAB_URL=https://gitlab.example.com`, or `https://gitlab.com` on gitlab.com |
+| Runs whose GitLab URL is `http://` for a host other than `localhost`, `127.0.0.1` or `::1` | The run stops: `GitLab forge URL from <variable> must use https ...` | Use the https URL, for example `export FULLSEND_GITLAB_URL=https://gitlab.example.com` |
+| Custom provider profiles with YAML merge keys (`<<`), alias keys, duplicate keys or more than one document | The run stops: `binding GitLab forge host to provider profiles: ...` | Write each key out once, with one document per file. |
+| Agents that call GitLab under a host name other than the URL's | No stop. Calls to the other host no longer get `GITLAB_TOKEN`. The run log lists the hosts removed: `GitLab credential profile "<id>" narrowed to gitlab.example.com:443; removed: ...` | Call GitLab at the URL's host and port. |
+
+The run stops before setup when:
+
+- the GitLab URL has no host, or is not https (other schemes only for `localhost`, `127.0.0.1` or `::1`);
+- no GitLab URL is set and an imported provider profile issues `GITLAB_TOKEN`;
+- an imported provider profile uses YAML merge keys, alias keys, duplicate keys or more than one document.
+
+For the exact errors and fixes, see [Self-Hosted GitLab Instances](../guides/getting-started/configuring-gitlab.md#self-hosted-gitlab-instances). For the credential contract, see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
 
 ## GitHub Packages credentials
 
 On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's workflow token) to
-`GH_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted App token. Provider
+`GH_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted App token. When `GH_TOKEN` is
+unset or empty it copies the pre-mint `GITHUB_TOKEN` instead. Provider
 credentials may expand `${GH_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
 pre/post/validation child environments never receive it. Outside Actions the variable is not
-derived from a local PAT — a caller may set it explicitly. `GH_TOKEN` / `PUSH_TOKEN` still receive
-the minted App identity.
+derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`,
+`GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` and
+`PUSH_TOKEN` still receive the minted App identity.
+
+The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
+expansion: before it creates the sandbox, on GitHub Actions, when the harness `image:` is on
+`ghcr.io`, it pulls the image with the token through Podman (a run-scoped auth file in a private
+temporary directory, removed after the pull), so the image can be a private package. Only the
+shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
+harnesses; on other agents a private image is denied and sandbox creation fails. The package must also
+allow Actions access from the repository. If the pull fails, the runner logs a warning and the
+OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
+on other registries the runner adds no credentials. See
+[Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
+
+Every mint sets `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and
+`GITHUB_ENTERPRISE_TOKEN` to the minted token, even when the caller workflow
+did not export them. `gh` reads `GH_TOKEN` and `GITHUB_TOKEN` for `github.com`
+and `*.ghe.com`, and `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` for
+any other host (GitHub Enterprise Server), so `gh` calls made after the mint
+use the minted token on every host. When the mint is cleaned up, each one goes
+back to the value it held before that mint, or is unset if it was unset. A
+caller workflow that exports any of these variables for its own pre- or
+post-script therefore gets the minted App token in that variable, not the job
+token.
 
 Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
-`JIRA_USER_EMAIL`, or the OTLP collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
+`JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+`FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`, or the OTLP
+collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
 `OTEL_EXPORTER_OTLP_*_HEADERS`) from the `fullsend run` process environment. A script
 receives one only when the harness declares it under `env.runner`; see
 [`env.runner`](../reference/harness-reference.md#field-details) in the harness reference.
+`FULLSEND_JIRA_EMAIL` is optional: an `env.runner` reference to it does not fail when it is
+unset, and the entry is omitted rather than passed empty. The OAuth client credentials
+`FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` are optional the same way, and
+`FULLSEND_JIRA_TOKEN` is optional while they are set. See
+[Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs).
 
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).
+
+## Reserved `env.sandbox` keys
+
+`fullsend run` drops reserved names from `env.sandbox` instead of exporting
+them into the sandbox. Matching is case-insensitive. It warns twice:
+
+- When the harness loads, one warning names every reserved key:
+  `N env.sandbox key(s) are reserved and will be dropped instead of exported into the sandbox: ...`
+- As it writes the sandbox environment, one stderr line per key:
+  `WARNING: env.sandbox key "NAME" is reserved (runner infrastructure or security deny-list); skipping`
+
+`fullsend lint` also reports the load-time warning, and
+`fullsend lint --strict` exits non-zero on it. `fullsend lock` prints the
+load-time warning when it composes a harness. A current lock entry is not
+composed; run `fullsend lock --update` to check its keys. `lock` composes
+without event context, so a key added by an overlay
+guarded on `event` is reported only by `fullsend run`. The reserved names are
+listed in [Harness Field Reference § Reserved `env.sandbox`
+names](../reference/harness-reference.md#reserved-envsandbox-names); where
+blocked proxy and certificate settings go instead is in [Migrating proxy and
+certificate
+settings](../reference/harness-reference.md#migrating-proxy-and-certificate-settings).
+
+## Runner secrets
+
+`fullsend run` reads a JSON object of name → value for host-side scripts
+([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)) from one of two variables:
+
+| Runner environment | Effect |
+|---|---|
+| `FULLSEND_GITHUB_RUNNER_SECRETS_FILE` | Path to a file holding the object. The composite action writes the `FULLSEND_GITHUB_RUNNER_SECRETS` secret to a mode 0600 file and passes only this path. `fullsend run` deletes the file as soon as it has read it, even when the content is invalid, so for a local run point it at a copy. An empty value means no bundle. |
+| `FULLSEND_GITHUB_RUNNER_SECRETS` | The object inline. Use it for local runs only: in CI the value would stay readable in `/proc/<pid>/environ` for the life of the process. |
+
+Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process. Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
 
 ## Related
 

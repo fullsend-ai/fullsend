@@ -487,6 +487,14 @@ func TestAddIssueLabels(t *testing.T) {
 	}
 }
 
+func TestEnsureLabel(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	require.NoError(t, d.EnsureLabel(context.Background(), "org", "repo", "do-it"))
+	assert.Equal(t, []string{"do-it"}, fc.RepoLabels["org/repo"])
+}
+
 func TestCloseIssue(t *testing.T) {
 	fc := forge.NewFakeClient()
 	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "test", "body")
@@ -621,6 +629,25 @@ func TestListPullRequestCommits_Error(t *testing.T) {
 	assert.ErrorContains(t, err, "list failed")
 }
 
+func TestGetPullRequestHeadSHA(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "abc123"
+	d := New(fc)
+
+	sha, err := d.(*Driver).GetPullRequestHeadSHA(context.Background(), "owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, "abc123", sha)
+}
+
+func TestGetPullRequestHeadSHA_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetPullRequestHeadSHA"] = errors.New("head failed")
+	d := New(fc)
+
+	_, err := d.(*Driver).GetPullRequestHeadSHA(context.Background(), "owner", "repo", 1)
+	assert.ErrorContains(t, err, "head failed")
+}
+
 func TestListPullRequestReviews_Error(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["ListPullRequestReviews"] = errors.New("list failed")
@@ -700,4 +727,18 @@ func TestEnsureRepoPublic_ContextCancelledWhileWaiting(t *testing.T) {
 	err := New(c).EnsureRepoPublic(ctx, "org", "host")
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, c.calls)
+}
+
+func TestListOpenIssues(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.OpenIssues = map[string][]forge.Issue{"owner/repo": {
+		{Number: 1, Title: "a", Labels: []string{"bug"}},
+		{Number: 2, Title: "b", Labels: []string{"docs"}},
+	}}
+	d := New(fc)
+
+	issues, err := d.ListOpenIssues(context.Background(), "owner", "repo", "bug")
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.Equal(t, 1, issues[0].Number)
 }

@@ -23,7 +23,7 @@ import (
 // thread's (its session_meta names a parent_thread_id) as
 // <agentLabel>-sub<seq>-<role>.jsonl, where seq counts the kept child
 // rollouts in ascending basename order and role is the child's agent_role
-// when it is a legal persona name, else codexGenericRole.
+// when it is a legal persona name or explore, else codexGenericRole.
 //
 // Only `.jsonl` is collected. codex writes the running session's rollout
 // uncompressed and compresses older ones in place
@@ -37,7 +37,8 @@ import (
 //
 // ClearIterationArtifacts empties the sessions directory between iterations,
 // so in practice this finds the current run's rollout.
-func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string) error {
+func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir, progressVerbosity string) error {
+	rep := newTranscriptReport(agentLabel, progressVerbosity)
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
@@ -55,9 +56,10 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 	if err != nil {
 		return fmt.Errorf("finding transcripts: %w", err)
 	}
+	defer rep.end()
 	trimmed := strings.TrimSpace(stdout)
 	if trimmed == "" {
-		fmt.Fprintf(os.Stderr, "  [%s] No transcripts found\n", agentLabel)
+		rep.noneFound("No transcripts found")
 		return nil
 	}
 	// `find` prints directory order; a child's <seq> follows the rollout
@@ -80,7 +82,7 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 		// above already skips symlinks — a symlink is -type l — so a link to
 		// /sandbox/workspace/.env is not listed in the first place.)
 		if err := codexValidSessionPath(r.codexSessionsDir(), remotePath); err != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Skipping %s: %v\n", agentLabel, sanitizeOutput(remotePath), err)
+			rep.skip("Skipping %s: %v", sanitizeOutput(remotePath), err)
 			continue
 		}
 		localName := fmt.Sprintf("%s-%s", agentLabel, filepath.Base(remotePath))
@@ -89,12 +91,12 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 		// download lands at outputDir/<basename> before the rename, so that
 		// name counts too.
 		if saved[localName] || saved[filepath.Base(remotePath)] {
-			fmt.Fprintf(os.Stderr, "  [%s] Skipping %s: already saved\n", agentLabel, localName)
+			rep.skip("Skipping %s: already saved", localName)
 			continue
 		}
 		f, createErr := root.Create(localName)
 		if createErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, localName, createErr)
+			rep.skip("Skipping (path rejected): %s: %v", localName, createErr)
 			continue
 		}
 		f.Close()
@@ -108,7 +110,7 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 		stagePath := localPath + ".fullsend-staging"
 		os.Remove(stagePath)
 		if dlErr := sandbox.DownloadFile(sandboxName, remotePath, stagePath); dlErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Failed to copy transcript: %v\n", agentLabel, dlErr)
+			rep.skip("Failed to copy transcript: %v", dlErr)
 			os.Remove(stagePath)
 			continue
 		}
@@ -116,29 +118,30 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 		// ending in .jsonl proves nothing: anything that is not a codex
 		// rollout is dropped rather than shipped as this run's transcript.
 		if err := codexIsRolloutFile(stagePath); err != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Discarded %s: %v\n", agentLabel, localName, err)
+			rep.skip("Discarded %s: %v", localName, err)
 			os.Remove(stagePath)
 			continue
 		}
 		// A rollout whose first line names a parent thread is a child's. Its
-		// role enters the file name only as a legal persona name that the
-		// redactor leaves alone; anything else is codexGenericRole. The child
-		// name gets the same os.Root check as the root's.
+		// role enters the file name only as a legal persona name or explore
+		// that the redactor leaves alone; default and anything else is
+		// codexGenericRole. The child name gets the same os.Root check as
+		// the root's.
 		isChild := false
 		if meta, metaErr := codexReadSessionMeta(stagePath); metaErr == nil && meta.ParentThreadID != "" {
 			role := meta.AgentRole
-			if !config.ValidSubagentKey(role) || slices.Contains(config.ReservedSubagentKeys(), role) || redactSummary(role) != role {
+			if role == "default" || !config.ValidSubagentKey(role) || redactSummary(role) != role {
 				role = codexGenericRole
 			}
 			childName := codexChildTranscriptName(agentLabel, children+1, role)
 			if saved[childName] {
-				fmt.Fprintf(os.Stderr, "  [%s] Skipping %s: already saved\n", agentLabel, childName)
+				rep.skip("Skipping %s: already saved", childName)
 				os.Remove(stagePath)
 				continue
 			}
 			cf, createErr := root.Create(childName)
 			if createErr != nil {
-				fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, childName, createErr)
+				rep.skip("Skipping (path rejected): %s: %v", childName, createErr)
 				os.Remove(stagePath)
 				continue
 			}
@@ -152,13 +155,12 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 		// is uploaded as a run artifact, so it gets the same pattern redaction
 		// (codex_redact.go).
 		if redErr := codexRedactFile(stagePath); redErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Discarded %s: could not redact it: %v\n",
-				agentLabel, localName, redErr)
+			rep.skip("Discarded %s: could not redact it: %v", localName, redErr)
 			os.Remove(stagePath)
 			continue
 		}
 		if mvErr := os.Rename(stagePath, localPath); mvErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Discarded %s: %v\n", agentLabel, localName, mvErr)
+			rep.skip("Discarded %s: %v", localName, mvErr)
 			os.Remove(stagePath)
 			continue
 		}
@@ -166,7 +168,7 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 			children++
 		}
 		saved[localName] = true
-		fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentLabel, localName)
+		rep.saved("Saved transcript: %s", localName)
 	}
 	return nil
 }
@@ -214,7 +216,7 @@ func codexValidSessionPath(sessionsDir, path string) error {
 }
 
 // codexGenericRole names a child transcript whose rollout carries no usable
-// role: null, reserved, not a legal persona name, or credential-shaped.
+// role: null, default, not a legal persona name, or credential-shaped.
 const codexGenericRole = "generic"
 
 // codexChildTranscriptName renders <agentLabel>-sub<seq>-<role>.jsonl, the

@@ -10,6 +10,11 @@ Today, if someone modifies a review agent's instructions, the only verification 
 
 **Behaviour tests are orthogonal.** [ADR 0066](../ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md) describes Gherkin end-to-end tests (framework in `pkg/behaviourtest/`, runner under `e2e/behaviour/`) that validate deterministic platform code (workflows, harness, sandbox policy, post-scripts) with inference explicitly removed via the dummy and dummy-playback ([ADR 0116](../ADRs/0116-dummy-playback-runtime.md)) runtimes. They do not evaluate instructions, prompts, or models, and they do not replace golden-set or statistical LLM evals described below.
 
+[ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)
+calls for grouping a behaviour test's fullsend and test-driver operations,
+including work items it creates, under one scenario trace for end-to-end
+diagnosis.
+
 ## What makes agent testing hard
 
 ### Non-determinism
@@ -359,6 +364,14 @@ Beyond testing individual instruction changes, there's a need for ongoing monito
 - **Periodic re-evaluation** — run the golden set on a schedule, even without instruction changes, to catch drift from model updates
 - **Production outcome tracking** — when a human overrides an agent's decision, log it as a potential test case. If the agent approved something a human rejected, that's a signal.
 - **Capability dashboards** — for each agent, track which capabilities are covered by tests and what their recent pass rates look like. Similar in spirit to the coverage dashboard referenced in [repo-readiness.md](repo-readiness.md).
+
+External judge results can become policy inputs: a
+[Gemara lab](../spikes/2026-10-24-gemara-auto-merge.md) assessed an aggregate
+judge pass rate against an owner-set threshold before allowing a merge. Its
+aggregate mixed experiment-wide scored approvals rather than a reliably
+isolated current-agent-version cohort, so it could not separate drift in the
+agent from drift in the population. Selection bias, skipped or unscored cases,
+judge and rubric drift, and the lack of human labels remain unresolved.
 
 ## Relationship to other problem areas
 

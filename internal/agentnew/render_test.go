@@ -138,6 +138,28 @@ func TestGeneratedHarnessKeepsGHTokenOutOfSandbox(t *testing.T) {
 	}
 }
 
+// TestGeneratedHarnessUsesWorkItemURL pins the forge-agnostic work item URL
+// variable in both env maps. The generated prompt deliberately does not fetch
+// by URL, but the post-script still needs it.
+func TestGeneratedHarnessUsesWorkItemURL(t *testing.T) {
+	files, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeTree(t, dir, files)
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated harness does not load: %v", err)
+	}
+	if got := h.Env.Runner["ISSUE_URL"]; got != "${FULLSEND_WORK_ITEM_URL}" {
+		t.Errorf("env.runner ISSUE_URL = %q, want ${FULLSEND_WORK_ITEM_URL}", got)
+	}
+	if got := h.Env.Sandbox["ISSUE_URL"]; got != "${FULLSEND_WORK_ITEM_URL}" {
+		t.Errorf("env.sandbox ISSUE_URL = %q, want ${FULLSEND_WORK_ITEM_URL}", got)
+	}
+}
+
 // TestGeneratedHarnessHasNoDeprecatedShapes pins decision 6: no forge: block
 // (deprecated by ADR 0088) and no runner_env (deprecated by ADR 0055). Lint
 // would warn, and a generator must never emit a shape the repo has deprecated.
@@ -427,6 +449,53 @@ func TestPiHarnessKeepsVertexCredentials(t *testing.T) {
 	}
 }
 
+func TestOpenCodeHarnessHasOpenCodeConfigContent(t *testing.T) {
+	dir := t.TempDir()
+	opts := testOptions("lint-docs", "triage")
+	opts.Runtime = "opencode"
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	files, err := Render(opts)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	writeTree(t, dir, files)
+
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated opencode harness does not load: %v", err)
+	}
+	if got := h.Env.Sandbox["OPENCODE_CONFIG_CONTENT"]; got != "${OPENCODE_CONFIG_CONTENT}" {
+		t.Errorf("env.sandbox OPENCODE_CONFIG_CONTENT = %q, want ${OPENCODE_CONFIG_CONTENT}", got)
+	}
+	// Vertex credentials are retained for provider registration.
+	for k, v := range vertexSandboxEnv() {
+		if got := h.Env.Sandbox[k]; got != v {
+			t.Errorf("env.sandbox[%s] = %q, want %q", k, got, v)
+		}
+	}
+}
+
+// TestNonOpenCodeHarnessLacksOpenCodeConfigContent guards that
+// OPENCODE_CONFIG_CONTENT does not leak into non-opencode harnesses.
+func TestNonOpenCodeHarnessLacksOpenCodeConfigContent(t *testing.T) {
+	for _, runtime := range []string{"", "pi", "codex"} {
+		t.Run(runtime, func(t *testing.T) {
+			opts := testOptions("lint-docs", "triage")
+			opts.Runtime = runtime
+			files, err := Render(opts)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			yaml := string(fileByPath(t, files, "harness/lint-docs.yaml").Data)
+			if strings.Contains(yaml, "OPENCODE_CONFIG_CONTENT") {
+				t.Errorf("%q harness must not contain OPENCODE_CONFIG_CONTENT", runtime)
+			}
+		})
+	}
+}
+
 func TestRenderRejectsUnknownRole(t *testing.T) {
 	opts := testOptions("lint-docs", "triage")
 	opts.Role = "scribe"
@@ -512,8 +581,8 @@ func TestRoleImageReachesTheHarness(t *testing.T) {
 		// readonly_repo must survive into the emitted YAML, not only sit on
 		// the Role struct: a generated review harness that ships writable
 		// lets the reviewer modify the code it reviews.
-		if h.ReadonlyRepo != role.ReadonlyRepo || h.ReadonlyRepo != (name == "review") {
-			t.Errorf("role %q: readonly_repo = %v, want %v", name, h.ReadonlyRepo, name == "review")
+		if h.RepoReadonly() != role.ReadonlyRepo || h.RepoReadonly() != (name == "review") {
+			t.Errorf("role %q: readonly_repo = %v, want %v", name, h.RepoReadonly(), name == "review")
 		}
 		seen[role.Image] = true
 	}

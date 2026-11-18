@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -367,6 +368,73 @@ func TestCheckOrphanVars_GitLabRetiredVarsNotFlagged(t *testing.T) {
 	}
 }
 
+// The webhook fast path's trigger token and webhook secret, and the reserved
+// trace signing key, are managed variables, so status does not report them,
+// while an unknown FULLSEND_ variable on the same project still is an orphan.
+func TestCheckOrphanVars_GitLabWebhookVarsManagedButGenuineOrphanReported(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+forge.SecretTriggerToken] = "trigger"
+	fc.VariableValues["owner/repo/"+forge.SecretWebhookSecret] = "webhook"
+	fc.VariableValues["owner/repo/"+forge.SecretTraceSigningKey] = "seed"
+	fc.VariableValues["owner/repo/FULLSEND_UNKNOWN_LEFTOVER"] = "x"
+
+	orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo", InstallConfig{Forge: ForgeGitLab}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Name != "FULLSEND_UNKNOWN_LEFTOVER" {
+		t.Errorf("expected only the genuine orphan, got %v", orphans)
+	}
+}
+
+// Install writes FULLSEND_TRACE_SIGNING_KEY_ID on GitHub only (ADR 0154), so
+// status counts it as managed there, while an unknown FULLSEND_ variable
+// beside it is still an orphan. On GitLab install writes no such variable,
+// and one found there is reported.
+func TestCheckOrphanVars_TraceSigningKeyIDManagedOnGitHub(t *testing.T) {
+	cases := []struct {
+		forgeName, mintURL string
+		want               []string
+	}{
+		{ForgeGitHub, "https://mint.example.com", []string{"FULLSEND_UNKNOWN_LEFTOVER"}},
+		{ForgeGitLab, "", []string{forge.VarTraceSigningKeyID, "FULLSEND_UNKNOWN_LEFTOVER"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.forgeName, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.VariableValues["owner/repo/"+forge.VarTraceSigningKeyID] = "x"
+			fc.VariableValues["owner/repo/FULLSEND_UNKNOWN_LEFTOVER"] = "x"
+
+			orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo",
+				InstallConfig{Forge: tc.forgeName, MintURL: tc.mintURL}, tc.mintURL)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var names []string
+			for _, o := range orphans {
+				names = append(names, o.Name)
+			}
+			slices.Sort(names)
+			if !slices.Equal(names, tc.want) {
+				t.Errorf("orphans = %v, want %v", names, tc.want)
+			}
+		})
+	}
+}
+
+// Guard: the trace signing key and its key ID variable are managed but never
+// required, so an install without them is not incomplete.
+func TestTraceSigningKeyNamesNotRequired(t *testing.T) {
+	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
+		if slices.Contains(requiredVarsForForge(forgeName), forge.VarTraceSigningKeyID) {
+			t.Errorf("requiredVarsForForge(%s) must not include %s", forgeName, forge.VarTraceSigningKeyID)
+		}
+		if slices.Contains(requiredSecretsForForge(forgeName), forge.SecretTraceSigningKey) {
+			t.Errorf("requiredSecretsForForge(%s) must not include %s", forgeName, forge.SecretTraceSigningKey)
+		}
+	}
+}
+
 func TestCheckOrphanFiles_GitLabDispatchStubIsOrphan(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["owner/repo/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
@@ -446,5 +514,44 @@ func TestCheckOrphanVars_GitLabDetectsGenuineOrphan(t *testing.T) {
 	}
 	if orphans[0].Name != "FULLSEND_BOGUS" {
 		t.Errorf("orphan name = %q, want %q", orphans[0].Name, "FULLSEND_BOGUS")
+	}
+}
+
+// The removed unverified-variable-scope acceptance setting is no longer
+// special: a value left on a project is an ordinary orphan.
+func TestCheckOrphanVars_GitLabObsoleteScopeAcceptanceIsOrphan(t *testing.T) {
+	const obsolete = "FULLSEND_GITLAB_ACCEPT_UNVERIFIED_VARIABLE_SCOPES"
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+obsolete] = "instance"
+
+	orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo", InstallConfig{Forge: ForgeGitLab}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Name != obsolete {
+		t.Errorf("orphans = %v, want only %s", orphans, obsolete)
+	}
+}
+
+// Repos installed before #7902 have one space before the version comment;
+// that alone must not count as content drift.
+func TestCheckFileContentDrift_IgnoresCommentSpacing(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["owner/repo/.github/workflows/fullsend.yaml"] = []byte(
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v2.1.0\n")
+	expected := []forge.TreeFile{{
+		Path:    ".github/workflows/fullsend.yaml",
+		Content: []byte("    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123  # v2.1.0\n"),
+	}}
+
+	ghFC := GitHubForgeConfig()
+	ghFC.Client = fc
+
+	drifted, err := CheckFileContentDrift(context.Background(), fc, "owner", "repo", ghFC, ForgeGitHub, expected)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(drifted) != 0 {
+		t.Errorf("expected 0 drifted files, got %d", len(drifted))
 	}
 }

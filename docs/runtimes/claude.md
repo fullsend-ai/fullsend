@@ -10,31 +10,79 @@ fullsend run triage --model opus --effort high
 Choosing between runtimes is in [Agent runtimes](../runtimes.md). Selection, precedence and the
 config keys live there too.
 
+Background Workflow phase/agent changes and runtime lifecycle/status notices
+are displayed from Claude's structured event stream. See
+[live Workflow progress](#live-claude-workflow-progress)
+for the display behavior and its limits; it does not include full nested tool
+stdout/stderr.
+
 ## Models
 
-Pass an alias or a model id; Claude Code resolves aliases natively.
+Pass an alias or a model id. fullsend resolves `opus`, `sonnet` and `haiku` itself and passes the
+id to `--model`, so the default does not depend on the pinned Claude Code version:
 
-| Alias | Resolves to |
-|---|---|
-| `opus`, `sonnet`, `haiku`, `fable` | the current Anthropic model of that tier, as the pinned Claude Code version defines it |
+| Alias | Resolves to | Built-in fallback chain |
+|---|---|---|
+| `opus` | `claude-opus-5-5` | `claude-opus-4-6` |
+| `sonnet` | `claude-sonnet-5-5` | `claude-sonnet-4-6` |
+| `haiku` | `claude-haiku-5-5` | `claude-haiku-4-5` |
+| `fable` | the current model of that tier, as the pinned Claude Code version defines it | none |
 
-By default all inference goes to Anthropic models on Vertex AI, on the fleet's WIF credentials.
-Vertex enables models **per project**, so the tier's current model is not always one your project
-can serve; a run that asks for a model the project cannot serve fails at the first model call. When
-a specific generation matters, name the id. The one other supported route is the
+The same alias applies when the harness names no model and the agent definition's `model:`
+frontmatter does. By default all inference goes to Anthropic models on Vertex AI, on the fleet's
+WIF credentials. Vertex enables models **per project**, so the default is not always a model your
+project can serve. When it is not, the run falls back along the alias's chain (see **Fallback
+chains** below), so a project that has not enabled the 5.5 models keeps running on the previous
+default with no config change. A pinned id that the project does not serve fails at the first model
+call. The one other supported route is the
 [inference gateway route](#inference-gateway-route), selected by a `gateway/<model>` model.
 
 **Per-repo alias overrides.** Point an alias at a different model for this repo with
 `models.aliases` in `.fullsend/config.yaml` (`sonnet: claude-sonnet-5`); the run then passes that id
-to `--model` and `--fallback-model`. Syntax, rules and what the plan block shows are on the
-[pi page](pi.md#per-repo-alias-overrides) — it is the same block. It covers the run's own model only:
-sub-agent `model:` frontmatter is resolved by Claude Code itself, so a sub-agent that needs a
-specific generation names the id.
+to `--model` and `--fallback-model`, and the alias has no built-in fallback chain. A repo that
+pinned the 5.5 ids here before they became the default can drop the pin to get the fallback. Syntax, rules
+and what the plan block shows are on the [pi page](pi.md#per-repo-alias-overrides) — it is the
+same block. It covers the run's own model only.
 
-**Fallback chains.** `FULLSEND_FALLBACK_MODELS=a,b` becomes `--fallback-model a,b`, tried in order
-when the primary model is overloaded or retired. pi uses the same list differently: the runner
-retries an alias request on the next model when Vertex answers that it does not serve the first, for
-the top-level run only; see [pi](pi.md#at-a-glance).
+**Sub-agents.** Sub-agent `model:` frontmatter is resolved by Claude Code itself, with its own
+alias table for the pinned version. fullsend's defaults and fallback chain do not apply there, and
+fullsend does not set `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`: a pinned 5.5 id there would
+fail every sub-agent on a project that does not serve it. A sub-agent that needs a specific
+generation names the id.
+
+### When your project does not serve the model
+
+A run on `opus`, `sonnet` or `haiku` retries on the next model when Vertex says the project does
+not serve the one it asked for. Nothing to configure:
+
+| Situation | What happens |
+|---|---|
+| Alias on its default, project serves 5.5 | Runs on 5.5 |
+| Alias on its default, project does not serve 5.5 | Falls back along the built-in chain (table above) |
+| `FULLSEND_FALLBACK_MODELS=a,b` set | That list replaces the built-in chain |
+| Alias retargeted in `models.aliases` | No fallback, unless `FULLSEND_FALLBACK_MODELS` is set |
+| Pinned id (`claude-opus-5-5`) or `provider/id` | No fallback: the run fails at the first model call |
+| Any other error (auth, quota, `PERMISSION_DENIED`) | No fallback: the run fails |
+| Inference gateway route | No runner fallback |
+
+What you see:
+
+```text
+Model: opus → claude-opus-5-5 (built-in default)                          # plan block
+Fallback models: claude-opus-4-6 (built-in for opus, when not served)    # plan block
+! model claude-opus-5-5 is not available (not served in this project); falling back to claude-opus-4-6
+```
+
+`metrics.json` then records the model that answered as `model`, the one it left in
+`fallback_from`, and why in `fallback_reasons` (`not_served`). A retry happens only when the model
+produced nothing, and every attempt shares the run's timeout.
+
+An explicit `FULLSEND_FALLBACK_MODELS` list is also passed to Claude Code as `--fallback-model`, on
+every route. Claude Code may then switch models itself within the session (overload, server errors,
+or a Vertex 404). That prints the same warning with Claude Code's trigger as the reason,
+`! model <id> is not available (Claude Code: <trigger>); falling back to <next>`, and is recorded the
+same way, with `claude_code:<trigger>` in `fallback_reasons`. How the runner detects "not served" is in
+[Runtime implementation](../contributing/runtime-implementation.md).
 
 ## At a glance
 
@@ -76,8 +124,8 @@ prefix only selects the route, so `gateway/claude-haiku-5-5` calls `claude-haiku
   `api.anthropic.com`;
 - the credential, per mode (below).
 
-`.env` cannot override any of these. A variable that `.env` makes `readonly` stops the launch rather
-than reaching Claude Code. The placeholder is read from the sandbox before `.env` runs.
+`.env` cannot override any of these. A `readonly` line in `.env` is ignored with a warning by the
+data loader, so it never reaches Claude Code. The placeholder is read from the sandbox before `.env` runs.
 
 The repository's own `.claude/settings.json` and `.claude/settings.local.json` can carry an `env`
 block, which Claude Code applies after launch over the launch environment. The runner therefore
@@ -88,23 +136,33 @@ file in the sandbox. It sets
 and its TTL. It also sets every other variable in the [cleared list](#environment-the-launch-clears)
 to `""`, which Claude Code treats as unset. In the `api-key` mode it sets `apiKeyHelper` to `""`,
 so a repository helper adds no `x-api-key` value. In the `api-key` mode it also pins
-`ANTHROPIC_AUTH_TOKEN` to the placeholder. The runner reads that placeholder from the sandbox before
+`ANTHROPIC_AUTH_TOKEN` to the placeholder, or `ANTHROPIC_API_KEY` when the block sets
+`messages_auth_header: x-api-key` (below). The runner reads that placeholder from the sandbox before
 the agent starts. It is only a placeholder, so the file exposes nothing, and the key does not
 rotate, so it holds for the whole run. The launch refuses to start if the sandbox hands out a
 different placeholder by then.
 
-**Credential per `auth` mode.** In both modes the credential is sent as `Authorization: Bearer`,
-the header [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) sets for the route and the
-one pi sends, so a gateway reads one header whatever the runtime or mode:
+**Credential per `auth` mode.** By default the credential is sent as `Authorization: Bearer` in
+both modes, the header [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) sets for the
+route and the one pi sends, so a gateway reads one header whatever the runtime or mode. An
+`api-key` block can set `messages_auth_header: x-api-key` instead
+([ADR 0142](../ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md)):
 
 | Mode | How Claude Code gets it | Header sent |
 |---|---|---|
 | `oidc` (default) | an `apiKeyHelper` (`command -p cat` of a runner-seeded token file) in the inline `--settings` document, with `CLAUDE_CODE_API_KEY_HELPER_TTL_MS=10000` | `Authorization: Bearer`, plus a copy in `x-api-key` (below) |
 | `api-key` | `ANTHROPIC_AUTH_TOKEN` set to the placeholder for `FULLSEND_INFERENCE_GATEWAY_API_KEY` | `Authorization: Bearer` |
+| `api-key` with `messages_auth_header: x-api-key` | `ANTHROPIC_API_KEY` set to the same placeholder | `x-api-key` only |
 
-`ANTHROPIC_API_KEY`, which Claude Code would send as `x-api-key`, is cleared and never set, so a
-`.env` value cannot add a second credential header. A gateway that accepts static keys only in
-`x-api-key` is not supported on the route.
+Outside that last row, `ANTHROPIC_API_KEY`, which Claude Code would send as `x-api-key`, is cleared
+and never set, so a `.env` value cannot add a second credential header. In that row the roles swap:
+`ANTHROPIC_AUTH_TOKEN` is cleared and pinned to `""`, and `apiKeyHelper` is `""`, so the request
+carries the credential in `x-api-key` and nothing in `Authorization`. Use it for a gateway that reads
+the caller's key from `x-api-key` on `/v1/messages`, the header Anthropic documents for API keys on
+that API. The gateway must then replace the caller's `x-api-key` with its own upstream key, never
+forward it; see
+[Header custody for an x-api-key gateway](../guides/infrastructure/inference-gateway-operator.md#header-custody-for-an-x-api-key-gateway).
+`messages_auth_header: x-api-key` with `auth: oidc` is a config error.
 
 In the `oidc` mode Claude Code also sends the helper's value as `x-api-key`: it puts an
 `apiKeyHelper` value in both headers. The gateway authenticates the `Authorization` header and must
@@ -154,8 +212,9 @@ allows `POST /v1/messages` and `POST /v1/messages/count_tokens`, from the binari
 `**/claude.exe` (the sandbox image's native binary). OpenShell also admits a process whose ancestor
 matches ([egress binary identity](../contributing/runtime-implementation.md#egress-binary-identity-per-runtime)),
 so the tools Claude Code starts share this access. Its credential metadata names
-`Authorization: Bearer`. OpenShell
-resolves the placeholder only on requests to that host and path.
+`Authorization: Bearer`, or a plain `x-api-key` header with `messages_auth_header: x-api-key`. That
+rendering has its own profile id, so the two never overwrite each other on a shared OpenShell
+gateway. OpenShell resolves the placeholder only on requests to that host and path.
 
 **Limits.**
 
@@ -181,14 +240,38 @@ Use the gateway route above. For Claude models, the default Vertex route is the 
 
 ## Environment the launch clears
 
-The launch sources the sandbox `.env` and then clears variables before it starts Claude Code.
-`.env` carries the harness `env.sandbox` values, the host-file env files it sources, and anything
-the agent wrote there between iterations. The rest of the environment, including provider
+The launch reads the sandbox `.env` as data and then clears variables before it starts Claude Code.
+No line of `.env` runs as shell: a `python3` resolved before anything the agent wrote parses its
+`NAME=value` assignments and ignores everything else, and `LD_PRELOAD`, `LD_LIBRARY_PATH`,
+`LD_AUDIT`, every `PYTHON*` variable, `BASH_ENV`, `ENV` and `IFS` are never taken from it (#8498).
+The sandbox image therefore needs `python3` on every Claude run, including runs without sandbox
+hooks, in a `PATH` directory the sandbox user neither owns nor can write (a virtualenv or a
+`$HOME`-managed interpreter does not count); without one the launch fails with
+`python3 not found in a PATH directory the agent cannot write` (exit 127). It also needs
+`readlink` there as a regular file, not a symlink; without one the launch prints
+`no readlink that is a regular file in a PATH directory the agent cannot write` and then fails
+with `claude not found in a PATH directory the agent cannot write` (exit 127). With sandbox
+hooks on, that `python3` must also be 3.11 or newer; an older one fails Bootstrap with
+`hook interpreter ... needs at least 3.11`. The fullsend sandbox image ships both.
+
+The `claude` CLI is held to the same rule. The launch pins the first `claude`
+in a `PATH` directory the sandbox user neither owns nor can write, judged by
+the file it resolves to and every directory above that file. A `claude` found
+only through an agent-writable directory, or a symlink into one, fails the
+launch with `claude not found in a PATH directory the agent cannot write`
+(exit 127). If `claude` is a `#!/usr/bin/env node` script rather than a binary,
+`node` must sit in such a directory too. The launch then starts the script with
+that `node`, and without one it fails with
+`node not found in a PATH directory the agent cannot write` (exit 127). In the
+fullsend sandbox image `claude` is a binary. `.env` carries the harness
+`env.sandbox` values, the host-file env files it sources, and anything the agent
+wrote there between iterations. The rest of the environment, including provider
 credentials, comes from the sandbox.
 
 | Run | Cleared after `.env` | Sources it covers |
 |---|---|---|
-| Every run | `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH`, `BUN_OPTIONS`: code-loading variables, not routing ones | all |
+| Every run | `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS`, `NODE_PATH`, `BUN_OPTIONS`: code-loading variables, not routing ones | all |
+| Every run | `CLAUDE_CODE_SAFE_MODE`, `CLAUDE_CODE_SIMPLE`, `CLAUDE_CODE_SHELL_PREFIX`, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`: they change how Claude Code loads settings, runs hook commands and passes the environment to them | all |
 | Gateway runs | `ANTHROPIC_BASE_URL`, `ANTHROPIC_UNIX_SOCKET`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_IDENTITY_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN_FILE`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`, `ANTHROPIC_PROFILE`, `ANTHROPIC_FEDERATION_RULE_ID`, `CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_SESSION_ACCESS_TOKEN`, `CLAUDE_CODE_HOST_AUTH_ENV_VAR`, `CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER`, `AGENT_PROXY_AUTH_TOKEN`, and the provider selectors `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_FOUNDRY`, `CLAUDE_CODE_USE_MANTLE`, `CLAUDE_CODE_USE_ANTHROPIC_AWS`, `CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD`, `CLAUDE_CODE_USE_GATEWAY`; then the runner exports its own values | all: `env.sandbox`, host-file env files, the agent's `.env` writes, and providers |
 
 On non-gateway runs no `ANTHROPIC_*` variable is cleared. A value the harness sets is honoured.
@@ -197,6 +280,39 @@ pinned. On gateway runs the cleared variables are also pinned in the inline `--s
 `.claude/settings.json` `env` block (see [What the runner owns](#inference-gateway-route)). On
 non-gateway runs that block is read by Claude Code itself, after launch. On every route, the egress profile and the endpoint-bound placeholder are what keep the
 credential on its host.
+
+What the runner itself injects into the sandbox — for claude,
+`CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` on every
+run, plus `ANTHROPIC_BASE_URL` and a gateway credential variable when an
+inference gateway applies — and the keys it reserves from `env.sandbox` are
+published as generated, machine-checkable schemas: the
+[sandbox environment contract](../normative/sandbox-env/v1/README.md).
+
+**Sandbox hook settings come from the harness, not `.env`.** With sandbox
+hooks on, `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, `FULLSEND_EGRESS_ALLOWLIST`,
+`FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are taken from the harness
+configuration at Bootstrap, before the first iteration. The launch sets them
+again after it reads `.env`, and unsets any of them the harness did not set. A
+value in `.env`, including one the agent wrote there, cannot change them.
+
+Whether the hooks run at all is also the runner's choice. The `--settings`
+document the runner passes pins these keys:
+
+- `env`: the five hook variables, empty for any the harness did not set, and
+  every variable in the "Every run" rows of the table above, and `BASH_ENV`
+  and `ENV`, set empty; and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
+- `"disableAllHooks": false`.
+
+On gateway runs the `env` entries are added to the route's `env` block in the
+inline document. `--settings` ranks above `$CLAUDE_CONFIG_DIR/settings.json`
+and the repository's `.claude/settings.json` and `.claude/settings.local.json`
+for the keys it sets, so a value for one of these keys in those files has no
+effect. Other keys in those files still apply.
+
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is set on every run, so a harness
+that sets its own `ANTHROPIC_BASE_URL` sends no telemetry to Anthropic. The
+launch also exports it after `.env`, and a run without sandbox hooks gets an
+inline `--settings` document with only that key.
 
 ## Behaviour differences worth knowing
 
@@ -221,6 +337,110 @@ These are the places Claude Code differs from pi — useful when comparing a run
   hook wiring is passed explicitly with `--settings` so it loads regardless, but repo-supplied hooks
   are a separate exposure to be aware of.
 
+## Live Claude Workflow progress
+
+When Claude Code emits background task and Workflow progress, `fullsend run`
+prints task identity, agent labels, attributed phases, state changes, and
+available tool names/context. For example:
+
+```console
+  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — running (attempt 1)
+  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — completed (attempt 1)
+  ⚙ Task wf-example / agent #2 (creator) [Create]: strategy-create — running (tool: Bash: python3 create.py) (attempt 1)
+```
+
+Unchanged snapshots and counter-only updates do not repeat the same display
+line. Text is sanitized, credential-redacted, and bounded before display or
+retention in the bounded display cache. Progress text uses Unicode cleanup:
+bidirectional overrides, invisible format characters and Unicode tags are
+removed, and compatibility characters are normalized. The CLI applies the
+same cleanup to credential literals before matching.
+A dedicated reconciler owns lifecycle and deduplication; the renderer prints
+its safe messages. Parser/`OnEvent` callbacks and captured stream bytes keep
+their original snapshot content.
+
+Concurrent tasks and agents retain
+separate identities. Task tool/status fields retain omitted values;
+explicit empty strings clear them. Pausing hides the last summary until the
+task resumes; a terminal state or new run clears it. Partial lifecycle
+patches retain known task labels and state; explicit starts can reset an
+identity. Late running snapshots do not reopen known terminal tasks or
+agents. Sparse agent snapshots retain known
+labels, phases and tool context. Error, blocked and cached metadata persists
+within a state; state changes clear omitted transient metadata. Explicit
+empty strings and false flags also clear their corresponding fields.
+
+Task visibility, terminal state and run watermarks are retained separately
+from agent display rows. New runs and terminal task states retire old agent
+rows. Tracking admits up to 1,024 task identities and 1,024 agents per task,
+with a shared 16,384-row threshold for admitting new agent rows. At a limit,
+new identities or agent rows are suppressed; tracked rows and task guards
+remain.
+Agent-row capacity becomes available when tasks finish or open new runs.
+Task-identity slots stay reserved for the renderer's lifetime.
+
+Run IDs follow the Agent SDK opening order; late frames from superseded
+runs are ignored, so they cannot steal later updates without a run ID.
+Visibility belongs to each run: promoting its first late run ID preserves
+its hidden classification, while a distinct named run does not inherit an
+older run's visibility. Hook names and event attribution survive sparse
+progress/completion messages for the same hook ID.
+
+Workflow agent wire states are only `start`, `progress`, `done` and `error`.
+A `start` record with `queuedAt` and no `startedAt` is queued; a record with
+`startedAt` is executing. Started agents display their one-based `attempt`
+when supplied. A retry start has an `attempt` greater than one; its display
+includes `attempt` and the supplied `lastAttemptReason`
+(`stalled`, `throttled` or `user-retry`). Later progress is running, with the
+attempt retained, and each new attempt is visible even when its label and
+tool are unchanged. `error` plus `skipped: true` is skipped, not failed.
+Older records without timing metadata retain the best-effort running display.
+These derived statuses do not assume extra values in the agent wire enum.
+
+The display handles these structured Claude events when the runtime emits
+them. Task progress shapes were checked against Claude Code 2.1.296 capture
+and the embedded 2.1.312 emitter/schema; this is version-bound compatibility,
+not a promise of a stable public protocol. In particular, `workflow_progress`
+(including `workflow_agent` metadata) and `system/task_summary` are
+**undocumented internal Claude Code extensions**, not public Agent SDK
+contracts in the inspected version. They may change or disappear without
+notice in any Claude patch release. Support is best-effort; unsupported
+shapes are ignored for display and raw events remain available for diagnosis.
+A newly recorded live 2.1.312 Workflow stream has not been qualified here.
+
+Workflow agents use their positive index as stable identity within a task/run.
+A late `agentId` is retained as display attribution, and learning it alone
+does not add another progress line. If the index is absent, the agent ID is
+the identity fallback.
+
+| Event | Console behavior |
+| --- | --- |
+| `task_started` | Task identity and description; ambient/hidden starts suppress subsequent progress while tracked. |
+| `task_progress` | Task description, last tool and progress summary; best-effort decoding of the undocumented internal `workflow_progress` agent metadata. |
+| `task_updated` | Pending, running, paused, completed, failed and killed states; description-only patches and bounded errors. |
+| `task_notification` | Completion, failure or stop, including a worker-restart cause when supplied; full result summary excluded. |
+| `task_summary` | Undocumented internal mid-turn summary; best-effort display, with null/empty values clearing deduplication silently. |
+| `background_tasks_changed` | Count of reported non-ambient background tasks; membership is not execution or completion evidence. |
+| `hook_started`, `hook_progress`, `hook_response` | Hook name/event, running/outcome and exit code; stdout/stderr/output excluded. Fullsend launches Claude without `--include-hook-events`, and the inspected Claude 2.1.312 producer emits only SessionStart and Setup hook events in that mode, so those are the only hook rows real runs produce; the decoder still renders other hook events if a future launch enables them. |
+| `permission_denied` | Tool/agent identity and bounded decision reason; tool-result body excluded. |
+| `status`, `session_state_changed` | Compaction, session state and action-required transitions; per-request status chatter excluded. |
+| `informational`, `notification` | Salient notices, suggestions, warnings and text notifications; unkeyed occurrences repeat, transcript-only info excluded. |
+| `rate_limit_event` | Warnings, rejection, supplied reset time and subsequent recovery; routine initial allowed status suppressed. |
+
+Declared `workflow_phase` records do not prove live advancement and are not
+rendered as phase starts. Internal `workflow_log` entries are filtered out
+of SDK progress by the inspected Claude 2.1.312 producer; Fullsend cannot
+display records absent from its input stream. This is not a stream of full
+nested tool stdout/stderr, prompts, result bodies or hook output. Unknown
+message kinds/states and malformed records are ignored for display; raw
+events remain in `output.jsonl` for diagnosis and future compatibility work.
+
+Task completion and session idle are distinct from the run's validated
+business result. Progress counters do not add to token/cost totals. The
+periodic `Agent running (...)` heartbeat still reports elapsed time rather
+than proving progress. The display is advisory, not a durable task registry;
+very large sessions can evict cached identity and deduplication state.
+
 ## Troubleshooting
 
 **The model is not what you asked for.** Check `metrics.json`: `requested_model` is what was handed
@@ -231,6 +451,13 @@ override is visible after the fact.
 **A tool call was blocked.** The security hooks log to `/sandbox/workspace/.security/findings.jsonl`
 inside the sandbox. A blocked tool reports its reason in the transcript; an allowlist mismatch names
 the offending tool and the expected vocabulary.
+
+**The run refused to start with exit 97.** Before every launch the runtime checks that
+`/sandbox/claude-config/hooks.json` and the hook scripts under `/sandbox/claude-config/hooks/` are
+exactly what `Bootstrap` installed. A file that was changed, deleted or added, usually by an earlier
+iteration, fails the run instead of loading altered hooks. On the inference gateway route the settings
+document is passed inline, so only the hook scripts are checked. The launch also starts the `claude`
+binary it found before reading `.env`, so a `PATH` entry from `.env` cannot stand in for it.
 
 **A harness plugin did not load.** When Claude Code reports a plugin in the `plugin_errors` of its
 startup `system`/`init` event, the run output prints one `Plugin <name> failed to load …` warning per

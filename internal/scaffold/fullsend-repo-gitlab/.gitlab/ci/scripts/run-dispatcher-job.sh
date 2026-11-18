@@ -32,13 +32,20 @@ case "${CI_DEBUG_TRACE:-}" in
     ;;
 esac
 
-# Clear the webhook fast-path credentials. GitLab injects the protected
-# FULLSEND_TRIGGER_TOKEN (a bearer that starts default-branch pipelines)
-# and FULLSEND_WEBHOOK_SECRET into every protected-branch job, and the
-# dispatcher needs neither: the trigger already started this pipeline and
-# the webhook body is handed over as TRIGGER_PAYLOAD. Unset them before
-# any later code can read them.
-unset FULLSEND_TRIGGER_TOKEN FULLSEND_WEBHOOK_SECRET
+# Clear the webhook fast-path credentials. GitLab injects
+# FULLSEND_TRIGGER_TOKEN, FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN, and
+# FULLSEND_WEBHOOK_SECRET into every protected-branch job. Both trigger tokens
+# can start pipelines; the dispatcher needs none of these values because the
+# webhook already started this pipeline. Unset them before any later code can
+# read them.
+unset FULLSEND_TRIGGER_TOKEN FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN FULLSEND_WEBHOOK_SECRET
+
+# Clear the Jira credentials. `repos install` writes FULLSEND_JIRA_TOKEN and
+# FULLSEND_JIRA_EMAIL, or FULLSEND_JIRA_CLIENT_ID and
+# FULLSEND_JIRA_CLIENT_SECRET, as project-wide variables, so GitLab injects
+# them into every protected-branch job. Only the Jira poller and the agent jobs consume
+# them; the dispatcher needs neither value.
+unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
 
 # Pin job/pipeline/project identity to the CI_JOB_TOKEN job record
 # and admit only source=trigger. Disjoint from the poller (schedule)
@@ -88,6 +95,11 @@ export TRIGGER_PAYLOAD
 FULLSEND_JOB_KIND=poller
 . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"
 
+# Export the registered Analyst's numeric user ID while its credential is
+# still present — same as run-poll-job.sh (#8807). Only the ID outlives
+# this step.
+fullsend_resolve_gitlab_analyst_user_id
+
 # Blank sibling role secrets for the rest of the dispatcher job's
 # lifetime — same reasoning as run-poll-job.sh: GitLab injects every
 # registered role secret plus FULLSEND_FORGE_TOKEN into every
@@ -100,6 +112,12 @@ for _fs_sibling in $(compgen -v | grep -E '^FULLSEND_(GITLAB_(ANALYST|CODER|POLL
   fi
 done
 unset _fs_sibling
+
+# Select the agent dispatch route (#8438): the CI_JOB_TOKEN child-pipeline
+# route when this pipeline was created by the ready trigger-only account,
+# otherwise the Poller-credential pipelines API route. See
+# fullsend_select_gitlab_dispatch_route in pin-ci-job-identity.sh.
+fullsend_select_gitlab_dispatch_route
 
 # Run the gitlab-webhook input driver (#7773). Uses the pinned project
 # path/API root (from the CI_JOB_TOKEN job record), not the overridable

@@ -2,21 +2,21 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
-	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
@@ -33,36 +33,97 @@ The repos subcommand group provides bulk operations for platform administrators
 managing fullsend across many repositories and organizations.`,
 	}
 	cmd.PersistentFlags().String("gitlab-token", "", "GitLab personal or project access token (overrides GITLAB_TOKEN env var)")
+	cmd.PersistentFlags().Bool(reposVerboseFlag, false, "show the underlying API error text (HTTP status and server message, with credentials redacted) instead of withholding it, and log each GitLab API request (method, path, status) to stderr")
 	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
-	cmd.AddCommand(newReposSetDefaultCmd())
+	cmd.AddCommand(newReposSetCmd())
 	return cmd
 }
 
-func newReposSetDefaultCmd() *cobra.Command {
+func newReposSetCmd() *cobra.Command {
 	var manifest string
+	var unset bool
 
 	cmd := &cobra.Command{
-		Use:   "set-default <key> <value>",
-		Short: "Set a platform-level default in the manifest",
-		Long: fmt.Sprintf(`Set or remove a platform-level default in repos.yaml.
+		Use:   "set <path> <value>",
+		Short: "Set or remove any field in the repos.yaml manifest",
+		Long: `Set or remove a field anywhere in repos.yaml: defaults, the github and
+gitlab sections, and individual repository entries, including nested config
+fields and structured values. Paths are checked against the manifest schema,
+and the whole resulting manifest is validated before it is written. A failed
+edit leaves the file unchanged; a successful edit keeps unrelated values,
+comments, and ordering. A missing manifest is created with version: 1.
 
-An empty value removes the key. Creates the manifest with version: 1 if it does not exist.
+Path syntax:
+  Dot-separated YAML field names, for example defaults.config.runtime,
+  github.mint_url, or gitlab.agent_runner_tags. Select a repository entry by
+  its exact name with a double-quoted selector: github.repos["acme/api"].
+  Glob entries are selected by their literal pattern (github.repos["acme/*"]).
+  Quote the whole path in your shell.
 
-Valid keys:
-  %s
+  Setting a nested path under a repository entry requires the entry to exist.
+  Setting the whole entry path creates or replaces the entry; the selector
+  supplies its name.
 
-Per-repo config fields, including runtime and allowed_remote_resources, are
-not set here: edit defaults.config, github.config, gitlab.config, or a
-repository entry's config in repos.yaml instead.`, strings.Join(repos.ValidDefaultKeys, "\n  ")),
-		Args: cobra.ExactArgs(2),
+Values:
+  Strings are taken literally, so none and "" are stored as strings.
+  Booleans must be true or false. Lists and objects take YAML or JSON, for
+  example '[gpu, linux]' or '{"auth": "vertex-wif"}'. An empty argument
+  never deletes a key; use --unset <path> to remove it.`,
+		Example: `  # Set a fleet-wide default and a forge-wide config value
+  fullsend repos set defaults.inference.auth vertex-wif
+  fullsend repos set github.config.runtime claude
+
+  # Set a list value
+  fullsend repos set gitlab.agent_runner_tags '[fullsend-agent, gpu]'
+
+  # Add (or replace) a repository entry
+  fullsend repos set 'github.repos["acme/api"]' '{"app_set": "acme"}'
+
+  # Change a field on an existing repository entry
+  fullsend repos set 'github.repos["acme/api"].config.runtime' claude
+
+  # Delete a key
+  fullsend repos set --unset github.mint_url`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if unset {
+				if len(args) != 1 {
+					return fmt.Errorf("--unset takes exactly one argument (the path), received %d", len(args))
+				}
+				return nil
+			}
+			return cobra.ExactArgs(2)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return repos.SetDefault(manifest, args[0], args[1])
+			out := cmd.OutOrStdout()
+			if unset {
+				changed, err := repos.UnsetManifestValue(manifest, args[0])
+				if err != nil {
+					return err
+				}
+				if changed {
+					fmt.Fprintf(out, "Removed %s from %s\n", args[0], manifest)
+				} else {
+					fmt.Fprintf(out, "%s is not set in %s; nothing changed\n", args[0], manifest)
+				}
+				return nil
+			}
+			changed, err := repos.SetManifestValue(manifest, args[0], args[1])
+			if err != nil {
+				return err
+			}
+			if changed {
+				fmt.Fprintf(out, "Set %s in %s\n", args[0], manifest)
+			} else {
+				fmt.Fprintf(out, "%s already has that value in %s; nothing changed\n", args[0], manifest)
+			}
+			return nil
 		},
 	}
 
 	cmd.Flags().StringVarP(&manifest, "manifest", "f", "repos.yaml", "path to repos.yaml")
+	cmd.Flags().BoolVar(&unset, "unset", false, "remove the key at <path> instead of setting it")
 
 	return cmd
 }
@@ -86,6 +147,9 @@ func newReposStatusCmd() *cobra.Command {
 		Short: "Compare manifest against actual repo state",
 		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml and managed configuration drift against .fullsend/config.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, restore := reposVerboseContext(cmd, getGitLabToken(cmd))
+			defer restore()
+			cmd.SetContext(ctx)
 			return runReposStatus(cmd, opts)
 		},
 	}
@@ -251,6 +315,20 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		}
 	}
 
+	// Managed configuration that the effective fullsend_ref may not read
+	// (#9292).
+	for _, s := range result.Repos {
+		if s.ConfigCompatibility != repos.ConfigIncompatible && s.ConfigCompatibility != repos.ConfigUnknown {
+			continue
+		}
+		ref := s.ConfigSchemaRef
+		if ref == "" {
+			ref = "running release"
+		}
+		fmt.Fprintf(out, "\n%s config compatibility (fullsend_ref %s): %s\n", s.Owner+"/"+s.Repo, ref, s.ConfigCompatibility)
+		fmt.Fprintf(out, "  %s\n", s.ConfigCompatibilityReason)
+	}
+
 	for _, s := range result.Repos {
 		if !showGitLabRoleStatus(s) {
 			continue
@@ -261,39 +339,71 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		}
 	}
 
+	// The webhook fast path's reasons, including an informational
+	// deferral that adds no drift. Names and IDs only, never values.
+	for _, s := range result.Repos {
+		w := s.GitLabWebhook
+		if w == nil || w.State == repos.GitLabWebhookStateReady {
+			continue
+		}
+		fmt.Fprintf(out, "\n%s GitLab webhook fast path: %s\n", s.Owner+"/"+s.Repo, w.State)
+		for _, r := range w.Reasons {
+			fmt.Fprintf(out, "  %s\n", r)
+		}
+	}
+
 	for _, w := range result.Warnings {
 		fmt.Fprintf(out, "WARNING: %s\n", w)
 	}
 }
 
 // reposInstallConfig holds flags and test overrides for repos install.
+// Persistent, non-secret repository settings and repository membership
+// live in repos.yaml; only credentials, local artifacts and one-run
+// controls are command-line inputs (#8219).
 type reposInstallConfig struct {
 	// Core flags
 	manifest            string
 	dryRun              bool
 	repoFilter          []string
 	concurrency         int
-	roles               []string
-	rolesChanged        bool
 	direct              bool
 	force               bool
 	reactivateSchedules bool
 	gitlabToken         string
-	forge               string
 
-	// GCP credentials (install-time only)
+	// GCP credentials (install-time only). The region is not an input:
+	// FULLSEND_GCP_REGION comes from the effective configuration (#8220).
 	inferenceProject       string
 	inferenceWIFProvider   string
-	inferenceProjectNumber string // auto-derived from --vertex-project; not a CLI flag
-	inferenceRegion        string
+	inferenceProjectNumber string // derived from the GCP project; not a CLI flag
 
 	// openAIAPIKey is written as FULLSEND_OPENAI_API_KEY to selected
 	// repos whose inference.auth is openai-api-key. Command-line only:
 	// never persisted to the manifest and never logged.
 	openAIAPIKey string
 
+	// jiraToken and jiraEmail are written as FULLSEND_JIRA_TOKEN and
+	// FULLSEND_JIRA_EMAIL to selected repos whose effective
+	// tracker.jira.poll.enabled is true (#9076). Command-line only: never
+	// persisted to the manifest and never logged.
+	jiraToken string
+	jiraEmail string
+	// jiraClientID and jiraClientSecret are written as
+	// FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET instead of
+	// the token, for a service account's OAuth 2.0 credential (#9176).
+	// Command-line only: never persisted to the manifest and never logged.
+	jiraClientID     string
+	jiraClientSecret string
+
+	// rotateTraceSigningKey writes a new trace signing key pair and keeps
+	// the previous verification key as retained unless the secret cannot
+	// hold it (ADR 0154); on an existing install without trace_context the
+	// first rotation provisions the keys. A one-run control: never
+	// persisted.
+	rotateTraceSigningKey bool
+
 	// GitLab-specific
-	gitlabURL          string
 	gitlabRoleRegistry string
 	gitlabRoleTokens   []string
 
@@ -305,25 +415,14 @@ type reposInstallConfig struct {
 	// rotateGitLabTriggerToken force-rotates the webhook fast-path
 	// pipeline trigger token (FULLSEND_TRIGGER_TOKEN, ADR 0125).
 	rotateGitLabTriggerToken bool
+	// rotateGitLabTriggerAccount replaces the trigger-only service account's
+	// deploy key, branch grant, and trigger token (#8437).
+	rotateGitLabTriggerAccount bool
 
-	// Per-repo overrides
-	fullsendRef   string
-	mintURL       string
-	appSet        string
-	inferenceAuth string
-
-	// Vendor flags
-	vendor         bool
+	// Local vendoring artifacts, used for repositories whose manifest
+	// settings resolve vendor: true. They are never persisted.
 	fullsendBinary string
 	fullsendSource string
-	vendorChanged  bool
-
-	// signoff adds a Signed-off-by trailer for the authenticated
-	// installing user to scaffold commits. When signoffChanged is true
-	// (--signoff or --signoff=false was passed), it overrides the
-	// manifest's signoff settings for this run; it is never persisted.
-	signoff        bool
-	signoffChanged bool
 
 	// Test overrides
 	testClient               forge.Client
@@ -331,6 +430,16 @@ type reposInstallConfig struct {
 	testGitLabTokenInventory repos.ProjectAccessTokenClient
 	testGitLabTriggerOwner   repos.GitLabTriggerOwner
 	testProjectNumberFn      func(ctx context.Context, projectID string) (string, error)
+	// testContainTriggerAccount replaces the live GitLab trigger-account
+	// containment step, which only runs against the live client.
+	testContainTriggerAccount func(ctx context.Context, client forge.Client, owner, repo string) error
+	// testConvergeTriggerAccount replaces the live GitLab trigger-account
+	// convergence step, which only runs against the live client.
+	testConvergeTriggerAccount func(ctx context.Context, client forge.Client, owner, repo string, rotate bool) error
+	// testRepairTriggerSchedules replaces the live repair of drifted
+	// trigger-account-owned polling schedules, which only runs against the
+	// live client.
+	testRepairTriggerSchedules func(ctx context.Context, client forge.Client, owner, repo string) error
 }
 
 func newReposInstallCmd() *cobra.Command {
@@ -341,38 +450,56 @@ func newReposInstallCmd() *cobra.Command {
 		Short: "Converge repos to the desired state defined in a manifest",
 		Long: `Idempotent convergence operator for repos.yaml manifest entries.
 
-For repos not yet in the manifest, adds them (requires --forge). For repos
-whose shim workflow is not yet on the default branch, scaffolds workflow
-files and writes variables/secrets onto the initialization branch, including
-re-runs while an initialization PR/MR is still open. For repos whose workflow
-is already on the default branch, reconciles variable drift, disabled GitLab
-pipeline schedules (reported as drift; reactivated only when
---reactivate-schedules is passed), declared configuration-preset drift
-against .fullsend/config.base.yaml, managed .fullsend/config.yaml drift
-for opted-in repositories, and upgrades scaffold refs to match the
-manifest.
+repos.yaml is the source of every persistent, non-secret repository setting
+and of repository membership. Declare repositories and settings there, by
+editing the file or with 'fullsend repos set', before running install; the
+command-line flags supply only credentials, local vendoring artifacts and
+one-run controls, and none of their values are written to repos.yaml.
 
-When repos are specified as positional arguments, only those repos are
-processed. Glob patterns (e.g. "acme/*") are matched against manifest
-entries. When no repos are specified, all manifest repos are converged.
-Credentials are required only for the forges of the selected repos.
+For repos whose shim workflow is not yet on the default branch, scaffolds
+workflow files and writes variables/secrets onto the initialization branch,
+including re-runs while an initialization PR/MR is still open. For repos
+whose workflow is already on the default branch, reconciles variable drift,
+disabled GitLab pipeline schedules (reported as drift; reactivated only when
+--reactivate-schedules is passed), declared configuration-preset drift
+against .fullsend/config.base.yaml, managed .fullsend/config.yaml drift,
+and upgrades scaffold refs to match the manifest.
+
+Positional arguments select repositories already declared in repos.yaml:
+exact entry names, repositories covered by a glob entry (e.g. "acme/api"
+under "acme/*"), or glob patterns (e.g. "acme/*"). They never add or copy
+manifest entries. Every selector must match a declared repository; one that
+matches none fails the whole command before anything is written, even when
+another selector matches (for example "other/*" next to a declared "acme/*",
+alongside "acme/api"). Declare a missing repository first. Dry run and
+status select the same way. For example:
+  fullsend repos set 'github.repos["acme/api"]' '{}'
+When no repos are specified, all manifest repos are converged. Credentials
+are required only for the forges of the selected repos.
 
 Every selected repo must resolve an inference authentication method
 (inference.auth: vertex-wif, openai-api-key or openai-wif) from its manifest
-entry, its forge section, or defaults; there is no implicit default. --inference-auth
-records the selection as inference.auth on each selected manifest entry
-(new and existing), never on defaults or forge sections.
+entry, its forge section, or defaults; there is no implicit default.
+
+Infrastructure values come from each repository's effective configuration
+(the managed config from repos.yaml layered over its config_base preset), so
+install, --dry-run and 'repos status' agree with the committed .fullsend
+files: FULLSEND_MINT_URL is the declared config mint_url, else the manifest
+mint_url/mint_mode; FULLSEND_GCP_REGION is the declared inference.region,
+else global. A manifest mint_url that contradicts a declared config mint_url
+fails before any write.
 
 Each repo's inference.auth selects the inference credentials provisioned on
-it: vertex-wif writes FULLSEND_GCP_PROJECT_ID, FULLSEND_GCP_WIF_PROVIDER and
-FULLSEND_GCP_REGION (from --vertex-project, --vertex-region and the
-derived or --vertex-wif-provider WIF provider); openai-api-key writes
-FULLSEND_OPENAI_API_KEY (from --openai-api-key, GitHub and GitLab). Existing
-secrets are reused when no values are supplied; supplied values replace
-them. A repo missing its credentials with no values supplied fails before
-any write. After switching methods, the other method's Fullsend-managed
-secrets are removed once the new ones are written. --openai-api-key is a
-command-line input only; it is never written to repos.yaml.
+it: vertex-wif writes FULLSEND_GCP_PROJECT_ID and FULLSEND_GCP_WIF_PROVIDER
+from --vertex-project and --vertex-wif-provider, else from the
+inference.project and inference.wif_provider the effective configuration
+declares (a flag that contradicts a declared value fails before any write;
+without a WIF provider one is derived from the project number);
+openai-api-key writes FULLSEND_OPENAI_API_KEY (from --openai-api-key, GitHub
+and GitLab). Existing secrets are reused when no values are supplied;
+supplied values replace them. A repo missing its credentials with no values
+supplied fails before any write. After switching methods, the other
+method's Fullsend-managed secrets are removed once the new ones are written.
 
 openai-wif (OpenAI Workload Identity Federation, GitHub only) needs no
 secret. The repo must have a complete set of OpenAI WIF identifiers: the
@@ -380,53 +507,128 @@ FULLSEND_OPENAI_AUDIENCE, FULLSEND_OPENAI_IDENTITY_PROVIDER_ID and
 FULLSEND_OPENAI_SERVICE_ACCOUNT_ID repository variables (which win when any
 is set), else inference.openai from the managed config, existing
 .fullsend/config.yaml, or config base/preset. A missing or partial set fails
-before any write. The GCP secrets stay optional (written when Vertex flags
-are supplied) for Vertex sub-agents; FULLSEND_OPENAI_API_KEY is removed only
+before any write. The GCP secrets stay optional (written when a GCP project
+is supplied) for Vertex sub-agents; FULLSEND_OPENAI_API_KEY is removed only
 once the identifiers are live on the default branch. openai-wif on a GitLab
 repo is rejected before any write.
 
+Jira polling follows each repo's effective tracker.jira.poll.enabled; the
+Jira site, project and query come only from the effective configuration.
+When it is true, --jira-token and the optional --jira-email are written as
+FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL, or an Atlassian service
+account's OAuth 2.0 credential is written with --jira-client-id and
+--jira-client-secret as FULLSEND_JIRA_CLIENT_ID and
+FULLSEND_JIRA_CLIENT_SECRET. A credential set is required when the repo has
+no Jira credentials yet, and an omitted flag keeps the existing secret. The
+two credential sets are mutually exclusive; supplying one removes existing
+secrets of the other. When polling is false or omitted, Fullsend-owned poll
+resources are removed and the Jira secrets are left in place.
+
+Trace signing keys (ADR 0154) are provisioned on GitHub only. A fresh
+install generates a trace installation ID and an Ed25519 key pair,
+records the installation ID and the public key in the repository's
+repos.yaml entry as config.trace_context (a repository that only a glob
+covers gets its own entry, copied from the glob), and writes the private
+seed as the FULLSEND_TRACE_SIGNING_KEY secret and its key ID as the
+FULLSEND_TRACE_SIGNING_KEY_ID variable. A later run writes a new pair,
+keeping the installation ID, when the secret is missing, when that
+variable is missing or names a retained key, and with
+--rotate-trace-signing-key, whose first use gives an existing install
+its keys. It retains the previous public key, or replaces it when the
+secret cannot hold that key: when the variable names a retained key and
+the committed .fullsend/config.yaml does not list the active key, or
+when neither the variable nor the secret exists and no block of the
+installation is committed. From a read-only manifest a fresh
+install without --rotate-trace-signing-key goes ahead without keys, and
+any other key write fails that repository; with
+--rotate-trace-signing-key it stops the run. Output shows installation
+and key IDs, never the seed. Commit the repos.yaml changes install
+makes, and run one install of a repository at a time. GitLab
+repositories get no keys yet.
+
+The persistent-setting flags --roles, --fullsend-ref, --mint-url, --app-set,
+--inference-auth, --vendor, --signoff, --gitlab-url, --vertex-region and
+--forge were removed; using one fails with the repos.yaml key to set instead.
+
 GCP infrastructure (WIF, mint) must be provisioned separately via
 'inference provision' and 'mint enroll' before running this command.`,
+		Example: `  # Declare a repository and its settings, then install it
+  fullsend repos set defaults.inference.auth vertex-wif
+  fullsend repos set defaults.config.inference.region us-east5
+  fullsend repos set 'github.repos["acme/api"]' '{}'
+  fullsend repos install acme/api --vertex-project my-gcp-project --dry-run
+  fullsend repos install acme/api --vertex-project my-gcp-project
+
+  # Converge every declared repository
+  fullsend repos install`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.repoFilter = args
 			opts.gitlabToken = getGitLabToken(cmd)
-			if err := validateVendorFlags(opts.vendor, opts.fullsendBinary, opts.fullsendSource); err != nil {
-				return err
-			}
-			opts.vendorChanged = cmd.Flags().Changed("vendor")
-			opts.signoffChanged = cmd.Flags().Changed("signoff")
-			opts.rolesChanged = cmd.Flags().Changed("roles")
-			return runReposInstall(cmd.Context(), opts)
+			secrets := append([]string{opts.gitlabToken, opts.openAIAPIKey, opts.jiraToken, opts.jiraClientSecret}, roleTokenValues(opts.gitlabRoleTokens)...)
+			ctx, restore := reposVerboseContext(cmd, secrets...)
+			defer restore()
+			return runReposInstall(ctx, opts)
 		},
 	}
+	cmd.SetFlagErrorFunc(removedReposInstallFlagError)
 
 	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or URL to repos.yaml manifest")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would change without applying")
 	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
-	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install")
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "allow scaffold ref downgrades")
 	cmd.Flags().BoolVar(&opts.reactivateSchedules, "reactivate-schedules", false, "reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted)")
-	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for repos not yet in the manifest (github or gitlab)")
-	cmd.Flags().StringVar(&opts.inferenceProject, "vertex-project", "", "GCP project ID for Vertex AI inference")
-	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "vertex-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}); uses this provider for all repos instead of deriving per-repo providers")
-	cmd.Flags().StringVar(&opts.inferenceRegion, "vertex-region", "", "GCP region for Vertex AI inference (default: global)")
+	cmd.Flags().StringVar(&opts.inferenceProject, "vertex-project", "", "GCP project ID written as FULLSEND_GCP_PROJECT_ID for Vertex AI inference; must match config.inference.project when repos.yaml or the preset declares one; never written to repos.yaml")
+	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "vertex-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}) written as FULLSEND_GCP_WIF_PROVIDER instead of deriving per-repo providers; must match config.inference.wif_provider when declared; never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.openAIAPIKey, "openai-api-key", "", "OpenAI API key written as FULLSEND_OPENAI_API_KEY to selected repos whose inference.auth is openai-api-key; command-line only, never written to repos.yaml and never logged")
-	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
-	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
-	cmd.Flags().StringVar(&opts.appSet, "app-set", "", "GitHub App set prefix (apps named {app-set}-{role}) persisted as FULLSEND_APP_SET for selected repos; GitHub-only")
-	cmd.Flags().StringVar(&opts.inferenceAuth, "inference-auth", "", "inference authentication method (vertex-wif, openai-api-key, or openai-wif) persisted as inference.auth on each selected manifest entry, overriding forge-section and defaults values for those repos")
-	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
+	cmd.Flags().StringVar(&opts.jiraToken, "jira-token", "", "Jira API token written as FULLSEND_JIRA_TOKEN to selected repos whose tracker.jira.poll.enabled is true; required on the first Jira-enabled install unless client credentials are supplied, an omitted value keeps the existing secret; command-line only, never written to repos.yaml and never logged")
+	cmd.Flags().StringVar(&opts.jiraEmail, "jira-email", "", "Jira account email written as FULLSEND_JIRA_EMAIL to selected repos whose tracker.jira.poll.enabled is true (optional); an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
+	cmd.Flags().StringVar(&opts.jiraClientID, "jira-client-id", "", "Atlassian service account OAuth 2.0 client ID written as FULLSEND_JIRA_CLIENT_ID to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
+	cmd.Flags().StringVar(&opts.jiraClientSecret, "jira-client-secret", "", "Atlassian service account OAuth 2.0 client secret written as FULLSEND_JIRA_CLIENT_SECRET to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml and never logged")
+	cmd.Flags().BoolVar(&opts.rotateTraceSigningKey, "rotate-trace-signing-key", false, "generate a new trace signing key pair for each selected GitHub repo, written as FULLSEND_TRACE_SIGNING_KEY with its public key recorded in repos.yaml, and keep the previous verification key as retained unless the secret cannot hold it; on an existing install without trace_context, the first rotation provisions the keys; needs a writable repos.yaml; GitLab repos get no key yet")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
 	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
-	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerToken, "rotate-gitlab-trigger-token", false, "force-rotate the GitLab webhook fast-path pipeline trigger token (FULLSEND_TRIGGER_TOKEN); the previous token is revoked after the webhook is updated")
-	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
-	cmd.Flags().BoolVar(&opts.signoff, "signoff", false, "add a Signed-off-by trailer for the authenticated user to scaffold commits; --signoff and --signoff=false override the manifest signoff settings for this run")
+	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerToken, "rotate-gitlab-trigger-token", false, "force-rotate the GitLab webhook fast-path pipeline trigger token (FULLSEND_TRIGGER_TOKEN); the previous token is revoked after the webhook is updated. A webhook on the trigger-account route uses FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN instead; rotate it with --rotate-gitlab-trigger-account")
+	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerAccount, "rotate-gitlab-trigger-account", false, "replace the GitLab trigger-only service account's deploy key, protected-branch push entry, and trigger token (FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN); requires a ready trigger account, otherwise install finishes it instead")
+	cmd.Flags().StringVar(&opts.fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload for repos whose repos.yaml settings resolve vendor: true (default: auto-resolve)")
+	cmd.Flags().StringVar(&opts.fullsendSource, "fullsend-source", "", "fullsend source checkout for vendored content and cross-compile, for repos whose repos.yaml settings resolve vendor: true (default: auto-detect or GitHub fetch)")
 
 	return cmd
+}
+
+// removedReposInstallFlags maps each persistent-setting flag removed from
+// repos install (#8219) to the repos.yaml setting that replaces it and an
+// example 'fullsend repos set' command.
+var removedReposInstallFlags = map[string]struct{ key, example string }{
+	"roles":                  {"config.roles (under defaults, a forge section, or a repository entry)", `fullsend repos set defaults.config.roles '[triage, coder, review]'`},
+	"fullsend-ref":           {"fullsend_ref (in the github or gitlab section, or on a repository entry)", `fullsend repos set github.fullsend_ref <ref>`},
+	"mint-url":               {"mint_url (in the github section or on a GitHub repository entry) or config.mint_url", `fullsend repos set github.mint_url https://mint.example.com`},
+	"app-set":                {"app_set (in the github section or on a GitHub repository entry)", `fullsend repos set github.app_set <app-set>`},
+	"inference-auth":         {"inference.auth (under defaults, a forge section, or a repository entry)", `fullsend repos set defaults.inference.auth vertex-wif`},
+	"vendor":                 {"vendor (under defaults or on a repository entry)", `fullsend repos set defaults.vendor true`},
+	"vendor-fullsend-binary": {"vendor (under defaults or on a repository entry)", `fullsend repos set defaults.vendor true`},
+	"signoff":                {"signoff (under defaults, a forge section, or a repository entry)", `fullsend repos set defaults.signoff true`},
+	"gitlab-url":             {"gitlab.url", `fullsend repos set gitlab.url https://gitlab.example.com`},
+	"vertex-region":          {"config.inference.region (under defaults, a forge section, or a repository entry; or inference.region in the config_base preset)", `fullsend repos set defaults.config.inference.region us-east5`},
+	"forge":                  {"a repository entry in the github or gitlab section (repository membership is declared in repos.yaml)", `fullsend repos set 'github.repos["owner/repo"]' '{}'`},
+}
+
+// removedReposInstallFlagError turns cobra's "unknown flag" error for a
+// removed persistent-setting flag into an actionable message naming the
+// repos.yaml setting to declare instead. Other flag errors pass through.
+func removedReposInstallFlagError(_ *cobra.Command, err error) error {
+	name, ok := strings.CutPrefix(err.Error(), "unknown flag: --")
+	if !ok {
+		return err
+	}
+	removed, ok := removedReposInstallFlags[name]
+	if !ok {
+		return err
+	}
+	return fmt.Errorf("--%s was removed from repos install: repos.yaml is the source of persistent repository settings; declare %s instead, for example:\n  %s\nthen re-run repos install", name, removed.key, removed.example)
 }
 
 func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
@@ -441,62 +643,20 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			return err
 		}
 	}
-	if opts.forge != "" && !repos.IsValidForge(opts.forge) {
-		return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", opts.forge, repos.ForgeGitHub, repos.ForgeGitLab)
-	}
-	if err := repos.ValidateInferenceAuth("--inference-auth", opts.inferenceAuth); err != nil {
-		return err
-	}
-	if opts.fullsendRef != "" && !repos.IsValidRef(opts.fullsendRef) {
-		return fmt.Errorf("--fullsend-ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", opts.fullsendRef)
-	}
-	if opts.mintURL != "" {
-		mu, muErr := url.Parse(opts.mintURL)
-		if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
-			return fmt.Errorf("--mint-url must be a valid HTTPS URL, got %q", opts.mintURL)
-		}
-	}
-	if opts.appSet != "" {
-		if opts.forge == repos.ForgeGitLab || opts.gitlabURL != "" {
-			return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
-		}
-		if opts.appSet != repos.NoneSentinel {
-			if err := appsetup.ValidateAppSet(opts.appSet); err != nil {
-				return fmt.Errorf("--app-set: %w", err)
-			}
-		}
-	}
-	if opts.gitlabURL != "" {
-		if opts.forge == repos.ForgeGitHub {
-			return fmt.Errorf("--gitlab-url cannot be combined with --forge=github")
-		}
-		gu, guErr := url.Parse(opts.gitlabURL)
-		if guErr != nil || gu.Scheme != "https" || gu.Host == "" {
-			return fmt.Errorf("--gitlab-url must be a valid HTTPS URL, got %q", opts.gitlabURL)
-		}
-		if err := repos.RejectExtraneousURLParts(gu, "--gitlab-url"); err != nil {
-			return err
-		}
-	}
 	if err := prepareGitLabRoleFlags(opts); err != nil {
 		return err
 	}
 
 	printer := ui.New(os.Stdout)
 
-	// Default --vertex-region to "global" (matching admin install)
-	// when --vertex-project is set but --vertex-region is not.
-	if opts.inferenceProject != "" && opts.inferenceRegion == "" {
-		opts.inferenceRegion = "global"
-	}
-
-	// When --vertex-wif-provider is not set, converge derives the
-	// project number from --vertex-project via the GCP Resource
-	// Manager API so that per-repo WIF provider paths can be constructed.
-	// The lookup is lazy: it runs only when a selected vertex-wif repo
-	// needs a derived provider, so OpenAI-only runs never call GCP.
+	// When no WIF provider is supplied, converge derives the project
+	// number of each repository's effective GCP project (--vertex-project
+	// or the declared inference.project) via the GCP Resource Manager API
+	// so that per-repo WIF provider paths can be constructed. The lookup
+	// is lazy: it runs only when a selected Vertex-using repo needs a
+	// derived provider, so OpenAI-only runs never call GCP.
 	var resolveProjectNumber func(ctx context.Context, projectID string) (string, error)
-	if opts.inferenceProject != "" && opts.inferenceWIFProvider == "" && opts.inferenceProjectNumber == "" {
+	if opts.inferenceWIFProvider == "" {
 		resolveProjectNumber = opts.testProjectNumberFn
 		if resolveProjectNumber == nil {
 			resolveProjectNumber = func(ctx context.Context, projectID string) (string, error) {
@@ -508,34 +668,21 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	printer.StepStart("Loading manifest")
 	manifest, err := repos.LoadManifest(ctx, opts.manifest)
 	if err != nil {
-		// Bootstrap an empty manifest when the file does not exist and
-		// positional repos are provided. The --forge requirement is
-		// enforced later when repos are added to the manifest.
-		if len(opts.repoFilter) > 0 &&
-			!strings.HasPrefix(opts.manifest, "https://") &&
-			!strings.HasPrefix(opts.manifest, "http://") &&
-			errors.Is(err, os.ErrNotExist) {
-			manifest = &repos.Manifest{Version: 1}
-			printer.StepDone("No manifest found; bootstrapping new manifest")
-		} else {
-			return fmt.Errorf("loading manifest: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("loading manifest: %w; repos install does not create a manifest: declare repositories first, for example:\n  fullsend repos set -f %s 'github.repos[\"owner/repo\"]' '{}'", err, opts.manifest)
 		}
-	} else {
-		if err := manifest.Validate(); err != nil {
-			return fmt.Errorf("manifest validation failed: %w", err)
-		}
-		printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
+		return fmt.Errorf("loading manifest: %w", err)
 	}
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
 
-	// When --gitlab-url is provided, set the URL in-memory before
-	// creating the forge client factory so it captures the correct
-	// URL for GitLab API calls during repo probing and converge.
-	// The forge-inference block below has an explicit guard that
-	// sets forgeName to ForgeGitLab when --gitlab-url is provided,
-	// so the EnsurePlatform side effect here is only for the URL.
-	if opts.gitlabURL != "" {
-		manifest.EnsurePlatform(repos.ForgeGitLab)
-		manifest.GitLab.URL = opts.gitlabURL
+	// Positional repositories only select entries already declared in
+	// repos.yaml (#8219): an undeclared selection fails here, before any
+	// manifest or forge write.
+	if err := requireDeclaredSelections(manifest, opts.repoFilter); err != nil {
+		return err
 	}
 
 	var clients repos.ForgeClientFactory
@@ -548,380 +695,175 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		clients = newForgeClientFactory(opts.gitlabToken, manifest)
 	}
 
-	// Preflight the existing configuration layers of manifest-tracked repos
-	// before any manifest or forge write: a markerless overlay needs
-	// adoption and an undeclared base needs resolution (#8218).
-	if err := repos.PreflightManagedConfig(ctx, manifest, clients, opts.repoFilter); err != nil {
-		return fmt.Errorf("configuration preflight: %w", err)
+	// Every selector must also match a declared repository once glob
+	// entries resolve: a glob selector no declared repository matches
+	// (other/* next to a declared acme/*) fails here even when another
+	// selector matches. This only reads from the forge, so dry run and live
+	// install fail identically before any manifest or forge write.
+	//
+	// The error is held, not returned, until the containment-only recovery
+	// below has run for the repositories that did resolve: an unrelated glob
+	// that cannot be listed must not leave an explicit repository's interrupted
+	// bootstrap uncontained. Normal installation stages stay blocked.
+	selectionMatchErr := repos.RequireDeclaredSelections(ctx, manifest, clients, opts.repoFilter)
+
+	// Containment-only recovery of an interrupted GitLab trigger-account
+	// bootstrap (#8437). It runs for every targeted GitLab repository as soon as
+	// the manifest and forge clients exist, before the configuration preflights,
+	// convergence, the Poller inventory and every later stage, none of which
+	// can then fail or skip it. It creates nothing and leaves the webhook fast
+	// path alone. A repo whose containment failed is reported as failed and
+	// skips the later stages.
+	containFailed := make(map[string]error)
+	var containFailedRepos []repos.ConvergeResult
+	// A selection error (for example a glob that cannot be expanded) does not
+	// stop containment of the repos that did resolve: SelectedGitLabRepos
+	// returns every repo it could resolve alongside the error.
+	gitlabRepos, selErr := repos.SelectedGitLabRepos(ctx, manifest, clients, opts.repoFilter)
+	if selErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not select every GitLab repo for trigger account recovery: %v", selErr))
+	}
+	for _, gr := range gitlabRepos {
+		key := gr.Owner + "/" + gr.Repo
+		fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+		if fcErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client for trigger account recovery: %v", key, fcErr))
+			continue
+		}
+		contain := func() error {
+			if opts.testContainTriggerAccount != nil {
+				return opts.testContainTriggerAccount(ctx, fc.Client, gr.Owner, gr.Repo)
+			}
+			return containGitLabTriggerAccount(ctx, opts, fc.Client, printer, gr.Owner, gr.Repo)
+		}
+		if _, dup := containFailed[key]; dup {
+			continue
+		}
+		if cErr := contain(); cErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] GitLab trigger account recovery failed: %v", key, cErr))
+			containFailed[key] = cErr
+			containFailedRepos = append(containFailedRepos, repos.ConvergeResult{
+				Owner: gr.Owner, Repo: gr.Repo,
+				Error: fmt.Errorf("GitLab trigger account recovery: %w", cErr),
+			})
+			continue
+		}
+	}
+	if selectionMatchErr != nil {
+		errs := []error{fmt.Errorf("matching repository selection: %w; repos install only selects repositories the manifest declares; nothing was changed. Declare a missing repository first, for example:\n  fullsend repos set 'github.repos[\"owner/repo\"]' '{}'", selectionMatchErr)}
+		for _, r := range containFailedRepos {
+			errs = append(errs, r.Error)
+		}
+		return errors.Join(errs...)
 	}
 
-	// Every manifest edit below is planned in memory: the edit helpers run
-	// with DryRun so repos.yaml is not written, and their progress output is
-	// held in deferredOutput. Once all edits are planned, the layered safety
-	// comparison runs against the proposed manifest and presets, and only
-	// then is the manifest persisted once, so a safety rejection leaves
-	// repos.yaml byte-identical and writes nothing to the forge (#8218).
+	// The configuration preflights below only read the forge, and the
+	// manifest is written only after all of them, so they share one read
+	// cache: equivalent layer, component and glob reads are made once
+	// (#8501). It is discarded before the manifest write; convergence
+	// reads current state through clients.
+	preflightClients := repos.NewPreflightReadCache(clients)
+
+	// Preflight the existing configuration layers of manifest-tracked repos
+	// before any manifest or forge write: a markerless overlay needs
+	// adoption and an undeclared base needs resolution (#8218). A repo that
+	// only needs adoption is skipped and reported as failed, so the other
+	// repos still converge (#8511); every other problem it finds stops the
+	// run. The trace signing key preflight below skips a repo it refuses
+	// the same way.
+	adoptionRequired, err := repos.PreflightManagedConfig(ctx, manifest, preflightClients, opts.repoFilter)
+	if err != nil {
+		return fmt.Errorf("configuration preflight: %w", err)
+	}
+	skippedRepos := make([]repos.ConvergeResult, 0, len(adoptionRequired))
+	adoptionSkip := make([]string, 0, len(adoptionRequired))
+	for _, a := range adoptionRequired {
+		printer.StepFail(fmt.Sprintf("[%s] skipped: %s", a.Name(), a.Guidance))
+		adoptionSkip = append(adoptionSkip, a.Name())
+		if _, failed := containFailed[a.Name()]; failed {
+			// Already excluded and counted as failed by trigger-account
+			// recovery.
+			continue
+		}
+		skippedRepos = append(skippedRepos, repos.ConvergeResult{
+			Owner: a.Owner, Repo: a.Repo,
+			Error: fmt.Errorf("adoption required: %s exists without the managed-configuration ownership marker (ADR-0122); see the guidance above; nothing was written", preset.OverlayPath),
+		})
+	}
+
+	// The token-scope check only reads, so it runs before install plans any
+	// manifest edit: a failure leaves repos.yaml unchanged instead of
+	// recording a trace key whose seed is never written (ADR 0154). The
+	// manifest edits below carve glob-covered repositories into entries
+	// copied from their globs, so they do not change the targeted forges.
+	targetedForges, err := manifest.DistinctForgesFor(opts.repoFilter)
+	if err != nil {
+		return fmt.Errorf("determining targeted forges: %w", err)
+	}
+	if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
+		return err
+	}
+
+	// Install plans its manifest edits below in memory: the initial
+	// tracking writeback and the trace_context of fresh installs,
+	// recoveries and rotations (ADR 0154). Their progress output is held
+	// in deferredOutput; the layered safety comparison then runs against
+	// the proposed manifest and presets, and only then is the manifest
+	// persisted, so a safety rejection leaves repos.yaml byte-identical and
+	// writes nothing to the forge (#8218).
 	var deferredOutput []func()
 	deferOutput := func(f func()) { deferredOutput = append(deferredOutput, f) }
 	manifestChanged := false
 
-	// Phase 0: add repos not yet in the manifest.
-	var newlyAdded []string
-	var notInManifest []string
-	var globCovered []string
-	if len(opts.repoFilter) > 0 {
-		for _, r := range opts.repoFilter {
-			if strings.ContainsAny(r, "*?[") {
-				continue
-			}
-			parts := strings.SplitN(r, "/", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			if _, found := manifest.ResolveConfig(parts[0], parts[1]); !found {
-				// A repo covered by a manifest glob is already tracked: keep
-				// the glob (and its inference.auth and other overrides)
-				// rather than creating an explicit entry that would drop
-				// them. Per-entry override flags and --inference-auth carve
-				// out an explicit copy of the glob below.
-				if _, globbed := manifest.ResolveConfigWithGlobs(parts[0], parts[1]); globbed {
-					globCovered = append(globCovered, r)
-					continue
-				}
-				notInManifest = append(notInManifest, r)
-			}
-		}
-		hasEntryOverrides := opts.fullsendRef != "" || opts.mintURL != "" ||
-			opts.vendorChanged || opts.appSet != ""
-		// A textual glob match does not guarantee that convergence discovers
-		// the repository: ListOrgRepos omits forks and archived repos, so a
-		// glob-covered target can be absent from the expansion and would then
-		// fail as an unmatched filter. Give such repos an explicit copy of
-		// their matching glob entry so they stay eligible for convergence.
-		carveTargets := globCovered
-		if len(globCovered) > 0 && !hasEntryOverrides {
-			carveTargets = nil
-			expanded, expandErr := manifest.ExpandGlobsFor(ctx, clients, globCovered)
-			if expandErr != nil {
-				// Convergence repeats the expansion and reports the error.
-				printer.StepWarn(fmt.Sprintf("Could not expand manifest globs to verify glob-covered repos: %v", expandErr))
-			} else {
-				discovered := make(map[string]bool, len(expanded))
-				for _, rr := range expanded {
-					discovered[strings.ToLower(rr.Owner+"/"+rr.Repo)] = true
-				}
-				for _, r := range globCovered {
-					if !discovered[strings.ToLower(r)] {
-						carveTargets = append(carveTargets, r)
-					}
-				}
-			}
-		}
-		if len(carveTargets) > 0 {
-			// Copy the matching glob into an explicit entry for each selected
-			// repo and record the requested overrides on it, so the repo keeps
-			// the glob's other settings and its siblings are unchanged. A value
-			// is written when it differs from the inherited platform/default
-			// value or when the copied glob entry already overrides it.
-			// A read-only manifest (HTTPS or an unwritable local file) never
-			// gets a write attempt: carve in memory only, then fail below
-			// with the exact entries to add (#8218).
-			manifestReadOnly := repos.ManifestReadOnly(manifest, opts.manifest)
-			carved, carveErr := repos.CarveOutGlobCovered(ctx, repos.ManifestEditConfig{
-				Manifest:     manifest,
-				ManifestPath: opts.manifest,
-				DryRun:       true,
-			}, carveTargets, clients, func(forgeName string, platform *repos.PlatformConfig, entry *repos.RepoEntry) error {
-				// Reject a target that would have no effective inference
-				// authentication selection before anything is persisted:
-				// the flag, or the copied glob entry's own, forge-section,
-				// or defaults value. --app-set also carves here, so the
-				// check runs before UpdateAppSet can persist its entry.
-				if forgeName != repos.ForgeGitHub && opts.appSet != "" {
-					return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
-				}
-				if opts.inferenceAuth == "" {
-					owner, repo, _ := strings.Cut(entry.Name, "/")
-					if err := manifest.ResolveConfigForEntry(owner, repo, forgeName, *entry).RequireInferenceAuth(); err != nil {
-						return err
-					}
-				} else if err := repos.ValidateInferenceAuthForForge(forgeName, opts.inferenceAuth); err != nil {
-					return fmt.Errorf("%s: %w", entry.Name, err)
-				}
-				// Apply --inference-auth and --app-set to the in-memory
-				// entry here as well (UpdateInferenceAuth and UpdateAppSet
-				// set the same values later), so a read-only manifest's
-				// suggested entry reproduces the requested install.
-				if opts.inferenceAuth != "" {
-					entry.Inference.Auth = opts.inferenceAuth
-				}
-				if forgeName == repos.ForgeGitHub && opts.appSet != "" {
-					entry.AppSet = opts.appSet
-				}
-				if opts.fullsendRef != "" && (entry.FullsendRef != "" || opts.fullsendRef != platform.FullsendRef) {
-					entry.FullsendRef = opts.fullsendRef
-				}
-				if forgeName == repos.ForgeGitHub && opts.mintURL != "" && (entry.MintURL != "" || opts.mintURL != platform.MintURL) {
-					entry.MintURL = opts.mintURL
-				}
-				if opts.vendorChanged {
-					defaultVendor := manifest.Defaults.Vendor != nil && *manifest.Defaults.Vendor
-					if entry.Vendor != nil || opts.vendor != defaultVendor {
-						v := opts.vendor
-						entry.Vendor = &v
-					}
-				}
-				return nil
-			})
-			if carveErr != nil {
-				return fmt.Errorf("applying per-repo overrides to glob-covered repos: %w", carveErr)
-			}
-			if manifestReadOnly {
-				if roErr := repos.RequireWritableManifestForCarved(ctx, manifest, opts.manifest, carved, clients, opts.roles, opts.rolesChanged); roErr != nil {
-					return fmt.Errorf("recording glob-covered repositories in manifest: %w", roErr)
-				}
-			}
-			if len(carved) > 0 {
-				manifestChanged = true
-				if !opts.dryRun {
-					deferOutput(func() {
-						printer.StepDone(fmt.Sprintf("Created explicit manifest entry for %s from matching glob", strings.Join(carved, ", ")))
-					})
-				}
-			}
-		}
-		if len(notInManifest) > 0 {
-			forgeName := opts.forge
-			if forgeName == "" && opts.gitlabURL != "" {
-				// --gitlab-url explicitly implies --forge=gitlab. Set it
-				// before the general inference so that manifests with
-				// existing GitHub repos don't pull the new repo into the
-				// wrong platform section.
-				forgeName = repos.ForgeGitLab
-			}
-			if forgeName == "" {
-				// Infer forge from platform sections that contain repos,
-				// falling back to section existence for empty manifests
-				// bootstrapped via set-default.
-				ghHasRepos := manifest.GitHub != nil && len(manifest.GitHub.Repos) > 0
-				glHasRepos := manifest.GitLab != nil && len(manifest.GitLab.Repos) > 0
-				if ghHasRepos && !glHasRepos {
-					forgeName = repos.ForgeGitHub
-				} else if glHasRepos && !ghHasRepos {
-					forgeName = repos.ForgeGitLab
-				} else if !ghHasRepos && !glHasRepos {
-					if manifest.GitHub != nil && manifest.GitLab == nil {
-						forgeName = repos.ForgeGitHub
-					} else if manifest.GitLab != nil && manifest.GitHub == nil {
-						forgeName = repos.ForgeGitLab
-					}
-				}
-			}
-			if forgeName == "" {
-				return fmt.Errorf("--forge is required when adding repos not yet in the manifest")
-			}
-
-			if forgeName != repos.ForgeGitHub && opts.mintURL != "" {
-				printer.StepWarn(fmt.Sprintf("--mint-url is only used with GitHub repos; ignored for %s", forgeName))
-			}
-			if forgeName != repos.ForgeGitHub && opts.appSet != "" {
-				// Unlike --mint-url, --app-set is rejected outright rather
-				// than silently ignored: the explicit-forge/--gitlab-url
-				// path above (line ~580) already rejects --app-set for
-				// GitLab, and a forge inferred from the manifest's
-				// existing GitLab repos must reject it the same way
-				// instead of warning and dropping the flag.
-				return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
-			}
-			if forgeName != repos.ForgeGitHub && opts.vendorChanged && opts.vendor {
-				printer.StepWarn("--vendor only fully supported for GitHub repos; GitLab CI templates do not yet reference the vendored binary")
-			}
-			// New entries must resolve an inference authentication method
-			// before anything is written: either the flag (persisted on the
-			// entry) or an inherited forge-section/defaults value.
-			effectiveAuth := opts.inferenceAuth
-			if effectiveAuth == "" {
-				inherited := manifest.Defaults.Inference.Auth
-				if p := manifest.PlatformFor(forgeName); p != nil && p.Inference.Auth != "" {
-					inherited = p.Inference.Auth
-				}
-				if inherited == "" {
-					return fmt.Errorf("no inference authentication selected for %s: pass --inference-auth (%s) or set inference.auth in the %s section or under defaults in the manifest",
-						strings.Join(notInManifest, ", "), strings.Join(repos.ValidInferenceAuths(), " or "), forgeName)
-				}
-				effectiveAuth = inherited
-			}
-			// A selection the forge cannot satisfy (openai-wif on GitLab)
-			// is rejected before anything is persisted or written.
-			if err := repos.ValidateInferenceAuthForForge(forgeName, effectiveAuth); err != nil {
-				return fmt.Errorf("%s: %w", strings.Join(notInManifest, ", "), err)
-			}
-
-			if err := repos.PreflightManagedConfigNew(ctx, manifest, clients, forgeName, notInManifest); err != nil {
-				return fmt.Errorf("configuration preflight: %w", err)
-			}
-
-			entries := make([]repos.RepoEntry, len(notInManifest))
-			for i, r := range notInManifest {
-				entry := repos.RepoEntry{Name: r}
-				// An explicit --inference-auth is always kept at repo scope
-				// so later status/converge runs resolve the same selection
-				// even if forge-section or defaults values change.
-				entry.Inference.Auth = opts.inferenceAuth
-				platform := manifest.PlatformFor(forgeName)
-				if opts.fullsendRef != "" && (platform == nil || opts.fullsendRef != platform.FullsendRef) {
-					entry.FullsendRef = opts.fullsendRef
-				}
-				if forgeName == repos.ForgeGitHub {
-					if opts.mintURL != "" && (manifest.GitHub == nil || opts.mintURL != manifest.GitHub.MintURL) {
-						entry.MintURL = opts.mintURL
-					}
-					// Record a per-repo app_set only when it differs from the
-					// manifest default, so the entry stays minimal. The "none"
-					// sentinel is written when it overrides a non-empty default.
-					if opts.appSet != "" && (manifest.GitHub == nil || opts.appSet != manifest.GitHub.AppSet) {
-						entry.AppSet = opts.appSet
-					}
-				}
-				if opts.vendorChanged {
-					defaultVendor := manifest.Defaults.Vendor != nil && *manifest.Defaults.Vendor
-					if opts.vendor && !defaultVendor {
-						v := true
-						entry.Vendor = &v
-					} else if !opts.vendor && defaultVendor {
-						v := false
-						entry.Vendor = &v
-					}
-				}
-				entries[i] = entry
-			}
-
-			// A manifest that cannot be written fails here, before any
-			// manifest write, with the exact entries to add (#8218).
-			if err := repos.RequireWritableManifestForNewRepos(ctx, manifest, opts.manifest, forgeName, entries, clients, opts.roles, opts.rolesChanged); err != nil {
-				return fmt.Errorf("recording new repositories in manifest: %w", err)
-			}
-
-			addProgress := func(repo, phase, msg string) {
-				// A planned (not yet persisted) addition is reported as
-				// "Added to manifest" once the manifest is written.
-				if phase == "dry-run" && !opts.dryRun {
-					return
-				}
-				deferOutput(func() {
-					switch phase {
-					case "done", "manifest":
-						printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
-					default:
-						printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
-					}
-				})
-			}
-			addResult, _, addErr := repos.AddToManifest(ctx, repos.ManifestEditConfig{
-				Manifest:     manifest,
-				ManifestPath: opts.manifest,
-				DryRun:       true,
-			}, forgeName, entries, clients, addProgress)
-			if addErr != nil {
-				return addErr
-			}
-			newlyAdded = addResult.Added
-			if !opts.dryRun {
-				for _, added := range newlyAdded {
-					deferOutput(func() { printer.StepDone(fmt.Sprintf("[%s] Added to manifest", added)) })
-				}
-			}
-
-			// The planned entries are added to the in-memory manifest so the
-			// following edits, the safety comparison and convergence (inference
-			// credential validation, secret writes) see them exactly as the
-			// real run would. The manifest file is written once, below.
-			if len(newlyAdded) > 0 {
-				manifestChanged = true
-				added := make(map[string]bool, len(newlyAdded))
-				for _, a := range newlyAdded {
-					added[strings.ToLower(a)] = true
-				}
-				platform := manifest.EnsurePlatform(forgeName)
-				for _, e := range entries {
-					if added[strings.ToLower(e.Name)] {
-						platform.Repos = append(platform.Repos, e)
-					}
-				}
-			}
-		}
+	// Plan trace signing key writes (ADR 0154) and record their public keys
+	// in the manifest entries, under the same deferred-persist contract. It
+	// runs before the tracking writeback, so a repo whose keys install
+	// refuses gets no tracking default either. A read error, or
+	// --rotate-trace-signing-key with a read-only manifest, fails here,
+	// before the manifest write and any key write. A fresh install from a
+	// read-only manifest without --rotate-trace-signing-key goes ahead
+	// without keys and says so.
+	traceKeyPlans, traceRefused, traceErr := repos.EnsureTraceSigningKeys(ctx, repos.TraceKeysConfig{
+		Manifest:     manifest,
+		ManifestPath: opts.manifest,
+		Deferred:     !opts.dryRun,
+		RepoFilter:   opts.repoFilter,
+		ExcludeRepos: adoptionSkip,
+		Rotate:       opts.rotateTraceSigningKey,
+	}, preflightClients, func(repo, _, msg string) {
+		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
+	})
+	if traceErr != nil {
+		return fmt.Errorf("planning trace signing keys: %w", traceErr)
+	}
+	// A repo whose trace keys install refuses is skipped and reported as
+	// failed, like one that needs adoption, so the other repos still
+	// converge. Every later preflight and convergence skip it too: its
+	// commit would replace the committed trace_context with the entry's.
+	skipped := append([]string(nil), adoptionSkip...)
+	for _, r := range traceRefused {
+		name := r.Owner + "/" + r.Repo
+		printer.StepFail(fmt.Sprintf("[%s] skipped: %v", name, r.Err))
+		skipped = append(skipped, name)
+		skippedRepos = append(skippedRepos, repos.ConvergeResult{Owner: r.Owner, Repo: r.Repo, Error: r.Err})
+	}
+	if len(traceKeyPlans) > 0 {
+		manifestChanged = true
 	}
 
-	// Apply --app-set to every selected GitHub manifest entry, including
-	// entries that were already tracked before this invocation. This makes
-	// the flag a real per-repo override rather than a silent no-op on reruns.
-	// Reject a selection containing GitLab before changing the manifest: the
-	// app-set variable is meaningful only for GitHub installations.
-	if opts.appSet != "" {
-		targetedForges, forgeErr := manifest.DistinctForgesFor(opts.repoFilter)
-		if forgeErr != nil {
-			return fmt.Errorf("determining targeted forges for --app-set: %w", forgeErr)
-		}
-		for _, forgeName := range targetedForges {
-			if forgeName == repos.ForgeGitLab {
-				return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
-			}
-		}
-		updated, updateErr := repos.UpdateAppSet(repos.ManifestEditConfig{
-			Manifest:     manifest,
-			ManifestPath: opts.manifest,
-			DryRun:       true,
-		}, opts.repoFilter, opts.appSet)
-		if updateErr != nil {
-			return fmt.Errorf("updating app-set overrides: %w", updateErr)
-		}
-		if len(updated) > 0 {
-			manifestChanged = true
-			if !opts.dryRun {
-				deferOutput(func() {
-					printer.StepDone(fmt.Sprintf("Updated app-set override for %d manifest entr%s", len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
-				})
-			}
-		}
-	}
-
-	// Apply --inference-auth to every selected manifest entry (both forges),
-	// including entries tracked before this invocation, so the explicit
-	// selection persists at repo scope. Entries added above already carry
-	// it; defaults and forge sections are never changed.
-	if opts.inferenceAuth != "" {
-		updated, updateErr := repos.UpdateInferenceAuth(ctx, repos.ManifestEditConfig{
-			Manifest:     manifest,
-			ManifestPath: opts.manifest,
-			DryRun:       true,
-		}, opts.repoFilter, opts.inferenceAuth, clients)
-		if updateErr != nil {
-			return fmt.Errorf("updating inference.auth: %w", updateErr)
-		}
-		if len(updated) > 0 {
-			manifestChanged = true
-			if !opts.dryRun {
-				deferOutput(func() {
-					printer.StepDone(fmt.Sprintf("Set inference.auth=%s on %d manifest entr%s", opts.inferenceAuth, len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
-				})
-			}
-		}
-	}
-
-	// Persist install-time choices the generated managed overlay must
-	// reproduce (the upstream create_issues default for a no-preset first
-	// install, and an explicit --roles) in each repo's manifest entry
-	// before the overlay is rendered (#8218). A manifest that cannot be
-	// written fails here, before any forge write, with the exact edit.
+	// Persist the install-time choice the generated managed overlay must
+	// reproduce (the upstream tracking default for a no-preset first
+	// install) in each repo's manifest entry before the overlay is rendered
+	// (#8218). A manifest that cannot be written fails here, before any
+	// forge write, with the exact edit.
 	writtenBack, wbErr := repos.EnsureManagedConfigDefaults(ctx, repos.ManagedConfigWritebackConfig{
-		Manifest:      manifest,
-		ManifestPath:  opts.manifest,
-		DryRun:        true,
-		Deferred:      !opts.dryRun,
-		RepoFilter:    opts.repoFilter,
-		Roles:         opts.roles,
-		RolesExplicit: opts.rolesChanged,
-	}, clients, func(repo, _, msg string) {
+		Manifest:     manifest,
+		ManifestPath: opts.manifest,
+		DryRun:       true,
+		Deferred:     !opts.dryRun,
+		RepoFilter:   opts.repoFilter,
+		ExcludeRepos: skipped,
+	}, preflightClients, func(repo, _, msg string) {
 		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
 	})
 	if wbErr != nil {
@@ -931,68 +873,87 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		manifestChanged = true
 	}
 
+	// The manifest loader converted any legacy tracker/create_issues config
+	// to the tracker mapping in memory (#9075), so the rendered managed
+	// overlays use the new shape. Persist the converted manifest with the
+	// other planned edits, or name the edits for a manifest that cannot be
+	// written.
+	if migrations := manifest.LegacyTrackingMigrations(); len(migrations) > 0 {
+		writable := opts.manifest != "" && !repos.ManifestReadOnly(manifest, opts.manifest)
+		if writable {
+			manifestChanged = true
+		}
+		deferOutput(func() { reportLegacyTrackingMigrations(printer, opts.manifest, migrations, writable, opts.dryRun) })
+	}
+
 	// Compare the proposed layered configuration (manifest edits and declared
 	// presets) with each repository's installed layers before anything is
 	// persisted or written to the forge.
-	if err := repos.PreflightProposedManagedSafety(ctx, manifest, clients, opts.repoFilter); err != nil {
+	if err := repos.PreflightProposedManagedSafety(ctx, manifest, preflightClients, opts.repoFilter, skipped); err != nil {
 		return fmt.Errorf("configuration safety preflight: %w", err)
 	}
+	// Resolve the effective infrastructure and reconcile the Vertex inputs
+	// of every selected repository before the manifest is persisted, so a
+	// mint URL conflict or a flag that contradicts the declared
+	// configuration leaves repos.yaml byte-identical.
+	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, skipped, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
+		return fmt.Errorf("effective infrastructure preflight: %w", err)
+	}
+	// Whether --fullsend-binary and --fullsend-source apply, and which forges
+	// need a sign-off identity, come from the manifest settings. Both are
+	// resolved here (including dry runs), from the edited manifest, since a
+	// new entry copied from a glob takes that glob's settings, so a refused
+	// flag or a missing identity fails before repos.yaml or any key is
+	// written. Trailers are resolved once per forge before convergence, and
+	// a repository convergence leaves out gets no commit, so it needs no
+	// identity.
+	if opts.fullsendBinary != "" || opts.fullsendSource != "" {
+		vendored, vendorErr := manifest.VendorSelected(opts.repoFilter)
+		if vendorErr != nil {
+			return fmt.Errorf("resolving vendor settings: %w", vendorErr)
+		}
+		if !vendored {
+			flag := "--fullsend-binary"
+			if opts.fullsendBinary == "" {
+				flag = "--fullsend-source"
+			}
+			return fmt.Errorf("%s is only used for repositories whose repos.yaml settings resolve vendor: true, and no selected repository does; enable vendoring in repos.yaml, for example:\n  fullsend repos set defaults.vendor true", flag)
+		}
+	}
+	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
+		opts.repoFilter, append(containFailedKeys(containFailedRepos), skipped...), opts.dryRun)
+	if err != nil {
+		return err
+	}
+	// A dry run reports the size refusal that the write below gives.
+	if manifestChanged && opts.dryRun && opts.manifest != "" {
+		if err := repos.CheckManifestSize(opts.manifest, manifest); err != nil {
+			return fmt.Errorf("checking the manifest size: %w", err)
+		}
+	}
 	if manifestChanged && !opts.dryRun && opts.manifest != "" {
+		// Another install that uses the same file may have rewritten it since
+		// this run loaded it; writing now would drop its edits, such as a
+		// first-install tracker default or the trace_context of a key it
+		// wrote. manifestChanged is set only for a writable manifest (each
+		// edit above refuses a read-only one or, like the legacy conversion,
+		// leaves it unwritten), so the file here is a local regular file. The
+		// comparison and the write are not atomic: a write that lands between
+		// them is overwritten. Lock the file if that window matters.
+		current, readErr := os.ReadFile(opts.manifest)
+		if readErr != nil {
+			return fmt.Errorf("writing manifest: reading %s again before writing it: %w", opts.manifest, readErr)
+		}
+		if !bytes.Equal(current, manifest.LoadedBytes()) {
+			return fmt.Errorf("writing manifest: %s changed after this run loaded it, as when another repos install that uses the same file runs at the same time; "+
+				"this run stopped before writing it: run install again once the other install has finished", opts.manifest)
+		}
 		if err := repos.WriteManifest(opts.manifest, manifest); err != nil {
 			return fmt.Errorf("writing manifest: %w", err)
 		}
 	}
 	for _, flush := range deferredOutput {
 		flush()
-	}
-
-	// Persist --gitlab-url to the manifest file. The in-memory assignment
-	// was done earlier (before factory creation) so the forge client
-	// factory already has the correct URL.
-	if opts.gitlabURL != "" {
-		if len(manifest.GitLab.Repos) > 0 {
-			if opts.dryRun {
-				announceGitLabURLDryRun(printer, opts.gitlabURL)
-			} else {
-				if err := repos.SetDefault(opts.manifest, "gitlab.url", opts.gitlabURL); err != nil {
-					return fmt.Errorf("writing gitlab.url to manifest: %w", err)
-				}
-				printer.StepDone(fmt.Sprintf("Set gitlab.url=%s in manifest", opts.gitlabURL))
-			}
-		} else {
-			printer.StepWarn("--gitlab-url was provided but no GitLab repos are in the manifest; flag had no effect")
-		}
-	}
-
-	targetedForges, err := manifest.DistinctForgesFor(opts.repoFilter)
-	if err != nil {
-		return fmt.Errorf("determining targeted forges: %w", err)
-	}
-	if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
-		return err
-	}
-
-	// When --vendor is explicitly set on the CLI, override the manifest
-	// vendor setting for all repos in this run. Both --vendor and
-	// --vendor=false are honored so the CLI can enable or disable
-	// vendoring for a one-off run.
-	var vendorOverride *bool
-	if opts.vendorChanged {
-		vendorOverride = &opts.vendor
-	}
-
-	// When --signoff is explicitly set on the CLI (true or false), it
-	// overrides the manifest signoff settings for this run. Trailers are
-	// resolved once per forge before convergence (including dry runs) so
-	// a missing identity fails before any scaffold commit is made.
-	var signoffOverride *bool
-	if opts.signoffChanged {
-		signoffOverride = &opts.signoff
-	}
-	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
-		opts.repoFilter, targetedForges, signoffOverride, opts.dryRun)
-	if err != nil {
-		return err
 	}
 
 	upstreamRef, upstreamTag := resolveUpstreamRef()
@@ -1007,14 +968,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			return fcErr
 		}
 
-		// When vendor is enabled (CLI flag or manifest), append vendored
+		// When the manifest enables vendor for this repo, append vendored
 		// binary and content files to the scaffold commit so they are
 		// delivered atomically.
-		repoVendor := rc.Vendor
-		if vendorOverride != nil {
-			repoVendor = *vendorOverride
-		}
-		if repoVendor {
+		if rc.Vendor {
 			var vendorErr error
 			var vendorCleanup func()
 			files, _, vendorCleanup, vendorErr = appendVendorTreeFiles(ctx, fc.Client, printer, owner, repo, files, true, opts.fullsendBinary, opts.fullsendSource)
@@ -1038,11 +995,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 		// The trailer goes after [skip ci] so it stays the last paragraph
 		// of the commit message, where git trailer parsing expects it.
-		repoSignoff := rc.Signoff
-		if signoffOverride != nil {
-			repoSignoff = *signoffOverride
-		}
-		if repoSignoff {
+		if rc.Signoff {
 			trailer, ok := signOffTrailers[rc.Forge]
 			if !ok {
 				return fmt.Errorf("signoff is enabled for %s/%s but no %s user identity was resolved", owner, repo, rc.Forge)
@@ -1082,9 +1035,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		Manifest:                manifest,
 		DryRun:                  opts.dryRun,
 		RepoFilter:              opts.repoFilter,
+		ExcludeRepos:            append(containFailedKeys(containFailedRepos), skipped...),
 		MaxConcurrency:          opts.concurrency,
-		Roles:                   opts.roles,
-		RolesExplicit:           opts.rolesChanged,
 		UpstreamRef:             upstreamRef,
 		UpstreamTag:             upstreamTag,
 		Direct:                  opts.direct,
@@ -1092,13 +1044,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		ReactivateSchedules:     opts.reactivateSchedules,
 		InferenceProject:        opts.inferenceProject,
 		InferenceProjectNumber:  opts.inferenceProjectNumber,
-		InferenceRegion:         opts.inferenceRegion,
 		WIFProvider:             opts.inferenceWIFProvider,
 		ResolveProjectNumber:    resolveProjectNumber,
 		OpenAIAPIKey:            opts.openAIAPIKey,
+		JiraToken:               opts.jiraToken,
+		JiraEmail:               opts.jiraEmail,
+		JiraClientID:            opts.jiraClientID,
+		JiraClientSecret:        opts.jiraClientSecret,
+		TraceKeyPlans:           traceKeyPlans,
 		ReviewAppClientID:       reviewAppClientID,
 		ReviewAppClientIDAppSet: reviewAppSet,
-		VendorOverride:          vendorOverride,
 		ReadVendoredWorkflow:    readVendoredWorkflow,
 	}
 
@@ -1108,6 +1063,30 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
 		default:
 			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+	}
+
+	// A managed schedule the trigger account owns that drifted to carry
+	// pipeline variables goes back to the installer before convergence: the
+	// pipeline-variable migration preflight convergence reaches rejects it and
+	// cannot edit it as the installer (#8508). It runs only here, after the
+	// repository selection and every configuration preflight succeeded, so an
+	// install that fails those checks leaves live schedules untouched. A repo
+	// whose containment failed is skipped. A failure here is only reported; a
+	// schedule left carrying variables fails the convergence or override-role
+	// check that rejects it.
+	for _, gr := range gitlabRepos {
+		key := gr.Owner + "/" + gr.Repo
+		if _, failed := containFailed[key]; failed {
+			continue
+		}
+		fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+		if fcErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client for trigger account schedule repair: %v", key, fcErr))
+			continue
+		}
+		if rErr := repairGitLabTriggerSchedules(ctx, opts, fc.Client, printer, gr.Owner, gr.Repo); rErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] GitLab trigger account schedule repair failed: %v", key, rErr))
 		}
 	}
 
@@ -1154,7 +1133,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					}
 				}
 				if hasGH && ghEmpty {
-					if wbErr := repos.SetDefault(opts.manifest, "github.fullsend_ref", writebackRef); wbErr == nil {
+					if _, wbErr := repos.SetManifestValue(opts.manifest, "github.fullsend_ref", writebackRef); wbErr == nil {
 						manifest.EnsurePlatform(repos.ForgeGitHub).FullsendRef = writebackRef
 						printer.StepDone(fmt.Sprintf("Wrote fullsend_ref=%s to manifest (GitHub)", writebackRef))
 					} else {
@@ -1162,7 +1141,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					}
 				}
 				if hasGL && glEmpty {
-					if wbErr := repos.SetDefault(opts.manifest, "gitlab.fullsend_ref", writebackRef); wbErr == nil {
+					if _, wbErr := repos.SetManifestValue(opts.manifest, "gitlab.fullsend_ref", writebackRef); wbErr == nil {
 						manifest.EnsurePlatform(repos.ForgeGitLab).FullsendRef = writebackRef
 						printer.StepDone(fmt.Sprintf("Wrote fullsend_ref=%s to manifest (GitLab)", writebackRef))
 					} else {
@@ -1188,6 +1167,20 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	var installedPostFail int
 	var postInstallFailedRepos []repos.ConvergeResult
+	// A repo whose trigger-account containment failed was excluded from
+	// Converge above, so it is in none of the result lists. It is counted once
+	// as failed here, takes no later stage (failedRepoKeys), and is
+	// deliberately not fed to the webhook safety reconciliation, so the
+	// existing fast path is preserved.
+	for _, r := range containFailedRepos {
+		failedRepoKeys[r.Owner+"/"+r.Repo] = true
+	}
+	// A repo skipped because its overlay needs adoption or install refused
+	// its trace signing keys was excluded the same way and is likewise
+	// counted once and takes no later stage.
+	for _, r := range skippedRepos {
+		failedRepoKeys[r.Owner+"/"+r.Repo] = true
+	}
 	postInstallRepos := make([]repos.ConvergeResult, 0, len(installed)+len(converged)+len(alreadyCurrent))
 	postInstallRepos = append(postInstallRepos, installed...)
 	postInstallRepos = append(postInstallRepos, converged...)
@@ -1202,6 +1195,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				continue
 			}
 			repoFullName := r.Owner + "/" + r.Repo
+			if failedRepoKeys[repoFullName] {
+				// Trigger-account containment failed for this repo: it is
+				// already counted once and takes no further mutating stage.
+				continue
+			}
 			printer.Blank()
 			printer.StepStart(fmt.Sprintf("[%s] GitLab post-install setup", repoFullName))
 
@@ -1242,7 +1240,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					continue
 				}
 
-				schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo, targetRepo.DefaultBranch, r.GitLabTypedDispatch)
+				schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo, targetRepo.DefaultBranch)
 				if schedErr != nil {
 					printer.StepWarn(fmt.Sprintf("[%s] Pipeline schedule setup failed: %v", repoFullName, schedErr))
 					r.Error = schedErr
@@ -1261,8 +1259,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// GitLab poll-state provisioning for already-enrolled repos.
 	// Fresh installs are handled above via repos.Install (Step 5b);
 	// converged and already-current repos still need
-	// FULLSEND_DISPATCH_SECRET and the two poll-state branches, with
-	// any legacy CI/CD variables migrated into signed documents. This
+	// FULLSEND_DISPATCH_SECRET and the two poll-state branches. This
 	// runs with the operator's Maintainer-level client and never
 	// touches the bot PAT, so it is safe on live repos.
 	var pollStateFail int
@@ -1352,8 +1349,40 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
+			// The trigger account does not use the Poller credential or its
+			// protected-ref grant, so a Poller credential failure does not
+			// stop its preparation (GitLab.com Free refuses the grant while a
+			// replacement Poller is verified, which surfaces here as an opaque
+			// provisioning failure). The failure stays the repo's recorded
+			// error and the dispatch-route stages below remain skipped, so
+			// it is counted once. After the lifecycle the callback
+			// provisions or converges the account-route webhook: it creates
+			// a missing webhook and secret from scratch and repairs a stale
+			// one, but never builds a Poller-route webhook or trigger.
+			convergeTriggerAfterPollerFailure := func(pollerErr error) error {
+				// Do not force rotation on a failed Poller stage, but do repair
+				// the webhook if normal account convergence changed its token.
+				tErr := maybeConvergeGitLabTriggerAccount(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo, false, true, manifest)
+				if tErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab trigger account failed: %v", item.r.Owner, item.r.Repo, tErr))
+				}
+				wErr := refreshGitLabWebhookAfterPollerFailure(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.dryRun)
+				if wErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab webhook route refresh failed: %v", item.r.Owner, item.r.Repo, wErr))
+				}
+				var containErr error
+				if repos.GitLabWebhookTriggerOwnerUnsafe(wErr) {
+					containErr = containGitLabTriggerAccountAfterWebhookFailure(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo)
+				}
+				var retireErr error
+				if tErr == nil && wErr == nil {
+					retireErr = finishGitLabTriggerAccountRetirement(ctx, opts, fc.Client, item.r.Owner, item.r.Repo)
+				}
+				return errors.Join(pollerErr, tErr, wErr, containErr, retireErr)
+			}
 			if err := maybeProvisionGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role provisioning failed: %v", item.r.Owner, item.r.Repo, err))
+				err = convergeTriggerAfterPollerFailure(err)
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1364,6 +1393,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			if err := maybeRotateGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role rotation failed: %v", item.r.Owner, item.r.Repo, err))
+				err = convergeTriggerAfterPollerFailure(err)
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1377,6 +1407,15 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			if err := ensureGitLabPollerPipelineAccess(ctx, fc.Client, gitLabTokenInventory(opts, fc.Client), printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab poller protected-ref pipeline access failed: %v", item.r.Owner, item.r.Repo, err))
+				// GitLab.com Free refuses the legacy Poller per-user merge
+				// grant. The trigger account does not use that grant, so its
+				// resource preparation still runs. The Poller failure stays the
+				// repo's recorded error. The full dispatch-route stages below
+				// remain skipped; the callback provisions or converges only the
+				// account-route webhook. The failure is counted once.
+				if pollerMergeGrantRejected(err) {
+					err = convergeTriggerAfterPollerFailure(err)
+				}
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1387,10 +1426,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			if err := ensureGitLabPipelineVariableOverrideRole(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab pipeline-variable override role failed: %v", item.r.Owner, item.r.Repo, err))
-				// The restriction is weakened or could not be verified; the
-				// safety reconciliation after this loop (roleFailedRepos)
-				// revokes any live trigger credential and keeps this role
-				// failure as the repo's recorded error.
+				// The restriction is weakened or could not be verified. A
+				// published trigger-account credential was already removed and
+				// revoked by the early containment pass, which checks the live
+				// role itself; the safety reconciliation after this loop
+				// (roleFailedRepos) revokes any live webhook trigger credential
+				// and keeps this role failure as the repo's recorded error.
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1399,19 +1440,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
-			// Webhook fast-path (ADR 0125): runs after the override-role
-			// step because it requires no_one_allowed before a live
-			// webhook may start trigger pipelines.
-			if item.r.NeedsGitLabWebhook || opts.rotateGitLabTriggerToken {
-				if err := setupGitLabWebhookFastPath(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.rotateGitLabTriggerToken, opts.dryRun); err != nil {
-					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab webhook fast-path provisioning failed: %v", item.r.Owner, item.r.Repo, err))
-					roleFail++
-					item.r.Error = err
-					if item.fresh {
-						roleFailInstalledCount++
-					}
-					roleFailedRepos = append(roleFailedRepos, item.r)
+			// Webhook fast-path (ADR 0125) and trigger-only service account
+			// (#8437), ordered so the webhook follows the dispatch route the
+			// account lifecycle settles (#8509).
+			if err := convergeGitLabDispatchRoute(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo, item.r.NeedsGitLabWebhook, manifest); err != nil {
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
 				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
 			}
 		}
 	}
@@ -1425,12 +1463,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// would otherwise stay live. This only revokes; it never provisions.
 	// Cleanup errors are reported alongside the original failure, which is
 	// preserved.
-	reconcileFailedGitLabWebhookSafety(ctx, clients, manifest, printer, opts.dryRun, webhookSafetyDone,
+	reconcileFailedGitLabWebhookSafety(ctx, opts, clients, manifest, printer, webhookSafetyDone,
 		failed, postInstallFailedRepos, pollStateFailedRepos, roleFailedRepos)
 
 	printer.Blank()
 	installedCount := len(installed) - installedPostFail - roleFailInstalledCount
-	failedCount := len(failed) + len(postInstallFailedRepos) + pollStateFail + roleFail
+	failedCount := len(failed) + len(postInstallFailedRepos) + len(containFailedRepos) + len(skippedRepos) + pollStateFail + roleFail
 
 	for _, r := range failed {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
@@ -1439,6 +1477,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 	for _, r := range postInstallFailedRepos {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+	for _, r := range containFailedRepos {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+	for _, r := range skippedRepos {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 	for _, r := range roleFailedRepos {
@@ -1454,13 +1498,33 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	return nil
 }
 
+// reportLegacyTrackingMigrations reports the manifest config layers whose
+// legacy tracker/create_issues keys were converted to the tracker mapping
+// (#9075). writable reports whether install persists the converted manifest;
+// otherwise the operator is asked to apply the same edits to its source.
+func reportLegacyTrackingMigrations(printer *ui.Printer, manifestPath string, migrations []repos.LegacyTrackingMigration, writable, dryRun bool) {
+	var b strings.Builder
+	for _, mig := range migrations {
+		fmt.Fprintf(&b, "\n  %s: %s", mig.Path, mig.Result)
+	}
+	switch {
+	case !writable:
+		printer.StepWarn(fmt.Sprintf("Manifest %s uses the legacy tracker/create_issues configuration and cannot be written; "+
+			"this run uses the converted values. Replace them in the manifest source with:%s", manifestPath, b.String()))
+	case dryRun:
+		printer.StepInfo("Would convert the legacy tracker/create_issues configuration in " + manifestPath + " to the tracker mapping:" + b.String())
+	default:
+		printer.StepInfo("Converted the legacy tracker/create_issues configuration in " + manifestPath + " to the tracker mapping:" + b.String())
+	}
+}
+
 // reconcileFailedGitLabWebhookSafety runs the revocation-only webhook safety
 // reconciliation for every GitLab repo in groups, once per repo (done tracks
 // repos already reconciled). Each group holds failed results — convergence,
 // post-install, poll-state, and role-stage failures — whose entries are
 // updated in place: a cleanup error is joined onto the original failure,
 // which is preserved.
-func reconcileFailedGitLabWebhookSafety(ctx context.Context, clients repos.ForgeClientFactory, manifest *repos.Manifest, printer *ui.Printer, dryRun bool, done map[string]bool, groups ...[]repos.ConvergeResult) {
+func reconcileFailedGitLabWebhookSafety(ctx context.Context, opts *reposInstallConfig, clients repos.ForgeClientFactory, manifest *repos.Manifest, printer *ui.Printer, done map[string]bool, groups ...[]repos.ConvergeResult) {
 	for _, group := range groups {
 		for i := range group {
 			r := &group[i]
@@ -1478,7 +1542,7 @@ func reconcileFailedGitLabWebhookSafety(ctx context.Context, clients repos.Forge
 				printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client for webhook safety reconciliation: %v", key, fcErr))
 				continue
 			}
-			if err := reconcileGitLabWebhookSafety(ctx, fc.Client, printer, r.Owner, r.Repo, dryRun); err != nil {
+			if err := reconcileGitLabWebhookSafety(ctx, opts, fc.Client, printer, r.Owner, r.Repo); err != nil {
 				r.Error = errors.Join(r.Error, fmt.Errorf("webhook safety reconciliation: %w", err))
 			}
 		}
@@ -1512,7 +1576,7 @@ By default, tears down (removes workflow files via a pull request, deletes
 variables and secrets immediately) and then removes the repo entry from
 repos.yaml. The manifest entry is only removed if teardown succeeds.
 
-File deletions (workflow YAML, .fullsend/config.yaml, and GitLab
+File deletions (workflow YAML, and on GitLab .fullsend/config.yaml and the
 .gitlab-ci.yml unmerge) are delivered as a PR unless --direct is set.
 Variable and secret deletions are API operations and always happen
 immediately. Use --direct to push file deletions to the default branch.
@@ -1529,7 +1593,9 @@ prompt for confirmation unless --yes is set.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposUninstall(cmd.Context(), opts, args)
+			ctx, restore := reposVerboseContext(cmd, opts.gitlabToken)
+			defer restore()
+			return runReposUninstall(ctx, opts, args)
 		},
 	}
 
@@ -1584,6 +1650,13 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if len(concreteRepos) == 0 {
 		printer.StepInfo("All matched entries are glob patterns — no concrete repos to uninstall")
 		return nil
+	}
+	// The manifest edit follows the teardown, so a read-only manifest is
+	// refused before anything is torn down, as install refuses one.
+	if !opts.manifestOnly && !opts.uninstallOnly && repos.ManifestReadOnly(manifest, opts.manifest) {
+		return fmt.Errorf("manifest %s is read-only and the uninstall must remove %s from it; no changes were made. "+
+			"Run with --uninstall-only to tear down without editing the manifest, then remove each torn-down entry from its source",
+			opts.manifest, strings.Join(concreteRepos, ", "))
 	}
 
 	action := "uninstall and remove from manifest"
@@ -1804,27 +1877,17 @@ func checkAllForgeScopes(ctx context.Context, clients repos.ForgeClientFactory, 
 }
 
 // resolveRepoSignOffTrailers returns the Signed-off-by trailer to use for
-// scaffold commits on each forge that needs one, keyed by forge name. When
-// override is non-nil (an explicit --signoff or --signoff=false), it
-// applies to every targeted forge; otherwise a forge needs a trailer when
-// any selected manifest entry resolves signoff to true (entry, then forge
-// section, then defaults). The authenticated user's identity is resolved
-// once per forge and a missing or incomplete identity is an error. In a
-// dry run the trailer that would be added is reported for each forge.
+// scaffold commits on each forge that needs one, keyed by forge name. A
+// forge needs a trailer when any selected manifest entry resolves signoff
+// to true (entry, then forge section, then defaults). The authenticated
+// user's identity is resolved once per forge and a missing or incomplete
+// identity is an error. In a dry run the trailer that would be added is
+// reported for each forge.
 func resolveRepoSignOffTrailers(ctx context.Context, clients repos.ForgeClientFactory, printer *ui.Printer,
-	manifest *repos.Manifest, filter, targetedForges []string, override *bool, dryRun bool) (map[string]string, error) {
-	var forges []string
-	switch {
-	case override != nil && !*override:
-		return nil, nil
-	case override != nil:
-		forges = targetedForges
-	default:
-		var err error
-		forges, err = manifest.SignoffForgesFor(filter)
-		if err != nil {
-			return nil, fmt.Errorf("determining signoff settings: %w", err)
-		}
+	manifest *repos.Manifest, filter, skip []string, dryRun bool) (map[string]string, error) {
+	forges, err := manifest.SignoffForgesFor(filter, skip)
+	if err != nil {
+		return nil, fmt.Errorf("determining signoff settings: %w", err)
 	}
 
 	trailers := make(map[string]string, len(forges))
@@ -1849,12 +1912,27 @@ func resolveRepoSignOffTrailers(ctx context.Context, clients repos.ForgeClientFa
 	return trailers, nil
 }
 
-// announceGitLabURLDryRun prints a dry-run preview message for --gitlab-url
-// when the flag is set. Centralizes the message and guard so both the
-// early-return path and the main --gitlab-url handler share a single
-// definition.
-func announceGitLabURLDryRun(printer *ui.Printer, gitlabURL string) {
-	if gitlabURL != "" {
-		printer.StepDone(fmt.Sprintf("Would set gitlab.url=%s in manifest", gitlabURL))
+// requireDeclaredSelections rejects positional repository selections that
+// match no repos.yaml entry. Repository membership is declared in the
+// manifest (#8219): install never adds or copies entries, so an undeclared
+// selection fails before any manifest or forge write with the command that
+// declares it.
+func requireDeclaredSelections(manifest *repos.Manifest, filter []string) error {
+	undeclared, err := manifest.UndeclaredSelectors(filter)
+	if err != nil {
+		return fmt.Errorf("matching repository selection: %w", err)
 	}
+	if len(undeclared) == 0 {
+		return nil
+	}
+	example := undeclared[0]
+	if strings.ContainsAny(example, "*?[") || !strings.Contains(example, "/") {
+		example = "owner/repo"
+	}
+	section := repos.ForgeGitHub
+	if manifest.GitLab != nil && manifest.GitHub == nil {
+		section = repos.ForgeGitLab
+	}
+	return fmt.Errorf("not declared in repos.yaml: %s; repos install only selects repositories the manifest declares (an entry or a covering glob entry) and never adds them; nothing was changed. Declare each repository first, for example:\n  fullsend repos set '%s.repos[\"%s\"]' '{}'",
+		strings.Join(undeclared, ", "), section, example)
 }

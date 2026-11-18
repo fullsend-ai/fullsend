@@ -39,6 +39,11 @@ Leverage infrastructure the organization already runs — e.g. CI runners, inter
 
 **Cons:** Internal platforms may not be designed for long-running or bursty agent workloads; we may need to add isolation, scaling, and tooling; ownership and SLOs may be unclear.
 
+Private execution infrastructure does not itself restrict the audience of
+console logs, artifacts or forge writes. See
+[Private Context in Public Agent Workflows](private-context-public-workflows.md)
+for the separate output boundary when an agent uses protected external data.
+
 **Open questions:**
 
 - What internal platforms exist that could host agent workloads (e.g. OpenShift, internal CI, shared Kube)?
@@ -71,7 +76,9 @@ Agents are often discussed as if they run on a developer workstation: fast local
 
 - **Workspace and context continuity** — Ephemeral jobs reset filesystem state between runs or stages. Carrying **in-progress repo state, partial edits, and task context** across those boundaries requires explicit design: shared volumes (for example PVCs in Kubernetes), artifact handoff between steps, branches or WIP commits, or external systems (issues, design docs). Without a deliberate handoff story, every run starts cold and context-window limits bite harder.
 
-- **Compute held open for human latency** — A long-lived pod that **blocks on PR approval, architecture sign-off, or escalation** consumes cluster quota and cost while idle. That misaligns with typical “always-on service” defaults. Better fits include **event-driven** scheduling (wake on comment or approval), aggressive scale-to-zero, or separating **planning** from **execution** so capacity is not reserved across human response times; see [human-factors.md](human-factors.md) and [autonomy-spectrum.md](autonomy-spectrum.md).
+- **Compute held open for human latency** — A long-lived pod that **blocks on PR approval, architecture sign-off, or escalation** consumes cluster quota and cost while idle. That misaligns with typical “always-on service” defaults. Better fits include **event-driven** scheduling (wake on comment or approval), aggressive scale-to-zero, or separating **planning** from **execution** so capacity is not reserved across human response times; see [human-factors.md](human-factors.md) and [autonomy-spectrum.md](autonomy-spectrum.md). For shorter gaps between work cycles, [ADR 0144](../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md) bounds host-process reuse and releases idle CI capacity without keeping an agent sandbox alive. Its repeated entity checks may share verified actor-role results only within [ADR 0148](../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)'s bounded lifetime.
+  Each harness reapplies its effective `human_min_role` to a reused role verdict
+  under [ADR 0151](../ADRs/0151-harness-human-role-minimums.md).
 
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) demonstrates one practical pause/resume pattern: LangGraph checkpoints workflow state, then later Jira or GitHub webhooks resume the graph while implementation work happens in ephemeral Podman containers. That separation is directionally useful for fullsend, even though Forge's sandbox is a productivity boundary rather than the stricter credential and egress isolation boundary fullsend needs.
 
@@ -121,10 +128,34 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 ## Open questions
 
 - What is the right level of isolation per agent (process, container, microVM, separate cluster)?
-- How do we provide agents with “resources to do their work” (clone, tools, APIs) without over-privileging them or creating a single high-value target? (Credential access decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md), with [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) as the first inference credential delivered entirely through a gateway provider, and [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) routing inference through an LLM gateway that accepts the job's OIDC token so the forge stores no reusable provider key ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md) adds an opt-in API-key mode for gateways that cannot trust forge OIDC, at the cost of a long-lived secret); tool access restrictions decided in [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md); cross-org public GitHub Packages access decided in [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md); other resource access remains open.)
+- How do we provide agents with “resources to do their work” (clone, tools,
+  APIs) without over-privileging them or creating a single high-value target?
+  Credential access is decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md),
+  with [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) as the first
+  inference credential delivered entirely through a gateway provider and
+  [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) routing
+  inference through an LLM gateway that accepts the job's OIDC token so the
+  forge stores no reusable provider key. [ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)
+  adds an opt-in API-key mode for gateways that cannot trust forge OIDC, at the
+  cost of a long-lived secret. Tool access restrictions are decided in
+  [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md), and
+  cross-org public GitHub Packages access in
+  [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md).
+  User-managed secrets for host-side scripts on GitHub are decided in
+  [ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md), with
+  source selection for selected runner secrets in
+  [ADR 0155](../ADRs/0155-configure-vault-backed-runner-secrets.md). The
+  runner's sandbox environment — its injected env vars, per-runtime values,
+  and keys reserved from harness override — is published as a generated,
+  machine-checkable contract in
+  [ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md). Jira
+  access for bot and Atlassian-managed service accounts uses the separate API
+  URL decided in
+  [ADR 0156](../ADRs/0156-separate-jira-api-url-from-site-url.md). Other
+  agent resource access remains open.
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).
 - How do we compare 3rd party vs internal vs build-our-own on concrete criteria: cost, time to first agent, compliance, and alignment with our security and coordination model?
 - Who in the org would own and operate agent infrastructure, and how does that align with existing platform or CI ownership? [ADR 0123](../ADRs/0123-tenant-configuration-from-repos-yaml.md) establishes the existing `repos.yaml` v1 format for tenant configuration in a possible centralized offering; the source of truth, service, operational ownership, and infrastructure remain open.
-- For cluster-hosted agents, how do we preserve an acceptable inner loop (fast local or sandboxed tests) without granting dangerous privilege, and how do we avoid paying for idle capacity while work waits on humans?
+- For cluster-hosted agents, how do we preserve an acceptable inner loop (fast local or sandboxed tests) without granting dangerous privilege, and how do we avoid paying for idle capacity while work waits on humans? (The poll/run process lifecycle and bound-run idle exit are decided in [ADR 0144](../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md); capacity policy and the inner loop remain open.)
 - For Kubernetes-hosted agents, how do upstream lifecycle controllers (for example [SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) fit alongside ephemeral task runners, and what stack (isolation runtime, telemetry, policy) must wrap them to meet our threat model?

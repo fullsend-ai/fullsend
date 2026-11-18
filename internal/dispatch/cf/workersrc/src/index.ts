@@ -60,7 +60,14 @@ export interface Env {
   /** JSON-encoded map of custom role permissions. */
   CUSTOM_ROLE_PERMISSIONS?: string;
   /**
-   * Native Workers rate limiter for POST /v1/token. Bound via
+   * Secret: OTLP collector authentication headers
+   * (OTEL_EXPORTER_OTLP_HEADERS syntax). Read by the Go WASM bridge only
+   * when a traces endpoint was stamped at deploy time.
+   */
+  MINT_OTLP_HEADERS?: string;
+  /**
+   * Native Workers rate limiter for POST /v1/token and POST
+   * /v1/bot-role (one counter per path). Bound via
    * [[ratelimits]] in wrangler.toml. The key includes the request
    * hostname so preview aliases (which produce distinct hostnames)
    * get isolated counters without extra namespace_id patching.
@@ -201,22 +208,39 @@ const HOST_FETCH_TIMEOUT_MS = 20_000;
 /**
  * Create a fetch callback for the WASM module.
  *
- * The Go side (HostFetchDoer.Do) calls this with
- * (method, url, headersJSON, body) and expects a Promise resolving
- * to {status: number, headers: string, body: string} where headers
- * is a JSON-encoded map of response headers.
+ * The Go side (mintHTTP) calls this with
+ * (method, url, headersJSON, body, noRedirect, timeoutMs) and expects a
+ * Promise resolving to {status: number, headers: string, body: string}
+ * where headers is a JSON-encoded map of response headers.
+ *
+ * noRedirect is true for OTLP trace export. The fetch then uses
+ * redirect: "manual" and returns the 3xx response unchanged, so
+ * collector credential headers and span payloads are never forwarded
+ * to another origin. The response body is discarded (returned as ""):
+ * the exporter ignores it, and reading it here would hold an unbounded
+ * collector response in isolate memory before Go could limit it.
+ *
+ * timeoutMs, when a positive number, is the Go caller's remaining
+ * deadline. It tightens the fetch abort budget below
+ * HOST_FETCH_TIMEOUT_MS, so the underlying fetch is aborted when the
+ * Go-side wait gives up (the OTLP exporter's 2 s deadline) instead of
+ * running on after the exporter has released its concurrency slot.
  */
 function createFetchCallback(): (
   method: string,
   url: string,
   headersJSON: string,
   body: string,
+  noRedirect?: boolean,
+  timeoutMs?: number,
 ) => Promise<{ status: number; headers: string; body: string }> {
   return async (
     method: string,
     url: string,
     headersJSON: string,
     body: string,
+    noRedirect?: boolean,
+    timeoutMs?: number,
   ): Promise<{ status: number; headers: string; body: string }> => {
     // Wrap the entire callback body so that any thrown Error (from
     // JSON.parse, fetch, or resp.text) is converted to a plain-string
@@ -230,16 +254,28 @@ function createFetchCallback(): (
         const msg = err instanceof Error ? err.message : String(err);
         return Promise.reject(`failed to parse fetch headers JSON: ${msg}`);
       }
+      const fetchTimeoutMs =
+        typeof timeoutMs === "number" && timeoutMs > 0
+          ? Math.min(timeoutMs, HOST_FETCH_TIMEOUT_MS)
+          : HOST_FETCH_TIMEOUT_MS;
       const resp = await fetch(url, {
         method,
         headers,
         body: method !== "GET" && method !== "HEAD" ? body : undefined,
+        redirect: noRedirect === true ? "manual" : "follow",
         // Bound the outbound call so a slow upstream cannot leave an
         // un-abortable fetch running after the Go-side deadline has
-        // already given up on it. See HOST_FETCH_TIMEOUT_MS.
-        signal: AbortSignal.timeout(HOST_FETCH_TIMEOUT_MS),
+        // already given up on it. See HOST_FETCH_TIMEOUT_MS. A tighter
+        // caller deadline (timeoutMs) wins.
+        signal: AbortSignal.timeout(fetchTimeoutMs),
       });
-      const respBody = await resp.text();
+      let respBody = "";
+      if (noRedirect === true) {
+        // Discard the collector's response body without reading it.
+        await resp.body?.cancel();
+      } else {
+        respBody = await resp.text();
+      }
       const respHeaders = JSON.stringify(
         Object.fromEntries(resp.headers.entries()),
       );
@@ -670,6 +706,33 @@ class GoWasm {
 const goWasm = new GoWasm();
 
 /**
+ * Canonicalize a URL pathname once for endpoint matching and rate-limit
+ * keys. The Go handler routes on the decoded path, so the Worker must
+ * match on the same decoded form. Returns null for a path with an
+ * invalid percent-escape or an encoded "/" or "\" (%2F, %5C), which no
+ * legitimate client sends.
+ */
+function canonicalRoutePath(pathname: string): string | null {
+  if (/%(?:2f|5c)/i.test(pathname)) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Strict-Transport-Security value for responses the Worker writes itself.
+ * Responses from the Go handler already carry it (hstsHeaderValue in
+ * internal/mintcore/handler.go); keep the two in sync. No
+ * includeSubDomains or preload, so the policy stays scoped to the mint's
+ * own hostname.
+ */
+const HSTS_HEADER_VALUE = "max-age=31536000";
+
+/**
  * Return a JSON error response.
  */
 function errorResponse(status: number, message: string): Response {
@@ -678,6 +741,7 @@ function errorResponse(status: number, message: string): Response {
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",
+      "strict-transport-security": HSTS_HEADER_VALUE,
     },
   });
 }
@@ -722,17 +786,33 @@ export default {
       );
     }
 
-    // Rate-limit POST /v1/token before WASM init to avoid wasting
-    // CPU on abusive traffic. The key includes the hostname so that
-    // preview aliases (which produce distinct hostnames like
-    // <alias>-<worker>.<subdomain>.workers.dev) get isolated
-    // counters — concurrent BT preview instances do not affect each
-    // other. Durable deploys use a stable hostname.
+    // Rate-limit POST /v1/token and POST /v1/bot-role before WASM init
+    // to avoid wasting CPU (and shared GitHub API capacity, for the
+    // bot-role lookup) on abusive traffic. The key includes the
+    // hostname so that preview aliases (which produce distinct
+    // hostnames like <alias>-<worker>.<subdomain>.workers.dev) get
+    // isolated counters — concurrent BT preview instances do not
+    // affect each other. Durable deploys use a stable hostname. The
+    // key also includes the path, so each endpoint has its own counter.
+    // The gate and the key use the canonical (decoded) path, the same
+    // path the Go handler routes on, so a percent-encoded spelling such
+    // as /v1%2Fbot-role cannot skip the limiter. The POST / token alias
+    // shares the /v1/token counter.
     const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/v1/token") {
+    const routePath = canonicalRoutePath(url.pathname);
+    if (routePath === null) {
+      return errorResponse(400, "invalid_path");
+    }
+    if (
+      request.method === "POST" &&
+      (routePath === "/v1/token" ||
+        routePath === "/" ||
+        routePath === "/v1/bot-role")
+    ) {
       const rl = env.MINT_TOKEN_RATE_LIMITER;
       if (rl) {
-        const key = `${url.hostname}:/v1/token:${clientIp(request)}`;
+        const limitedPath = routePath === "/" ? "/v1/token" : routePath;
+        const key = `${url.hostname}:${limitedPath}:${clientIp(request)}`;
         const { success } = await rl.limit({ key });
         if (!success) {
           return errorResponse(429, "rate_limited");

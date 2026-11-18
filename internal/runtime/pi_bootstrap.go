@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -68,17 +69,23 @@ const (
 // Agent/Task, which is also when Run does not load the extension.
 type piAgentManifest struct {
 	Enabled bool `json:"enabled"`
-	// PiBin is the pi binary the children run, resolved in the sandbox at
-	// Bootstrap ("pi" when the probe found nothing, i.e. PATH lookup).
+	// PiBin is the pi binary the Bootstrap probe found ("pi" when it found
+	// nothing). Children start through the pi and node the launch pinned
+	// instead (piChildLaunchExport).
 	PiBin       string `json:"piBin"`
 	SessionsDir string `json:"sessionsDir"`
 	// Extensions are the -e paths every child gets, in order: the provider
 	// extensions present in the image, then the hook adapter when security
-	// is enabled. Never this extension itself.
+	// is enabled. childArgs separately adds this extension in child-only mode
+	// when it must restore the inherited active-tool subset.
 	Extensions []string `json:"extensions"`
-	// ExtensionDigests is the sha256 (hex) of each Extensions entry that
-	// Bootstrap itself wrote under the runner-owned config dir. The
-	// extension re-hashes them before every dispatch; see
+	// DeclaredExtensions are the vetted harness plugins inherited by children.
+	// The dispatcher rechecks their tree hashes before every child launch.
+	DeclaredExtensions []piManifestExtension `json:"declaredExtensions,omitempty"`
+	MCPResourceTools   []string              `json:"mcpResourceTools"`
+	// ExtensionDigests holds sha256 (hex) digests for runner-written child
+	// extensions: always fullsend-agent.js, plus hook/repair adapters when used.
+	// The dispatcher re-hashes them before every dispatch; see
 	// piAgentExtensionDigests for why the vendored ones are absent.
 	ExtensionDigests map[string]string `json:"extensionDigests,omitempty"`
 	// GatewayConfigDigest is the sha256 (hex) of the inference-gateway.json
@@ -92,15 +99,20 @@ type piAgentManifest struct {
 	GatewayConfigDigest string `json:"gatewayConfigDigest,omitempty"`
 	// EditRepairExtension is the edit-repair extension's -e path (see
 	// pi_edit_repair.go), empty when the children's tool set has no edit.
-	// It is kept out of Extensions on purpose: the extension registers the
-	// edit tool, and a child launched with --no-builtin-tools (a persona
-	// declaring no tools) does not filter extension tools, so the Agent
-	// extension adds it only for a child whose --tools list names edit.
+	// Every child has an explicit --tools list that filters extension tools.
+	// Keeping edit-repair out of Extensions avoids loading an unused extension
+	// and registering edit unnecessarily: the dispatcher adds it only when
+	// the child's --tools list names edit.
 	EditRepairExtension string `json:"editRepairExtension,omitempty"`
 	// Models maps "default" (the agent's model) and the Claude aliases to
 	// pi model specs; the extension translates a child's `model` through
 	// it and rejects anything else it cannot serve.
 	Models map[string]string `json:"models"`
+	// ModelFallbacks maps an alias in Models to the specs a child that
+	// asked for it by name falls back to, in order, when the run's Vertex
+	// project does not serve the alias's spec (#8426). Only an alias on
+	// its built-in default has an entry (piAgentModelFallbacks).
+	ModelFallbacks map[string][]string `json:"modelFallbacks,omitempty"`
 	// ProviderModels lists the model ids of the providers pi serves without
 	// an extension and without a Models entry (google-vertex). The
 	// extension accepts a `provider/id` spec only when the id is in this
@@ -110,6 +122,7 @@ type piAgentManifest struct {
 	Thinking       string              `json:"thinking"`
 	// Tools is the built-in set a child gets (the parent's, minus
 	// Agent/Task); ExploreTools the read-only set for subagent_type Explore.
+	ToolMode       string   `json:"toolMode,omitempty"` // default or explicit (empty for older manifests)
 	Tools          []string `json:"tools"`
 	ExploreTools   []string `json:"exploreTools"`
 	MaxConcurrent  int      `json:"maxConcurrent"`
@@ -125,6 +138,9 @@ type piAgentManifest struct {
 	// is the whole point — a repo sets it so children stop inheriting an
 	// expensive parent — but an explicit argument still wins (#7031).
 	SubagentDefault string `json:"subagentDefault,omitempty"`
+	// SubagentDefaultFallbacks are SubagentDefault's fallback specs when
+	// subagents.default names an alias with a ModelFallbacks entry.
+	SubagentDefaultFallbacks []string `json:"subagentDefaultFallbacks,omitempty"`
 	// SkippedPersonas maps a persona file that did not register to the
 	// reason, so a dispatch naming it is rejected with that reason.
 	SkippedPersonas map[string]string `json:"skippedPersonas,omitempty"`
@@ -255,17 +271,8 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("writing %s: %w", piSettingsFile, err)
 	}
 
-	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
+	if err := uploadHarnessSkills(sandboxName, cfg+"/skills", input.SkillDirs()); err != nil {
 		return err
-	}
-	for _, skillPath := range input.SkillDirs() {
-		if skillPath == "" {
-			continue
-		}
-		if err := sandbox.Upload(sandboxName, skillPath, cfg+"/skills/"); err != nil {
-			return fmt.Errorf("copying skill %q: %w", skillPath, err)
-		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
 	// Extensions land under ConfigDir/extensions/<name>/ — a runner-owned
@@ -321,9 +328,16 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		if err := installHookScripts(sandboxName, r.piHooksDir(), hooks); err != nil {
 			return err
 		}
+		// The hook settings, recorded while .env is still exactly what the
+		// runner wrote; the launch re-asserts them after .env.
+		securityEnv, err := bootstrapHookEnv(sandboxName, hooks)
+		if err != nil {
+			return err
+		}
 		if err := appendHookEnv(sandboxName, hooks); err != nil {
 			return err
 		}
+		recordPiHookEnv(sandboxName, securityEnv)
 		if err := uploadBytes(sandboxName, cfg+"/"+piHooksExtensionFile, piHooksExtensionJS); err != nil {
 			return fmt.Errorf("installing hook extension: %w", err)
 		}
@@ -344,6 +358,13 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		if err != nil {
 			return err
 		}
+		block.DeclaredExtensions = extensions
+		block.MCPResourceTools = append([]string{}, piMCPResourceTools...)
+		if block.ExtensionDigests == nil {
+			block.ExtensionDigests = map[string]string{}
+		}
+		sum := sha256.Sum256(piAgentExtensionJS)
+		block.ExtensionDigests[cfg+"/"+piAgentExtensionFile] = hex.EncodeToString(sum[:])
 		manifest.Agent = block
 	}
 
@@ -405,6 +426,29 @@ func piManifestHash(sandboxName string) string {
 		}
 	}
 	return ""
+}
+
+// piHookEnvs carries the hook settings Bootstrap recorded (bootstrapHookEnv)
+// to Run through the same seam as piManifestHashes, so the launch re-asserts
+// them after the agent-writable .env. The hook adapter and every sub-agent
+// inherit the launch environment (childEnv copies it), so the one export
+// covers them all.
+var piHookEnvs sync.Map // sandboxName -> []hookEnvPair
+
+func recordPiHookEnv(sandboxName string, env []hookEnvPair) {
+	piHookEnvs.Store(sandboxName, env)
+}
+
+// piHookEnv returns the hook settings recorded for a sandbox, and false when
+// Bootstrap did not run in this process — the same case in which the
+// manifest guard is not emitted.
+func piHookEnv(sandboxName string) ([]hookEnvPair, bool) {
+	v, ok := piHookEnvs.Load(sandboxName)
+	if !ok {
+		return nil, false
+	}
+	env, ok := v.([]hookEnvPair)
+	return env, ok
 }
 
 // piBashAllowlistEnv selects how the extension treats a Bash(a,b) allowlist
@@ -479,7 +523,9 @@ const piNoSubagentNote = "\n## Runtime note\n\n" +
 
 // piAgentManifestFor builds the manifest block for fullsend-agent.js. tools
 // is the parent's --tools list (nil for the default set); children get the
-// built-ins from it minus Agent/Task.
+// selection minus Agent/Task. Bootstrap calls this only when Agent is enabled,
+// so explicit parent lists always contain Agent/Task before removal. A parent
+// whose translated list is empty has no dispatcher or child manifest.
 //
 // personas are the pre-discovered sub-agent personas (from discoverPersonas).
 // subagentsCfg is the merged agents[].subagents map from the config, driving
@@ -491,7 +537,9 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		return nil, err
 	}
 	childTools := []string{}
+	toolMode := "explicit"
 	if tools == nil {
+		toolMode = "default"
 		childTools = append(childTools, piDefaultTools...)
 	} else {
 		for _, t := range tools {
@@ -519,9 +567,11 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		Extensions:       exts,
 		ExtensionDigests: piAgentExtensionDigests(hooksExt, hooksEnabled, editRepairExt, editRepair),
 		Models:           piAgentModels(def.Model, configAliases),
+		ModelFallbacks:   piAgentModelFallbacks(configAliases),
 		ProviderModels:   piAgentProviderModels(gatewayIDs),
 		Thinking:         piAgentThinking(),
 		Tools:            childTools,
+		ToolMode:         toolMode,
 		ExploreTools:     append([]string{}, piExploreTools...),
 		MaxConcurrent:    piAgentMaxConcurrent,
 		TimeoutSeconds:   piAgentTimeoutSeconds,
@@ -574,9 +624,9 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 	// resolved persona specs are checked against this set and only then
 	// written into the manifest, so a persona can never widen the set that
 	// admits it.
-	trustedSpecs := piTrustedSpecs(manifest.Models, manifest.ProviderModels, parentModel, configAliases)
+	trustedSpecs := piTrustedSpecs(manifest.Models, manifest.ModelFallbacks, manifest.ProviderModels, parentModel, configAliases)
 
-	resolved, defaultSpec, skippedOut, err := resolvePersonaModels(personas, skipped, subagentsCfg, manifest.Models, trustedSpecs)
+	resolved, defaultSpec, skippedOut, err := resolvePersonaModels(personas, skipped, subagentsCfg, manifest.Models, manifest.ModelFallbacks, trustedSpecs)
 	if err != nil {
 		return nil, fmt.Errorf("resolving persona models: %w", err)
 	}
@@ -587,15 +637,76 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		manifest.SkippedPersonas = skippedOut
 	}
 	manifest.SubagentDefault = defaultSpec
+	piApplyChildFallbacks(manifest, personas, subagentsCfg)
 
 	return manifest, nil
 }
 
-// piAgentExtensionDigests records the sha256 of every child -e entry that
-// Bootstrap itself writes under the runner-owned config dir — the hook
-// adapter (the same bytes piHooksGuard checks before pi starts) and the
-// edit-repair extension (piEditRepairGuard's bytes). fullsend-agent.js
-// re-hashes them immediately before every dispatch: the launch guard
+// piAgentModelFallbacks is the manifest's per-alias child fallback table:
+// for each alias on its built-in default (ImplicitFallbackModels), the
+// chain's ids on the Anthropic Vertex provider, the provider piAgentModels
+// resolves the aliases on. An alias the repo retargets has no entry.
+func piAgentModelFallbacks(configAliases map[string]string) map[string][]string {
+	out := map[string][]string{}
+	for alias := range claudeAliasFallbacks {
+		chain := ImplicitFallbackModels(alias, configAliases)
+		if len(chain) == 0 {
+			continue
+		}
+		specs := make([]string, len(chain))
+		for i, id := range chain {
+			specs[i] = piDefaultProvider + "/" + id
+		}
+		out[alias] = specs
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// piChildAliasFallbacks returns the fallback specs for a child whose model
+// was configured as model: the alias's ModelFallbacks entry when model is
+// a bare alias name (an "@default"-style suffix dropped), else nil — a
+// pinned id or provider/id spec never falls back (#7026).
+func piChildAliasFallbacks(m *piAgentManifest, model string) []string {
+	base, _, _ := strings.Cut(strings.TrimSpace(model), "@")
+	return slices.Clone(m.ModelFallbacks[strings.ToLower(strings.TrimSpace(base))])
+}
+
+// piApplyChildFallbacks gives subagents.default and every persona whose
+// model was configured as an alias the alias's child fallback chain, so a
+// persona asking for sonnet runs on sonnet's fallback when the project
+// does not serve sonnet's default (#8426). The specs come from the
+// manifest's own ModelFallbacks table.
+func piApplyChildFallbacks(m *piAgentManifest, personas []piPersona, subagentsCfg map[string]*string) {
+	defaultModel := ""
+	if v := subagentsCfg["default"]; v != nil {
+		defaultModel = *v
+	}
+	if m.SubagentDefault != "" {
+		m.SubagentDefaultFallbacks = piChildAliasFallbacks(m, defaultModel)
+	}
+	for _, p := range personas {
+		entry, ok := m.Personas[p.Name]
+		if !ok || entry.Model == "" {
+			continue
+		}
+		model, _ := piPersonaModelSource(p, subagentsCfg, defaultModel)
+		if fb := piChildAliasFallbacks(m, model); len(fb) > 0 {
+			entry.Fallbacks = fb
+			m.Personas[p.Name] = entry
+		}
+	}
+}
+
+// piAgentExtensionDigests records hook/repair digests. Bootstrap additionally
+// records fullsend-agent.js, whose child-only mode restores the active loadout.
+// Together they cover runner-written child -e files: the dispatcher itself,
+// the hook adapter (piHooksGuard's bytes) and the edit-repair extension
+// (piEditRepairGuard's bytes). The dispatcher digest is present even with
+// hooks off and no edit tool. fullsend-agent.js re-hashes all these files
+// immediately before every dispatch: the launch guard
 // fires once, and nothing else re-verifies the adapter afterwards, so a
 // parent with `write` could replace it mid-iteration and dispatch
 // children whose adapter runs no hooks and silently skips its own
@@ -665,11 +776,11 @@ func piAgentModels(defModel string, configAliases map[string]string) map[string]
 
 // piGoogleVertexModels are the model ids pi's built-in google-vertex
 // provider registers, verbatim from the catalog the pinned pi bundles
-// (@earendil-works/pi-ai 0.85.0, dist/providers/data/google-vertex.json).
+// (@earendil-works/pi-ai 1.5.0, dist/providers/data/google-vertex.json).
 // Re-check it on a pi bump, the way the Anthropic ids in pi_run.go are:
-// diff that data file, not the generated wrapper -- 0.85.0 added
-// gemini-3.8-flash and nothing else, and a missed entry means this table
-// rejects an id the running pi actually serves.
+// diff that data file, not the generated wrapper (0.85.0 changed only the
+// data file); a missed entry means this table rejects an id the running pi
+// actually serves.
 // internal/runtime/testdata/pi/check-vertex-catalog.sh does the diff
 // against whatever PI_VERSION the Containerfile pins.
 //
@@ -691,8 +802,7 @@ var piGoogleVertexModels = []string{
 	"gemini-3.6-flash",
 	"gemini-3.7-flash",
 	"gemini-3.8-flash",
-	"gemini-flash-latest",
-	"gemini-flash-lite-latest",
+	"gemini-4-argon",
 }
 
 // piXaiVertexModels are the model ids the vendored xai-vertex extension

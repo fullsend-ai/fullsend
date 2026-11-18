@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// wideningInstallPreset supplies a cross-repo create_issues target the code
+// wideningInstallPreset supplies a cross-repo tracking target the code
 // defaults do not allow, so declaring it for an installed repository without
 // a base file widens the effective configuration.
-const wideningInstallPreset = "version: \"1\"\ncreate_issues:\n  allow_targets:\n    repos:\n      - acme/other\n"
+const wideningInstallPreset = "version: \"1\"\ntracker:\n  github:\n    allowed_targets:\n      repos:\n        - acme/other\n"
 
 // assertNoInstallWrites fails when the fake client recorded any forge write.
 func assertNoInstallWrites(t *testing.T, fc *forge.FakeClient) {
@@ -26,18 +26,21 @@ func assertNoInstallWrites(t *testing.T, fc *forge.FakeClient) {
 	assert.Empty(t, fc.ForceCommittedFiles, "no forced commits")
 	assert.Empty(t, fc.CreatedBranches, "no branches")
 	assert.Empty(t, fc.CreatedProposals, "no PR/MR")
-	assert.Empty(t, fc.CreatedSecrets, "no secret writes")
+	// Counted, not printed: a secret value must not reach the test log.
+	assert.Zero(t, len(fc.CreatedSecrets), "no secret writes")
 	assert.Empty(t, fc.DeletedSecrets, "no secret deletions")
 	assert.Empty(t, fc.Variables, "no variable writes")
 	assert.Empty(t, fc.UpdatedVariables, "no variable updates")
+	assert.Empty(t, fc.DeletedVariables, "no variable deletions")
 }
 
 // A layered safety rejection stops `repos install` before repos.yaml is
-// persisted or the forge is written to. Every manifest edit the install
-// plans (glob carving, a new entry, --app-set, --inference-auth, and the
-// install defaults and explicit --roles recorded for a pending install) is
+// persisted or the forge is written to. The manifest edits install plans
+// (here the install defaults and the trace_context of a pending install) are
 // applied in memory and compared with the installed layers first, for an
-// overlay relaxation and for a preset replacement alike.
+// overlay relaxation and for a preset replacement alike; selecting an
+// installed glob-covered repository plans no edit at all (#8219). The
+// refused run reports no repos.yaml edit either.
 func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T) {
 	const header = `version: 1
 %DEFAULTS%github:
@@ -57,45 +60,28 @@ func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T
 	}
 	scenarios := []scenario{
 		{
-			name:    "glob carving",
+			name:    "glob-covered selection",
 			entries: "    - name: acme/*\n",
 			target:  "acme/api",
 			edit: func(o *reposInstallConfig) {
 				o.repoFilter = []string{"acme/api"}
-				o.fullsendRef = "v2.0.0"
 			},
 		},
 		{
-			name:    "added entry",
-			entries: "    - name: acme/other\n",
-			target:  "acme/new",
+			name:    "selection beside other entries",
+			entries: "    - name: acme/other\n    - name: acme/api\n",
+			target:  "acme/api",
 			others:  []string{"acme/other"},
 			edit: func(o *reposInstallConfig) {
-				o.repoFilter = []string{"acme/new"}
-				o.forge = "github"
+				o.repoFilter = []string{"acme/api"}
 			},
 		},
 		{
-			name:    "app-set",
-			entries: "    - name: acme/api\n",
-			target:  "acme/api",
-			edit:    func(o *reposInstallConfig) { o.appSet = "alt" },
-		},
-		{
-			name:    "inference-auth",
-			entries: "    - name: acme/api\n",
-			target:  "acme/api",
-			edit:    func(o *reposInstallConfig) { o.inferenceAuth = "vertex-wif" },
-		},
-		{
-			name:    "managed defaults and roles",
+			name:    "managed defaults",
 			entries: "    - name: acme/api\n",
 			target:  "acme/api",
 			pending: true,
-			edit: func(o *reposInstallConfig) {
-				o.roles = []string{"triage", "review"}
-				o.rolesChanged = true
-			},
+			edit:    func(*reposInstallConfig) {},
 		},
 	}
 	rejections := []struct {
@@ -113,7 +99,7 @@ func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T
 			name:         "preset relaxation",
 			defaults:     "defaults:\n  config_base:\n    source: preset.yaml\n",
 			targetConfig: managedConfigMarker + "{}\n",
-			want:         "create_issues.allow_targets",
+			want:         "tracker.github.allowed_targets",
 		},
 	}
 
@@ -139,15 +125,89 @@ func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T
 
 				opts := githubManagedInstallOpts(manifestPath, fc)
 				sc.edit(opts)
-				err := runReposInstall(context.Background(), opts)
+				var err error
+				out := captureStdout(t, func() { err = runReposInstall(context.Background(), opts) })
 
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), rej.want)
+				// Compared without printing: a seed the refused run generated is
+				// never written, so none can be checked for first.
+				assert.False(t, strings.Contains(out, "Persisted"), "a refused run reports no repos.yaml edit")
 				data, readErr := os.ReadFile(manifestPath)
 				require.NoError(t, readErr)
 				assert.Equal(t, manifestYAML, string(data), "repos.yaml must be byte-identical after a rejection")
 				assertNoInstallWrites(t, fc)
 			})
 		}
+	}
+}
+
+// Effective-infrastructure conflicts (a mint URL that the repos.yaml
+// mint_url and the declared configuration disagree on, or a Vertex flag
+// that contradicts the declared value) are rejected before the planned
+// tracking writeback is persisted, so repos.yaml stays byte-identical
+// — including for a pristine glob-covered repository — and the refused run
+// reports no repos.yaml edit.
+func TestRunReposInstall_InfrastructureConflictLeavesManifestByteIdentical(t *testing.T) {
+	const manifestHeader = `version: 1
+defaults:
+  config:
+    %CONFIG%github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  inference:
+    auth: vertex-wif
+  repos:
+`
+	scenarios := []struct {
+		name    string
+		config  string
+		entries string
+		filter  []string
+		edit    func(*reposInstallConfig)
+		want    string
+	}{
+		{
+			name:    "mint URL conflict",
+			config:  "mint_url: https://other-mint.example.com\n",
+			entries: "    - name: acme/api\n",
+			want:    "mint URL conflict",
+		},
+		{
+			name:    "mint URL conflict on a glob-covered selection",
+			config:  "mint_url: https://other-mint.example.com\n",
+			entries: "    - name: acme/*\n",
+			filter:  []string{"acme/api"},
+			want:    "mint URL conflict",
+		},
+		{
+			name:    "vertex project flag contradicts declared project",
+			config:  "inference:\n      project: declared-project\n",
+			entries: "    - name: acme/api\n",
+			want:    "disagrees with inference.project",
+		},
+	}
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			manifestYAML := strings.Replace(manifestHeader, "%CONFIG%", sc.config, 1) + sc.entries
+			manifestPath := writeTestManifest(t, manifestYAML)
+			fc := newInstallFakeClient("acme/api")
+			fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+
+			opts := githubManagedInstallOpts(manifestPath, fc)
+			opts.repoFilter = sc.filter
+			var err error
+			out := captureStdout(t, func() { err = runReposInstall(context.Background(), opts) })
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), sc.want)
+			// Compared without printing: a seed the refused run generated is
+			// never written, so none can be checked for first.
+			assert.False(t, strings.Contains(out, "Persisted"), "a refused run reports no repos.yaml edit")
+			data, readErr := os.ReadFile(manifestPath)
+			require.NoError(t, readErr)
+			assert.Equal(t, manifestYAML, string(data), "repos.yaml must be byte-identical after a rejection")
+			assertNoInstallWrites(t, fc)
+		})
 	}
 }

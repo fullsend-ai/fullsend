@@ -132,7 +132,9 @@ func isSlashCommandEvent(event RoutableEvent) bool {
 // RunWebhook builds events from a native GitLab webhook body and
 // dispatches their routed stages, deduplicated against the poller's
 // per-mode state. It fails closed — dispatching nothing — when the
-// payload cannot be validated.
+// payload cannot be validated. A payload that yields no events (an
+// ignored bare issue update, for example) returns nil without loading
+// or writing poll state.
 func (p *Poller) RunWebhook(ctx context.Context, raw []byte) error {
 	events, err := p.BuildWebhookEvents(ctx, raw)
 	if err != nil {
@@ -222,7 +224,7 @@ func (p *Poller) dispatchWebhookEvents(ctx context.Context, slash bool, events [
 				anyDispatched = true
 				continue
 			}
-			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
+			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &we.Normalized); err != nil {
 				errs = append(errs, fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))
 				eventFailed = true
 				continue
@@ -280,6 +282,11 @@ func (p *Poller) dispatchWebhookEvents(ctx context.Context, slash bool, events [
 				delete(pendingClear, eventKey)
 			}
 		}
+		// The reaction tells the user the command was picked up. An
+		// event no stage of which dispatched — an over-budget refusal is
+		// permanent, with no pipeline and no reply — never reaches this
+		// point (the early continue above), so it never claims it
+		// (TestRunWebhook_TransportBudgetRefusalFailsClosed).
 		if isSlashCommandEvent(event) {
 			noteableType := "Issue"
 			if strings.HasPrefix(event.Type, "mr_") {
@@ -353,6 +360,18 @@ func alreadyDispatched(dispatched map[string]int64, mirrors mirrorSet, stage str
 		// ignored by the parse.
 		if strings.HasPrefix(key, prefix) && !mirrors.isMirror(mirrorKindDispatch, key) &&
 			labelKeyAtOrAfter(strings.TrimPrefix(key, prefix), event.UpdatedAt) {
+			return true
+		}
+	}
+	return false
+}
+
+// dispatchedForAnyStage reports whether any stage already has a dispatch
+// record for event's exact occurrence key.
+func dispatchedForAnyStage(dispatched map[string]int64, event RoutableEvent) bool {
+	suffix := ":" + event.Key()
+	for key := range dispatched {
+		if strings.HasSuffix(key, suffix) {
 			return true
 		}
 	}

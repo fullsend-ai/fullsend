@@ -13,7 +13,10 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID})
+// uninstallVariables are the variables uninstall deletes outside GitLab,
+// including FULLSEND_TRACE_SIGNING_KEY_ID, which install writes next to the
+// trace signing key (ADR 0154).
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID, forge.VarTraceSigningKeyID})
 
 // uninstallSecrets deletes every Fullsend-managed inference secret of
 // every inference.auth method (managedInferenceSecrets), independent of
@@ -22,7 +25,21 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 // block cleanup. Deleting an absent secret is a no-op, so repeating
 // uninstall is safe. It must not become requiredSecrets — probe/converge
 // require only the selected method's secrets.
-var uninstallSecrets = managedInferenceSecrets()
+//
+// It also deletes the Jira polling credentials (FULLSEND_JIRA_TOKEN,
+// FULLSEND_JIRA_EMAIL, FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET) that `repos install` provisions for repositories
+// whose effective tracker.jira.poll.enabled is true. Install deliberately
+// keeps them while polling is disabled, but teardown must not leave a
+// long-lived Jira credential behind.
+//
+// It also deletes the trace signing key (FULLSEND_TRACE_SIGNING_KEY,
+// ADR 0154), so a torn-down repository keeps no private key.
+var uninstallSecrets = slices.Concat(managedInferenceSecrets(), jiraManagedSecrets, []string{forge.SecretTraceSigningKey})
+
+// jiraManagedSecrets are the Jira polling credentials written by install
+// (convergeJiraPoll) outside installSecretsForForge.
+var jiraManagedSecrets = []string{forge.SecretJiraToken, forge.SecretJiraEmail, forge.SecretJiraClientID, forge.SecretJiraClientSecret}
 
 // gitlabUninstallVars intentionally does NOT include the legacy
 // FULLSEND_FORGE_TOKEN shared secret. Uninstall no longer retires it
@@ -39,6 +56,7 @@ var gitlabUninstallVars = []string{
 	forge.VarLegacyForge,
 	forge.SecretDispatch,
 	forge.VarGCPRegion,
+	forge.VarGCPServiceAccount,
 	forge.VarLabelState,
 	forge.VarLastPollAtFast,
 	forge.VarLastPollAtFull,
@@ -65,7 +83,10 @@ var gitlabUninstallVars = []string{
 // It also includes the webhook fast-path credentials (FULLSEND_TRIGGER_TOKEN
 // and FULLSEND_WEBHOOK_SECRET). Secret deletion addresses only the
 // wildcard-scoped variable, which is the one Fullsend creates.
-var gitlabUninstallSecrets = append(managedInferenceSecrets(), forge.SecretTriggerToken, forge.SecretWebhookSecret)
+//
+// It also includes the Jira polling credentials, which GitLab injects into
+// every protected-branch job while they exist, and the trace signing key.
+var gitlabUninstallSecrets = slices.Concat(managedInferenceSecrets(), []string{forge.SecretTriggerToken, forge.SecretWebhookSecret}, jiraManagedSecrets, []string{forge.SecretTraceSigningKey})
 
 // gitlabScaffoldPaths is the full set of files uninstall removes. It is
 // a superset of the current install set: fullsend-dispatch.yml is no
@@ -86,13 +107,6 @@ var gitlabScaffoldPaths = []string{
 	".gitlab/ci/scripts/run-agent-job.sh",
 	".gitlab/ci/scripts/checkout-mr-source.sh",
 	".fullsend/config.yaml",
-}
-
-// gitlabRetiredScaffoldPaths are files previous GitLab installs wrote
-// that the current template no longer produces. Converge deletes them
-// (unlike generic orphans, which are reported but left in place).
-var gitlabRetiredScaffoldPaths = []string{
-	fullsendDispatchInclude,
 }
 
 const gitlabTrustScriptPath = ".gitlab/ci/scripts/trust-ci-server-ca.sh"
@@ -327,6 +341,26 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		files = append(files, forge.TreeFile{Path: p, Delete: true})
 	}
 
+	// The managed Jira poll caller (#9109) is removed with the rest of the
+	// scaffold, since uninstall also deletes the Jira credentials it uses.
+	// A user-owned workflow at the same path is left alone.
+	if cfg.Forge == ForgeGitHub || cfg.Forge == "" {
+		actions, err := githubJiraPollReconciler{}.Remove(ctx, jiraPollRequest{
+			Client:    client,
+			Owner:     owner,
+			Repo:      repo,
+			StageFile: func(f forge.TreeFile) { files = append(files, f) },
+		})
+		if err != nil {
+			result.Error = fmt.Errorf("checking managed Jira poll workflow before uninstall: %w", err)
+			progress(fullName, "workflow", fmt.Sprintf("Failed: %v", result.Error))
+			return result
+		}
+		for _, a := range actions {
+			progress(fullName, "workflow", a.Detail)
+		}
+	}
+
 	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml
 	// in the same commit as the scaffold deletes. The root file is
 	// user-owned: we remove only fullsend's include directive and
@@ -374,7 +408,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	var pollerErr error
 	unlockProject := func() error { return nil }
 	if cfg.Forge == ForgeGitLab {
-		release, lockErr := LockGitLabProject(ctx, client, owner, repo, false)
+		lease, release, lockErr := LockGitLabProjectLease(ctx, client, owner, repo)
 		if lockErr != nil {
 			result.Error = fmt.Errorf("serializing uninstall with other installers: %w", lockErr)
 			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", lockErr))
@@ -390,6 +424,24 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 			return leaseErr
 		}
 		defer func() { _ = unlockProject() }()
+
+		// An interrupted trigger-account bootstrap can leave that account
+		// elevated with a live bootstrap PAT. Contain it first, with no Poller
+		// inventory and before any gate below can return early, on a bounded,
+		// cancellation-detached context so a canceled uninstall still demotes.
+		// Removal later still needs the verified inventory. A failure stops
+		// uninstall with the ledger kept, so a retry resumes containment.
+		if containTokens, ok := tokens.(GitLabTriggerAccountUninstaller); ok {
+			progress(fullName, "cleanup", "Containing the GitLab trigger account")
+			cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), 3*gitlabCleanupTimeout)
+			containErr := containTokens.ContainGitLabTriggerAccountForUninstall(cctx, client, lease, owner, repo)
+			ccancel()
+			if containErr != nil {
+				result.Error = errors.Join(fmt.Errorf("containing the GitLab trigger account before uninstall: %w", containErr), unlockProject())
+				progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", containErr))
+				return result
+			}
+		}
 
 		// An interrupted trigger-creation transaction can leave the Poller
 		// elevated or holding its bootstrap credential. Restore and revoke
@@ -437,6 +489,48 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 			result.Error = errors.Join(fmt.Errorf("removing webhook fast-path: %w", teardownErr), pollerErr, unlockProject())
 			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", teardownErr))
 			return result
+		}
+
+		// Remove the trigger-only service account and its protected-branch
+		// resources before role-identity cleanup retires the Poller
+		// generation state that proves the account is not a Poller. Skipped
+		// when the Poller could not be reconciled: the inventory is then
+		// unverified, and FULLSEND_GITLAB_TRIGGER_ACCOUNT stays as the durable
+		// cleanup obligation for the retried uninstall. A failure stops
+		// uninstall here, keeping the manifest entry and the ledger.
+		if pollerErr == nil {
+			remover, ok := tokens.(GitLabTriggerAccountUninstaller)
+			if !ok {
+				// Without the dedicated removal capability a ledger cannot be
+				// cleaned up, and nothing else may forget it: stop here with
+				// the ledger and the token sink in place.
+				_, ledgerExists, ledgerErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabTriggerAccount)
+				switch {
+				case ledgerErr != nil:
+					err := SafeAPIError("reading "+forge.VarGitLabTriggerAccount, ledgerErr)
+					result.TokensRevoked = triggersRevoked
+					result.Error = errors.Join(fmt.Errorf("checking for a GitLab trigger account: %w", err), unlockProject())
+					progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", err))
+					return result
+				case ledgerExists:
+					err := fmt.Errorf("%s exists but this uninstall client cannot remove the GitLab trigger account; %s is kept so a retried uninstall with that capability resumes", forge.VarGitLabTriggerAccount, forge.VarGitLabTriggerAccount)
+					result.TokensRevoked = triggersRevoked
+					result.Error = errors.Join(err, unlockProject())
+					progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", err))
+					return result
+				}
+			} else {
+				progress(fullName, "cleanup", "Removing the GitLab trigger account")
+				rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 3*gitlabCleanupTimeout)
+				triggerErr := remover.RemoveGitLabTriggerAccountForUninstall(rctx, client, lease, owner, repo)
+				rcancel()
+				if triggerErr != nil {
+					result.TokensRevoked = triggersRevoked
+					result.Error = errors.Join(fmt.Errorf("removing the GitLab trigger account (%s is kept so a retried uninstall resumes): %w", forge.VarGitLabTriggerAccount, triggerErr), unlockProject())
+					progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", triggerErr))
+					return result
+				}
+			}
 		}
 	}
 
@@ -514,10 +608,11 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		defer innerWg.Done()
 		for _, name := range forgeSecrets {
 			if delErr := client.DeleteRepoSecret(ctx, owner, repo, name); delErr != nil {
-				if name == forge.SecretTriggerToken || name == forge.SecretWebhookSecret {
-					// The webhook credentials are not known to any redactor
-					// at this point, so an error echoing one must not reach
-					// uninstall output; withhold the server text.
+				if name == forge.SecretTriggerToken || name == forge.SecretWebhookSecret || name == forge.SecretTraceSigningKey {
+					// The webhook credentials and the trace signing key are
+					// not known to any redactor at this point, so an error
+					// echoing one must not reach uninstall output; withhold
+					// the server text.
 					secretErr = safeAPIError("deleting secret "+name, delErr)
 				} else {
 					secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)
@@ -568,8 +663,9 @@ func deleteGitLabPollStateBranches(ctx context.Context, client forge.Client, own
 // that accept glob patterns must filter them out before calling this.
 //
 // Validation uses gitlabRepoNamePattern (2+ segments) rather than the
-// stricter repoNamePattern because splitOwnerRepo runs before the forge
-// is resolved; forge-specific validation already occurs at install time.
+// stricter two-segment GitHub owner/repo format because splitOwnerRepo
+// runs before the forge is resolved; forge-specific validation already
+// occurs at install time.
 func splitOwnerRepo(fullName string) (string, string, error) {
 	if !gitlabRepoNamePattern.MatchString(fullName) {
 		return "", "", fmt.Errorf("invalid repo format %q: expected owner/repo[/subgroup/...] using alphanumeric, dash, dot, or underscore characters", fullName)

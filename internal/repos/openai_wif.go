@@ -418,7 +418,9 @@ type gcpSecretSet map[string]bool
 
 // plannedGCPSecrets returns the GCP secrets available after this run: those
 // already present in the probed components, plus the pair this run writes
-// when --vertex-project is supplied.
+// when a GCP project is supplied (--vertex-project or the effective
+// configuration's inference.project; cfg carries the repository's
+// effective inputs).
 func plannedGCPSecrets(components []ComponentStatus, cfg ConvergeConfig) gcpSecretSet {
 	set := gcpSecretSet{}
 	for _, name := range openAIWIFGCPSecrets {
@@ -892,11 +894,7 @@ func checkOpenAIWIFContract(ctx context.Context, d convergeDiscovery, cfg Conver
 		return false, nil
 	}
 	gcp := plannedGCPSecrets(d.components, cfg)
-	vendor := resolved.Vendor
-	if cfg.VendorOverride != nil {
-		vendor = *cfg.VendorOverride
-	}
-	vendoredSource := vendor && cfg.ReadVendoredWorkflow != nil
+	vendoredSource := resolved.Vendor && cfg.ReadVendoredWorkflow != nil
 	if vendoredSource {
 		if err := checkVendoredOpenAIWIFContract(cfg.ReadVendoredWorkflow, gcp); err != nil {
 			return true, err

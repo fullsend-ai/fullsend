@@ -49,6 +49,9 @@ type fakeGCFClient struct {
 	// can simulate a competing update superseding the deploy.
 	keepRevisionInfoSourceHash bool
 
+	// Captured zip from the last UploadFunctionSource call.
+	lastUploadedSource []byte
+
 	// Captured env vars from the last UpdateServiceEnvVars call.
 	lastUpdateServiceEnvVars map[string]string
 
@@ -241,8 +244,9 @@ func (f *fakeGCFClient) GetCloudRunServiceURI(_ context.Context, _, _, _ string)
 	}
 	return f.functionURL, nil
 }
-func (f *fakeGCFClient) UploadFunctionSource(_ context.Context, _, _ string, _ []byte) (json.RawMessage, error) {
+func (f *fakeGCFClient) UploadFunctionSource(_ context.Context, _, _ string, source []byte) (json.RawMessage, error) {
 	f.calls = append(f.calls, "UploadFunctionSource")
+	f.lastUploadedSource = source
 	if err := f.errs["UploadFunctionSource"]; err != nil {
 		return nil, err
 	}
@@ -479,6 +483,13 @@ func WithFakeRevisionInfo(info *ServiceRevisionInfo) FakeGCFOption {
 
 func WithFakeSecrets(secrets map[string]bool) FakeGCFOption {
 	return func(f *fakeGCFClient) { f.secrets = secrets }
+}
+
+// WithFakeSecretData backs AddSecretVersion and AccessSecretVersion with
+// data (secretID → latest payload). The caller keeps the map and can
+// inspect what was written.
+func WithFakeSecretData(data map[string][]byte) FakeGCFOption {
+	return func(f *fakeGCFClient) { f.secretData = data }
 }
 
 func WithFakeErrors(errs map[string]error) FakeGCFOption {

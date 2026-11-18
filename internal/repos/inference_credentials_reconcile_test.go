@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/preset"
 )
 
 // Tests for obsolete inference-secret reconciliation and OpenAI key
@@ -80,7 +81,12 @@ func TestConverge_VariableWriteFailureKeepsObsoleteSecrets(t *testing.T) {
 	fc.VariableValues["acme/api/"+forge.VarGCPRegion] = "us-east1"
 	fc.Errors["CreateOrUpdateRepoVariable"] = errors.New("forge unavailable")
 
-	cfg := convergeCfgWithDefaults(newConvergeManifest("acme/api"))
+	// The declared region makes the stale variable drift that must be
+	// rewritten.
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "inference:\n  region: us-central1\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = mustDesiredManaged(t, m, "acme", "api")
+	cfg := convergeCfgWithDefaults(m)
 	sc := &fakeScaffoldCommit{}
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	require.NoError(t, err)

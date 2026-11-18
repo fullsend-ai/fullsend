@@ -25,12 +25,39 @@ func writePinCIJobIdentityScripts(t *testing.T) (root, pinScript string) {
 	return root, pinScript
 }
 
+// noRetryCurlDir returns a directory holding a curl wrapper that runs the
+// real curl with --retry 0 in place of the gate's --retry count, leaving
+// every other argument as given. fullsend_gate_curl retries every failed
+// call 3 times with a 2s delay, so each fail-closed case would otherwise
+// sleep ~6s per failed lookup; the mock API answers deterministically, so
+// the retries cannot change the outcome.
+func noRetryCurlDir(t *testing.T) string {
+	t.Helper()
+	realCurl, err := exec.LookPath("curl")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	wrapper := "#!/usr/bin/env bash\n" +
+		"args=()\n" +
+		"while [ \"$#\" -gt 0 ]; do\n" +
+		"  if [ \"$1\" = \"--retry\" ] && [ \"$#\" -gt 1 ]; then\n" +
+		"    args+=(--retry 0)\n" +
+		"    shift 2\n" +
+		"    continue\n" +
+		"  fi\n" +
+		"  args+=(\"$1\")\n" +
+		"  shift\n" +
+		"done\n" +
+		"exec '" + realCurl + "' \"${args[@]}\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "curl"), []byte(wrapper), 0o755))
+	return dir
+}
+
 func sourcePinScript(t *testing.T, root, script string, extraEnv []string) (combined string, err error) {
 	t.Helper()
 	cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"; echo PINNED_PROJECT=$FULLSEND_PINNED_PROJECT_ID; echo PINNED_PIPELINE=$FULLSEND_PINNED_PIPELINE_ID; echo PINNED_REF=$FULLSEND_PINNED_REF; echo PINNED_SOURCE=$FULLSEND_PINNED_PIPELINE_SOURCE")
 	cmd.Env = append([]string{
 		"SCRIPT=" + script,
-		"PATH=" + os.Getenv("PATH"),
+		"PATH=" + noRetryCurlDir(t) + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
 		"CI_PROJECT_DIR=" + root,
 		"RUNNER_TEMP=" + t.TempDir(),
@@ -61,9 +88,16 @@ type pinAPIState struct {
 	projectPATJSON   string
 	branchPATStatus  int
 	branchPATJSON    string
-	jobHits          atomic.Int32
-	sawPAT           atomic.Bool
-	jobAuth          atomic.Bool
+	// pipelinePATJSON, when non-empty, is the pipeline body served to a
+	// PRIVATE-TOKEN request (the creator re-read in
+	// fullsend_pinned_pipeline_creator_id) instead of pipelineJSON.
+	pipelinePATJSON string
+	// userIDByPAT maps a PRIVATE-TOKEN value to the user ID GET /user
+	// returns for it; an unmapped token gets 404.
+	userIDByPAT map[string]int
+	jobHits     atomic.Int32
+	sawPAT      atomic.Bool
+	jobAuth     atomic.Bool
 }
 
 func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
@@ -82,6 +116,15 @@ func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
 		}
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(st.jobJSON))
+	})
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := st.userIDByPAT[r.Header.Get("PRIVATE-TOKEN")]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"id":%d}`, id)
 	})
 	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
 		isPAT := r.Header.Get("PRIVATE-TOKEN") != ""
@@ -103,6 +146,9 @@ func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
 		case strings.Contains(path, "/pipelines/"):
 			status = st.pipelineStatus
 			body = st.pipelineJSON
+			if isPAT && st.pipelinePATJSON != "" {
+				body = st.pipelinePATJSON
+			}
 		default:
 			if isPAT && st.projectPATStatus != 0 {
 				status = st.projectPATStatus
@@ -146,6 +192,12 @@ func startPinAPIOnIPv6Loopback(t *testing.T, st *pinAPIState) *httptest.Server {
 
 func pinJobJSON(projectID, pipelineID, ref string) string {
 	return fmt.Sprintf(`{"id":9,"ref":%q,"pipeline":{"id":%s,"project_id":%s,"ref":%q}}`, ref, pipelineID, projectID, ref)
+}
+
+// pinJobJSONWithUser is pinJobJSON for a job that runs as userID, the identity
+// CI_JOB_TOKEN authenticates as.
+func pinJobJSONWithUser(projectID, pipelineID, ref, userID string) string {
+	return fmt.Sprintf(`{"id":9,"ref":%q,"user":{"id":%s},"pipeline":{"id":%s,"project_id":%s,"ref":%q}}`, ref, userID, pipelineID, projectID, ref)
 }
 
 func pinTLSEnv(t *testing.T, srv *httptest.Server) []string {

@@ -28,6 +28,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -53,6 +54,9 @@ func TestResolveWorkItemID(t *testing.T) {
 	cases := []struct {
 		name           string
 		issueKey       string
+		wiSource       string
+		wiKey          string
+		wiURL          string
 		repoFull       string
 		issueNumber    string
 		issueURL       string
@@ -115,6 +119,27 @@ func TestResolveWorkItemID(t *testing.T) {
 			want:        "octo/repo#9",
 		},
 		{
+			name:     "Jira work item key with legacy issue env unset",
+			wiSource: "jira",
+			wiKey:    "PROJ-123",
+			wiURL:    "https://example.atlassian.net/browse/PROJ-123",
+			repoFull: "octo/status-repo",
+			want:     "PROJ-123",
+		},
+		{
+			name:     "Jira work item URL when key is absent",
+			wiSource: "jira",
+			wiURL:    "https://example.atlassian.net/browse/PROJ-123",
+			want:     "https://example.atlassian.net/browse/PROJ-123",
+		},
+		{
+			name:     "work item vars ignored for non-Jira source",
+			wiSource: "github",
+			wiKey:    "ignored",
+			wiURL:    "https://github.com/octo/repo/issues/1",
+			want:     evalmeasure.UnknownSentinel,
+		},
+		{
 			name: "unknown when nothing is set",
 			want: evalmeasure.UnknownSentinel,
 		},
@@ -138,6 +163,9 @@ func TestResolveWorkItemID(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ISSUE_KEY", tc.issueKey)
+			t.Setenv("FULLSEND_WORK_ITEM_SOURCE", tc.wiSource)
+			t.Setenv("FULLSEND_WORK_ITEM_KEY", tc.wiKey)
+			t.Setenv("FULLSEND_WORK_ITEM_URL", tc.wiURL)
 			t.Setenv("REPO_FULL_NAME", tc.repoFull)
 			t.Setenv("ISSUE_NUMBER", tc.issueNumber)
 			t.Setenv("GITHUB_ISSUE_URL", tc.issueURL)
@@ -398,6 +426,10 @@ func setInheritedScriptSecrets(t *testing.T) {
 	t.Setenv("JIRA_TOKEN", "process-jira-token")
 	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
 	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "process-jira-client-id")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "process-jira-client-secret")
 }
 
 func envHasKey(env []string, key string) bool {
@@ -424,6 +456,10 @@ func TestChildScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
 		"JIRA_TOKEN",
 		"JIRA_USER_EMAIL",
+		"FULLSEND_JIRA_TOKEN",
+		"FULLSEND_JIRA_EMAIL",
+		"FULLSEND_JIRA_CLIENT_ID",
+		"FULLSEND_JIRA_CLIENT_SECRET",
 	} {
 		assert.False(t, envHasKey(env, key), "%s must not be inherited by child scripts", key)
 	}
@@ -434,6 +470,7 @@ func TestChildScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
 
 	// The parent process keeps them for its own Jira client and exporter.
 	assert.Equal(t, "process-jira-token", os.Getenv("JIRA_TOKEN"))
+	assert.Equal(t, "process-scoped-jira-token", os.Getenv("FULLSEND_JIRA_TOKEN"))
 	assert.Equal(t, "Authorization=Bearer%20traces", os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"))
 }
 
@@ -443,12 +480,16 @@ func TestChildScriptEnv_KeepsDeclaredNamedSecrets(t *testing.T) {
 	setInheritedScriptSecrets(t)
 
 	env := childScriptEnv(map[string]string{
-		"JIRA_TOKEN":      "process-jira-token",
-		"JIRA_USER_EMAIL": "bot@example.com",
+		"JIRA_TOKEN":          "process-jira-token",
+		"JIRA_USER_EMAIL":     "bot@example.com",
+		"FULLSEND_JIRA_TOKEN": "process-scoped-jira-token",
+		"FULLSEND_JIRA_EMAIL": "scoped-bot@example.com",
 	}, "")
 
 	assert.Equal(t, "process-jira-token", envLast(env, "JIRA_TOKEN"), "declared JIRA_TOKEN must reach the script")
 	assert.Equal(t, "bot@example.com", envLast(env, "JIRA_USER_EMAIL"), "declared JIRA_USER_EMAIL must reach the script")
+	assert.Equal(t, "process-scoped-jira-token", envLast(env, "FULLSEND_JIRA_TOKEN"), "declared FULLSEND_JIRA_TOKEN must reach the script")
+	assert.Equal(t, "scoped-bot@example.com", envLast(env, "FULLSEND_JIRA_EMAIL"), "declared FULLSEND_JIRA_EMAIL must reach the script")
 	assert.False(t, envHasKey(env, "OTEL_EXPORTER_OTLP_HEADERS"), "undeclared OTLP headers must still be stripped")
 }
 
@@ -543,6 +584,10 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 	for key, want := range map[string]bool{
 		"JIRA_TOKEN":                        true,
 		"JIRA_USER_EMAIL":                   true,
+		"FULLSEND_JIRA_TOKEN":               true,
+		"FULLSEND_JIRA_EMAIL":               true,
+		"FULLSEND_JIRA_CLIENT_ID":           true,
+		"FULLSEND_JIRA_CLIENT_SECRET":       true,
 		"OTEL_EXPORTER_OTLP_HEADERS":        true,
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS": true,
 		"OTEL_EXPORTER_OTLP_LOGS_HEADERS":   true,
@@ -554,6 +599,187 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 	} {
 		assert.Equal(t, want, isInheritedScriptDenyKey(key), key)
 	}
+}
+
+// TestProviderDefinitionsCannotExpandJiraSecrets verifies that provider
+// definitions may not expand the Jira repository secrets in config values
+// (argv), and may expand only FULLSEND_JIRA_TOKEN in credential values
+// (child environment): the token reaches the provider proxy so the jira-ro
+// provider can read it (#9411), while the email and the OAuth 2.0 client
+// credentials stay host-script-only (#9079).
+func TestProviderDefinitionsCannotExpandJiraSecrets(t *testing.T) {
+	const token, email = "jira-secret-token-9f8e7d", "jira-bot-secret@example.com"
+	const clientID, clientSecret = "jira-client-id-4c3b2a", "jira-client-secret-1a2b3c"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+	t.Setenv("FULLSEND_JIRA_EMAIL", email)
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", clientID)
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", clientSecret)
+	t.Setenv("HARMLESS_PROVIDER_VALUE", "harmless-ok")
+
+	binDir := t.TempDir()
+	argsLog := filepath.Join(binDir, "args.log")
+	envLog := filepath.Join(binDir, "env.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(argsLog) +
+		"\nprintf '%s|%s|%s|%s|%s\\n' \"${JIRA_TOKEN-<unset>}\" \"${JIRA_CRED2-<unset>}\" \"${JIRA_CRED3-<unset>}\" \"${JIRA_CRED4-<unset>}\" \"${OTHER-<unset>}\" >> " +
+		shellQuoteForTest(envLog) + "\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := sandbox.EnsureProvider(context.Background(), "jira-probe", "custom",
+		map[string]string{
+			"JIRA_TOKEN": "${FULLSEND_JIRA_TOKEN}",
+			"JIRA_CRED2": "${FULLSEND_JIRA_EMAIL}",
+			"JIRA_CRED3": "${FULLSEND_JIRA_CLIENT_ID}",
+			"JIRA_CRED4": "${FULLSEND_JIRA_CLIENT_SECRET}",
+			"OTHER":      "${HARMLESS_PROVIDER_VALUE}",
+		},
+		map[string]string{
+			"TOKEN_URL":  "https://x/${FULLSEND_JIRA_TOKEN}",
+			"EMAIL_URL":  "https://x/${FULLSEND_JIRA_EMAIL}",
+			"CLIENT_URL": "https://x/${FULLSEND_JIRA_CLIENT_ID}/${FULLSEND_JIRA_CLIENT_SECRET}",
+		}, false)
+	require.NoError(t, err)
+
+	args, err := os.ReadFile(argsLog)
+	require.NoError(t, err)
+	for _, secret := range []string{token, email, clientID, clientSecret} {
+		assert.NotContains(t, string(args), secret, "provider argv must never carry a Jira secret")
+	}
+	assert.Contains(t, string(args), "TOKEN_URL=https://x/", "a config value expands the token empty")
+
+	env, err := os.ReadFile(envLog)
+	require.NoError(t, err)
+	assert.Equal(t, token+"|<unset>|<unset>|<unset>|harmless-ok\n", string(env),
+		"only FULLSEND_JIRA_TOKEN expands in a credential value; the others expand empty")
+}
+
+// TestJiraTokenRefusedAtSandboxSites verifies that allowing
+// FULLSEND_JIRA_TOKEN in provider credential values (#9411) does not let it
+// reach the sandbox: env.sandbox values, expanded host_files content and
+// FULLSEND_OUTPUT_FILE still expand it empty, and the runtime redactor still
+// masks its value.
+func TestJiraTokenRefusedAtSandboxSites(t *testing.T) {
+	const token = "jira-secret-token-sandbox-5e6f"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+
+	assert.Equal(t, "x--y", expandSandboxEnvValue("x-${FULLSEND_JIRA_TOKEN}-y", harnessEnvExpand), "env.sandbox")
+	assert.NotContains(t, shellSafeExpandEnv("export JIRA_TOKEN=\"${FULLSEND_JIRA_TOKEN}\"\n"), token, "host_files content")
+	assert.Equal(t, "out-.json", expandRunnerEntry("FULLSEND_OUTPUT_FILE", "out-${FULLSEND_JIRA_TOKEN}.json", harnessEnvExpand),
+		"FULLSEND_OUTPUT_FILE")
+
+	assert.NotContains(t, redactFeedback("leaked "+token, nil), token, "the runtime redactor masks the token")
+	assert.Contains(t, security.RuntimeSecrets(), token)
+}
+
+// TestHarnessEnvLookup_OptionalJiraEmail verifies that a harness may declare
+// FULLSEND_JIRA_EMAIL in env.runner on a run without that secret: the
+// service-account mode has no email, and the reference must not fail
+// validation (#9079). The token stays required.
+func TestHarnessEnvLookup_OptionalJiraEmail(t *testing.T) {
+	h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{
+		"FULLSEND_JIRA_TOKEN": "${FULLSEND_JIRA_TOKEN}",
+		"FULLSEND_JIRA_EMAIL": "${FULLSEND_JIRA_EMAIL}",
+	}}}
+
+	t.Setenv("FULLSEND_JIRA_TOKEN", "scoped-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "bot@example.com")
+	v, ok := harnessEnvLookup("FULLSEND_JIRA_EMAIL")
+	assert.True(t, ok)
+	assert.Equal(t, "bot@example.com", v)
+
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_EMAIL"))
+	v, ok = harnessEnvLookup("FULLSEND_JIRA_EMAIL")
+	assert.True(t, ok, "an unset FULLSEND_JIRA_EMAIL must still resolve")
+	assert.Empty(t, v)
+	require.NoError(t, h.ValidateRunnerEnvWith(harnessEnvLookup))
+
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_TOKEN"))
+	_, ok = harnessEnvLookup("FULLSEND_JIRA_TOKEN")
+	assert.False(t, ok, "FULLSEND_JIRA_TOKEN is not optional")
+	err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is not set")
+	assert.NotContains(t, err.Error(), "FULLSEND_JIRA_EMAIL")
+}
+
+// TestDropEmptyOptionalRunnerEnv verifies that an empty FULLSEND_JIRA_EMAIL
+// is omitted from the effective runner env, so scripts see it absent rather
+// than empty, while a set email and other empty keys are kept (#9079).
+func TestDropEmptyOptionalRunnerEnv(t *testing.T) {
+	for _, empty := range []string{"", "  \n"} {
+		env := map[string]string{"FULLSEND_JIRA_EMAIL": empty, "FULLSEND_JIRA_TOKEN": "tok", "OTHER": ""}
+		dropEmptyOptionalRunnerEnv(env)
+		assert.NotContains(t, env, "FULLSEND_JIRA_EMAIL")
+		assert.Equal(t, map[string]string{"FULLSEND_JIRA_TOKEN": "tok", "OTHER": ""}, env)
+	}
+
+	env := map[string]string{"FULLSEND_JIRA_EMAIL": "bot@example.com"}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Equal(t, "bot@example.com", env["FULLSEND_JIRA_EMAIL"])
+
+	env = map[string]string{}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Empty(t, env)
+}
+
+// TestHarnessEnvLookup_OAuthClientCredentials verifies that a harness may
+// declare both Jira credential types in env.runner: the OAuth 2.0 client
+// credentials resolve when unset, and FULLSEND_JIRA_TOKEN resolves when
+// unset on a deployment that uses the client credentials instead (#9176).
+func TestHarnessEnvLookup_OAuthClientCredentials(t *testing.T) {
+	h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{
+		"FULLSEND_JIRA_TOKEN":         "${FULLSEND_JIRA_TOKEN}",
+		"FULLSEND_JIRA_EMAIL":         "${FULLSEND_JIRA_EMAIL}",
+		"FULLSEND_JIRA_CLIENT_ID":     "${FULLSEND_JIRA_CLIENT_ID}",
+		"FULLSEND_JIRA_CLIENT_SECRET": "${FULLSEND_JIRA_CLIENT_SECRET}",
+	}}}
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		t.Setenv(key, "")
+		require.NoError(t, os.Unsetenv(key))
+	}
+
+	// Token deployment: the client credentials are optional.
+	t.Setenv("FULLSEND_JIRA_TOKEN", "scoped-token")
+	for _, key := range []string{"FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		v, ok := harnessEnvLookup(key)
+		assert.True(t, ok, "an unset %s must still resolve", key)
+		assert.Empty(t, v)
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(harnessEnvLookup))
+
+	// OAuth deployment: the token is optional.
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_TOKEN"))
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "client-id")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "client-secret")
+	v, ok := harnessEnvLookup("FULLSEND_JIRA_TOKEN")
+	assert.True(t, ok, "FULLSEND_JIRA_TOKEN is optional with client credentials")
+	assert.Empty(t, v)
+	v, ok = harnessEnvLookup("FULLSEND_JIRA_CLIENT_SECRET")
+	assert.True(t, ok)
+	assert.Equal(t, "client-secret", v)
+	require.NoError(t, h.ValidateRunnerEnvWith(harnessEnvLookup))
+
+	// Neither: the token is required again.
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_CLIENT_ID"))
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_CLIENT_SECRET"))
+	_, ok = harnessEnvLookup("FULLSEND_JIRA_TOKEN")
+	assert.False(t, ok)
+}
+
+// TestDropEmptyOptionalRunnerEnv_OAuth verifies that empty OAuth client
+// credentials are omitted, and an empty FULLSEND_JIRA_TOKEN is omitted on a
+// deployment that uses the client credentials (#9176).
+func TestDropEmptyOptionalRunnerEnv_OAuth(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "")
+	env := map[string]string{"FULLSEND_JIRA_CLIENT_ID": "", "FULLSEND_JIRA_CLIENT_SECRET": " ", "FULLSEND_JIRA_TOKEN": ""}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Equal(t, map[string]string{"FULLSEND_JIRA_TOKEN": ""}, env, "the token is not optional without client credentials")
+
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "client-id")
+	env = map[string]string{"FULLSEND_JIRA_CLIENT_ID": "client-id", "FULLSEND_JIRA_TOKEN": ""}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Equal(t, map[string]string{"FULLSEND_JIRA_CLIENT_ID": "client-id"}, env)
 }
 
 func TestAgentSpanStartAttrs(t *testing.T) {
@@ -730,6 +956,33 @@ func TestAggregateRunMetrics(t *testing.T) {
 // where only one iteration dispatched sub-agents is the case that breaks
 // if an iteration reports totals without also reporting its own entry, so
 // the pi runtime folds the parent entry on every iteration.
+// A fallback through the alias's chain (#8426) reaches metrics.json, and an
+// iteration that did not fall back does not erase an earlier one's record.
+func TestAggregateRunMetrics_FallbackFrom(t *testing.T) {
+	var agg aggregateMetrics
+	m1 := agentruntime.RunMetrics{Model: "claude-opus-4-6", FallbackFrom: []string{"claude-opus-5-5"}, FallbackReasons: []string{"not_served"}}
+	aggregateRunMetrics(&agg, &m1, 1)
+	m1.FallbackFrom[0] = "mutated"
+	m1.FallbackReasons[0] = "mutated"
+	assert.Equal(t, []string{"claude-opus-5-5"}, agg.FallbackFrom, "the aggregate keeps its own copy")
+	assert.Equal(t, []string{"not_served"}, agg.FallbackReasons, "the aggregate keeps its own copy")
+
+	m2 := agentruntime.RunMetrics{Model: "claude-opus-4-6"}
+	aggregateRunMetrics(&agg, &m2, 2)
+	assert.Equal(t, []string{"claude-opus-5-5"}, agg.FallbackFrom)
+	assert.Equal(t, []string{"not_served"}, agg.FallbackReasons)
+
+	data, err := json.Marshal(agg)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"fallback_from":["claude-opus-5-5"]`)
+	assert.Contains(t, string(data), `"fallback_reasons":["not_served"]`)
+
+	empty, err := json.Marshal(aggregateMetrics{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(empty), "fallback_from", "absent when no iteration fell back")
+	assert.NotContains(t, string(empty), "fallback_reasons", "absent when no iteration fell back")
+}
+
 func TestAggregateRunMetrics_MixedIterations(t *testing.T) {
 	var agg aggregateMetrics
 
@@ -1533,7 +1786,8 @@ func TestAttachContent_SetsContentAndMarkerAttrs(t *testing.T) {
 		OutputMessages: `[{"role":"assistant","parts":[{"type":"text","content":"hi"}]}]`,
 		DroppedBytes:   7,
 		Truncated:      true,
-		Findings:       []security.Finding{{Severity: "high"}},
+		Findings: []security.Finding{{Severity: "high"},
+			{Scanner: "unicode_normalizer", Name: "fullwidth"}, {Scanner: "unicode_normalizer", Name: "ansi_escape"}, {Scanner: "url", Name: "url_masked"}},
 	})
 	span.End()
 
@@ -1547,7 +1801,8 @@ func TestAttachContent_SetsContentAndMarkerAttrs(t *testing.T) {
 	assert.Contains(t, attrs[attribute.Key("gen_ai.output.messages")].AsString(), `"type":"text"`)
 	assert.Equal(t, int64(7), attrs[attribute.Key("fullsend.content.dropped_bytes")].AsInt64())
 	assert.True(t, attrs[attribute.Key("fullsend.content.truncated")].AsBool())
-	assert.Equal(t, int64(1), attrs[attribute.Key("fullsend.content.redactions")].AsInt64())
+	assert.Equal(t, int64(1), attrs[attribute.Key("fullsend.content.redactions")].AsInt64(), "only what matched a known secret")
+	assert.Equal(t, int64(3), attrs[attribute.Key("fullsend.content.sanitizations")].AsInt64(), "what was masked for its shape, apart")
 }
 
 func TestAttachContent_EmptyResultAddsNothing(t *testing.T) {
@@ -1628,10 +1883,10 @@ func TestIterationEventHandler_TeesToRendererAndCollector(t *testing.T) {
 
 func TestNewContentCollectorIfEnabled_FollowsGate(t *testing.T) {
 	t.Setenv(telemetry.ContentCaptureEnvVar, "")
-	assert.Nil(t, newContentCollectorIfEnabled(), "gate off => nil collector")
+	assert.Nil(t, newContentCollectorIfEnabled(nil), "gate off => nil collector")
 
 	t.Setenv(telemetry.ContentCaptureEnvVar, "true")
-	assert.NotNil(t, newContentCollectorIfEnabled(), "gate on => live collector")
+	assert.NotNil(t, newContentCollectorIfEnabled(nil), "gate on => live collector")
 }
 
 // TestContentCapture_EndToEndFileSink drives the REAL telemetry.Setup —
@@ -1651,12 +1906,16 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 	dir := t.TempDir()
 	tracer, cleanup := telemetry.Setup(dir, "test")
 
-	c := newContentCollectorIfEnabled()
+	c := newContentCollectorIfEnabled(nil)
 	require.NotNil(t, c)
 	big := strings.Repeat("all work and no play makes claude a dull agent. ", 400) // ~19KB > 8192
+	c.Handle(agentruntime.ToolUseEvent{ID: "toolu_01", Name: "Bash", Arguments: `{"command":"make lint"}`})
 	c.Handle(agentruntime.TextEvent{Text: big})
 
+	prompt, _ := buildFeedbackPrompt(strings.Repeat("the validator said no. ", 500)) // cut at 10 KiB > 8192
+
 	_, span := tracer.Start(context.Background(), "agent")
+	c.attachInput(span, prompt, false)
 	res := c.Result("stop")
 	attachContent(span, res)
 	span.End()
@@ -1666,9 +1925,18 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, raw)
 	content := string(raw)
+	require.Greater(t, len(prompt), telemetry.MaxSpanAttrValueLen)
+	promptJSON, err := json.Marshal(prompt)
+	require.NoError(t, err)
+	escapedInput, err := json.Marshal(`[{"role":"user","parts":[{"type":"text","content":` + string(promptJSON) + `}]}]`)
+	require.NoError(t, err)
+	require.Contains(t, content, "gen_ai.input.messages")
+	assert.Contains(t, content, string(escapedInput[1:len(escapedInput)-1]),
+		"the input record must appear byte-intact in the file sink")
 	require.Contains(t, content, "gen_ai.output.messages")
 	assert.Contains(t, content, "dull agent",
 		"content must reach the file sink")
+	assert.Contains(t, res.OutputMessages, `"arguments":{"command":"make lint"}`)
 	// The whole redacted content must survive — no SDK truncation at 8192.
 	var decoded []map[string]any
 	require.NoError(t, json.Unmarshal([]byte(res.OutputMessages), &decoded),
@@ -1695,17 +1963,26 @@ func TestContentCapture_GateOffProducesNoContent(t *testing.T) {
 	dir := t.TempDir()
 	tracer, cleanup := telemetry.Setup(dir, "test")
 
-	c := newContentCollectorIfEnabled()
+	c := newContentCollectorIfEnabled(nil)
 	require.Nil(t, c, "gate off must mean no collector")
 	c.Handle(agentruntime.TextEvent{Text: "would-be content"}) // nil-safe no-op
 
-	_, span := tracer.Start(context.Background(), "agent")
+	ctx, span := tracer.Start(context.Background(), "agent")
+	c.attachInput(span, "would-be prompt", false) // nil-safe no-op
+	handle := iterationEventHandler(func(agentruntime.AgentEvent) {}, c, newToolSpanTracker(tracer, ctx))
+	handle(agentruntime.ToolUseEvent{ID: "toolu_01", Name: "Bash", Arguments: `{"command":"would-be arguments"}`})
+	handle(agentruntime.ToolResultEvent{ID: "toolu_01", Result: "would-be result"})
 	attachContent(span, c.Result("stop"))
 	span.End()
 	cleanup(context.Background())
 
 	raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
 	require.NoError(t, err)
+	assert.Contains(t, string(raw), "execute_tool Bash", "the tool span is metadata")
+	assert.NotContains(t, string(raw), "would-be arguments")
+	assert.NotContains(t, string(raw), "would-be result")
+	assert.NotContains(t, string(raw), "gen_ai.input.messages")
+	assert.NotContains(t, string(raw), "would-be prompt")
 	assert.NotContains(t, string(raw), "gen_ai.output.messages")
 	assert.NotContains(t, string(raw), "would-be content")
 	assert.NotContains(t, string(raw), "fullsend.content.")

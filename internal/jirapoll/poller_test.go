@@ -1,9 +1,11 @@
 package jirapoll
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +63,9 @@ type mockClient struct {
 	userGroupsErr  error                           // global error
 	userGroupsErrs map[string]error                // per-actor error (overrides global)
 
+	roleActorsCalls int            // GetProjectRoleActors call count
+	userGroupsCalls map[string]int // accountID -> GetUserGroups call count
+
 	// getPropertyHook, if set, runs after each GetEntityProperty call
 	// captures its return value, and before that value is returned. Used
 	// to simulate a concurrent writer changing the stored property
@@ -90,6 +95,14 @@ func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]j
 	m.lastLimit = limit
 	if m.searchErr != nil {
 		return nil, m.searchErr
+	}
+	// The default mock serves an issue without labels with "labels": []
+	// (one shape Jira serves); rawSearchClient serves the raw nil shape
+	// instead, so tests pin both.
+	for i := range m.searchResult {
+		if m.searchResult[i].Fields.Labels == nil {
+			m.searchResult[i].Fields.Labels = []string{}
+		}
 	}
 	if limit > 0 && len(m.searchResult) > limit {
 		return m.searchResult[:limit], nil
@@ -191,6 +204,7 @@ func (m *mockClient) GetStatus(_ context.Context, idOrName string) (*jira.Status
 }
 
 func (m *mockClient) GetProjectRoleActors(_ context.Context, _ string) (map[string]jira.ProjectRoleActors, error) {
+	m.roleActorsCalls++
 	if m.roleActorsErr != nil {
 		return nil, m.roleActorsErr
 	}
@@ -216,6 +230,10 @@ func (m *mockClient) GetProjectRoleActors(_ context.Context, _ string) (map[stri
 }
 
 func (m *mockClient) GetUserGroups(_ context.Context, accountID string) ([]jira.UserGroupInfo, error) {
+	if m.userGroupsCalls == nil {
+		m.userGroupsCalls = make(map[string]int)
+	}
+	m.userGroupsCalls[accountID]++
 	if err, ok := m.userGroupsErrs[accountID]; ok {
 		return nil, err
 	}
@@ -466,6 +484,95 @@ func TestRunHappyPath_CommentWithSlashCommand(t *testing.T) {
 	}
 }
 
+// captureLog sends the standard logger's output to the returned buffer for
+// the rest of the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return &buf
+}
+
+// An event that fails normalized-event validation (here an issue id that
+// does not parse as an int, which becomes entity.id 0) is skipped instead of
+// dispatched: fullsend run would stop on it. strconv.Atoi returns the max int
+// with ErrRange for an out-of-range numeric id, so that row pins that
+// parseIssueID returns 0 on every parse error. A cycle in which every event
+// failed validation fails and holds the checkpoint (criterion 1 as amended
+// on PR #9191's review): the events are retried next cycle instead of being
+// dropped for good behind a green run.
+func TestRun_InvalidEventNotDispatched(t *testing.T) {
+	for _, id := range []string{"not-a-number", "99999999999999999999"} {
+		t.Run(id, func(t *testing.T) {
+			now := time.Now().Truncate(time.Second)
+			mc := newMockClient()
+			mc.roleMembership = map[string]string{"557058:abc123def456": "Developers"}
+			mc.searchResult = []jira.Issue{{
+				ID:   id,
+				Key:  "PROJ-123",
+				Self: "https://acme.atlassian.net/rest/api/3/issue/" + id,
+				Fields: jira.IssueFields{
+					Summary:  "Test issue",
+					Labels:   []string{"bug"},
+					Status:   jira.Status{Name: "Open", StatusCategory: jira.StatusCategory{Key: "new"}},
+					Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+					Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+					Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+				},
+			}}
+			mc.comments["PROJ-123"] = []jira.Comment{{
+				ID:      "50001",
+				Body:    "/fs-triage check acceptance criteria",
+				Created: now.Format("2006-01-02T15:04:05.000-0700"),
+				Author:  jira.User{AccountID: "557058:abc123def456", AccountType: "atlassian"},
+			}}
+
+			outputPath := filepath.Join(t.TempDir(), "dispatches.json")
+			p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
+				TargetRepo:  "acme/platform",
+				JiraBaseURL: "https://acme.atlassian.net",
+				JiraProject: "PROJ",
+				OutputPath:  outputPath,
+			})
+			logBuf := captureLog(t)
+			err := p.Run(context.Background())
+			if err == nil {
+				t.Fatalf("Run() = nil error, want the all-invalid cycle to fail")
+			}
+			const wantErr = "failed normalized-event validation"
+			if !strings.Contains(err.Error(), wantErr) {
+				t.Errorf("Run() error = %q, want it to name %q", err.Error(), wantErr)
+			}
+			// A comment event's key is comment-<id>, so the warning also
+			// names the issue the operator has to comment on again.
+			const want = "WARNING: skipping event comment-50001 for issue PROJ-123: normalized event: "
+			if !strings.Contains(logBuf.String(), want) {
+				t.Errorf("poll log lacks %q:\n%s", want, logBuf.String())
+			}
+			const summary = "WARNING: skipped 2 of 2 events this cycle because they failed normalized-event validation"
+			if !strings.Contains(logBuf.String(), summary) {
+				t.Errorf("poll log lacks %q:\n%s", summary, logBuf.String())
+			}
+			data, err := os.ReadFile(outputPath)
+			if err != nil {
+				t.Fatalf("read output: %v", err)
+			}
+			var dispatches []DispatchRecord
+			if err := json.Unmarshal(data, &dispatches); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(dispatches) != 0 {
+				t.Errorf("expected no dispatches for an invalid event, got %+v", dispatches)
+			}
+			if got, err := p.readLastCheck(context.Background(), "PROJ-123"); err != nil || !got.IsZero() {
+				t.Errorf("PROJ-123 lastCheck = %v (err %v), want held at zero so the cycle retries the events", got, err)
+			}
+		})
+	}
+}
+
 // TestRunDispatchWriteFailure_NoCheckpointCommitted is a regression test:
 // checkpoints must not advance in Jira until the dispatch file has been
 // durably written. Previously each issue's lastCheck advanced inline
@@ -604,6 +711,7 @@ func TestProcessIssue_CheckpointNeverRegresses(t *testing.T) {
 		ID:  "10042",
 		Key: "PROJ-123",
 		Fields: jira.IssueFields{
+			Labels:   []string{},
 			Reporter: jira.User{AccountID: "reporter-id"},
 			Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
 		},
@@ -620,6 +728,54 @@ func TestProcessIssue_CheckpointNeverRegresses(t *testing.T) {
 	}
 	if len(p.dispatches) == 0 {
 		t.Error("expected the comment after lastCheck to still dispatch")
+	}
+}
+
+// TestRun_NoActorEventSkippedWithoutRoster: an event with no actor fails
+// validation and is skipped, so it must not load the project-role roster;
+// a roster failure would otherwise fail the cycle and hold the checkpoint.
+// With every event of the cycle invalid, Run fails and holds the checkpoint
+// (criterion 1 as amended on PR #9191's review).
+func TestRun_NoActorEventSkippedWithoutRoster(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleErr = fmt.Errorf("jira api: 503 service unavailable")
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Body:    "/fs-code fix it",
+			Created: now.Add(-30 * time.Minute).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{},
+		},
+	}
+
+	p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+	logBuf := captureLog(t)
+	if err := p.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "failed normalized-event validation") {
+		t.Fatalf("Run() error = %v, want the all-invalid cycle to fail", err)
+	}
+	if mc.roleActorsCalls != 0 {
+		t.Errorf("GetProjectRoleActors called %d times, want 0", mc.roleActorsCalls)
+	}
+	if !strings.Contains(logBuf.String(), "WARNING: skipping event comment-1 for issue PROJ-123") {
+		t.Errorf("poll log lacks the skip warning:\n%s", logBuf.String())
+	}
+	if got, err := p.readLastCheck(context.Background(), "PROJ-123"); err != nil || !got.IsZero() {
+		t.Errorf("PROJ-123 lastCheck = %v (err %v), want held at zero so the cycle retries the events", got, err)
 	}
 }
 
@@ -717,6 +873,118 @@ func TestDetectChanges_EditedCommentAttributedToEditor(t *testing.T) {
 	}
 }
 
+// TestEditedComment_IsEntityAssigneeFollowsEditor checks that an edited
+// comment is judged by its editor: the assignee editing someone else's
+// comment yields true, and another user editing the assignee's comment
+// yields false.
+func TestEditedComment_IsEntityAssigneeFollowsEditor(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-1 * time.Hour)
+	created := now.Add(-48 * time.Hour).Format("2006-01-02T15:04:05.000-0700")
+	updated := now.Add(-10 * time.Minute).Format("2006-01-02T15:04:05.000-0700")
+
+	tests := []struct {
+		name         string
+		author       string
+		editor       string
+		wantAssignee bool
+	}{
+		{"assignee edits another user's comment", "other-b", "assignee-a", true},
+		{"another user edits the assignee's comment", "assignee-a", "other-b", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := newMockClient()
+			mc.comments["PROJ-123"] = []jira.Comment{{
+				ID:           "1",
+				Body:         "/fs-code",
+				Created:      created,
+				Updated:      updated,
+				Author:       jira.User{AccountID: tc.author, AccountType: "atlassian"},
+				UpdateAuthor: jira.User{AccountID: tc.editor, AccountType: "atlassian"},
+			}}
+			p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+			issue := jira.Issue{
+				ID:  "10042",
+				Key: "PROJ-123",
+				Fields: jira.IssueFields{
+					Reporter: jira.User{AccountID: "reporter-r"},
+					Assignee: jira.User{AccountID: "assignee-a"},
+					Created:  created,
+				},
+			}
+			result, err := p.detectChanges(context.Background(), issue, lastCheck)
+			if err != nil {
+				t.Fatalf("detectChanges() error: %v", err)
+			}
+			var found bool
+			for _, e := range result.events {
+				if e.Type != "comment_added" || e.CommentID != "1" {
+					continue
+				}
+				found = true
+				ne := p.toNormalizedEvent(e)
+				if ne.Actor.ID != tc.editor {
+					t.Errorf("actor.id = %q, want the editor %q", ne.Actor.ID, tc.editor)
+				}
+				if ne.Actor.IsEntityAssignee != tc.wantAssignee {
+					t.Errorf("actor.is_entity_assignee = %v, want %v", ne.Actor.IsEntityAssignee, tc.wantAssignee)
+				}
+			}
+			if !found {
+				t.Fatal("expected the edited comment to surface")
+			}
+		})
+	}
+}
+
+// TestDetectChanges_CarriesAssignee checks that opened, comment and
+// changelog events carry the issue's assignee for the
+// actor.is_entity_assignee check.
+func TestDetectChanges_CarriesAssignee(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	ts := now.Add(-time.Minute).Format("2006-01-02T15:04:05.000-0700")
+	mc := newMockClient()
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{ID: "1", Body: "/fs-code", Created: ts, Author: jira.User{AccountID: "assignee-a"}},
+	}
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "100",
+			Created: ts,
+			Author:  jira.User{AccountID: "assignee-a"},
+			Items:   []jira.ChangeItem{{Field: "labels", ToString: "ready-to-code"}},
+		},
+	}
+
+	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Reporter: jira.User{AccountID: "reporter-r"},
+			Assignee: jira.User{AccountID: "assignee-a"},
+			Created:  ts,
+		},
+	}
+	result, err := p.detectChanges(context.Background(), issue, time.Time{})
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+	types := map[string]bool{}
+	for _, e := range result.events {
+		types[e.Type] = true
+		if e.Assignee.AccountID != "assignee-a" {
+			t.Errorf("%s event Assignee = %q, want assignee-a", e.Type, e.Assignee.AccountID)
+		}
+	}
+	for _, want := range []string{"opened", "comment_added", "label_changed"} {
+		if !types[want] {
+			t.Errorf("expected a %s event, got %v", want, types)
+		}
+	}
+}
+
 // TestReadLastCheck_ClampsUntrustedValues: lastCheck is attacker-writable,
 // so a future value is treated as unset (bounded first-poll path) and a
 // value older than the backfill window is floored.
@@ -808,6 +1076,7 @@ func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
 		ID:  "10042",
 		Key: "PROJ-123",
 		Fields: jira.IssueFields{
+			Labels:   []string{},
 			Reporter: jira.User{AccountID: "reporter-id"},
 			Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
 		},
@@ -816,7 +1085,7 @@ func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
 		_ = lastCheck
 		t.Fatalf("processIssue() error: %v", err)
 	}
-	if len(p.dispatches) > maxEventsPerIssue {
+	if len(p.dispatches) != maxEventsPerIssue {
 		t.Errorf("dispatched %d records, want capped at %d", len(p.dispatches), maxEventsPerIssue)
 	}
 }
@@ -2910,5 +3179,65 @@ func TestRunPerActorGroupResolution_AllActorsAPIError(t *testing.T) {
 	// Should fail because ALL actors have errors and only 1 issue → all failed.
 	if err := p.Run(context.Background()); err == nil {
 		t.Fatal("expected Run() to fail when all actor group lookups fail for all issues")
+	}
+}
+
+func TestPoller_DispatchesStructuredEventPayload(t *testing.T) {
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+	p := &Poller{
+		dispatches: []DispatchRecord{
+			{
+				Agent:        "code",
+				Role:         "code",
+				SourceRepo:   "acme/platform",
+				EventType:    "comment_added",
+				EventPayload: json.RawMessage(`{"entity":{"key":"PROJ-123"},"comment":{"id":"comment-456"},"pull_request":{"head":{"sha":"abc1234"}}}`),
+				StatusRepo:   "acme/platform",
+				StatusNumber: "100",
+			},
+		},
+	}
+
+	if err := p.writeDispatches(outputPath); err != nil {
+		t.Fatalf("writeDispatches: %v", err)
+	}
+
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read dispatches: %v", err)
+	}
+
+	// Ensure event_payload was marshaled as an unescaped object, not a JSON string literal.
+	if strings.Contains(string(content), `"event_payload": "{\`) {
+		t.Errorf("event_payload is string-escaped, want structured JSON object:\n%s", string(content))
+	}
+	if !strings.Contains(string(content), `"event_payload": {`) {
+		t.Errorf("event_payload missing structured object format:\n%s", string(content))
+	}
+
+	// Verify unmarshaling into a matrix slice of maps (matching GitHub Actions strategy matrix)
+	var matrix []map[string]any
+	if err := json.Unmarshal(content, &matrix); err != nil {
+		t.Fatalf("unmarshal into matrix: %v", err)
+	}
+	if len(matrix) != 1 {
+		t.Fatalf("matrix len = %d, want 1", len(matrix))
+	}
+	payloadMap, ok := matrix[0]["event_payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("event_payload is type %T, want map[string]any", matrix[0]["event_payload"])
+	}
+	commentMap, ok := payloadMap["comment"].(map[string]any)
+	if !ok || commentMap["id"] != "comment-456" {
+		t.Errorf("payloadMap[comment][id] = %v, want comment-456", payloadMap["comment"])
+	}
+	prMap, ok := payloadMap["pull_request"].(map[string]any)
+	if !ok {
+		t.Fatalf("payloadMap[pull_request] is type %T, want map[string]any", payloadMap["pull_request"])
+	}
+	headMap, ok := prMap["head"].(map[string]any)
+	if !ok || headMap["sha"] != "abc1234" {
+		t.Errorf("payloadMap[pull_request][head][sha] = %v, want abc1234", headMap["sha"])
 	}
 }

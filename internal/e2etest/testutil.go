@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // ErrAllOrgsRateLimited is returned by AcquireOrg when every pool org
@@ -61,6 +61,17 @@ const (
 	rateLimitBackoffMax = 2 * time.Minute
 )
 
+const (
+	// LockRepo is the name of the per-org lock repository. The behaviour
+	// install driver's shared-lock bridge (#8620) coordinates through the
+	// same repository so legacy runners keep seeing its locks as held.
+	LockRepo = lockRepo
+
+	// StaleLockTimeout is the creation age after which legacy runners
+	// reclaim a lock without checking its holder.
+	StaleLockTimeout = staleLockTimeout
+)
+
 // orgPool is the set of GitHub orgs available for parallel e2e test runs.
 // Each run acquires a lock on one org before proceeding.
 var orgPool = []string{
@@ -76,6 +87,40 @@ var orgPool = []string{
 	"halfsend-10",
 	"halfsend-11",
 	"halfsend-12",
+	"halfsend-13",
+	"halfsend-14",
+	"halfsend-15",
+	"halfsend-16",
+	"halfsend-17",
+	"halfsend-18",
+	"halfsend-19",
+	"halfsend-20",
+	"halfsend-21",
+	"halfsend-22",
+}
+
+var (
+	// poolTokenFn returns the token used for an org in the pool. It defaults
+	// to tokenForOrg. Override in tests to drive acquireOrg without minting
+	// tokens.
+	poolTokenFn = tokenForOrg
+
+	// poolClientFn builds the forge.Client used for an org in the pool. It
+	// defaults to newLiveClient. Override in tests to drive acquireOrg
+	// without calling GitHub.
+	poolClientFn = func(token string) forge.Client { return newLiveClient(token) }
+)
+
+// rateLimitedUnlessCancelled reports whether a tryCreateLock error should
+// be handled as a GitHub rate limit. A cancelled request can wrap a 429,
+// so it returns ctx.Err() first when the context is done: callers must
+// surface that error instead of logging "rate limited" and moving on to
+// the next org.
+func rateLimitedUnlessCancelled(ctx context.Context, err error) (bool, error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	return gh.IsRateLimitError(err), nil
 }
 
 // acquireOrg scans the pool for an unlocked org and acquires its lock.
@@ -85,7 +130,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 	// same first org (thundering herd).
 	shuffled := make([]string, len(pool))
 	copy(shuffled, pool)
-	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	randutil.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 
 	// First pass: try each org without waiting. If a lock exists but is
 	// stale (older than staleLockTimeout), force-acquire it so we don't
@@ -93,19 +138,23 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 	sawRateLimit := false
 	for _, org := range shuffled {
 		logf("[org-pool] Trying to acquire %s...", org)
-		token, tokErr := tokenForOrg(ctx, cfg, org)
+		token, tokErr := poolTokenFn(ctx, cfg, org)
 		if tokErr != nil {
 			logf("[org-pool] Could not get token for %s: %v", org, tokErr)
 			continue
 		}
-		client := newLiveClient(token)
+		client := poolClientFn(token)
 
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
 			logf("[org-pool] Error trying %s: %v", org, err)
+			rateLimited, ctxErr := rateLimitedUnlessCancelled(ctx, err)
+			if ctxErr != nil {
+				return "", "", ctxErr
+			}
 			// Rate-limit scope depends on the credential: installation
 			// tokens are minted per org, a shared PAT is limited per user.
-			if gh.IsRateLimitError(err) {
+			if rateLimited {
 				if cfg.useMint {
 					// Installation tokens are minted per org, so the
 					// limit is per org too: another org's token still
@@ -170,17 +219,21 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 		}
 		roundRateLimited := false
 		for _, org := range shuffled {
-			token, tokErr := tokenForOrg(ctx, cfg, org)
+			token, tokErr := poolTokenFn(ctx, cfg, org)
 			if tokErr != nil {
 				logf("[org-pool] Could not get token for %s: %v", org, tokErr)
 				continue
 			}
-			client := newLiveClient(token)
+			client := poolClientFn(token)
 
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
 				logf("[org-pool] Error trying %s: %v", org, err)
-				if gh.IsRateLimitError(err) {
+				rateLimited, ctxErr := rateLimitedUnlessCancelled(ctx, err)
+				if ctxErr != nil {
+					return "", "", ctxErr
+				}
+				if rateLimited {
 					if cfg.useMint {
 						// Installation tokens are minted per org, so the
 						// limit is per org too: another org's token still
@@ -241,7 +294,7 @@ func acquireOrgWithClient(ctx context.Context, client forge.Client, token, runID
 func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
 	shuffled := make([]string, len(pool))
 	copy(shuffled, pool)
-	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	randutil.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 
 	sawRateLimit := false
 	for _, org := range shuffled {
@@ -249,7 +302,11 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
 			logf("[org-pool] Error trying %s: %v", org, err)
-			if gh.IsRateLimitError(err) {
+			rateLimited, ctxErr := rateLimitedUnlessCancelled(ctx, err)
+			if ctxErr != nil {
+				return "", "", ctxErr
+			}
+			if rateLimited {
 				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
 				sawRateLimit = true
 				break
@@ -295,7 +352,11 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 		for _, org := range shuffled {
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
-				if gh.IsRateLimitError(err) {
+				rateLimited, ctxErr := rateLimitedUnlessCancelled(ctx, err)
+				if ctxErr != nil {
+					return "", "", ctxErr
+				}
+				if rateLimited {
 					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
 					roundRateLimited = true
 					break
@@ -538,6 +599,15 @@ func retryOnNotFound(ctx context.Context, maxAttempts int, fn func() error) erro
 // AcquireOrg scans the pool for an unlocked org and acquires its lock.
 func AcquireOrg(ctx context.Context, cfg EnvConfig, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
 	return acquireOrg(ctx, cfg.internal(), runID, pool, timeout, logf)
+}
+
+// TokenForOrg returns an API token for operating on org: in GitHub
+// Actions a cross-org e2e installation token minted for that org,
+// locally the developer's own token. Behaviour suites lease repo slots
+// across pool orgs and resolve one token per org through it, without
+// taking the org's exclusive e2e-lock.
+func TokenForOrg(ctx context.Context, cfg EnvConfig, org string) (string, error) {
+	return tokenForOrg(ctx, cfg.internal(), org)
 }
 
 // OrgPool returns the halfsend org names used for parallel e2e runs.

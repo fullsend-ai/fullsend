@@ -1119,7 +1119,7 @@ unknown_section: true
 func TestParseManifestBytes_EmptyAndCommentOnlyInput(t *testing.T) {
 	// yaml.Decoder.Decode returns io.EOF for empty or comment-only input.
 	// parseManifestBytes must treat this as a no-op (matching the old
-	// yaml.Unmarshal behavior) so callers like SetDefault can handle
+	// yaml.Unmarshal behavior) so callers can handle
 	// empty manifest files as zero-value manifests.
 	tests := []struct {
 		name  string
@@ -1166,8 +1166,13 @@ func TestLoadManifest_OversizedResponse(t *testing.T) {
 }
 
 func TestLoadManifest_Timeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(5 * time.Second)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return once the client gives up, so srv.Close does not wait
+		// out the full delay.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
 		_, _ = w.Write([]byte(validManifest))
 	}))
 	defer srv.Close()
@@ -1375,6 +1380,142 @@ func TestDistinctForges_SingleForge(t *testing.T) {
 
 	forges := m.DistinctForges()
 	assert.Equal(t, []string{"github"}, forges)
+}
+
+func TestUndeclaredSelectors(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/api"}, {Name: "widgets/*"}},
+		},
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "group/sub/project"}},
+		},
+	}
+
+	undeclared, err := m.UndeclaredSelectors(nil)
+	require.NoError(t, err)
+	assert.Empty(t, undeclared)
+
+	undeclared, err = m.UndeclaredSelectors([]string{
+		"acme/api",          // explicit entry
+		"ACME/API",          // case-insensitive
+		"widgets/gadget",    // covered by a glob entry
+		"group/sub/project", // GitLab nested path
+		"acme/*",            // glob: judged against resolved repositories
+		"other/*",           // glob: not judged from the manifest alone
+		"acme/web",          // not declared
+		"nonsense",          // not an owner/repo name
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/web", "nonsense"}, undeclared)
+
+	// Glob selectors are only syntax-checked here.
+	_, err = m.UndeclaredSelectors([]string{"acme/["})
+	require.Error(t, err, "an invalid glob selector is an error")
+}
+
+func TestVendorSelected(t *testing.T) {
+	yes, no := true, false
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/api"}, {Name: "acme/vendored", Vendor: &yes}},
+		},
+	}
+
+	got, err := m.VendorSelected([]string{"acme/api"})
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	got, err = m.VendorSelected([]string{"acme/vendored"})
+	require.NoError(t, err)
+	assert.True(t, got)
+
+	got, err = m.VendorSelected(nil)
+	require.NoError(t, err)
+	assert.True(t, got, "an empty filter selects every entry")
+
+	m.Defaults.Vendor = &yes
+	m.GitHub.Repos[1].Vendor = &no
+	got, err = m.VendorSelected([]string{"acme/api"})
+	require.NoError(t, err)
+	assert.True(t, got, "defaults.vendor applies to entries without their own value")
+
+	got, err = m.VendorSelected([]string{"acme/vendored"})
+	require.NoError(t, err)
+	assert.False(t, got, "an entry's vendor: false overrides defaults")
+
+	_, err = m.VendorSelected([]string{"acme/["})
+	require.Error(t, err)
+}
+
+// A concrete filter name resolves vendoring with explicit-entry and
+// first-glob precedence, not through any entry that merely may match.
+func TestVendorSelected_Precedence(t *testing.T) {
+	yes, no := true, false
+
+	t.Run("explicit entry overrides vendored glob", func(t *testing.T) {
+		m := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				Repos: []RepoEntry{
+					{Name: "acme/*", Vendor: &yes},
+					{Name: "acme/api", Vendor: &no},
+				},
+			},
+		}
+		got, err := m.VendorSelected([]string{"acme/api"})
+		require.NoError(t, err)
+		assert.False(t, got, "explicit vendor: false wins over the vendored glob")
+
+		got, err = m.VendorSelected([]string{"acme/web"})
+		require.NoError(t, err)
+		assert.True(t, got, "a repo covered only by the vendored glob is vendored")
+
+		got, err = m.VendorSelected([]string{"acme/*"})
+		require.NoError(t, err)
+		assert.True(t, got, "glob filters stay conservative")
+	})
+
+	t.Run("earlier glob shadows later vendored glob", func(t *testing.T) {
+		m := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				Repos: []RepoEntry{
+					{Name: "acme/*", Vendor: &no},
+					{Name: "acme/team-*", Vendor: &yes},
+				},
+			},
+		}
+		got, err := m.VendorSelected([]string{"acme/team-a"})
+		require.NoError(t, err)
+		assert.False(t, got, "the first matching glob decides")
+
+		got, err = m.VendorSelected(nil)
+		require.NoError(t, err)
+		assert.False(t, got, "a shadowed vendored glob never wins resolution")
+	})
+}
+
+func TestResolveConfig_MintURLExplicit(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/default"}, {Name: "acme/entry", MintURL: "https://entry.example.com"}, {Name: "acme/none", MintURL: NoneSentinel}},
+		},
+	}
+	rc, _ := m.ResolveConfig("acme", "default")
+	assert.False(t, rc.MintURLExplicit, "the public-mode default is not an explicit mint_url")
+	rc, _ = m.ResolveConfig("acme", "entry")
+	assert.True(t, rc.MintURLExplicit)
+	rc, _ = m.ResolveConfig("acme", "none")
+	assert.False(t, rc.MintURLExplicit, "none clears the value")
+
+	m.GitHub.MintURL = "https://platform.example.com"
+	rc, _ = m.ResolveConfig("acme", "default")
+	assert.True(t, rc.MintURLExplicit)
 }
 
 func TestDistinctForgesFor(t *testing.T) {
@@ -2378,8 +2519,8 @@ func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *t
 	}
 	require.NoError(t, m.Validate())
 	// The user-facing Source field must stay the relative path the
-	// operator wrote so a subsequent marshal (e.g. AddToManifest,
-	// RemoveFromManifest) round-trips it unchanged; only the internal
+	// operator wrote so a subsequent marshal (e.g. RemoveFromManifest,
+	// WriteManifest) round-trips it unchanged; only the internal
 	// fetch-time source is resolved to an absolute, manifest-relative path.
 	assert.Equal(t, "presets/base.yaml", m.Defaults.ConfigBase.Source)
 	assert.Equal(t, filepath.Join(base, "presets/base.yaml"), m.Defaults.ConfigBase.configSource())
@@ -2432,14 +2573,11 @@ func TestManifest_RuntimeResolvesAndValidates(t *testing.T) {
 	rc, _ = none.ResolveConfig("acme", "c")
 	assert.Equal(t, "", rc.Runtime, "no layer declares runtime: preset or code default")
 
-	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: opencode\n")}}
-	err := bad.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "defaults.config")
-	assert.Contains(t, err.Error(), `invalid runtime "opencode"`)
+	opencode := &Manifest{Version: 1, Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: opencode\n")}}
+	require.NoError(t, opencode.Validate())
 
-	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Config: mustManagedConfig(t, "runtime: nope\n")}}}}
-	err = bad.Validate()
+	bad := &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Config: mustManagedConfig(t, "runtime: nope\n")}}}}
+	err := bad.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "github.repos[acme/x].config")
 	assert.Contains(t, err.Error(), `invalid runtime "nope"`)
@@ -2771,4 +2909,17 @@ func TestMarshalWithHeader(t *testing.T) {
 	assert.Contains(t, s, "# Review and adjust before running fullsend repos install.")
 	assert.Contains(t, s, "version: 1")
 	assert.Contains(t, s, "acme/api")
+}
+
+// LoadedBytes is the content LoadManifest parsed, which install compares
+// with the file before it writes repos.yaml, and nil for a manifest built in
+// memory.
+func TestManifest_LoadedBytes(t *testing.T) {
+	input := "version: 1\ngithub:\n  repos:\n    - name: acme/repo\n"
+	p := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(input), 0o644))
+	m, err := LoadManifest(context.Background(), p)
+	require.NoError(t, err)
+	assert.Equal(t, input, string(m.LoadedBytes()))
+	assert.Nil(t, (&Manifest{}).LoadedBytes())
 }

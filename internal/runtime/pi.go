@@ -132,7 +132,7 @@ func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 // (piExtensionsGuard) and the hook adapter's SHA-256 check (piHooksGuard),
 // neither of which can see it. Setting the variable to false makes jiti
 // ignore any planted entry and create no cache directory at all (verified
-// on pi 0.84.4, and jiti is still 2.7.0 at the pinned 0.85.0 —
+// on pi 0.84.4, re-checked on 0.85.0 and 1.5.0, jiti 2.7.0 throughout —
 // internal/runtime/testdata/pi/jiti-cache-check.sh reproduces both
 // halves). Run re-exports these after the agent-writable
 // .env is sourced, so the agent cannot switch the cache back on, and
@@ -153,6 +153,35 @@ func (r PiRuntime) EnvExports() []string {
 	}
 }
 
+// LaunchEnvExports implements LaunchEnvExporter: the environment names
+// buildPiRunCommand sets beyond EnvExports. The launch command pins the
+// manifest the sandbox runs, re-exports the hook and child helper paths
+// the bootstrap .env carried, and maps the Vertex project variables onto
+// their GOOGLE_CLOUD_* names. GOOGLE_CLOUD_PROJECT and
+// XAI_VERTEX_PROJECT_ID are conditional on the provider path and are
+// recorded flat anyway: runtime_specific asks whether the runtime can set
+// the name, not whether every provider path does. The INFERENCE_GATEWAY_*
+// names are set only when an inference gateway is registered for the run
+// (piGatewayEnvParts). TestLaunchEnvExportsMatchLaunchCommands pins this
+// list to the launch commands.
+func (PiRuntime) LaunchEnvExports() []string {
+	return []string{
+		piRuntimeEnv,
+		piManifestEnv,
+		piManifestSumEnv,
+		piHookPythonEnv,
+		piHookPathEnv,
+		piChildBinEnv,
+		piChildNodeEnv,
+		"GOOGLE_CLOUD_LOCATION",
+		"GOOGLE_CLOUD_PROJECT",
+		"XAI_VERTEX_PROJECT_ID",
+		piInferenceGatewayBaseURLEnv,
+		piInferenceGatewayTokenFileEnv,
+		piInferenceGatewayConfigFileEnv,
+	}
+}
+
 // Compile-time interface assertions.
 var (
 	_ Runtime           = PiRuntime{}
@@ -160,5 +189,6 @@ var (
 	_ DebugLogNamer     = PiRuntime{}
 	_ ProviderResolver  = PiRuntime{}
 
+	_ LaunchEnvExporter      = PiRuntime{}
 	_ OpenAICredentialSeeder = PiRuntime{}
 )

@@ -158,10 +158,12 @@ func isVendoredReusableWorkflow(path string) bool {
 // vendoredDefaultsScripts is the explicit allowlist of .github/scripts/
 // files that ship to consumer repos. Everything here is executed in user
 // repos: check-fix-eligibility.sh directly by the vendored reusable
-// workflows, pre-fetch-review-body.sh by the fix job's "Pre-fetch review
-// body" step (#8353), the other three by the root composite action
+// workflows, pre-fetch-review-body.sh and count-fix-commits.jq by the fix
+// job's "Pre-fetch review body" (#8353) and "Extract PR number and
+// context" (#8425) steps, the other four by the root composite action
 // (action.yml, invoked as ./.defaults/ with GITHUB_ACTION_PATH resolving
-// into the vendored tree).
+// into the vendored tree). retry-with-backoff.sh is sourced by
+// install-podman.sh and install-openshell.sh, so it must ship with them.
 //
 // .github/scripts/ also hosts repo-local CI tooling and *-test.sh files
 // that must NOT ship to consumers. The directory prefix alone is
@@ -173,10 +175,13 @@ func isVendoredReusableWorkflow(path string) bool {
 // current path regardless of whether they are listed.
 var vendoredDefaultsScripts = map[string]bool{
 	".github/scripts/check-fix-eligibility.sh": true,
+	".github/scripts/count-fix-commits.jq":     true,
 	".github/scripts/install-openshell.sh":     true,
 	".github/scripts/install-podman.sh":        true,
 	".github/scripts/openshell-version.sh":     true,
 	".github/scripts/pre-fetch-review-body.sh": true,
+	".github/scripts/review-diff-hash.sh":      true,
+	".github/scripts/retry-with-backoff.sh":    true,
 }
 
 // vendoredDefaultsActions is the explicit allowlist of .github/actions/

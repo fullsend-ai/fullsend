@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/cucumber/godog"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -208,8 +210,8 @@ func thenTriageAgentDidNotRun(w *world.World) error {
 		return err
 	}
 	defer os.RemoveAll(dest)
-	err = w.CI.DownloadNamedArtifactFromRun(context.Background(),
-		w.RepoOwner, w.RepoName, w.WorkflowRun.ID, install.PerRepoAgentArtifact, dest)
+	err = ci.DownloadAgentArtifactsFromRun(context.Background(), w.CI,
+		w.RepoOwner, w.RepoName, w.WorkflowRun.ID, "triage", dest)
 	if err == nil {
 		return fmt.Errorf("triage run %d uploaded %q: the agent ran", w.WorkflowRun.ID, install.PerRepoAgentArtifact)
 	}
@@ -244,13 +246,22 @@ func waitForDispatchRun(w *world.World) (*forge.WorkflowRun, error) {
 	if err == nil {
 		return run, nil
 	}
+	// Only a timeout with no run (any driver's, marked by the shared
+	// sentinel) is retried; any other error, such as one from a run that
+	// did dispatch or a cancelled context, is the real failure.
+	if !errors.Is(err, ci.ErrWorkflowNotDispatched) {
+		return nil, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w", err)
+	}
 
 	worldLogf(w, "dispatch run: retrying with skew buffer: %v", err)
 	buffered := w.ScenarioStart.Add(-issueOpenDrainSkewBuffer)
-	if retryRun, retryErr := w.CI.WaitForWorkflow(ctx, w.RepoOwner, repo, file, buffered, issueCommentEvent); retryErr == nil {
+	retryRun, retryErr := w.CI.WaitForWorkflow(ctx, w.RepoOwner, repo, file, buffered, issueCommentEvent)
+	if retryErr == nil {
 		return retryRun, nil
 	}
-	return nil, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w", err)
+	// Wrap the retry's error: its wait ended last, so its detail matches
+	// the window the dispatch diagnostics measure from.
+	return nil, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w", retryErr)
 }
 
 func disableOwnersAuth(w *world.World) error {
@@ -269,17 +280,14 @@ func disableOwnersAuth(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(),
-		w.Org, w.RepoName,
-		cfgPath, "behaviour: disable OWNERS authorization",
-		merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: disable OWNERS authorization", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
 }
 
 func cleanupOwnersAuth(w *world.World) {
-	ctx := context.Background()
+	ctx := mutationCtx(w)
 	owner := w.Org
 	repo := w.RepoName
 
@@ -298,7 +306,7 @@ func cleanupOwnersAuth(w *world.World) {
 		}},
 	}
 	for _, st := range steps {
-		if err := cleanupRetry(w.Logf, st.desc, st.fn); err != nil {
+		if err := guardedCleanupRetry(w, st.desc, st.fn); err != nil {
 			worldLogf(w, "behaviour cleanup: %s: %v", st.desc, err)
 		}
 	}

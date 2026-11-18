@@ -1,0 +1,132 @@
+# Reusable Jira poll workflow for per-repo installations (#9109).
+# Called by the managed .github/workflows/fullsend-poll-jira.yml caller that
+# `fullsend repos install` writes while tracker.jira.poll.enabled is true.
+#
+# workflow_call contract:
+# - Optional secrets: FULLSEND_JIRA_TOKEN / FULLSEND_JIRA_EMAIL for API-token
+#   authentication, or FULLSEND_JIRA_CLIENT_ID / FULLSEND_JIRA_CLIENT_SECRET
+#   for OAuth 2.0 client credentials. The Jira client validates the pair.
+# - Optional inputs: runner_image (runner for the poll job) and timeout_minutes
+#   (job timeout; defaults to 15 minutes and can be raised by the caller).
+# - Output: matrix is the JSON include matrix for reusable-dispatch.yml; an
+#   empty include array means there were no Jira issues to dispatch.
+# Runs `fullsend poll --input-driver jira-poll` against the caller's
+# .fullsend/config.yaml and returns the dispatch matrix to the caller. The
+# caller passes it to reusable-dispatch.yml at the same ref (ADR 62).
+# The poll normally completes within 15 minutes; the caller controls the job
+# timeout through timeout_minutes to account for its runner and Jira latency.
+#
+# Security: Jira credentials reach only the poll step. They are never
+# forwarded to agents or the runner-secret bundle.
+name: Jira poll
+
+on:
+  workflow_call:
+    inputs:
+      runner_image:
+        description: GitHub Actions runner image for the poll job.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
+      timeout_minutes:
+        description: Maximum runtime in minutes for the Jira poll job.
+        type: number
+        required: false
+        default: 15
+    secrets:
+      FULLSEND_JIRA_TOKEN:
+        required: false
+      FULLSEND_JIRA_EMAIL:
+        required: false
+      FULLSEND_JIRA_CLIENT_ID:
+        required: false
+      FULLSEND_JIRA_CLIENT_SECRET:
+        required: false
+    outputs:
+      matrix:
+        description: Dispatch matrix accepted by reusable-dispatch.yml.
+        value: ${{ jobs.poll.outputs.matrix }}
+
+jobs:
+  poll:
+    name: Poll Jira
+    runs-on: ${{ inputs.runner_image }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .fullsend/
+            .defaults/action.yml
+            .fullsend/.defaults/action.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Detect CLI install mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .defaults/action.yml || -f .fullsend/.defaults/action.yml ]]; then
+            echo "mode=vendored" >> "${GITHUB_OUTPUT}"
+          else
+            echo "mode=upstream" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout upstream install action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-actions
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/install-fullsend-cli/
+          sparse-checkout-cone-mode: false
+
+      - name: Install fullsend CLI
+        uses: ./.workflow-actions/.github/actions/install-fullsend-cli
+        with:
+          mode: ${{ steps.mode.outputs.mode }}
+          vendored_path: .fullsend/bin/fullsend
+          workflow_repository: ${{ job.workflow_repository }}
+          workflow_sha: ${{ job.workflow_sha }}
+          github_token: ${{ github.token }}
+
+      - name: Poll Jira
+        env:
+          FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
+          FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
+          FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
+          FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
+          TARGET_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          fullsend poll \
+            --input-driver jira-poll \
+            --target-repo "${TARGET_REPO}" \
+            --output dispatches.json \
+            --fullsend-dir .fullsend
+
+      - name: Build dispatch matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array"' dispatches.json > /dev/null
+          if jq -e 'length == 0' dispatches.json > /dev/null; then
+            echo "No dispatches."
+            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          MATRIX=$(jq -c '{include: .}' dispatches.json)
+          DELIM="MATRIX_$(openssl rand -hex 8)"
+          {
+            echo "matrix<<${DELIM}"
+            printf '%s\n' "${MATRIX}"
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"

@@ -132,7 +132,9 @@ are covered in the sections below.
 
 > **Note:** [ADR 0074](0074-repos-command-consolidation.md) consolidates
 > the subcommands defined above into five commands (`migrate`, `install`,
-> `status`, `uninstall`, `set-default`).
+> `status`, `uninstall`, `set-default`). `set-default` was later replaced
+> by `repos set <path> <value>`; see the
+> [`repos` CLI reference](../cli/repos.md#repos-set).
 
 ## Implementation status
 

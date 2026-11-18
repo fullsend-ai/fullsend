@@ -6,8 +6,13 @@
 # reuses the same helper with FULLSEND_ADMIT_SOURCE=trigger.
 #
 # Required caller-set input:
-#   FULLSEND_ADMIT_SOURCE  exactly one of api|schedule|trigger
-#                          (disjoint per-job allowlists; never a union)
+#   FULLSEND_ADMIT_SOURCE  exactly one of api|schedule|trigger, or the
+#                          agent-only set "api pipeline" (#8438): an agent
+#                          pipeline is started either by the Poller through
+#                          the pipelines API (api) or by a dispatch job
+#                          through the CI_JOB_TOKEN trigger API (pipeline).
+#                          Per-job allowlists stay disjoint: the poller
+#                          admits schedule and the dispatcher trigger only.
 #
 # Exports on success:
 #   FULLSEND_PINNED_PROJECT_ID
@@ -15,7 +20,8 @@
 #   FULLSEND_PINNED_REF
 #   FULLSEND_PINNED_PIPELINE_SOURCE
 #   FULLSEND_PINNED_PIPELINE_RESPONSE
-#   FULLSEND_PINNED_PROJECT_PATH   (path_with_namespace, e.g. group/project)
+#   FULLSEND_PINNED_JOB_USER_ID
+#   FULLSEND_PINNED_PROJECT_PATH  (path_with_namespace, e.g. group/project)
 #   FULLSEND_PINNED_GITLAB_URL     (validated API root with /api/v4 stripped)
 #
 # FULLSEND_PINNED_PROJECT_PATH / FULLSEND_PINNED_GITLAB_URL exist so
@@ -25,20 +31,28 @@
 # pipeline variables (same outrankable class as CI_PROJECT_ID, ADR
 # 0125). See run-poll-job.sh and run-agent-job.sh for that reuse.
 #
-# Trust model (ADR 0125):
+# Trust model (ADR 0131, superseding ADR 0125's trigger-variable control):
 #   The GitLab-side pipeline-variable restriction
-#   (ci_pipeline_variables_minimum_override_role=owner, with the
-#   poller/dispatcher on an Owner-role PAT and the webhook trigger
-#   token minted under a sub-Owner identity) is the REQUIRED control
-#   that stops a trigger-token holder from outranking CI_JOB_TOKEN,
-#   CI_API_V4_URL, and dispatch secrets. This repo's install/converge
-#   path (internal/repos/gitlab_pipeline_var_restriction.go) reads and
-#   can converge that setting, but active enforcement defaults to
-#   report-only (an opt-in environment variable switches it to enforced)
-#   until the poller/dispatcher identity is separately raised to Owner —
-#   see that file and docs/contributing/gitlab-role-credentials.md for
-#   the open credential-cost decision tracked in #7769. This helper is
-#   defense-in-depth: it
+#   (ci_pipeline_variables_minimum_override_role=no_one_allowed) is the
+#   REQUIRED control that stops a pipeline caller, including a
+#   trigger-token holder, from outranking CI_JOB_TOKEN, CI_API_V4_URL,
+#   and dispatch secrets with pipeline variables. Dispatch data travels
+#   as typed pipeline inputs, which that setting does not govern, so
+#   the Poller stays a Developer-role identity and no runtime
+#   credential (including the webhook trigger token's owner) is above
+#   Developer. Install/converge
+#   (internal/repos/gitlab_pipeline_var_restriction.go) verifies
+#   no_one_allowed before delivering runnable typed jobs and fails
+#   closed otherwise; automatic changes to the setting stay behind an
+#   opt-in environment variable (see that file). See
+#   docs/contributing/gitlab-role-credentials.md ("How a job selects
+#   its credential") and the ADR 0125 security-gate status table in
+#   docs/normative/normalized-event/v1/README.md.
+#   Historical: ADR 0125 first proposed an `owner` threshold with an
+#   Owner-role poller/dispatcher PAT and a sub-Owner trigger identity;
+#   ADR 0131 replaced that design (#7769).
+#
+#   This helper is defense-in-depth: it
 #   takes project, pipeline, and ref from GET /api/v4/job (the job
 #   that owns the supplied token) rather than from the overridable
 #   CI_PROJECT_ID / CI_PIPELINE_ID / CI_COMMIT_REF_PROTECTED env
@@ -49,11 +63,11 @@
 #   GET /api/v4/job still needs a bootstrap URL (CI_API_V4_URL).
 #   That URL is in the same overridable class; the restriction is
 #   what makes the bootstrap trustworthy. An invalid CI_JOB_TOKEN
-#   override fails closed here (the lookup 401s/404s). A valid
-#   foreign job token would mis-resolve the pin to that foreign
-#   job — residual, closed by the restriction rather than by this
-#   script. Live verification of the valid-foreign-token case is
-#   tracked as follow-up once a second job token can be minted.
+#   override is expected to fail closed here (the lookup 401s/404s).
+#   A valid foreign job token would mis-resolve the pin to that
+#   foreign job — residual, closed by the restriction rather than by
+#   this script. Neither override case has been live-tested on a
+#   target GitLab version yet (see the security-gate status table).
 #
 # Transport: gate curls ignore trigger-influenced proxy settings
 # (--noproxy '*', proxy env stripped), disable curlrc (-q, CURLRC/
@@ -152,9 +166,9 @@ fullsend_gate_curl() {
 
 fullsend_pin_ci_job_identity() {
   case "${FULLSEND_ADMIT_SOURCE:-}" in
-    api|schedule|trigger) ;;
+    api|schedule|trigger|"api pipeline") ;;
     *)
-      echo "ERROR: FULLSEND_ADMIT_SOURCE must be 'api', 'schedule', or 'trigger' (disjoint per-job allowlist), got '${FULLSEND_ADMIT_SOURCE:-<empty>}'" >&2
+      echo "ERROR: FULLSEND_ADMIT_SOURCE must be 'api', 'schedule', 'trigger', or 'api pipeline' (disjoint per-job allowlist), got '${FULLSEND_ADMIT_SOURCE:-<empty>}'" >&2
       return 1
       ;;
   esac
@@ -234,26 +248,30 @@ fullsend_pin_ci_job_identity() {
   FULLSEND_PINNED_PROJECT_ID=$(printf '%s' "${_fs_job_json}" | jq -r '.pipeline.project_id // empty')
   FULLSEND_PINNED_PIPELINE_ID=$(printf '%s' "${_fs_job_json}" | jq -r '.pipeline.id // empty')
   FULLSEND_PINNED_REF=$(printf '%s' "${_fs_job_json}" | jq -r '.ref // .pipeline.ref // empty')
+  # The user the running job (and so CI_JOB_TOKEN) authenticates as. A retry
+  # keeps the pipeline creator but runs as the retrier, so route selection
+  # compares this, not the pipeline creator, with the trigger account.
+  FULLSEND_PINNED_JOB_USER_ID=$(printf '%s' "${_fs_job_json}" | jq -r '.user.id // empty' 2>/dev/null || true)
   unset _fs_job_json
 
   case "${FULLSEND_PINNED_PROJECT_ID}" in
     ''|*[!0-9]*)
       echo "ERROR: CI_JOB_TOKEN job record is missing a numeric pipeline.project_id — aborting (fail-closed)" >&2
-      unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF
+      unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF
       return 1
       ;;
   esac
   case "${FULLSEND_PINNED_PIPELINE_ID}" in
     ''|*[!0-9]*)
       echo "ERROR: CI_JOB_TOKEN job record is missing a numeric pipeline.id — aborting (fail-closed)" >&2
-      unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF
+      unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF
       return 1
       ;;
   esac
   case "${FULLSEND_PINNED_REF}" in
     ''|*[$'\n\r']*|*'..'*|*' '*|*$'\t'*)
       echo "ERROR: CI_JOB_TOKEN job record ref is empty or unsafe — aborting (fail-closed)" >&2
-      unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF
+      unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF
       return 1
       ;;
   esac
@@ -282,7 +300,7 @@ fullsend_pin_ci_job_identity() {
     fi
     if [ "${_fs_fallback_ok}" -ne 0 ]; then
       echo "ERROR: cannot read pinned project ${FULLSEND_PINNED_PROJECT_ID} via JOB-TOKEN or the Poller-role PAT fallback — aborting (fail-closed)" >&2
-      unset _fs_api _fs_trust _fs_project_json _fs_fallback_ok FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF
+      unset _fs_api _fs_trust _fs_project_json _fs_fallback_ok FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF
       return 1
     fi
     unset _fs_fallback_ok
@@ -293,17 +311,17 @@ fullsend_pin_ci_job_identity() {
   _fs_default_branch="${_fs_default_branch#refs/heads/}"
   if [ -z "${_fs_default_branch}" ]; then
     echo "ERROR: pinned project has no default_branch — aborting (fail-closed)" >&2
-    unset _fs_api _fs_trust _fs_default_branch FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
+    unset _fs_api _fs_trust _fs_default_branch FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
     return 1
   fi
   if [ -z "${FULLSEND_PINNED_PROJECT_PATH}" ]; then
     echo "ERROR: pinned project has no path_with_namespace — aborting (fail-closed)" >&2
-    unset _fs_api _fs_trust _fs_default_branch FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
+    unset _fs_api _fs_trust _fs_default_branch FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
     return 1
   fi
   if [ "${FULLSEND_PINNED_REF}" != "${_fs_default_branch}" ]; then
     echo "ERROR: job ref '${FULLSEND_PINNED_REF}' is not the enrolled default branch '${_fs_default_branch}' — refusing a protected-but-non-default ref (fail-closed)" >&2
-    unset _fs_api _fs_trust _fs_default_branch FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
+    unset _fs_api _fs_trust _fs_default_branch FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
     return 1
   fi
 
@@ -337,7 +355,7 @@ fullsend_pin_ci_job_identity() {
     fi
     if [ "${_fs_fallback_ok}" -ne 0 ]; then
       echo "ERROR: cannot read pinned branch '${FULLSEND_PINNED_REF}' via JOB-TOKEN or the Poller-role PAT fallback — aborting (fail-closed)" >&2
-      unset _fs_api _fs_trust _fs_default_branch _fs_ref_enc _fs_branch_json _fs_fallback_ok FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
+      unset _fs_api _fs_trust _fs_default_branch _fs_ref_enc _fs_branch_json _fs_fallback_ok FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
       return 1
     fi
     unset _fs_fallback_ok
@@ -346,7 +364,7 @@ fullsend_pin_ci_job_identity() {
   unset _fs_branch_json _fs_ref_enc
   if [ "${_fs_protected}" != "true" ]; then
     echo "ERROR: enrolled default branch '${FULLSEND_PINNED_REF}' is not protected — aborting (fail-closed)" >&2
-    unset _fs_api _fs_trust _fs_default_branch _fs_protected FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
+    unset _fs_api _fs_trust _fs_default_branch _fs_protected FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PROJECT_PATH
     return 1
   fi
   unset _fs_default_branch _fs_protected
@@ -356,19 +374,29 @@ fullsend_pin_ci_job_identity() {
     -H "JOB-TOKEN: ${CI_JOB_TOKEN}" \
     "${_fs_api}/projects/${FULLSEND_PINNED_PROJECT_ID}/pipelines/${FULLSEND_PINNED_PIPELINE_ID}"); then
     echo "ERROR: cannot read pinned pipeline ${FULLSEND_PINNED_PIPELINE_ID} — aborting (fail-closed)" >&2
-    unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PIPELINE_RESPONSE FULLSEND_PINNED_PROJECT_PATH
+    unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PIPELINE_RESPONSE FULLSEND_PINNED_PROJECT_PATH
     return 1
   fi
   FULLSEND_PINNED_PIPELINE_SOURCE=$(printf '%s' "${FULLSEND_PINNED_PIPELINE_RESPONSE}" | jq -r '.source // empty')
-  if [ "${FULLSEND_PINNED_PIPELINE_SOURCE}" != "${FULLSEND_ADMIT_SOURCE}" ]; then
+  _fs_source_admitted=false
+  case "${FULLSEND_ADMIT_SOURCE}:${FULLSEND_PINNED_PIPELINE_SOURCE}" in
+    "api pipeline:api"|"api pipeline:pipeline") _fs_source_admitted=true ;;
+  esac
+  if [ "${FULLSEND_PINNED_PIPELINE_SOURCE}" = "${FULLSEND_ADMIT_SOURCE}" ]; then
+    _fs_source_admitted=true
+  fi
+  if [ "${_fs_source_admitted}" != "true" ]; then
+    unset _fs_source_admitted
     echo "ERROR: pinned pipeline source '${FULLSEND_PINNED_PIPELINE_SOURCE:-<empty>}' is not '${FULLSEND_ADMIT_SOURCE}' — disjoint allowlist deny (fail-closed)" >&2
-    unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PIPELINE_SOURCE FULLSEND_PINNED_PIPELINE_RESPONSE FULLSEND_PINNED_PROJECT_PATH
+    unset _fs_api _fs_trust FULLSEND_PINNED_PROJECT_ID FULLSEND_PINNED_PIPELINE_ID FULLSEND_PINNED_JOB_USER_ID FULLSEND_PINNED_REF FULLSEND_PINNED_PIPELINE_SOURCE FULLSEND_PINNED_PIPELINE_RESPONSE FULLSEND_PINNED_PROJECT_PATH
     return 1
   fi
+  unset _fs_source_admitted
 
   export FULLSEND_PINNED_PROJECT_ID
   export FULLSEND_PINNED_PIPELINE_ID
   export FULLSEND_PINNED_REF
+  export FULLSEND_PINNED_JOB_USER_ID
   export FULLSEND_PINNED_PIPELINE_SOURCE
   export FULLSEND_PINNED_PIPELINE_RESPONSE
   export FULLSEND_PINNED_PROJECT_PATH
@@ -389,6 +417,170 @@ fullsend_pin_ci_job_identity() {
   # credential-bearing fetches elsewhere in the scaffold) honors it as
   # a fallback, matching the set fullsend_gate_curl already strips.
   unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
+}
+
+# fullsend_gitlab_trigger_account_id prints the numeric user ID of the
+# trigger-only service account (#8437) recorded in the protected
+# FULLSEND_GITLAB_TRIGGER_ACCOUNT ledger, or nothing. Only a ledger in phase
+# "ready" names a usable account: while an account is bootstrapping,
+# rotating, or being removed, no pipeline it creates is trusted. It also
+# requires the FULLSEND_GITLAB_DISPATCH_ACTIVATION record, which
+# `fullsend repos install` writes only after the full activation gate
+# (schedules migrated, override role no_one_allowed, job-token push disabled,
+# no unrelated job in trigger or agent child pipelines, account ready) passes
+# and deletes on any later lifecycle run, so a ready ledger alone never selects
+# or admits the child-pipeline route (#8438). The ledger
+# is a protected CI/CD variable written only by `fullsend repos install`. The
+# trigger account holds a live trigger credential only while
+# ci_pipeline_variables_minimum_override_role is no_one_allowed (the install
+# lifecycle defers otherwise and contains a published token when the setting
+# weakens), so a pipeline it creates cannot carry a variable that overrides
+# this ledger.
+fullsend_gitlab_trigger_account_id() {
+  # The ledger and activation are passed as raw strings and parsed with
+  # `fromjson` (try/catch to null): a value that is not exactly one JSON
+  # document fails to parse, yields null, and prints no account ID, matching
+  # the Go decoder (which rejects trailing garbage and multiple documents).
+  #
+  # The activation is a separate record (FULLSEND_GITLAB_DISPATCH_ACTIVATION),
+  # not a ledger field: older CLIs reject unknown ledger fields before they
+  # read its version. It is honored only while it names exactly the ledger's
+  # current generation (nonce, account, deploy key, grant, trigger token), so
+  # an older CLI that rotates, repairs or removes the account leaves it stale
+  # and the Poller route stays selected.
+  jq -nr \
+    --arg ledger "${FULLSEND_GITLAB_TRIGGER_ACCOUNT:-}" \
+    --arg activation "${FULLSEND_GITLAB_DISPATCH_ACTIVATION:-}" '
+    ($ledger | try fromjson catch null) as $l
+    | ($activation | try fromjson catch null) as $a
+    | if ($l | type) == "object" and ($a | type) == "object"
+        and $l.version == 1
+        and $l.phase == "ready"
+        and ($l.account_id | type) == "number" and $l.account_id > 0
+        and ($l.trigger_token_id | type) == "number" and $l.trigger_token_id > 0
+        and $l.trigger_published == true
+        and ($l.nonce | type) == "string" and ($l.nonce | length) > 0
+        and $a.version == 1
+        and $a.nonce == $l.nonce
+        and $a.account_id == $l.account_id
+        and ($a.deploy_key_id // 0) == ($l.deploy_key_id // 0)
+        and ($a.grant_entry_id // 0) == ($l.grant_entry_id // 0)
+        and $a.trigger_token_id == $l.trigger_token_id
+      then $l.account_id | tostring else empty end' 2>/dev/null \
+    || true
+}
+
+# fullsend_cli_supports_dispatch_route succeeds only when the installed
+# fullsend CLI reports the given dispatch route. A CLI that predates
+# FULLSEND_GITLAB_DISPATCH_ROUTE rejects --print-dispatch-routes as an unknown
+# flag, so the probe fails closed for it (#8438).
+fullsend_cli_supports_dispatch_route() {
+  local _fs_routes
+  _fs_routes=$(fullsend poll --forge gitlab --fullsend-dir .fullsend --print-dispatch-routes 2>/dev/null) || return 1
+  printf '%s\n' "${_fs_routes}" | grep -qx -- "$1"
+}
+
+# fullsend_pinned_pipeline_creator_id prints the user ID that created the
+# pinned pipeline, or nothing. Some GitLab versions omit .user on the
+# job-token pipeline GET; it is then re-read with FULLSEND_JOB_TOKEN when the
+# caller already selected one, using the pinned IDs (never the overridable
+# CI_PROJECT_ID / CI_PIPELINE_ID).
+fullsend_pinned_pipeline_creator_id() {
+  local _fs_creator _fs_response
+  _fs_creator=$(printf '%s' "${FULLSEND_PINNED_PIPELINE_RESPONSE:-}" | jq -r '.user.id // empty' 2>/dev/null || true)
+  if [ -z "${_fs_creator}" ] && [ -n "${FULLSEND_JOB_TOKEN:-}" ] && [ -n "${FULLSEND_PINNED_GITLAB_URL:-}" ]; then
+    if _fs_response=$(fullsend_gate_curl \
+      -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" \
+      "${FULLSEND_PINNED_GITLAB_URL}/api/v4/projects/${FULLSEND_PINNED_PROJECT_ID}/pipelines/${FULLSEND_PINNED_PIPELINE_ID}"); then
+      _fs_creator=$(printf '%s' "${_fs_response}" | jq -r '.user.id // empty' 2>/dev/null || true)
+    fi
+  fi
+  case "${_fs_creator}" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s' "${_fs_creator}" ;;
+  esac
+}
+
+# fullsend_select_gitlab_dispatch_route exports FULLSEND_GITLAB_DISPATCH_ROUTE
+# for `fullsend poll` (#8438). A schedule or webhook pipeline created by the
+# trigger-only account runs on the protected default branch through that
+# account's deploy-key grant, and the job can then start the agent pipeline
+# with its own CI_JOB_TOKEN ("child-pipeline", source=pipeline, attributed to
+# the same account). Any other creator, an unreadable creator, or no ready
+# trigger account keeps the Poller credential and the pipelines API ("api"),
+# so existing polling continues unchanged while activation is deferred.
+# Call it after select-gitlab-role-token.sh, so the creator can be re-read
+# when the job-token pipeline GET omits it.
+fullsend_select_gitlab_dispatch_route() {
+  local _fs_account _fs_creator _fs_job_user
+  FULLSEND_GITLAB_DISPATCH_ROUTE=api
+  _fs_account=$(fullsend_gitlab_trigger_account_id)
+  if [ -n "${_fs_account}" ]; then
+    _fs_creator=$(fullsend_pinned_pipeline_creator_id)
+    # CI_JOB_TOKEN acts as the running job's user, which differs from the
+    # pipeline creator when the job was retried by someone else. Both must be
+    # the trigger account, or the child pipeline would be created as another
+    # user and rejected by the agent job after the dispatch is lost.
+    case "${FULLSEND_PINNED_JOB_USER_ID:-}" in
+      ''|*[!0-9]*) _fs_job_user="" ;;
+      *) _fs_job_user="${FULLSEND_PINNED_JOB_USER_ID}" ;;
+    esac
+    if [ -n "${_fs_creator}" ] && [ "${_fs_creator}" = "${_fs_account}" ] &&
+      [ "${_fs_job_user}" = "${_fs_account}" ]; then
+      # This pipeline can only dispatch through CI_JOB_TOKEN: the trigger
+      # account holds no Poller credential. A CLI that predates the route
+      # selector would ignore it and fail late on the Poller route, after
+      # the event was consumed, so refuse explicitly before any dispatch.
+      if ! fullsend_cli_supports_dispatch_route child-pipeline; then
+        echo "ERROR: the installed fullsend CLI does not support the FULLSEND_GITLAB_DISPATCH_ROUTE child-pipeline route required by this trigger-account pipeline; upgrade the CLI pinned in .gitlab/ci/scripts/install-fullsend-cli.sh (re-run 'fullsend repos install') before using this scaffold. Refusing to dispatch." >&2
+        exit 1
+      fi
+      FULLSEND_GITLAB_DISPATCH_ROUTE=child-pipeline
+    elif [ -n "${_fs_creator}" ] && [ "${_fs_creator}" = "${_fs_account}" ]; then
+      echo "WARNING: Pipeline creator is the trigger account but the running job is not; keeping the api route" >&2
+    fi
+  fi
+  export FULLSEND_GITLAB_DISPATCH_ROUTE
+  echo "Agent dispatch route: ${FULLSEND_GITLAB_DISPATCH_ROUTE}"
+}
+
+# fullsend_resolve_gitlab_analyst_user_id exports
+# FULLSEND_GITLAB_ANALYST_USER_ID, the numeric GitLab user ID of the
+# registered Analyst identity, for `fullsend poll` in the poll and
+# dispatcher jobs (#8807). The review stage posts its changes-requested
+# marker as the Analyst, which in distinct-role installations is not the
+# Poller whose credential those jobs hold, so the poller needs the Analyst
+# ID to retain that marker for the fix stage. Only the numeric ID is
+# exported: the Analyst credential is selected inside a subshell for a
+# single GET /user call through fullsend_gate_curl and never replaces
+# FULLSEND_JOB_TOKEN. Call it after select-gitlab-role-token.sh (so
+# fullsend_select_gitlab_role_token is defined) and before the caller
+# blanks sibling role secrets. Any inherited value is discarded first, and
+# a failed lookup only warns: the poller then retains no marker, which is
+# the safe outcome, instead of stopping unrelated dispatch.
+fullsend_resolve_gitlab_analyst_user_id() {
+  local _fs_resp _fs_id
+  unset FULLSEND_GITLAB_ANALYST_USER_ID
+  if ! _fs_resp=$(
+    # shellcheck disable=SC2034  # consumed by fullsend_select_gitlab_role_token
+    FULLSEND_JOB_KIND=agent
+    # shellcheck disable=SC2034  # consumed by fullsend_select_gitlab_role_token
+    FULLSEND_JOB_AGENT=analyst
+    fullsend_select_gitlab_role_token || exit 1
+    fullsend_gate_curl "${FULLSEND_PINNED_GITLAB_URL}/api/v4/user" \
+      -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"
+  ); then
+    echo "WARNING: could not resolve the Analyst identity; changes-requested markers will not trigger the fix stage in this job" >&2
+    return 0
+  fi
+  _fs_id=$(printf '%s' "${_fs_resp}" | jq -r '.id // empty' 2>/dev/null || true)
+  case "${_fs_id}" in
+    ''|0|*[!0-9]*)
+      echo "WARNING: GitLab returned no valid user ID for the Analyst identity; changes-requested markers will not trigger the fix stage in this job" >&2
+      return 0
+      ;;
+  esac
+  export FULLSEND_GITLAB_ANALYST_USER_ID="${_fs_id}"
 }
 
 fullsend_pin_ci_job_identity

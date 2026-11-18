@@ -129,7 +129,7 @@ func TestEnsureTrafficOnLatestRevision_FullTraffic_SkipsPinWhenTargetServing(t *
 
 func TestProvisioner_Provision_SameHash_PinsWhenTrafficSplit(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, TracingStamp{})
 	require.NoError(t, err)
 
 	fake := newFakeGCFClient()
@@ -284,7 +284,7 @@ func TestProvisioner_Provision_ExistingMint_PreservesDenyAllWorkflowFilesThrough
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srcDir := fakeFunctionSourceDir(t)
-			sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+			sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, TracingStamp{})
 			require.NoError(t, err)
 			hash := "old-hash"
 			if tc.sameHash {
@@ -351,7 +351,7 @@ func TestProvisioner_Provision_ExistingMint_PreservesDenyAllWorkflowFilesThrough
 // write at all.
 func TestProvisioner_Provision_HashSkip_SkipsPlaceholderOrgRegistration(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, TracingStamp{})
 	require.NoError(t, err)
 
 	fake := newFakeGCFClient()
@@ -383,7 +383,7 @@ func TestProvisioner_Provision_SameHash_SecretFailureHappensBeforeReconciliation
 	for _, failing := range []string{"AddSecretVersion", "GetSecret"} {
 		t.Run(failing, func(t *testing.T) {
 			srcDir := fakeFunctionSourceDir(t)
-			sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+			sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, TracingStamp{})
 			require.NoError(t, err)
 
 			fake := newFakeGCFClient()
@@ -439,7 +439,7 @@ func TestProvisioner_Provision_SameHash_SecretFailureHappensBeforeReconciliation
 // ahead of reconciliation.
 func TestProvisioner_Provision_SameHash_StoresPEMOnce(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, TracingStamp{})
 	require.NoError(t, err)
 
 	fake := newFakeGCFClient()
@@ -1183,7 +1183,7 @@ func TestProvisioner_Provision_CodeChanged_OldTemplatePatchAfterBuildIsRefused(t
 // redeploys the source (a plain retry would otherwise fail identically).
 func TestProvisioner_Provision_SameHash_SupersededTemplateForcesRedeploy(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, TracingStamp{})
 	require.NoError(t, err)
 
 	fake := newFakeGCFClient()

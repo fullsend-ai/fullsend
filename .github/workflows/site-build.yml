@@ -93,7 +93,6 @@ jobs:
           set -euo pipefail
           mkdir -p _bundle/public
           cp web/public/index.html _bundle/public/index.html
-          cp web/public/graph.html _bundle/public/graph.html
           cp web/public/404.html _bundle/public/404.html
           mkdir -p _bundle/public/docs
           cp -a docs/.vitepress/dist/. _bundle/public/docs/

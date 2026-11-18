@@ -10,6 +10,9 @@
 #   - Codex (npm, version-pinned via CODEX_VERSION ARG; replaces the copy
 #     the OpenShell base image ships, with the same shadow-proof symlink
 #     and build-time assertion as Claude Code — stub runtime, see #6920)
+#   - OpenCode (GitHub release, SHA256-verified glibc build via
+#     OPENCODE_VERSION + per-arch checksum ARGs; opt-in runtime, see
+#     unbound-force#510)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - ripgrep + fd (backends of pi's built-in grep/find tools; SHA256-verified
 #     static builds, versions asserted at build time)
@@ -56,7 +59,7 @@ RUN apt-get update \
 #
 # To update: bump CLAUDE_CODE_VERSION; renovate tracks this ARG via
 # a customManagers regex entry in renovate.json.
-ARG CLAUDE_CODE_VERSION=2.1.296
+ARG CLAUDE_CODE_VERSION=2.1.306
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # The OpenShell base image bundles its own Claude Code at /usr/local/bin/claude
@@ -92,18 +95,20 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # 0.84.4 is the FLOOR for Gemini on Vertex (the pin is above it): 0.84.3
 # bundles https-proxy-agent without its named export, so every google-vertex
 # request fails with "HttpsProxyAgent is not a constructor" whenever
-# HTTPS_PROXY is set — which the OpenShell sandbox always does
-# (earendil-works/pi#8610, fixed in 0.84.4).
+# HTTPS_PROXY is set (earendil-works/pi#8610, fixed in 0.84.4).
 # To update: bump PI_VERSION; renovate tracks this ARG via a customManagers
 # regex entry in renovate.json. pi releases ~weekly minors and has changed
 # its --mode json wire shape within a minor before (0.84.0) — the pi stream
 # parser fixtures must be re-verified when this pin moves.
+# CI runs all internal/runtime/pi_extension/*.test.mjs with this pin,
+# including offline MCP parent/child permission and agent dispatch tests.
+# Re-run that full glob locally with FULLSEND_TEST_PI_BIN on every bump.
 # Also run internal/runtime/pi_extension/fullsend-edit-repair.test.mjs with
 # FULLSEND_TEST_PI_BIN at the new pin. That extension works around pi
 # rejecting malformed edit arguments (earendil-works/pi#8521, #8962); once
 # the test's without-extension control stops failing, this pi repairs both
 # shapes itself — delete the extension and internal/runtime/pi_edit_repair.go.
-ARG PI_VERSION=1.1.0
+ARG PI_VERSION=1.5.0
 RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
         || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
     && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
@@ -147,8 +152,8 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # PI_VERSION bump move that matrix to the new pin first. Compat flags
 # reach Vertex only through the extension's VERTEX_COMPAT_KEYS allowlist.
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
-ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.1
-ARG PI_ANTHROPIC_VERTEX_SHA256=b7c5572a94dc2b1ad80a189216067b4d3adee4028d85a1f60c3228651c826559
+ARG PI_ANTHROPIC_VERTEX_VERSION=0.2.1
+ARG PI_ANTHROPIC_VERTEX_SHA256=3463c8c655001dfc89fdce649a461dbc55463f970b35b923d28a35eed712f5ef
 ARG PI_EXTENSIONS_DIR=/usr/local/share/pi-extensions
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
@@ -187,8 +192,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # would re-walk earlier extensions on every rebuild), so the last install also
 # locks the parent directory itself, non-recursively -- its mode is then
 # explicit rather than inherited from the build umask.
-ARG PI_XAI_VERTEX_VERSION=0.2.1
-ARG PI_XAI_VERTEX_SHA256=2d910e500c1052f5a8b10d0f9a39149629fd1fff93e5cac71ae963211a71ee30
+ARG PI_XAI_VERTEX_VERSION=0.3.1
+ARG PI_XAI_VERTEX_SHA256=325de8a6b123f205b45de446f628878f3e9ecc1bd69034dd7a5abf4948b6b7ac
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v${PI_XAI_VERTEX_VERSION}.tar.gz" \
       -o /tmp/pi-xai-vertex.tar.gz \
@@ -226,8 +231,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # carry the tarball SHA256) and set the two ARGs below:
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v<ver>.tar.gz)
 # The last extension install locks the parent directory (see pi-xai-vertex).
-ARG PI_INFERENCE_GATEWAY_VERSION=0.1.2
-ARG PI_INFERENCE_GATEWAY_SHA256=86684dd41f23bc9fd9043db7677caed65de6fa0e200501598e7c7d0465e8f441
+ARG PI_INFERENCE_GATEWAY_VERSION=0.2.0
+ARG PI_INFERENCE_GATEWAY_SHA256=359960609b3b6841f0cb3cd7d6c8b4a926d49c32c0237b01b2a8f5669c3a277d
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v${PI_INFERENCE_GATEWAY_VERSION}.tar.gz" \
       -o /tmp/pi-inference-gateway.tar.gz \
@@ -266,7 +271,7 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 #
 # To update: bump CODEX_VERSION; renovate tracks this ARG via a
 # customManagers regex entry in renovate.json.
-ARG CODEX_VERSION=0.159.3
+ARG CODEX_VERSION=0.166.0
 RUN npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION} \
     && npm cache clean --force
 
@@ -327,6 +332,56 @@ RUN mkdir -p /etc/codex \
     && chmod 0644 /etc/codex/config.toml
 
 # ---------------------------------------------------------------------------
+# OpenCode — opt-in agent runtime (anomalyco/opencode, unbound-force#510).
+# glibc builds (the musl tarballs dynamically link libc.musl — absent in the
+# Debian-based OpenShell base image).  The base image may ship its own
+# opencode at /usr/local/bin; rm -f before extract so the pinned version wins
+# (same shadow-proof pattern as Claude Code above).
+# To update: bump OPENCODE_VERSION and OPENCODE_SHA256_{AMD64,ARM64} from:
+#   https://github.com/anomalyco/opencode/releases
+ARG OPENCODE_VERSION=1.19.1
+ARG OPENCODE_SHA256_AMD64=6f1904b860bdbd32e90e679c9e1b0e64e78269a353e1497d5ea792dfa449538c
+ARG OPENCODE_SHA256_ARM64=3840e9afb2462a666d31816b20bc13b91af9845c329cff660a972aa9cfaee3a2
+RUN case "$TARGETARCH" in \
+      amd64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+             EXPECTED="${OPENCODE_SHA256_AMD64}" ;; \
+      arm64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz" \
+             EXPECTED="${OPENCODE_SHA256_ARM64}" ;; \
+      *)     echo "unsupported TARGETARCH=$TARGETARCH for opencode" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --retry 3 --retry-delay 5 "${OPENCODE_URL}" -o /tmp/opencode.tar.gz \
+    && GOT="$(sha256sum /tmp/opencode.tar.gz | cut -d' ' -f1)" \
+    && if [ "${GOT}" != "${EXPECTED}" ]; then \
+         echo "opencode checksum mismatch: got ${GOT}, expected ${EXPECTED}" >&2; \
+         exit 1; \
+       fi \
+    && rm -f /usr/local/bin/opencode \
+    && tar xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode \
+    && chmod 0755 /usr/local/bin/opencode \
+    && rm -f /tmp/opencode.tar.gz \
+    && GOT_VER="$(opencode --version)" \
+    && if [ "${GOT_VER}" != "${OPENCODE_VERSION}" ]; then \
+         echo "opencode version mismatch: got '${GOT_VER}', expected version ${OPENCODE_VERSION}" >&2; \
+         exit 1; \
+       fi
+
+# OpenCode hygiene defaults. OPENCODE_CONFIG_DIR must match
+# sandbox.SandboxOpenCodeConfig (internal/sandbox/sandbox.go).
+# Root-owned, group-writable (0775): Bootstrap and the run prelude create
+# subdirectories and write opencode.json as the sandbox user (gid sandbox).
+# The run prelude re-pins OPENCODE_CONFIG_DIR after sourcing .env so the
+# agent cannot redirect the config path; per-run agent tampering with
+# opencode.json is overwritten at the next iteration. Full config-dir
+# lockdown is deferred to the hook adapter (#7824).
+RUN install -d -o root -g sandbox -m 0775 /sandbox/opencode-config
+# OPENCODE_DISABLE_MODELS_FETCH: the sandbox cannot reach models.opencode.ai,
+# so skip the refresh. With no cached models.json (the runner removes it
+# before each iteration), OpenCode uses the catalog built into the binary.
+ENV OPENCODE_CONFIG_DIR="/sandbox/opencode-config" \
+    OPENCODE_DISABLE_PROJECT_CONFIG="true" \
+    OPENCODE_DISABLE_MODELS_FETCH="true"
+
+# ---------------------------------------------------------------------------
 # ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).
 #
 # The model's only consumer is security.RunMLScan, called solely from
@@ -377,12 +432,14 @@ RUN case "$TARGETARCH" in \
 # To update: bump the versions and refresh the SHA256s from
 #   https://github.com/BurntSushi/ripgrep/releases/download/<ver>/ripgrep-<ver>-<arch>-unknown-linux-musl.tar.gz.sha256
 #   sha256sum <(curl -fsSL https://github.com/sharkdp/fd/releases/download/v<ver>/fd-v<ver>-<arch>-unknown-linux-musl.tar.gz)
+# Renovate bumps FD_VERSION; postUpgradeTasks runs
+# scripts/renovate/update-fd-checksums.sh to refresh the FD_SHA256 ARGs.
 ARG RIPGREP_VERSION=15.2.0
 ARG RIPGREP_SHA256_AMD64=33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
 ARG RIPGREP_SHA256_ARM64=800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915
-ARG FD_VERSION=10.5.0
-ARG FD_SHA256_AMD64=761c72dc8e120d85b22292063be8a796e2eeb20eb3e4f38b8fa2343ccf3514a7
-ARG FD_SHA256_ARM64=d76c4317f7d5dba69f8a2a15856c90c777e7f0dd4e85f0de8c76de6992c374d4
+ARG FD_VERSION=10.5.2
+ARG FD_SHA256_AMD64=7e2d07fa2b8807642aaec67b7e2972a9fbe4db26fcb340a7372392db42b26694
+ARG FD_SHA256_ARM64=63ea52cb31586e6d98efa2f06d73d542f16c7d0c4af0f07b579aaf9714cf907a
 RUN case "$TARGETARCH" in \
       amd64) RS_ARCH="x86_64";  RG_SHA="$RIPGREP_SHA256_AMD64"; FD_SHA="$FD_SHA256_AMD64" ;; \
       arm64) RS_ARCH="aarch64"; RG_SHA="$RIPGREP_SHA256_ARM64"; FD_SHA="$FD_SHA256_ARM64" ;; \
@@ -425,9 +482,9 @@ RUN apt-get update \
 # Pinned version + sha256 checksum for supply chain safety.
 # Renovate bumps TIRITH_VERSION; postUpgradeTasks runs
 # scripts/renovate/update-tirith-checksums.sh to refresh the SHA256 ARGs.
-ARG TIRITH_VERSION=0.4.2
-ARG TIRITH_SHA256_AMD64=efa6bf414a83dba385d4f13137e8677f850ced9102fe74ebb14c72f31df0dc77
-ARG TIRITH_SHA256_ARM64=c550b1bfb0c8c872ab3421cd6ef756f260f7cf4981a18cedd49f141fa2d77569
+ARG TIRITH_VERSION=0.5.0
+ARG TIRITH_SHA256_AMD64=e2a87b1fbb967e8d37bc9c3c19bcd97f7979c9253e2f600d9293fce4d86d07ce
+ARG TIRITH_SHA256_ARM64=e9f3d685f0a5ba210c67e763749905915a1b34099a1419f9ce87a1ee60b9fc37
 RUN case "$TARGETARCH" in \
       amd64) TI_ARCH="x86_64";  TI_SHA="$TIRITH_SHA256_AMD64" ;; \
       arm64) TI_ARCH="aarch64"; TI_SHA="$TIRITH_SHA256_ARM64" ;; \

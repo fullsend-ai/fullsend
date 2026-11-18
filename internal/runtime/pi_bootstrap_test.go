@@ -20,7 +20,8 @@ import (
 )
 
 // fakeOpenshellPi installs a fake "openshell" that records every argv line
-// to logPath, stores each "sandbox upload <name> <local> <remote>" payload
+// to logPath, stores each
+// "sandbox upload --no-git-ignore <name> <local> <remote>" payload
 // under storeDir keyed by the remote path, answers `pi --version` and `cat
 // <remote>` execs from that store, and streams streamFixture for the pi run
 // command. Everything else succeeds silently.
@@ -40,8 +41,8 @@ func fakeOpenshellPi(t *testing.T, logPath, storeDir, streamFixture string) {
 	script := `#!/bin/sh
 echo "$@" >> '` + logPath + `'
 if [ "$2" = "upload" ]; then
-  case "$5" in /tmp/fs-upload-*/) cp -- "$4" "$5/"; exit $? ;; esac
-  cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
+  case "$6" in /tmp/fs-upload-*/) cp -- "$5" "$6/"; exit $? ;; esac
+  cp "$5" '` + storeDir + `'/"$(printf '%s' "$6" | tr '/' '_')"
   exit 0
 fi
 if [ "$2" = "exec" ]; then
@@ -52,10 +53,11 @@ if [ "$2" = "exec" ]; then
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
     "pi --version") echo "0.84.2"; exit 0 ;;
+    ` + hookEnvReadStubArm + `
     "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
     *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
-    *"--print --mode json"*) cat '` + streamFixture + `'; exit 0 ;;
+    *"--print --mode json"*) ` + fakeAgentStderrArm + `cat '` + streamFixture + `'; exit 0 ;;
   esac
   exit 0
 fi
@@ -63,6 +65,9 @@ exit 0
 `
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// A hooks-enabled Bootstrap records the hook settings for its sandbox
+	// name; drop them so other tests' launches for that name are unchanged.
+	t.Cleanup(resetPiHookEnvs)
 }
 
 func storedUpload(t *testing.T, storeDir, remotePath string) []byte {
@@ -145,6 +150,9 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	require.NotNil(t, m.Hooks)
 	assert.Equal(t, cfg+"/hooks", m.Hooks.Dir)
 	assert.Equal(t, "Bash", m.Hooks.ToolNames["bash"])
+	assert.Equal(t, "ListMcpResourcesTool", m.Hooks.ToolNames["list_mcp_resources"])
+	assert.Equal(t, "ListMcpResourcesTool", m.Hooks.ToolNames["list_mcp_resource_templates"])
+	assert.Equal(t, "ReadMcpResourceTool", m.Hooks.ToolNames["read_mcp_resource"])
 	var phases []string
 	for _, g := range m.Hooks.Groups {
 		phases = append(phases, g.Phase)
@@ -282,7 +290,7 @@ func TestPiRuntimeRun_StreamsFixtureAndReportsMetrics(t *testing.T) {
 	require.NotEmpty(t, events)
 	init, ok := events[0].(InitEvent)
 	require.True(t, ok, "InitEvent is emitted first")
-	assert.Equal(t, "claude-opus-4-6", init.Model, "bare model id, as Claude Code reports it")
+	assert.Equal(t, "claude-opus-5-5", init.Model, "bare model id, as Claude Code reports it")
 	assert.Equal(t, "0.84.2", init.Version, "pi version comes from Bootstrap's preflight")
 	inits := 0
 	for _, e := range events {
@@ -294,7 +302,7 @@ func TestPiRuntimeRun_StreamsFixtureAndReportsMetrics(t *testing.T) {
 
 	assert.Equal(t, 1, metrics.NumTurns)
 	assert.Equal(t, int32(1), metrics.ToolCalls.Load())
-	assert.Equal(t, "claude-opus-4-6", metrics.Model)
+	assert.Equal(t, "claude-opus-5-5", metrics.Model)
 	assert.InDelta(t, 0.015, metrics.TotalCostUSD, 0.001)
 
 	teed, err := os.ReadFile(outPath)
@@ -333,7 +341,7 @@ func TestPiRuntimeRun_FoldsSubagentUsage(t *testing.T) {
 	assert.Equal(t, 0, exit)
 
 	require.NotNil(t, metrics.PerModelUsage)
-	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-4-6"]
+	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-5-5"]
 	child := metrics.PerModelUsage["anthropic-vertex/claude-sonnet-4-6"]
 	assert.Equal(t, 1, parent.Requests, "the parent's own iteration is one request, keyed by its full model spec")
 	assert.Equal(t, 2, child.Requests, "a failed sub-agent still spent tokens")
@@ -342,7 +350,7 @@ func TestPiRuntimeRun_FoldsSubagentUsage(t *testing.T) {
 	assert.Equal(t, parent.InputTokens+child.InputTokens, metrics.InputTokens)
 	assert.Equal(t, parent.CacheReadInputTokens+10, metrics.CacheReadInputTokens)
 	assert.Equal(t, parent.CacheCreationInputTokens+5, metrics.CacheCreationInputTokens)
-	assert.Equal(t, "claude-opus-4-6", metrics.Model, "the reported model stays the bare parent id")
+	assert.Equal(t, "claude-opus-5-5", metrics.Model, "the reported model stays the bare parent id")
 
 	// The read consumes the file, so a retry iteration whose
 	// ClearIterationArtifacts failed cannot count the same children twice.
@@ -380,7 +388,7 @@ func TestPiRuntimeRun_NoSubagentUsageLeavesMetricsAlone(t *testing.T) {
 	// an iteration missing from the breakdown makes the run's
 	// per_model_usage stop matching its totals.
 	require.Len(t, metrics.PerModelUsage, 1)
-	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-4-6"]
+	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-5-5"]
 	assert.Equal(t, 1, parent.Requests)
 	assert.InDelta(t, metrics.TotalCostUSD, parent.CostUSD, 1e-9, "no children means the parent entry is the whole breakdown")
 }
@@ -493,6 +501,11 @@ func TestPiRuntimeRun_SecurityOnButManifestWithoutHooksFailsFast(t *testing.T) {
 	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "sb", agentPath: writeAgentFile(t, testAgentDef), agentName: "triage",
 	}))
+	// Hook settings recorded as a hooks Bootstrap would, so Run reaches the
+	// manifest check (TestPiRuntimeRun_RefusesWithoutRecordedHookEnv covers
+	// the missing record).
+	recordPiHookEnv("sb", nil)
+	t.Cleanup(func() { piHookEnvs.Delete("sb") })
 	exit, err := PiRuntime{}.Run(context.Background(), RunParams{
 		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second, HooksSettingsPath: "/sandbox/claude-config/hooks.json",
 		OnEvent: func(AgentEvent) {},
@@ -543,6 +556,62 @@ func TestPiRuntimeBootstrap_SkillDirsOnlyAddsRead(t *testing.T) {
 	assert.Equal(t, []string{"go"}, m.BashAllowlist)
 }
 
+func TestPiRuntimeBootstrap_NestedForgeSkillsShareBasename(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	fakeOpenshellPi(t, logPath, filepath.Join(work, "store"), "/dev/null")
+
+	root := t.TempDir()
+	labelsDir := filepath.Join(root, "issue-labels", "github")
+	reviewDir := filepath.Join(root, "pr-review", "github")
+	require.NoError(t, os.MkdirAll(labelsDir, 0o755))
+	require.NoError(t, os.MkdirAll(reviewDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(labelsDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "SKILL.md"),
+		[]byte("---\nname: pr-review-github\n---\n"), 0o644))
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, testAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{labelsDir, reviewDir},
+	}
+	require.NoError(t, PiRuntime{}.Bootstrap(in))
+
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	cfg := PiRuntime{}.ConfigDir()
+	assert.Contains(t, string(log), cfg+"/skills/issue-labels")
+	assert.Contains(t, string(log), cfg+"/skills/pr-review-github")
+	assert.NotContains(t, string(log), cfg+"/skills/github")
+}
+
+func TestPiRuntimeBootstrap_RejectsInvalidSkillDestinationName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(root string) string
+	}{
+		{"dotdot", func(root string) string { return root + "/sub/.." }},
+		{"dot", func(root string) string { return root + "/sub/." }},
+		{"control-char", func(root string) string { return root + "/bad\x01name" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := t.TempDir()
+			fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), filepath.Join(work, "store"), "/dev/null")
+
+			err := PiRuntime{}.Bootstrap(bootstrapInput{
+				sandboxName: "sb",
+				agentPath:   writeAgentFile(t, testAgentDef),
+				agentName:   "triage",
+				skillDirs:   []string{tc.path(t.TempDir())},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid sandbox name")
+		})
+	}
+}
+
 func TestPiRuntimeExtractTranscripts(t *testing.T) {
 	work := t.TempDir()
 	logPath := filepath.Join(work, "openshell.log")
@@ -570,7 +639,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "transcripts")
-	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "triage", out))
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "triage", out, ""))
 	entries, err := os.ReadDir(out)
 	require.NoError(t, err)
 	var names []string
@@ -616,7 +685,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "transcripts")
-	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "review", out))
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "review", out, ""))
 	entries, err := os.ReadDir(out)
 	require.NoError(t, err)
 	var names []string
@@ -663,7 +732,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "artifacts", "transcripts")
-	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "../../escaped", out),
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "../../escaped", out, ""),
 		"a rejected name is reported and skipped, not an extraction failure")
 
 	// The usage file and a session transcript go through the same check,
@@ -729,6 +798,18 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		return &m, store, string(storedUpload(t, store, cfg+"/APPEND_SYSTEM.md"))
 	}
 
+	t.Run("mapped-empty parent has no child dispatcher", func(t *testing.T) {
+		m, _, _ := bootstrap(t, "---\nname: review\ntools: [Skill]\n---\nReview.", false)
+		assert.Nil(t, m.Agent)
+	})
+
+	t.Run("Agent-only parent has explicit empty child selection", func(t *testing.T) {
+		m, _, _ := bootstrap(t, "---\nname: review\ntools: [Agent]\n---\nReview.", false)
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "explicit", m.Agent.ToolMode)
+		assert.Empty(t, m.Agent.Tools)
+	})
+
 	t.Run("enabled without tools frontmatter, hooks on", func(t *testing.T) {
 		m, store, appendSystem := bootstrap(t, "---\nname: review\nmodel: opus\n---\nReview the PR.", true)
 		require.NotNil(t, m.Agent)
@@ -738,10 +819,10 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Equal(t, []string{piVertexExtensionPath, cfg + "/fullsend-hooks.js"}, m.Agent.Extensions,
 			"only the provider extensions the image has (the probe found anthropic-vertex, not xai-vertex), then the hook adapter")
 		assert.Equal(t, map[string]string{
-			"default": "anthropic-vertex/claude-opus-4-6",
-			"opus":    "anthropic-vertex/claude-opus-4-6",
-			"sonnet":  "anthropic-vertex/claude-sonnet-4-6",
-			"haiku":   "anthropic-vertex/claude-haiku-4-5",
+			"default": "anthropic-vertex/claude-opus-5-5",
+			"opus":    "anthropic-vertex/claude-opus-5-5",
+			"sonnet":  "anthropic-vertex/claude-sonnet-5-5",
+			"haiku":   "anthropic-vertex/claude-haiku-5-5",
 			"fable":   "anthropic-vertex/claude-fable-5-1",
 		}, m.Agent.Models)
 		assert.Equal(t, map[string][]string{
@@ -754,7 +835,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			"the publisher-qualified wire id the vendored extension registers, so xai-vertex/xai/grok-4.6 resolves and an invented Grok id does not")
 		hooksExt := cfg + "/fullsend-hooks.js"
 		editExt := cfg + "/fullsend-edit-repair.js"
-		require.Len(t, m.Agent.ExtensionDigests, 2,
+		require.Len(t, m.Agent.ExtensionDigests, 3,
 			"both child -e entries Bootstrap wrote into the config dir are digest-covered, so the extension can re-check them before every dispatch")
 		require.NotEmpty(t, m.Agent.ExtensionDigests[hooksExt])
 		assert.Contains(t, piHooksGuard(hooksExt, cfg+"/fullsend-manifest.json"), m.Agent.ExtensionDigests[hooksExt],
@@ -769,6 +850,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			"the vendored provider extension is root-owned and read-only in the image; nothing to re-check")
 		assert.Equal(t, "medium", m.Agent.Thinking, "children default to medium: the roster overran the review budget at high")
 		assert.Equal(t, piDefaultTools, m.Agent.Tools, "no tools: frontmatter → the default built-in set")
+		assert.Equal(t, "default", m.Agent.ToolMode)
 		assert.Equal(t, piExploreTools, m.Agent.ExploreTools)
 		assert.Equal(t, piAgentMaxConcurrent, m.Agent.MaxConcurrent)
 		assert.Equal(t, piAgentTimeoutSeconds, m.Agent.TimeoutSeconds)
@@ -791,8 +873,11 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, []string{"read", "grep", "Agent", "Task"}, m.Tools, "--tools carries both tool names")
 		assert.Equal(t, []string{"read", "grep"}, m.Agent.Tools, "children get the built-ins only")
+		assert.Equal(t, "explicit", m.Agent.ToolMode)
 		assert.Equal(t, []string{piVertexExtensionPath}, m.Agent.Extensions, "no hook adapter without security")
-		assert.Empty(t, m.Agent.ExtensionDigests, "no hook adapter and no edit repair (no edit tool), hence no digests")
+		require.Len(t, m.Agent.ExtensionDigests, 1, "the child loadout guard is always checked")
+		assert.NotEmpty(t, m.Agent.ExtensionDigests[cfg+"/fullsend-agent.js"])
+		assert.Equal(t, piMCPResourceTools, m.Agent.MCPResourceTools)
 		assert.Empty(t, m.Agent.EditRepairExtension, "the tools: list names no edit")
 		_, err := os.Stat(filepath.Join(store, strings.ReplaceAll(cfg+"/fullsend-edit-repair.js", "/", "_")))
 		assert.True(t, os.IsNotExist(err), "not uploaded for an agent without edit")
@@ -806,7 +891,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Equal(t, []string{"read", "edit"}, m.Agent.Tools, "children keep edit, minus the sub-agent tools")
 		assert.Equal(t, cfg+"/fullsend-edit-repair.js", m.Agent.EditRepairExtension, "a declared list naming Edit carries the extension")
 		assert.NotContains(t, m.Agent.Extensions, cfg+"/fullsend-edit-repair.js", "never in the shared list: a child without edit must not load it")
-		require.Len(t, m.Agent.ExtensionDigests, 1, "hooks are off, so the repair is the only digest")
+		require.Len(t, m.Agent.ExtensionDigests, 2, "repair and child loadout guard are checked")
 		require.NotEmpty(t, m.Agent.ExtensionDigests[cfg+"/fullsend-edit-repair.js"])
 		assert.Equal(t, piEditRepairExtensionJS, storedUpload(t, store, cfg+"/fullsend-edit-repair.js"))
 	})
@@ -835,7 +920,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		t.Setenv(piProviderEnv, piXaiVertexProvider)
 		m, _, _ := bootstrap(t, "---\nname: review\nmodel: grok-4.6\n---\nbody", false)
 		assert.Equal(t, "xai-vertex/xai/grok-4.6", m.Agent.Models["default"])
-		assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", m.Agent.Models["sonnet"], "aliases are Claude models on the Anthropic Vertex provider regardless of the parent's provider")
+		assert.Equal(t, "anthropic-vertex/claude-sonnet-5-5", m.Agent.Models["sonnet"], "aliases are Claude models on the Anthropic Vertex provider regardless of the parent's provider")
 	})
 
 	t.Run("config aliases reach the sub-agent model table", func(t *testing.T) {
@@ -855,9 +940,9 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, "anthropic-vertex/claude-sonnet-5", m.Agent.Models["sonnet"],
 			"per-repo config alias overrides the fleet default in the child model table")
-		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", m.Agent.Models["opus"],
+		assert.Equal(t, "anthropic-vertex/claude-opus-5-5", m.Agent.Models["opus"],
 			"unstated aliases keep the fleet default")
-		assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", m.Agent.Models["haiku"],
+		assert.Equal(t, "anthropic-vertex/claude-haiku-5-5", m.Agent.Models["haiku"],
 			"unstated aliases keep the fleet default")
 		assert.Equal(t, "anthropic-vertex/claude-fable-5-1", m.Agent.Models["fable"],
 			"unstated aliases keep the fleet default")
@@ -885,7 +970,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, "google-vertex/gemini-3.8-flash", m.Agent.Models["haiku"],
 			"a provider-qualified override passes through verbatim, as it does for the parent")
-		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", m.Agent.Models["opus"],
+		assert.Equal(t, "anthropic-vertex/claude-opus-5-5", m.Agent.Models["opus"],
 			"bare fleet defaults still get the Anthropic Vertex prefix")
 	})
 

@@ -74,6 +74,7 @@ decide..." or "We also require...", stop. That is a second ADR.
   instead of restating them.
 - **Decision:** State the decision directly. A few paragraphs at most.
 - **Consequences:** 3-5 bullet points. Each one sentence.
+- **Forge scope:** A few sentences, or one line per forge.
 
 | Section | Target | Anti-pattern |
 |---------|--------|-------------|
@@ -81,6 +82,28 @@ decide..." or "We also require...", stop. That is a second ADR.
 | Options (if any) | 1 paragraph each | Multi-page analysis per option |
 | Decision | Direct statement + brief rationale | Burying the decision in prose |
 | Consequences | 3-5 one-sentence bullets | Essay-length explanations |
+| Forge scope | A few sentences, or one line per forge | Per-forge essays |
+
+### State the aim, then the choice
+
+Close the Context with one sentence stating what this ADR aims to achieve
+(e.g., "This ADR aims to …"). The reader needs it before the Options, because
+Options are judged against it. Then open the Decision with the choice and its
+purpose in one line ("We adopt X to do Y"), before any mechanics.
+
+```markdown
+# Good (end of Context)
+This ADR aims to stop requiring the Administer Projects permission on the
+long-lived Jira polling credential.
+
+# Good (start of Decision)
+We authorize Jira actors through config-owned lists and Jira's own label
+permission to drop that requirement.
+
+# Bad (start of Decision)
+Jira actors are authorized without the project role roster unless a
+repository opts into it: [immediately lists three numbered mechanisms]
+```
 
 ### Link, don't repeat
 
@@ -95,9 +118,22 @@ The threat model establishes least-privilege as a cross-cutting principle
 [3 paragraphs restating the threat model's least-privilege section]
 ```
 
+The same applies to sibling ADRs and contracts. When another ADR decides a
+rule, or a `docs/normative/` contract specifies it (often one in the same PR),
+link it in one line instead of restating it, so the two texts cannot drift.
+
 ### Cross-reference other ADRs
 
 If this decision builds on or relates to another ADR, say so in Context.
+
+### Keep implementation out of the ADR PR
+
+The recommendation is that implementation does **not** accompany an ADR. An
+ADR PR carries the decision record and the living-document updates. File
+follow-up issues to track the implementation, and land it in separate PRs.
+
+The exception is implementation that is really short and trivial. That will
+rarely be the case. When in doubt, split the implementation out.
 
 ### Normative specs (`docs/normative/`)
 
@@ -135,8 +171,22 @@ Follow these steps in order:
    Options section only when there are genuine alternatives worth documenting;
    if the decision is obvious, just decide it.
 5. **Write the ADR.** Follow the conciseness rules above.
-6. **Run linters.** Stage your changes, then execute `make lint` and fix any errors before committing.
-7. **If status is Accepted, update living documents** (see below).
+6. **Cite current behavior.** Verify each claim about how fullsend works today
+   against the code at a specific commit SHA (reading `main` is fine; record
+   its SHA), not general knowledge of the underlying tool. In the ADR, describe
+   it in plain language and link the PR, issue, or ADR that introduced it; put
+   the file or function evidence at that SHA in the PR description, never as
+   code permalinks (`blob/<sha>/…`) in Context or Decision.
+7. **Fill in Forge scope.** State which forges (GitHub, GitLab, Forgejo) the
+   decision applies to and how each is handled. For any forge left out, say so
+   explicitly with a reason or a tracking issue (e.g., "GitHub only; GitLab
+   tracked in #NNN").
+8. **Leave implementation out.** File follow-up issues for the implementation
+   instead of including it in the ADR PR, unless it is really short and
+   trivial (see [Keep implementation out of the ADR
+   PR](#keep-implementation-out-of-the-adr-pr)).
+9. **Run linters.** Stage your changes, then execute `make lint` and fix any errors before committing.
+10. **If status is Accepted, update living documents** (see below).
 
 ## Updating Living Documents After Acceptance
 
@@ -191,6 +241,8 @@ If the ADR partially answers a question, add a parenthetical:
 
 ## Red Flags -- Stop and Reconsider
 
+- Context ends without saying what the ADR aims to fix -- close it with "This ADR aims to …"
+- Decision opens with mechanics instead of the choice -- lead with "We adopt X to do Y"
 - Context section restates information from problem docs at length
 - You wrote "Additionally, we decide..." -- split into two ADRs
 - You're rewriting a section of architecture.md -- make a surgical edit instead
@@ -200,12 +252,19 @@ If the ADR partially answers a question, add a parenthetical:
   accepted ADR -- write a new superseding ADR instead
 - You're turning an old ADR into a running changelog -- use
   `docs/architecture.md` for evolving design narrative
+- A limit, timeout, or size in the Decision has no stated basis -- give the
+  basis, or say it is an initial value to revisit and when
+- A sibling ADR or contract version in the same series just merged -- re-check
+  each open ADR's references to its siblings and contract versions
 
 ## Common Mistakes
 
 | Mistake | Fix |
 |---------|-----|
 | Bundling multiple decisions | Split into separate ADRs |
+| Bundling non-trivial implementation with the ADR | Land the decision record alone; track implementation in follow-up issues |
+| Context ends without stating the aim | Close it with a "This ADR aims to …" sentence |
+| Decision opens with mechanics, choice buried | Lead with "We adopt X to do Y" |
 | Verbose context | Link to problem docs |
 | Forgetting frontmatter `relates_to` | Check template, list problem doc filenames |
 | Not updating architecture.md | Follow the update checklist above |
@@ -217,3 +276,8 @@ If the ADR partially answers a question, add a parenthetical:
 | Treating old ADRs as evolving design docs | Use `docs/architecture.md` for living narrative |
 | Forgetting to update architecture.md | It must always reflect current decisions |
 | Leading zeros in title number | Use `"1. Title"` not `"0001. Title"` — zero-padded numbers are only for filenames |
+| Missing or implicit forge scope (only GitHub mechanisms discussed) | Fill in Forge scope; name every forge left out with a reason or tracking issue |
+| Unverified claims about how fullsend works today, or checking only `main` | Verify against the code at a commit SHA; put the file/function evidence in the PR description |
+| Code permalinks (`blob/<sha>/…`, with or without `#L`) in Context or Decision | Describe the behavior in plain prose and link the PR, issue, or ADR that introduced it |
+| File slug names an option the ADR rejected | Name the slug after the chosen decision |
+| Implementation-status blocks such as "Planned:" in Context | Keep status in Context to one sentence at most; it belongs in `docs/architecture.md` "(target state)" and in issues |

@@ -117,7 +117,6 @@ func TestNewCFMintDriver_OK(t *testing.T) {
 	d, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, cfmintConfig{
 		pemDir:            dir,
 		suiteName:         "bt",
-		perRepoWIFRepos:   "my-org/test-repo-01,my-org/test-repo-02",
 		workflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		appSet:            "fullsend-test",
 	})
@@ -129,7 +128,6 @@ func TestCFMintDeployArgs_WithAppSet(t *testing.T) {
 	cfg := cfmintConfig{
 		pemDir:            "/tmp/pems",
 		suiteName:         "bt",
-		perRepoWIFRepos:   "my-org/test-repo-01",
 		workflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		appSet:            "fullsend-test",
 	}
@@ -145,7 +143,8 @@ func TestCFMintDeployArgs_WithAppSet(t *testing.T) {
 		}
 	}
 	assert.Contains(t, args, "--pem-dir")
-	assert.Contains(t, args, "--per-repo-wif-repos")
+	assert.Contains(t, args, "--public", "previews accept any caller (PER_REPO_WIF_REPOS=*)")
+	assert.NotContains(t, args, "--per-repo-wif-repos", "the CLI rejects it next to --public")
 	assert.Contains(t, args, "--workflow-host-repos")
 	assert.NotContains(t, args, "--allowed-orgs", "per-org mint enrollment was removed")
 
@@ -162,7 +161,6 @@ func TestCFMintDeployArgs_WithoutAppSet(t *testing.T) {
 	cfg := cfmintConfig{
 		pemDir:            "/tmp/pems",
 		suiteName:         "bt",
-		perRepoWIFRepos:   "my-org/test-repo-01",
 		workflowHostRepos: "my-org/test-repo-01",
 	}
 
@@ -172,6 +170,22 @@ func TestCFMintDeployArgs_WithoutAppSet(t *testing.T) {
 	assert.Contains(t, args, "--pem-dir")
 	assert.NotContains(t, args, "--allowed-orgs")
 	assert.Contains(t, args, "--workflow-host-repos")
+	assert.NotContains(t, args, "--status-auth", "no status group, no GitHub status auth")
+	assert.NotContains(t, args, "--status-github-group")
+}
+
+func TestCFMintDeployArgs_StatusGitHubGroup(t *testing.T) {
+	cfg := cfmintConfig{
+		pemDir:            "/tmp/pems",
+		suiteName:         "bt",
+		workflowHostRepos: "halfsend-03/test-repo-01",
+		statusGitHubGroup: mintStatusGitHubGroup("halfsend-03"),
+	}
+
+	args := CFMintDeployArgs("bt-abc12345", "bt-mint", cfg)
+
+	assert.Equal(t, []string{"--status-auth", "oidc,github", "--status-github-group", "halfsend-03/mint-status"},
+		args[len(args)-4:])
 }
 
 func TestCFMintTeardownArgs(t *testing.T) {
@@ -206,7 +220,6 @@ func TestCFMintDriver_Implements_MintDriver(t *testing.T) {
 	d, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, cfmintConfig{
 		pemDir:            dir,
 		suiteName:         "bt",
-		perRepoWIFRepos:   "org/repo",
 		workflowHostRepos: "org/repo",
 	})
 	require.NoError(t, err)
@@ -233,7 +246,7 @@ func TestCFMintInstall_Success(t *testing.T) {
 		return "✓ Worker deployed at " + wantMintURL, nil
 	})
 
-	mintURL, err := d.Install(context.Background(), "my-org")
+	mintURL, err := d.Install(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, wantMintURL, mintURL)
 
@@ -246,7 +259,7 @@ func TestCFMintInstall_DeployFailure(t *testing.T) {
 		return "", fmt.Errorf("deploy exploded")
 	})
 
-	mintURL, err := d.Install(context.Background(), "my-org")
+	mintURL, err := d.Install(context.Background())
 	require.Error(t, err)
 	assert.Empty(t, mintURL)
 	assert.Contains(t, err.Error(), "deploying CF preview mint for BT")
@@ -257,7 +270,7 @@ func TestCFMintInstall_NoMintURLInOutput(t *testing.T) {
 		return "Deploying...\nDone", nil
 	})
 
-	mintURL, err := d.Install(context.Background(), "my-org")
+	mintURL, err := d.Install(context.Background())
 	require.Error(t, err)
 	assert.Empty(t, mintURL)
 	assert.Contains(t, err.Error(), "could not parse mint URL")
@@ -299,7 +312,7 @@ type testCFMintMintDriver struct {
 	teardownErr    error
 }
 
-func (m *testCFMintMintDriver) Install(_ context.Context, _ string) (string, error) {
+func (m *testCFMintMintDriver) Install(_ context.Context) (string, error) {
 	return m.installMintURL, m.installErr
 }
 
@@ -307,48 +320,22 @@ func (m *testCFMintMintDriver) Teardown(_ context.Context) error {
 	return m.teardownErr
 }
 
-func TestBuildCFMintDriver_HappyPath(t *testing.T) {
-	mint := &testCFMintMintDriver{
-		installMintURL: "https://mint.test",
+func TestBuildPoolDriver_CapacitySpansOrgs(t *testing.T) {
+	newMint := func(mintGroup, orgCredential) (mintDriver, func(), error) {
+		return &testCFMintMintDriver{installMintURL: "https://mint.test"}, nil, nil
 	}
-
-	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
+	d, err := buildPoolDriver(testPoolConfig(t, PoolLayout{FirstOrgIndex: 1, OrgCount: 3, SlotsPerOrg: 2}), nil, newMint, playbackSetupOpts(), traceStart{})
 	require.NoError(t, err)
-	require.NotNil(t, d)
-	assert.Equal(t, 3, d.Capacity())
+	assert.Equal(t, 6, d.Capacity())
+	_, isLease := d.(LeaseDriver)
+	assert.True(t, isLease, "the pool driver leases across orgs")
 }
 
-func TestBuildCFMintDriver_InstallFails(t *testing.T) {
-	mint := &testCFMintMintDriver{
-		installErr: fmt.Errorf("deploy boom"),
-	}
-
-	_, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
+func TestBuildPoolDriver_InvalidLayout(t *testing.T) {
+	newMint := func(mintGroup, orgCredential) (mintDriver, func(), error) { return nil, nil, nil }
+	_, err := buildPoolDriver(testPoolConfig(t, PoolLayout{FirstOrgIndex: 1, OrgCount: 1}), nil, newMint, playbackSetupOpts(), traceStart{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cfmint factory: deploying mint")
-	assert.Contains(t, err.Error(), "deploy boom")
-}
-
-func TestBuildCFMintDriver_EmptyMintURL(t *testing.T) {
-	// Install returns empty mint URL — driver should still construct.
-	mint := &testCFMintMintDriver{
-		installMintURL: "",
-	}
-
-	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", 2, t.Logf)
-	require.NoError(t, err)
-	require.NotNil(t, d)
-	assert.Equal(t, 2, d.Capacity())
-}
-
-func TestBuildCFMintDriver_InvalidPoolSize(t *testing.T) {
-	mint := &testCFMintMintDriver{
-		installMintURL: "https://mint.test",
-	}
-
-	_, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", 0, t.Logf)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "capacity must be positive")
+	assert.Contains(t, err.Error(), "slots per org must be positive")
 }
 
 func TestCFMintTeardown_CLIFailure_ReturnsError(t *testing.T) {
@@ -366,6 +353,20 @@ func TestCFMintTeardown_CLIFailure_ReturnsError(t *testing.T) {
 func TestBuildRepoList(t *testing.T) {
 	list := buildRepoList("my-org", 3)
 	assert.Equal(t, "my-org/test-repo-01,my-org/test-repo-02,my-org/test-repo-03", list)
+}
+
+func TestBuildWorkflowHostRepoList(t *testing.T) {
+	list := buildWorkflowHostRepoList("my-org", 2)
+	assert.Equal(t,
+		"my-org/test-repo-01,my-org/test-repo-01-mint-host,my-org/test-repo-02,my-org/test-repo-02-mint-host",
+		list)
+
+	// The pool repos stay workflow hosts, and only they are enrolled
+	// callers: the probe hosts must not leak into PER_REPO_WIF_REPOS.
+	for _, repo := range strings.Split(buildRepoList("my-org", 2), ",") {
+		assert.Contains(t, strings.Split(list, ","), repo)
+	}
+	assert.NotContains(t, buildRepoList("my-org", 2), MintProbeHostRepoSuffix)
 }
 
 func TestSetupCFMintPEMDir_NoPEMVars(t *testing.T) {
@@ -448,6 +449,7 @@ func TestEnvAppSet_Default(t *testing.T) {
 func TestEnvAppSet_Override(t *testing.T) {
 	t.Setenv("BEHAVIOUR_APP_SET", "my-app-set")
 	assert.Equal(t, "my-app-set", envAppSet())
+	assert.Equal(t, "my-app-set", AppSet())
 }
 
 func TestEnvConfigPreset_Unset(t *testing.T) {
@@ -474,9 +476,28 @@ func TestNewRepoPoolCFMintPreviews_NoPEMs_FailsEarly(t *testing.T) {
 		t.Setenv(envVar, "")
 	}
 
-	_, err := NewRepoPoolCFMintPreviews("my-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	_, err := NewRepoPoolCFMintPreviews(testPoolConfig(t, DevPoolLayout(2)))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PEMDir is required")
+
+	_, err = NewRepoPoolCFMintPreviews(testPoolConfig(t, PoolLayout{}))
+	require.ErrorContains(t, err, "cfmint factory")
+}
+
+func TestNewRepoPoolCFMintPreviews_DerivedDevOrgs(t *testing.T) {
+	for _, envVar := range cfmintPEMRoleEnvVars {
+		t.Setenv(envVar, "")
+	}
+	t.Setenv("TEST_FULLSEND_PEM", "fake-pem")
+	t.Setenv(envTraceCollector, "false")
+	stubWranglerPrep(t, nil)
+
+	d, err := NewRepoPoolCFMintPreviews(testPoolConfig(t, DevPoolLayout(2)))
+	require.NoError(t, err)
+	assert.Equal(t, DevPoolOrgCount*2, d.Capacity())
+	orgs := d.(*composedDriver).alloc.layout.Orgs()
+	assert.Equal(t, "halfsend-01", orgs[0])
+	assert.Equal(t, "halfsend-22", orgs[len(orgs)-1])
 }
 
 // --- setupCFMintPEMDir tests ---

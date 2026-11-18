@@ -66,22 +66,28 @@ func TestCLIActivationDefersUntilRepairTemplatesLand(t *testing.T) {
 			require.ErrorContains(t, err, "refusing to deliver runnable typed GitLab jobs")
 			assert.Equal(t, "slash", fc.PipelineSchedules["group/project"][0].Variables[forge.VarPollMode])
 			fc.PipelineVarOverrideRoles["group/project"] = forge.PipelineVarOverrideNoOneAllowed
+			// The legacy schedule variable is no longer migrated
+			// automatically: activation refuses until it is removed.
+			err = ensureGitLabPipelineVariableOverrideRole(context.Background(), fc, ui.New(io.Discard), "group", "project", dryRun)
+			require.ErrorContains(t, err, "legacy FULLSEND_POLL_MODE pipeline variable")
+			assert.Equal(t, "slash", fc.PipelineSchedules["group/project"][0].Variables[forge.VarPollMode])
+			fc.PipelineSchedules["group/project"][0].Variables = nil
 			err = ensureGitLabPipelineVariableOverrideRole(context.Background(), fc, ui.New(io.Discard), "group", "project", dryRun)
 			require.NoError(t, err)
-			if dryRun {
-				assert.Equal(t, "slash", fc.PipelineSchedules["group/project"][0].Variables[forge.VarPollMode])
-			} else {
-				assert.Empty(t, fc.PipelineSchedules["group/project"][0].Variables)
-			}
 		})
 	}
 }
 
-func TestLegacyGitLabWrapperKeepsVariableCompatibleSetting(t *testing.T) {
+// A committed legacy wrapper (e.g. while the typed upgrade MR is unmerged)
+// defers activation with an explicit reason and leaves the setting alone.
+func TestLegacyGitLabWrapperDefersActivation(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["group/project/.gitlab/ci/fullsend-pipeline.yml"] = []byte("include:\n  - local: .gitlab/ci/fullsend-agent.yml\n")
 	fc.PipelineVarOverrideRoles["group/project"] = forge.PipelineVarOverrideDeveloper
-	err := ensureGitLabPipelineVariableOverrideRole(context.Background(), fc, ui.New(io.Discard), "group", "project", false)
+	var output bytes.Buffer
+	err := ensureGitLabPipelineVariableOverrideRole(context.Background(), fc, ui.New(&output), "group", "project", false)
 	require.NoError(t, err)
+	assert.Contains(t, output.String(), "deferred")
+	assert.Contains(t, output.String(), "legacy pipeline-variable dispatch contract")
 	assert.Equal(t, forge.PipelineVarOverrideDeveloper, fc.PipelineVarOverrideRoles["group/project"])
 }

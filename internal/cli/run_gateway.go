@@ -212,7 +212,7 @@ func gatewayBlockApplies(g config.InferenceGatewayConfig) (bool, error) {
 	if missing := g.Missing(); len(missing) > 0 {
 		return false, fmt.Errorf("inference.gateway is partial: missing %s (the %s mode needs url%s)", strings.Join(missing, " and "), g.EffectiveAuth(), gatewayAudienceHint(g))
 	}
-	if err := g.Validate(); err != nil {
+	if err := g.ValidateEffective(); err != nil {
 		return false, err
 	}
 	if g.IsAPIKey() {

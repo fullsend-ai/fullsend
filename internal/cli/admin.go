@@ -241,7 +241,11 @@ func newInstallCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "install <owner/repo>",
-		Short: "Install fullsend in a repository",
+		Short: "Install fullsend in a repository (deprecated)",
+		Deprecated: "use 'fullsend inference provision' + 'fullsend github setup <owner/repo>' " +
+			"(GitHub; create apps with 'fullsend mint add-role') or " +
+			"'fullsend repos install' with a repos.yaml manifest " +
+			"(GitLab; see the Configuring GitLab guide) instead",
 		Long: `Sets up the fullsend agentic development pipeline for a single repository.
 
 The argument is owner/repo (e.g. "acme/widget"). The repository is
@@ -325,7 +329,7 @@ Inference authentication:
 	cmd.Flags().BoolVar(&skipMintCheck, "skip-mint-check", false, "skip mint validation, GCP provisioning, and app setup; requires --mint-url")
 	cmd.Flags().BoolVar(&publicApps, "public", false, "create public (unlisted) GitHub Apps installable by other orgs")
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., myorg creates myorg-fullsend, myorg-coder)")
-	cmd.Flags().StringVar(&runtimeName, "runtime", "claude", "agent runtime for fullsend run (claude, pi or dummy; dummy is for behaviour test orgs only)")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "claude", "agent runtime for fullsend run (claude, pi, codex, opencode, dummy or dummy-playback; dummy runtimes are for behaviour tests only)")
 	cmd.Flags().StringVar(&mintURL, "mint-url", DefaultMintURL, "token mint URL for OIDC token exchange (default: hosted public mint)")
 	cmd.Flags().BoolVar(&direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
 

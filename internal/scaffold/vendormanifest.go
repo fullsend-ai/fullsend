@@ -136,6 +136,7 @@ func (m *VendorManifest) CleanupPaths(workflowPrefix string) []string {
 
 var vendoredReusableWorkflows = []string{
 	"reusable-dispatch.yml",
+	"reusable-poll-jira.yml",
 	"reusable-prioritize.yml",
 }
 
@@ -157,10 +158,13 @@ var vendoredDefaultsInfraPaths = []string{
 	".github/actions/setup-gcp/action.yml",
 	".github/actions/validate-enrollment/action.yml",
 	".github/scripts/check-fix-eligibility.sh",
+	".github/scripts/count-fix-commits.jq",
 	".github/scripts/install-openshell.sh",
 	".github/scripts/install-podman.sh",
 	".github/scripts/openshell-version.sh",
 	".github/scripts/pre-fetch-review-body.sh",
+	".github/scripts/review-diff-hash.sh",
+	".github/scripts/retry-with-backoff.sh",
 }
 
 // enumerateVendoredPaths returns embed-derived paths for a current --vendor install layout.

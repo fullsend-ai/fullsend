@@ -18,9 +18,10 @@ roles: [triage]
 runtime: claude
 allowed_remote_resources:
   - https://example.com/
-create_issues:
-  allow_targets:
-    repos: [acme/other]
+tracker:
+  github:
+    allowed_targets:
+      repos: [acme/other]
 inference:
   provider: vertex
   project: proj
@@ -48,7 +49,7 @@ models:
 	assert.Equal(t, "https://mint.example.com", got["mint_url"])
 	assert.Equal(t, []any{"triage"}, got["roles"])
 	assert.Contains(t, got["allowed_remote_resources"], "https://example.com/", "base prefixes merge with the code defaults")
-	assert.Contains(t, got, "create_issues")
+	assert.Equal(t, map[string]any{"github": map[string]any{"allowed_targets": map[string]any{"repos": []any{"acme/other"}}}}, got["tracker"])
 	assert.Equal(t, []any{"owners_file"}, got["authorization"])
 	assert.Equal(t, map[string]any{"aliases": map[string]any{"fast": "some-model"}}, got["models"])
 	inference, ok := got["inference"].(map[string]any)
@@ -92,6 +93,50 @@ func TestEffectiveYAML_InheritsInferenceGateway(t *testing.T) {
 	data, err = EffectiveYAML(empty)
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "gateway")
+}
+
+func TestEffectiveYAML_ListsJiraAuthorizationProvider(t *testing.T) {
+	overlay, err := ParsePerRepoConfigWriter([]byte("authorization:\n  - provider: jira\n    write:\n      accounts: [acct]\n"))
+	require.NoError(t, err)
+	layered, err := LayerOnBase(overlay, nil)
+	require.NoError(t, err)
+	data, err := EffectiveYAML(layered)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, yaml.Unmarshal(data, &got))
+	assert.Equal(t, []any{map[string]any{
+		"provider": "jira",
+		"write":    map[string]any{"accounts": []any{"acct"}},
+		"labels":   JiraLabelsEditors,
+	}}, got["authorization"])
+}
+
+func TestEffectiveYAML_JiraPolicyChangesChangeOutput(t *testing.T) {
+	render := func(doc string) string {
+		overlay, err := ParsePerRepoConfigWriter([]byte(doc))
+		require.NoError(t, err)
+		layered, err := LayerOnBase(overlay, nil)
+		require.NoError(t, err)
+		data, err := EffectiveYAML(layered)
+		require.NoError(t, err)
+		return string(data)
+	}
+	base := render("authorization:\n  - provider: jira\n    write:\n      accounts: [acct]\n")
+	assert.NotEqual(t, base, render("authorization:\n  - provider: jira\n    write:\n      accounts: [other]\n"), "a changed list renders differently")
+	assert.NotEqual(t, base, render("authorization:\n  - provider: jira\n    write:\n      accounts: [acct]\n    triage:\n      groups: [g]\n"), "an added triage list renders differently")
+	assert.NotEqual(t, base, render("authorization:\n  - provider: jira\n    write:\n      accounts: [acct]\n    labels: allowlist\n"), "a changed labels rule renders differently")
+	assert.NotEqual(t,
+		render("authorization:\n  - provider: jira\n"),
+		render("authorization:\n  - provider: jira\n    write: {}\n"),
+		"a set but empty list differs from an unset one")
+}
+
+func TestCloneAuthorizationSlice_DeepCopiesJiraLists(t *testing.T) {
+	in := []AuthorizationProvider{{Provider: AuthProviderJira, Write: &JiraActorList{Groups: []string{"g"}}}}
+	out := cloneAuthorizationSlice(in)
+	out[0].Write.Groups[0] = "changed"
+	assert.Equal(t, "g", in[0].Write.Groups[0])
+	assert.Nil(t, out[0].Triage)
 }
 
 func TestEffectiveYAML_CodeDefaultsAndNil(t *testing.T) {

@@ -93,6 +93,37 @@ The question is how these signals compose:
 
 **Tiered requirements.** Different autonomy levels require different evidence portfolios. Auto-triaging issues (low risk) requires only static analysis and basic behavioral tests. Auto-merging code (high risk) requires all five evidence types with strict thresholds. This aligns with the autonomy spectrum's per-repo, per-path granularity. However, defining and maintaining per-tier evidence portfolios adds complexity: who decides the tier boundaries, and how do you prevent agents from gaming the system by targeting the minimum tier? Tier definitions must also evolve as new evidence types emerge.
 
+### Gemara lab observation
+
+A public lab exercised the threshold model using
+[Gemara](../spikes/2026-10-24-gemara-auto-merge.md) policy and evaluation
+artifacts. It combined revision-bound PR evidence with a separate aggregate
+judge-quality condition. The same historical observation, 238 passing
+judgments out of 254 scored approvals, held at a 99% requirement and satisfied
+a separately configured 90% requirement. Gemara's native evaluation artifacts
+recorded the assessment results. Consumer-owned code authenticated the
+evidence and enforced the protected merge path. This demonstrates composition
+and auditability. It does not demonstrate calibrated confidence that a future
+PR is safe, qualification across all five evidence types, or adoption of a
+production scorecard schema.
+
+The lab surfaced distinctions that any composition model has to keep:
+
+- **Freshness versus cohort validity.** A recently read snapshot of old
+  outcomes is fresh but may not describe the agent configuration being
+  trusted. Freshness says when evidence was collected; cohort validity says
+  whether it measures the right subject.
+- **Status versus value.** Missing, stale, or malformed evidence was recorded
+  as unknown and held, separately from a measured value below threshold. This
+  is the same `status`-versus-`score` distinction as the scorecard below.
+- **Current-change versus historical evidence.** Review, risk, and check
+  results were bound to the PR's exact revision, while the quality signal was
+  experiment-wide history. Combining them with AND does not make either one
+  stand in for the other.
+- **Evaluation is not attestation or authorization.** A policy or evaluation
+  artifact records a result. It is not an authenticated attestation of the
+  evidence behind it, and it does not by itself authorize a merge.
+
 ## A concrete artifact: the trust scorecard
 
 The composition models above describe *how* to decide. They do not describe *what the decision is recorded as*. A trust scorecard is a serialized record that carries the evidence and the resulting decision, so a trust decision is auditable and portable across the dispatch pipeline instead of living only in a reviewer's head.

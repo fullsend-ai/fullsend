@@ -65,7 +65,7 @@ agent: agents/lint-docs.md
 description: Check docs changes for broken links
 role: triage
 slug: my-org-lint-docs
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:f8255971fec8a72a60adb20f501e55098f237e699dc829f0894647c0de2a19c2
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:bcf8cd84a37623d761d38f2a6f51d20283f8798b7d3eeb9c509a2503c074bd55
 policy: policies/base.yaml
 providers:
   - github-ro
@@ -77,11 +77,11 @@ env:
   runner:
     FULLSEND_FORGE: github
     GH_TOKEN: ${GH_TOKEN}
-    ISSUE_URL: ${GITHUB_ISSUE_URL}
+    ISSUE_URL: ${FULLSEND_WORK_ITEM_URL}
   sandbox:
     FULLSEND_FORGE: github
     ISSUE_NUMBER: ${ISSUE_NUMBER}
-    ISSUE_URL: ${GITHUB_ISSUE_URL}
+    ISSUE_URL: ${FULLSEND_WORK_ITEM_URL}
     REPO_FULL_NAME: ${REPO_FULL_NAME}
 timeout_minutes: 15
 trigger: |
@@ -178,7 +178,7 @@ trigger: |
 # iteration and only the last one counts.
 #
 # Required env:
-#   ISSUE_URL — HTML URL of the work item (the harness maps GITHUB_ISSUE_URL to it)
+#   ISSUE_URL — HTML URL of the work item (the harness maps FULLSEND_WORK_ITEM_URL to it)
 #   GH_TOKEN  — minted by fullsend from the harness `role:` field
 #
 # Optional env:

@@ -8,12 +8,25 @@ import (
 
 // Options configures the poller.
 type Options struct {
-	BotUserID      int
+	BotUserID int
+	// AnalystUserID is the GitLab user ID of the registered Analyst
+	// identity, which authors the review stage's changes-requested
+	// marker notes. Only a marker note from this identity reaches the
+	// fix stage; 0 (unknown) matches no author. In a single-identity
+	// installation it equals BotUserID.
+	AnalystUserID  int
 	GitLabURL      string
 	PipelineRef    string // git ref for API-triggered pipelines (required; resolved at CLI wiring time)
 	PollJobURL     string // back-link to the poller CI job (optional; from CI_JOB_URL)
 	DispatchSecret string // HMAC shared secret for signing dispatch variables (optional; from FULLSEND_DISPATCH_SECRET)
 	Mode           string // "slash" (slash commands only) or "events" (full discovery, filters /fs-* notes); empty uses events discovery path but includes all notes for backward compatibility
+	// ChildDispatchJobToken, when set, selects the child-pipeline dispatch
+	// route (#8438): agent pipelines are started with this CI_JOB_TOKEN
+	// through the pipeline trigger API (source "pipeline", attributed to
+	// the owner of the running job) instead of with the Poller credential
+	// through the pipelines API (source "api"). It requires the typed
+	// pipeline-input contract. Empty keeps the Poller API route.
+	ChildDispatchJobToken string
 }
 
 // RoutableEvent is an intermediate representation of a detected change,
@@ -21,7 +34,7 @@ type Options struct {
 // NormalizedEvent conversion and dispatch.
 type RoutableEvent struct {
 	Type         string
-	Action       string // MR lifecycle action for Type=="mr_event": "opened", "closed", or empty (merged)
+	Action       string // MR lifecycle action for Type=="mr_event": "opened", "closed", "synchronized", or empty (merged)
 	IID          int
 	UpdatedAt    time.Time
 	Labels       []string // full label set at event time
@@ -55,7 +68,15 @@ type RoutableEvent struct {
 	TargetBranch    string
 	MRAuthorID      int
 	MRAuthorLogin   string
+	MRAssigneeIDs   []int // from the same MR object as MRAuthorID (MR events only)
 	MergedByLogin   string
+	// HeadSHA is the MR head commit the event is about. For a
+	// synchronized event (Type=="mr_event" with Action=="synchronized")
+	// it is the head the push moved the source branch to, read from the
+	// diff version, and it keys the event, so a head that was already
+	// dispatched is never re-run. Other MR events carry the MR's current
+	// sha as read with the MR; it does not affect their keys.
+	HeadSHA string
 }
 
 // Key returns a deduplication key for the event.
@@ -64,8 +85,10 @@ type RoutableEvent struct {
 // event, hence a new key); otherwise on a millisecond timestamp so a
 // re-add within one second is still distinct. MR open events include
 // Action so they do not collide with a merge of the same IID in the same
-// second. MR merge events use type+IID+timestamp (Action empty) for
-// stable dispatched-key persistence.
+// second. MR synchronized events are keyed on the new head SHA, so the
+// same head is dispatched at most once however often it is rediscovered.
+// MR merge events use type+IID+timestamp (Action empty) for stable
+// dispatched-key persistence.
 //
 // Keys persisted by earlier versions carry Unix-second label timestamps;
 // see LegacyLabelKey and labelKeyAtOrAfter for how those stay recognised.
@@ -78,6 +101,9 @@ func (e RoutableEvent) Key() string {
 			return fmt.Sprintf("%s-%d-%s-e%d", e.Type, e.IID, e.ChangedLabel, e.LabelEventID)
 		}
 		return fmt.Sprintf("%s-%d-%s-%d", e.Type, e.IID, e.ChangedLabel, e.UpdatedAt.UnixMilli())
+	}
+	if e.Action == "synchronized" && e.HeadSHA != "" {
+		return fmt.Sprintf("%s-%d-%s-%s", e.Type, e.IID, e.Action, e.HeadSHA)
 	}
 	if e.Action != "" {
 		return fmt.Sprintf("%s-%d-%s-%d", e.Type, e.IID, e.Action, e.UpdatedAt.Unix())

@@ -30,11 +30,13 @@
 #   - busy check: before the first change of any kind (--delete too),
 #     refuses (exit 6) while a merge_group run of e2e.yml or a release.yml
 #     run is not completed
-#   - frozen-path diff: refuses (exit 4) any config difference except extra
-#     allowlist repositories after the pool list, the REAL_KEY_HASH entry and
-#     its allow rule on a real model, and (with --allow-tpm-change) the
-#     tokens-per-minute cap. The base is the config version that the
-#     revision getting the traffic started with.
+#   - pool org ids: refuses (exit 1) unless every pool org still has its
+#     pinned id (POOL_ORG_IDS) on GitHub
+#   - frozen-path diff: refuses (exit 4) any config difference except an
+#     exact-name list of extra repositories after the pool rule, the
+#     REAL_KEY_HASH entry and its allow rule on a real model, and (with
+#     --allow-tpm-change) the tokens-per-minute cap. The base is the config
+#     version that the revision getting the traffic started with.
 #   - post-deploy check: after any new revision, anonymous calls to every
 #     model and endpoint must be refused and a wrong key must get a 401;
 #     otherwise it prints the served config version and the command that
@@ -63,9 +65,12 @@
 # configured key, so an anonymous request is refused per model.
 #
 # Idempotent: checks each resource and creates or updates only what is
-# missing or different, then prints what it did. Re-running after a pool
-# change (POOL_ORGS / POOL_REPOS below) adds a config secret version and rolls
-# a new Cloud Run revision. A second run with no changes is a no-op.
+# missing or different, then prints what it did. A second run with no changes
+# is a no-op. A pool change (POOL_ORG_COUNT / POOL_REPO_COUNT below) changes
+# the pool regex, a frozen part of the config: run --dry-run first, which
+# shows the diff and exits 4, then re-run with --allow-frozen-change, outside
+# a release window and with the maintainers told first. That run adds a config
+# secret version and rolls a new Cloud Run revision.
 #
 # Resources, all named fullsend-e2e-gateway*:
 #   - Artifact Registry repository, holding the agentgateway release image
@@ -90,11 +95,51 @@
 set -euo pipefail
 
 # --- Pool repositories allowed to use the gateway -------------------------
-# Keep in sync with orgPool in internal/e2etest/testutil.go (plus the STAGE
-# org halfsend) and DefaultPoolSize in pkg/behaviourtest/drivers/install/
-# driver.go. A pool change is an edit here plus a re-run.
-POOL_ORGS=(halfsend-01 halfsend-02 halfsend-03 halfsend-04 halfsend-05 halfsend-06 halfsend-07 halfsend-08 halfsend-09 halfsend-10 halfsend-11 halfsend-12 halfsend)
-POOL_REPOS=(test-repo-01 test-repo-02 test-repo-03 test-repo-04 test-repo-05 test-repo-06 test-repo-07 test-repo-08 test-repo-09 test-repo-10 test-repo-11 test-repo-12)
+# The pool is test-repo-01 ... test-repo-<POOL_REPO_COUNT> in halfsend-01 ...
+# halfsend-<POOL_ORG_COUNT> and in the STAGE org halfsend. The config matches
+# it with one anchored regular expression (pool_regex), not a list of names.
+# POOL_ORG_COUNT must equal DevPoolOrgCount in
+# pkg/behaviourtest/drivers/install/slotpool.go (orgPool in
+# internal/e2etest/testutil.go lists the same orgs), and POOL_REPO_COUNT must
+# equal DefaultPoolSize in pkg/behaviourtest/drivers/install/driver.go;
+# hack/setup-e2e-inference-gateway_test.sh fails when they differ. A pool
+# change is a frozen change: see "Idempotent" above.
+POOL_ORG_COUNT=22
+POOL_REPO_COUNT=12
+
+# POOL_ORG_IDS pins each pool org's GitHub id; the rules match it as
+# jwt.repository_owner_id. Org ids are never reused, so an org re-created
+# under a pool name (after a delete or rename) is refused. Add an org's id
+# from `gh api orgs/<org> --jq .id`, never from a lookup at deploy time,
+# which would pin whoever holds the name that day. Each run checks the table
+# against GitHub before it changes anything. Only the highest-numbered org
+# can be dropped: lower POOL_ORG_COUNT, remove its line and deploy before the
+# org is deleted or renamed, or every run stops at that check.
+POOL_ORG_IDS=(
+  halfsend=273231846
+  halfsend-01=286139071
+  halfsend-02=286136132
+  halfsend-03=286139209
+  halfsend-04=286139284
+  halfsend-05=286139354
+  halfsend-06=286139421
+  halfsend-07=298026865
+  halfsend-08=298029010
+  halfsend-09=298029468
+  halfsend-10=298030162
+  halfsend-11=298030745
+  halfsend-12=298031207
+  halfsend-13=351883647
+  halfsend-14=353052683
+  halfsend-15=353052733
+  halfsend-16=353052777
+  halfsend-17=353052812
+  halfsend-18=353052850
+  halfsend-19=353052883
+  halfsend-20=353052926
+  halfsend-21=353052961
+  halfsend-22=353053001
+)
 
 # A repository outside the pool. Only it may use the echo-denied model, so a
 # behaviour test can assert the 403 for a pool repository.
@@ -128,9 +173,17 @@ vertex_params() {
 # --- Fixed names and versions ---------------------------------------------
 NAME="fullsend-e2e-gateway"
 AUDIENCE="fullsend-e2e-gateway"
-AGW_VERSION="v1.6.0"
+AGW_VERSION="v1.7.0"
+# The multi-arch index digest of that release (the same value
+# hack/check-gateway-doc-configs pins for the operator guide's version). A run
+# refuses an upstream tag that resolves to anything else. Bump it together with
+# AGW_VERSION; the version in the config header is masked, so a bump is not a
+# frozen change.
+AGW_DIGEST="sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b"
 UPSTREAM_IMAGE="ghcr.io/agentgateway/agentgateway:${AGW_VERSION}"
 CONFIG_SECRET="${NAME}-config"
+# Secret Manager refuses a secret version over 65,536 bytes.
+CONFIG_MAX_BYTES=65536
 KEY_SECRET="${NAME}-stub-upstream-key"
 STUB_UPSTREAM_KEY="e2e-stub-upstream-key"
 CONFIG_DIR="/etc/agw-config"
@@ -232,21 +285,70 @@ REGISTRY_HOST="${REGION}-docker.pkg.dev"
 DEST_IMAGE="${REGISTRY_HOST}/${PROJECT}/${NAME}/agentgateway:${AGW_VERSION}"
 
 # --- Gateway config -----------------------------------------------------------
-# pool_cel prints the exact-match authorization rule for every pool repository.
-pool_cel() {
-  local org repo sep=""
-  printf 'jwt.repository in ['
-  for org in "${POOL_ORGS[@]}"; do
-    for repo in "${POOL_REPOS[@]}"; do
-      printf '%s"%s/%s"' "${sep}" "${org}" "${repo}"
-      sep=", "
-    done
+# pool_numbers N prints 01|02|...|N. Each number is an explicit alternative,
+# never [0-9]{2} or a digit range, so the regex admits exactly the pool.
+pool_numbers() {
+  local i sep=""
+  for (( i = 1; i <= $1; i++ )); do
+    printf '%s%02d' "${sep}" "${i}"
+    sep="|"
   done
-  printf ']'
+}
+
+# pool_org_name I prints the name of pool org I: halfsend for 0, else halfsend-II.
+pool_org_name() {
+  if (( $1 == 0 )); then printf 'halfsend'; else printf 'halfsend-%02d' "$1"; fi
+}
+
+# check_pool_org_ids exits unless POOL_ORG_IDS lists every pool org once, in
+# order, each with a numeric id.
+check_pool_org_ids() {
+  local i want=$(( POOL_ORG_COUNT + 1 ))
+  if (( ${#POOL_ORG_IDS[@]} != want )); then
+    echo "Error: POOL_ORG_IDS has ${#POOL_ORG_IDS[@]} entries; POOL_ORG_COUNT=${POOL_ORG_COUNT} needs ${want}." >&2
+    exit 1
+  fi
+  for (( i = 0; i < want; i++ )); do
+    if [[ ! "${POOL_ORG_IDS[i]}" =~ ^$(pool_org_name "${i}")=[0-9]+$ ]]; then
+      echo "Error: POOL_ORG_IDS entry $(( i + 1 )) is '${POOL_ORG_IDS[i]}', expected $(pool_org_name "${i}")=<id>." >&2
+      exit 1
+    fi
+  done
+}
+
+# pool_regex prints the anchored regular expression that matches exactly
+# "<repository_owner_id>/<owner>/<repo>" for every pool repository. Each org
+# appears only with its pinned id, so neither a re-created org under a pool
+# name nor a pool name with another org's id matches. An anchored alternation
+# behaves the same in RE2 (CEL's matches) and in ERE (grep -E in the tests).
+# Its closing "$" is always followed by a quote, which agentgateway's variable
+# expansion leaves alone.
+pool_regex() {
+  local e orgs="" sep=""
+  for e in "${POOL_ORG_IDS[@]}"; do
+    orgs+="${sep}${e#*=}/${e%%=*}"
+    sep="|"
+  done
+  printf '^(%s)/test-repo-(%s)$' "${orgs}" "$(pool_numbers "${POOL_REPO_COUNT}")"
+}
+
+# pool_subject prints the CEL string that pool_regex matches. With "default"
+# as $1 a missing claim reads as "", for the rate-limit keys.
+pool_subject() {
+  if [[ "${1:-}" == "default" ]]; then
+    printf '(default(jwt.repository_owner_id, "") + "/" + default(jwt.repository, ""))'
+  else
+    printf '(jwt.repository_owner_id + "/" + jwt.repository)'
+  fi
+}
+
+# pool_cel prints the authorization rule that admits every pool repository.
+pool_cel() {
+  printf '%s.matches("%s")' "$(pool_subject)" "$(pool_regex)"
 }
 
 # Cost cap: per real model, RATE_RPM requests and RATE_TPM tokens per minute.
-# agentgateway v1.6.0 has no per-model limit, so these are llm-wide rules whose
+# agentgateway v1.7.0 has no per-model limit, so these are llm-wide rules whose
 # CEL key picks the bucket. The request rule runs before the LLM request is
 # parsed and before model authorization, so its key reads the model from the
 # body. Each bucket is a (real model, caller class) pair. The caller class is
@@ -264,13 +366,6 @@ RATE_RPM=60
 RATE_TPM=200000
 ECHO_MODELS='["echo", "echo-denied"]'
 
-# pool_list prints the pool as a CEL list.
-pool_list() {
-  local cel
-  cel=$(pool_cel)
-  printf '%s' "${cel#jwt.repository in }"
-}
-
 # real_list prints the real models as a CEL list.
 real_list() {
   local m sep=""
@@ -284,8 +379,8 @@ real_list() {
 
 # rate_key prints the bucket key for a CEL expression that yields the model.
 rate_key() {
-  printf '(default(jwt.repository, "") in %s ? "pool" : (default(apiKey.purpose, "") != "" ? "key/" + string(apiKey.purpose) : "other")).with(c, c == "other" ? "other" : (%s in %s ? "echo/" + c + "/" + string(request.startTime).substring(0, 19) : (%s in %s ? string(%s) + "/" + c : "unknown/" + c)))' \
-    "$(pool_list)" "$1" "${ECHO_MODELS}" "$1" "$(real_list)" "$1"
+  printf '(%s.matches("%s") ? "pool" : (default(apiKey.purpose, "") != "" ? "key/" + string(apiKey.purpose) : "other")).with(c, c == "other" ? "other" : (%s in %s ? "echo/" + c + "/" + string(request.startTime).substring(0, 19) : (%s in %s ? string(%s) + "/" + c : "unknown/" + c)))' \
+    "$(pool_subject default)" "$(pool_regex)" "$1" "${ECHO_MODELS}" "$1" "$(real_list)" "$1"
 }
 
 # rate_limit_policy prints the llm localRateLimit policy.
@@ -344,7 +439,7 @@ fi
 
 # api_key_policy prints the llm apiKey policy for the configured key hashes.
 # jwtAuth runs first and strips a valid JWT, so a key never reaches JWT
-# validation and a JWT never reaches the key check. agentgateway v1.6.0
+# validation and a JWT never reaches the key check. agentgateway v1.7.0
 # rejects a key budget without config.database, so keys carry none.
 api_key_policy() {
   [[ "${HAS_KEYS}" == "true" ]] || return 0
@@ -357,8 +452,9 @@ api_key_policy() {
   fi
 }
 
-# render_config prints the agentgateway config. It must not contain "$":
-# agentgateway expands $VARS in its config file.
+# render_config prints the agentgateway config. agentgateway expands $VARS
+# and ${VARS} in its config file, so every "$" must be followed by a quote,
+# like the pool regex's end anchor; a "$" there is kept as it is.
 #
 # The echo listener is a header-echo upstream inside the same container (Cloud
 # Run only routes to port 8080). Its answer reports whether the gateway's own
@@ -375,7 +471,7 @@ render_config() {
   local echo_params="{ baseUrl: http://127.0.0.1:${ECHO_PORT}/v1, apiKey: { file: ${KEY_DIR}/key } }"
   cat <<EOF
 # fullsend-e2e-gateway (fullsend#8285): agentgateway ${AGW_VERSION}, llm mode, GitHub Actions OIDC
-# $(( ${#POOL_ORGS[@]} * ${#POOL_REPOS[@]} )) allowed repositories (${#POOL_ORGS[@]} orgs x ${#POOL_REPOS[@]} repos)
+# $(( (POOL_ORG_COUNT + 1) * POOL_REPO_COUNT )) allowed repositories ($(( POOL_ORG_COUNT + 1 )) orgs x ${POOL_REPO_COUNT} repos)
 config:
   adminAddr: "off"
   statsAddr: "off"
@@ -445,6 +541,7 @@ EOF
   model echo-denied "${echo_provider}" "${echo_params}" "jwt.repository == \"${DENIED_REPO}\""
 }
 
+check_pool_org_ids
 if [[ "${PRINT_CONFIG}" == "true" ]]; then
   render_config
   exit 0
@@ -460,6 +557,22 @@ ok() { say "OK: $*"; }
 die() {
   echo "    ERROR: $*" >&2
   exit 1
+}
+
+# verify_pool_org_ids exits unless every pool org still has its pinned id on
+# GitHub. A mismatch means the name now belongs to another org; a failed
+# lookup stops the run, since an unknown owner is not a verified one.
+verify_pool_org_ids() {
+  local e org want got
+  command -v gh &>/dev/null || die "gh is required to check the pool org ids."
+  for e in "${POOL_ORG_IDS[@]}"; do
+    org="${e%%=*}" want="${e#*=}"
+    got=$(gh api "orgs/${org}" --jq .id 2>"${TMP}/gh-org.err") \
+      || die "could not look up org ${org} on GitHub: $(cat "${TMP}/gh-org.err"); nothing changed."
+    [[ "${got}" == "${want}" ]] \
+      || die "org ${org} has id '${got}' on GitHub, but POOL_ORG_IDS pins ${want}: the name may belong to another org now; nothing changed."
+  done
+  ok "all ${#POOL_ORG_IDS[@]} pool orgs have their pinned ids on GitHub"
 }
 
 # check_busy exits 6 while a merge_group run of the e2e workflows or a release
@@ -756,21 +869,30 @@ fi
 # differ from the live one only where a change is allowed, and nothing may be
 # using the gateway.
 
-# mask_config prints a config with the allowed changes masked out: extra
-# allowlist repositories after the pool list (temporary repositories added to
-# the live config), the time-boxed real key's entry when it may call exactly
-# one real model, its allow rule inside a real model's block, and, with
-# --allow-tpm-change, the tokens-per-minute cap. The real key's rule on echo
-# or echo-denied, or a real key that may call another model, stays visible.
-# The header line that counts the pool stays unmasked, so a smaller pool
-# cannot pass as removed extra repositories.
+# mask_config prints a config with the allowed changes masked out: an
+# exact-name list of extra repositories right after the pool rule (temporary
+# repositories added to the live config, as `<pool rule> || jwt.repository in
+# ["owner/name"]`, with default(jwt.repository, "") in a rate-limit key), the
+# time-boxed real key's entry when it may call exactly one real model, its
+# allow rule inside a real model's block, and, with --allow-tpm-change, the
+# tokens-per-minute cap. Only that trailing list is masked: the pool rule is
+# matched as this script renders it, so a changed regex, org id or count
+# stays visible, as does the header line that counts the pool. The real key's
+# rule on echo or echo-denied, or a real key that may call another model,
+# stays visible too.
 mask_config() {
-  local pool
-  pool=$(pool_list)
-  jq -Rrs --arg pool "${pool%]}" --argjson tpm "${ALLOW_TPM_CHANGE}" \
+  local re
+  re=$(pool_regex)
+  jq -Rrs --arg key "$(pool_subject default).matches(\"${re}\")" \
+    --arg rule "$(pool_subject).matches(\"${re}\")" --argjson tpm "${ALLOW_TPM_CHANGE}" \
     --argjson real "$(printf '%s\n' "${VERTEX_MODELS[@]}" | jq -R . | jq -sc .)" \
     --arg allow "      - allow: '${REAL_KEY_CEL}'" '
-    (split($pool) | [.[0]] + (.[1:] | map(sub("^(, \"[^\"]*\")*\\]"; "]"))) | join($pool))
+    def drop_extra($call; $extra):
+      split($call) | [.[0]] + (.[1:] | map(sub("^ \\|\\| " + $extra + " in \\[\"[^\"]*\"(, \"[^\"]*\")*\\]"; "")))
+      | join($call);
+    drop_extra($key; "default\\(jwt\\.repository, \"\"\\)")
+    | drop_extra($rule; "jwt\\.repository")
+    | sub("(?<h># fullsend-e2e-gateway \\(fullsend#8285\\): agentgateway )v[^,]+,"; "\(.h)<version>,")
     | split("\n") | . as $l
     | def real_model($m): $m != null and ($real | index([$m])) != null;
       reduce range(0; length) as $i ({out: [], skip: 0, type: "", model: null};
@@ -791,10 +913,17 @@ mask_config() {
 }
 
 echo "==> Change control..."
+verify_pool_org_ids
 render_config > "${TMP}/config.yaml"
-if grep -q '\$' "${TMP}/config.yaml"; then
-  die "rendered config contains '\$', which agentgateway would expand."
+if grep -qE '\$([^"]|$)' "${TMP}/config.yaml"; then
+  die "rendered config contains a '\$' that is not followed by '\"', which agentgateway may expand."
 fi
+# Checked before any change, so an oversized config never stops a run half way.
+config_bytes=$(wc -c < "${TMP}/config.yaml" | tr -d ' ')
+if (( config_bytes > CONFIG_MAX_BYTES )); then
+  die "rendered config is ${config_bytes} bytes, over Secret Manager's limit of ${CONFIG_MAX_BYTES} bytes for a secret version; nothing changed."
+fi
+ok "rendered config is ${config_bytes} bytes (limit ${CONFIG_MAX_BYTES})"
 # created_after reports whether RFC 3339 timestamp $1 is later than $2, to the
 # nanosecond. It exits on a timestamp it cannot parse.
 created_after() {
@@ -928,6 +1057,8 @@ echo "==> agentgateway ${AGW_VERSION} image..."
 skopeo inspect --raw "docker://${UPSTREAM_IMAGE}" >"${TMP}/upstream.manifest" \
   || die "could not read ${UPSTREAM_IMAGE}."
 upstream_digest="sha256:$(sha256 < "${TMP}/upstream.manifest")"
+[[ "${upstream_digest}" == "${AGW_DIGEST}" ]] \
+  || die "${UPSTREAM_IMAGE} is ${upstream_digest}, not the pinned ${AGW_DIGEST}. Refusing to continue; investigate before re-running."
 # Cloud Run resolves the index to its linux/amd64 image for each revision.
 upstream_amd64=$(jq -r '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest][0] // empty' \
   "${TMP}/upstream.manifest") || die "could not parse the ${UPSTREAM_IMAGE} index."
@@ -1209,11 +1340,14 @@ else
 fi
 
 # probe sends one request and expects a 401 from the gateway itself (not an
-# HTML page from Cloud Run's front end) whose text/plain body starts with
-# the given prefix. It prints the real status and body.
+# HTML page from Cloud Run's front end) whose text/plain body is
+# AUTH_FAILED_BODY. Since v1.7.0, agentgateway answers every jwtAuth and
+# apiKey refusal with that same body and logs the reason instead. It prints
+# the real status and body.
+AUTH_FAILED_BODY="authentication failed"
 probe() {
-  local label="$1" prefix="$2"
-  shift 2
+  local label="$1"
+  shift
   local status ctype body
   : > "${TMP}/probe.body"
   status=$(curl -sS -m 30 -o "${TMP}/probe.body" -w '%{http_code} %{content_type}' "$@" "${URL}/v1/models") \
@@ -1229,7 +1363,7 @@ probe() {
   elif [[ "${ctype}" == text/html* ]] || grep -qi '<html' "${TMP}/probe.body"; then
     echo "    FAIL: 401 is an HTML page; the invoker IAM check is still on." >&2
     verify_failed=1
-  elif [[ "${ctype}" != text/plain* ]] || ! grep -q "^${prefix}" "${TMP}/probe.body"; then
+  elif [[ "${ctype}" != text/plain* ]] || [[ "$(cat "${TMP}/probe.body")" != "${AUTH_FAILED_BODY}" ]]; then
     echo "    FAIL: 401 is not agentgateway's text/plain authentication failure." >&2
     verify_failed=1
   fi
@@ -1238,11 +1372,11 @@ if [[ -n "${URL}" && "${HAS_KEYS}" == "true" ]]; then
   # With keys, no credential passes authentication (and is refused per
   # model), so the probe that must fail is a bearer that is neither a
   # valid JWT nor a configured key.
-  probe "wrong key" 'api key authentication failure: ' -H "authorization: Bearer not-a-configured-key"
+  probe "wrong key" -H "authorization: Bearer not-a-configured-key"
 elif [[ -n "${URL}" ]]; then
-  probe "no token" 'authentication failure: '
-  probe "x-api-key only" 'authentication failure: ' -H "x-api-key: ${STUB_UPSTREAM_KEY}"
-  probe "non-JWT bearer" 'authentication failure: ' -H "authorization: Bearer not-a-jwt"
+  probe "no token"
+  probe "x-api-key only" -H "x-api-key: ${STUB_UPSTREAM_KEY}"
+  probe "non-JWT bearer" -H "authorization: Bearer not-a-jwt"
 fi
 echo
 

@@ -319,15 +319,20 @@ func (e *managedServiceAccountNameDriftError) Error() string {
 
 // managedServiceAccounts returns the project's role service accounts by
 // name for provisioning. Duplicates (for example from a retried create)
-// resolve to the lowest ID so every caller picks the same account.
-func (c ServiceAccountTokenClient) managedServiceAccounts(ctx context.Context, owner, repo string) (map[string]GitLabServiceAccount, error) {
+// resolve to the lowest ID so every caller picks the same account, except that
+// an account whose ID is in current wins: rotation state's recorded managed
+// account is the runtime identity. After a Poller generation handoff the
+// superseded Poller shares its display name and is still in the ownership
+// inventory for cleanup, but its older ID must not win credential selection.
+func (c ServiceAccountTokenClient) managedServiceAccounts(ctx context.Context, owner, repo string, current []int) (map[string]GitLabServiceAccount, error) {
 	accounts, err := c.managedServiceAccountList(ctx, owner, repo, true)
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]GitLabServiceAccount)
 	for _, sa := range accounts {
-		if _, ok := out[sa.Name]; !ok {
+		prior, ok := out[sa.Name]
+		if !ok || (slices.Contains(current, sa.ID) && !slices.Contains(current, prior.ID)) {
 			out[sa.Name] = sa
 		}
 	}
@@ -369,17 +374,23 @@ func (c ServiceAccountTokenClient) CreateProjectAccessToken(ctx context.Context,
 	// membership or token operation, so a caller that did not wrap the client
 	// with withProjectExclusions still cannot touch an administrator-owned
 	// account. Wrapping an already frozen client is idempotent.
+	var currentManaged []int
 	if c.ContainmentClient != nil {
 		state, _, stateErr := loadRotationState(ctx, c.ContainmentClient, owner, repo)
 		if stateErr != nil {
 			return nil, fmt.Errorf("refusing to provision GitLab role identity %q: durable account exclusions unreadable: %w", name, safeAPIError("reading rotation state", stateErr))
+		}
+		for _, rs := range state.Roles {
+			if rs.ManagedUserID > 0 {
+				currentManaged = append(currentManaged, rs.ManagedUserID)
+			}
 		}
 		var exclErr error
 		if c, _, exclErr = c.withProjectExclusions(ctx, owner, repo, state); exclErr != nil {
 			return nil, exclErr
 		}
 	}
-	accounts, err := c.managedServiceAccounts(ctx, owner, repo)
+	accounts, err := c.managedServiceAccounts(ctx, owner, repo, currentManaged)
 	if err != nil {
 		if serviceAccountsUnavailable(err) {
 			return c.legacyCreate(ctx, owner, repo, name, scopes, accessLevel, expiresAt, err)
@@ -451,7 +462,7 @@ func (c ServiceAccountTokenClient) CreateProjectAccessToken(ctx context.Context,
 		cleanupCtx, cancel := gitlabCleanupContext(ctx)
 		defer cancel()
 		revokeErr := c.SA.RevokeServiceAccountPAT(cleanupCtx, owner, repo, sa.ID, tok.ID)
-		return nil, errors.Join(safeAPIError("validating the replacement service-account credential", verifyErr), safeAPIError("revoking the invalid replacement credential", revokeErr))
+		return nil, errors.Join(safeAPIError("validating the replacement service-account credential", verifyErr), revokeCleanupError("revoking the invalid replacement credential", revokeErr))
 	}
 	return tok, nil
 }
@@ -596,7 +607,7 @@ func (c ServiceAccountTokenClient) legacyCreate(ctx context.Context, owner, repo
 	if verifyErr != nil {
 		cleanupCtx, cancel := gitlabCleanupContext(ctx)
 		defer cancel()
-		return nil, errors.Join(safeAPIError("validating the replacement legacy credential", verifyErr), safeAPIError("revoking the invalid legacy replacement credential", c.Legacy.RevokeProjectAccessToken(cleanupCtx, owner, repo, tok.ID)))
+		return nil, errors.Join(safeAPIError("validating the replacement legacy credential", verifyErr), revokeCleanupError("revoking the invalid legacy replacement credential", c.Legacy.RevokeProjectAccessToken(cleanupCtx, owner, repo, tok.ID)))
 	}
 	return tok, nil
 }

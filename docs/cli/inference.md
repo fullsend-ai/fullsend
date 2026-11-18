@@ -10,7 +10,7 @@ Manage the inference credentials agent runs use. `provision`, `deprovision` and 
 
 | Command | Description | Who runs it / permission |
 |---------|-------------|--------------------------|
-| `fullsend inference provision <org\|owner/repo>` | Create WIF pool/provider and grant Agent Platform access | GCP project admin, with `roles/iam.workloadIdentityPoolAdmin` and `roles/resourcemanager.projectIamAdmin` |
+| `fullsend inference provision <org\|owner/repo\|group/project>` | Create WIF pool/provider and grant Agent Platform access (GitLab projects with `--forge gitlab`) | GCP project admin, with `roles/iam.workloadIdentityPoolAdmin` and `roles/resourcemanager.projectIamAdmin` (plus `roles/serviceusage.serviceUsageAdmin` to enable missing APIs automatically) |
 | `fullsend inference deprovision <org\|owner/repo>` | Remove org or repo from WIF | GCP project admin, with `roles/iam.workloadIdentityPoolAdmin` |
 | `fullsend inference status <org\|owner/repo>` | Check WIF health and print config values | Read access on the GCP project: `roles/iam.workloadIdentityPoolViewer` and `roles/browser` |
 | `fullsend inference openai request <owner/repo>[,…]` | Generate WIF provider/mapping request for OpenAI admin | Anyone; needs no credentials |
@@ -34,12 +34,36 @@ fullsend inference provision <owner/repo> \
   --project "<GCP_PROJECT>"
 ```
 
+GitLab mode creates a dedicated provider for one GitLab project:
+
+```bash
+fullsend inference provision <group/project> \
+  --forge gitlab \
+  --gitlab-project-id "<numeric-project-id>" \
+  --gitlab-url "https://gitlab.com" \
+  --project "<GCP_PROJECT>"
+```
+
+In GitLab mode the command creates:
+
+- the WIF pool, if it is missing;
+- a provider named `gl-<project-path>`, with `/` and other characters outside `[a-z0-9-]` replaced by `-`, lowercased, and truncated to 32 characters;
+- the `roles/aiplatform.user` binding on `principalSet://…/attribute.project_path/<project-path>`.
+
+The provider trusts the issuer `--gitlab-url` and allows the audience `fullsend`. It maps `google.subject` to the numeric `assertion.project_id`, not `assertion.sub`. Its condition binds both the project ID and the project path: `assertion.project_id == '<id>' && assertion.project_path == '<path>'`. The condition comparison is case-sensitive, so pass the project path in its canonical case.
+
+Find the numeric project ID on the project's **Settings → General** page. The command needs no GitLab token. A re-run is idempotent: it rewrites a provider only when its issuer, condition, audiences, or attribute mapping differ. If a provider with the same ID exists for a different project path, the command fails and leaves that provider unchanged. Pass the printed provider resource name to `fullsend repos install` with `--vertex-wif-provider`, or declare it as `inference.wif_provider`.
+
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--project` | | GCP project ID |
 | `--region` | `global` | GCP region |
+| `--dry-run` | `false` | Preview changes without making them |
+| `--forge` | `github` | Forge whose CI identities the provider trusts: `github` or `gitlab` |
+| `--gitlab-project-id` | | Numeric GitLab project ID. Required with `--forge gitlab` |
+| `--gitlab-url` | `https://gitlab.com` | GitLab instance URL used as the OIDC issuer. Must match the instance that signs the project's `id_tokens` (`--forge gitlab` only) |
 
 ### Required IAM roles
 
@@ -47,8 +71,19 @@ fullsend inference provision <owner/repo> \
 |------|-------------|
 | `roles/iam.workloadIdentityPoolAdmin` | Create WIF pool and provider |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to WIF principals |
+| `roles/serviceusage.serviceUsageAdmin` | Optional. Lets the command enable missing GCP APIs automatically |
 
 ### Required GCP APIs
+
+The command needs these APIs on the target project:
+
+- `iam.googleapis.com`
+- `cloudresourcemanager.googleapis.com`
+- `aiplatform.googleapis.com`
+
+Before provisioning, the command checks these APIs and enables any that are disabled. Newly enabled APIs can take a few minutes to become usable, so the command retries provisioning with bounded backoff while they propagate. `--dry-run` lists the APIs without checking or enabling them.
+
+If the command cannot check or enable the APIs, for example because the caller lacks Service Usage permissions, it prints the `gcloud` command to run and continues. If provisioning then fails because an API is disabled, enable the APIs manually and re-run:
 
 ```bash
 gcloud services enable \
@@ -169,7 +204,7 @@ fullsend inference openai status <owner/repo> \
 
 ## `inference gateway status`
 
-Prints the resolved `inference.gateway` block ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)) — `url`, `audience`, the `auth` mode and the model list (`models` or `models_file`) — with the config layer each comes from (`config.yaml` or `config.base.yaml`), and flags a partial block (url missing, or audience missing in the `oidc` mode). The block has no environment-variable override. For a complete block it also reports the Claude Code route: the `ANTHROPIC_BASE_URL` a claude runtime `gateway/<model>` run gets, and how the credential reaches it (an `apiKeyHelper` in the `oidc` mode, an `ANTHROPIC_AUTH_TOKEN` placeholder in the `api-key` mode, sent as `Authorization: Bearer` in both, and in the `oidc` mode Claude Code also copies the helper value into `x-api-key`; see [Claude Code § Inference gateway route](../runtimes/claude.md#inference-gateway-route)). In the `api-key` mode ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)) it warns that the mode relies on a long-lived secret and recommends `oidc` when the gateway supports it, reports whether `FULLSEND_INFERENCE_GATEWAY_API_KEY` is set (never its value), and stops at the config checks. In the `oidc` mode, when run inside a GitHub Actions job in `<owner/repo>` with `id-token: write`, fetches one GitHub OIDC assertion for the configured audience, reports its expiry (`exp`, lifetime, time left), and sends one authenticated request, `GET <url>/v1/models` with the assertion as a bearer token (under the url's path prefix when it has one, for example `GET https://gateway.example.com/team-a/v1/models`). It reports the HTTP status and reads the reply as an OpenAI-style model list (`{"data":[{"id":...}]}`, at most 1 MiB): a 2xx list with entries means the gateway accepted the assertion, and the command prints how many models the gateway authorises for `<owner/repo>` and their ids (the first 20, with JWT-shaped values redacted, control characters replaced by `?` and every `::` printed as `: :` so an id cannot form a workflow command); an empty list means the assertion was authenticated but no models are authorised for the repository, which is an error; 401 or 403 means the gateway refused the assertion; 3xx is an error (redirects are not followed); any other status (for example 404, 405, 429 or 5xx), or a 2xx reply that is not a model list, means authentication could not be confirmed, which is also an error. The request goes out over `https` only, ignores proxy settings, and refuses to connect to loopback, private or other internal addresses. The assertion is never printed. Outside Actions, it says so and stops at the config checks.
+Prints the resolved `inference.gateway` block ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)) — `url`, `audience`, the `auth` mode, `messages_auth_header` (`authorization (default)` when unset; [ADR 0142](../ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md)) and the model list (`models` or `models_file`) — with the config layer each comes from (`config.yaml` or `config.base.yaml`), and flags a partial block (url missing, or audience missing in the `oidc` mode). The block has no environment-variable override. For a complete block it also reports the Claude Code route: the `ANTHROPIC_BASE_URL` a claude runtime `gateway/<model>` run gets, and how the credential reaches it (an `apiKeyHelper` in the `oidc` mode, an `ANTHROPIC_AUTH_TOKEN` placeholder in the `api-key` mode, sent as `Authorization: Bearer` in both, and in the `oidc` mode Claude Code also copies the helper value into `x-api-key`; an `ANTHROPIC_API_KEY` placeholder sent as `x-api-key` only when an `api-key` block sets `messages_auth_header: x-api-key`; see [Claude Code § Inference gateway route](../runtimes/claude.md#inference-gateway-route)). In the `api-key` mode ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)) it warns that the mode relies on a long-lived secret and recommends `oidc` when the gateway supports it, reports whether `FULLSEND_INFERENCE_GATEWAY_API_KEY` is set (never its value), and stops at the config checks. In the `oidc` mode, when run inside a GitHub Actions job in `<owner/repo>` with `id-token: write`, fetches one GitHub OIDC assertion for the configured audience, reports its expiry (`exp`, lifetime, time left), and sends one authenticated request, `GET <url>/v1/models` with the assertion as a bearer token (under the url's path prefix when it has one, for example `GET https://gateway.example.com/team-a/v1/models`). It reports the HTTP status and reads the reply as an OpenAI-style model list (`{"data":[{"id":...}]}`, at most 1 MiB): a 2xx list with entries means the gateway accepted the assertion, and the command prints how many models the gateway authorises for `<owner/repo>` and their ids (the first 20, with JWT-shaped values redacted, control characters replaced by `?` and every `::` printed as `: :` so an id cannot form a workflow command); an empty list means the assertion was authenticated but no models are authorised for the repository, which is an error; 401 or 403 means the gateway refused the assertion; 3xx is an error (redirects are not followed); any other status (for example 404, 405, 429 or 5xx), or a 2xx reply that is not a model list, means authentication could not be confirmed, which is also an error. The request goes out over `https` only, ignores proxy settings, and refuses to connect to loopback, private or other internal addresses. The assertion is never printed. Outside Actions, it says so and stops at the config checks.
 
 ```bash
 fullsend inference gateway status <owner/repo> \

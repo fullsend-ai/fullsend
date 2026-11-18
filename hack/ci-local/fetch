@@ -1,0 +1,14 @@
+#!/bin/sh
+# fetch URL SHA256: download URL to /tmp/dl and verify its SHA256, or fail.
+# Copied into the ci-local image (see Containerfile); runs at build time.
+set -eu
+[ $# -eq 2 ] || { echo "usage: fetch URL SHA256" >&2; exit 2; }
+# Exactly 64 lowercase hex characters: anything else (a backslash escape, a
+# newline) could forge the sha256sum -c record below and skip the check.
+case $2 in *[!0123456789abcdef]*) bad=yes ;; *) bad=no ;; esac
+if [ "$bad" = yes ] || [ ${#2} -ne 64 ]; then
+  echo "fetch: not a SHA-256 digest: $2" >&2; exit 2
+fi
+# HTTPS only, redirects included (file: is for the stub tests).
+curl -sSfL --proto '=https,file' --proto-redir '=https' "$1" -o /tmp/dl
+printf '%s  /tmp/dl\n' "$2" | sha256sum -c - >/dev/null

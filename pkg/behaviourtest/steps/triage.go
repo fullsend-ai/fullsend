@@ -2,11 +2,13 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/cucumber/godog"
 
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -48,17 +50,64 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 		return fmt.Errorf("no install driver configured; use a Factory to construct a Driver for the suite")
 	}
 
-	repoName, err := w.Driver.AllocateRepo(ctx)
-	if err != nil {
-		return fmt.Errorf("allocating repo: %w", err)
+	if ld, ok := w.Driver.(install.LeaseDriver); ok {
+		lease, err := ld.AllocateLease(ctx)
+		if err != nil {
+			return fmt.Errorf("allocating repo: %w", err)
+		}
+		if err := bindLease(w, lease); err != nil {
+			if deallocErr := ld.DeallocateLease(ctx, lease.Org, lease.Repo); deallocErr != nil {
+				err = errors.Join(err, fmt.Errorf("releasing the lease: %w", deallocErr))
+			}
+			return err
+		}
+		w.LeasedRepoName = lease.Repo
+		w.LeasedRepoOrg = lease.Org
+	} else {
+		repoName, err := w.Driver.AllocateRepo(ctx)
+		if err != nil {
+			return fmt.Errorf("allocating repo: %w", err)
+		}
+		w.LeasedRepoName = repoName
 	}
 
-	w.LeasedRepoName = repoName
 	w.RepoOwner = w.Org
-	w.RepoName = repoName
-	w.RepoFull = w.Org + "/" + repoName
+	w.RepoName = w.LeasedRepoName
+	w.RepoFull = w.Org + "/" + w.LeasedRepoName
 
 	return ValidateSlotClean(w)
+}
+
+// bindLease points the scenario World at a leased slot's org: Org,
+// Token, MintURL and the mint's status group and workflow hosts come
+// from the lease, and SCM and CI are rebuilt from
+// the lease's org client through World.OrgDrivers, so every scenario
+// operation and its cleanup use the credentials of the org that owns
+// the repo. A lease without an org (a driver that leases by name only)
+// leaves the World's org and drivers unchanged.
+func bindLease(w *world.World, lease install.RepoLease) error {
+	if lease.Org == "" {
+		return nil
+	}
+	if w.OrgDrivers != nil {
+		if lease.Client == nil {
+			return fmt.Errorf("binding lease %s/%s: lease carries no forge client", lease.Org, lease.Repo)
+		}
+		scmDriver, ciDriver, err := w.OrgDrivers(lease.Client, lease.Token)
+		if err != nil {
+			return fmt.Errorf("binding lease %s/%s: building org drivers: %w", lease.Org, lease.Repo, err)
+		}
+		w.SCM = scmDriver
+		w.CI = ciDriver
+	}
+	w.Org = lease.Org
+	if lease.Token != "" {
+		w.Token = lease.Token
+	}
+	w.MintURL = lease.MintURL
+	w.MintStatusGroup = lease.MintStatusGroup
+	w.MintWorkflowHostRepos = lease.MintWorkflowHostRepos
+	return nil
 }
 
 func givenEnrolledRepository(w *world.World, fullName string) error {
@@ -106,15 +155,15 @@ func createIssue(w *world.World, title, body string) error {
 }
 
 // issueOpenDrainSkewBuffer is subtracted from the trigger timestamp on
-// retry to compensate for clock drift between the test runner and GitHub.
-// 30 s covers typical NTP drift without matching stale runs from prior
-// scenarios (pool repos are org-isolated).
+// retry to compensate for clock drift between the test runner and the
+// forge's clock. 30 s covers typical NTP drift without matching stale
+// runs from prior scenarios (pool repos are org-isolated).
 const issueOpenDrainSkewBuffer = 30 * time.Second
 
 // drainIssueOpenWorkflow waits for the fullsend.yaml workflow to process
-// the issues.opened event. If the first attempt fails (typically due to
-// GitHub Actions webhook delivery lag or clock skew between the runner
-// and GitHub), it retries once with a relaxed trigger timestamp.
+// the issues.opened event. If the first attempt finds no run (typically
+// due to GitHub Actions webhook delivery lag or clock skew between the
+// runner and GitHub), it retries once with a relaxed trigger timestamp.
 func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	ctx := context.Background()
 	repo := w.RepoName
@@ -124,17 +173,29 @@ func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	if err == nil {
 		return nil
 	}
+	// Only a timeout with no run (any driver's, marked by the shared
+	// sentinel) is retried. A run that concluded with a failure, or did
+	// not finish in time, did dispatch: its error is the real one, as is a
+	// cancelled context.
+	if !errors.Is(err, ci.ErrWorkflowNotDispatched) {
+		return fmt.Errorf("waiting for issue-open workflow: %w", err)
+	}
 
 	// Retry with a clock-skew buffer. When the test runner's clock is
-	// slightly ahead of GitHub's, the workflow run's CreatedAt falls
-	// before our trigger timestamp and the first poll window misses it.
+	// slightly ahead of the forge's clock, the workflow run's CreatedAt
+	// falls before our trigger timestamp and the first poll window misses
+	// it.
 	worldLogf(w, "issue-open drain: retrying with skew buffer: %v", err)
 	buffered := trigger.Add(-issueOpenDrainSkewBuffer)
-	if _, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent); retryErr == nil {
+	_, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent)
+	if retryErr == nil {
 		return nil
 	}
 
-	return fmt.Errorf("waiting for issue-open workflow: %w", err)
+	// Wrap the retry's error: its wait ended last, so its detail (such as
+	// a poll-error summary) matches the window the dispatch diagnostics
+	// measure from.
+	return fmt.Errorf("waiting for issue-open workflow: %w", retryErr)
 }
 
 func whenIssueLabeled(w *world.World, label string) error {
@@ -158,14 +219,5 @@ func thenTriageWorkflowCompletes(w *world.World) error {
 }
 
 func thenIssueHasLabel(w *world.World, label string) error {
-	issue, err := w.SCM.GetIssue(context.Background(), w.RepoOwner, w.RepoName, w.IssueNumber)
-	if err != nil {
-		return err
-	}
-	for _, name := range issue.Labels {
-		if name == label {
-			return nil
-		}
-	}
-	return fmt.Errorf("issue #%d labels %v do not include %q", w.IssueNumber, issue.Labels, label)
+	return thenTargetLabel(w, targetIssue, label, true)
 }

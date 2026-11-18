@@ -5,6 +5,8 @@ to validate and rejects one that contains the key `notAField`, the way the
 real `--validate-only` rejects an unknown field.
 """
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import shutil
@@ -20,7 +22,31 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "hack" / "check-gateway-doc-configs"
 PAGE = REPO_ROOT / "docs" / "guides" / "infrastructure" / "inference-gateway-operator.md"
 EXAMPLES = PAGE.parent / "examples" / "inference-gateway"
-DIGEST = "sha256:9d3e6044ddcdc0878b1787f77bd401252b95e22684203fb5e874c4c42d2ed90c"
+
+
+def load_checker():
+    loader = importlib.machinery.SourceFileLoader("check_gateway_doc_configs", str(SCRIPT))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
+# The version the page names and the digest the script pins for it, so a
+# version bump touches only the page and IMAGE_DIGESTS.
+CHECKER = load_checker()
+VERSION = CHECKER.page_version(PAGE.read_text())
+DIGEST = CHECKER.IMAGE_DIGESTS.get(VERSION, "")
+
+
+def test_page_version_has_a_pinned_digest():
+    assert DIGEST, f"the page names agentgateway {VERSION}; add its image digest to IMAGE_DIGESTS"
+    assert DIGEST.removeprefix("sha256:") in PAGE.read_text(), (
+        f"IMAGE_DIGESTS[{VERSION!r}] does not match the digest the page shows in step 1"
+    )
+
 
 FAKE_AGENTGATEWAY = """\
 import os, sys, time, yaml
@@ -34,7 +60,7 @@ def has_bad_key(node):
 
 args = sys.argv[1:]
 if args == ["-V"]:
-    print(os.environ.get("FAKE_AGW_VERSION", "1.6.0"))
+    print(os.environ["FAKE_AGW_VERSION"])
     sys.exit(0)
 config = args[args.index("-f") + 1]
 text = open(config).read()
@@ -104,7 +130,12 @@ def env(tmp_path):
     fake = write_executable(tmp_path / "agentgateway", FAKE_AGENTGATEWAY)
     e = {k: v for k, v in os.environ.items() if k not in ("AGENTGATEWAY_BIN", "CONTAINER_RUNTIME")}
     e.update(
-        {"FAKE_AGW_LOG": str(log), "FAKE_AGW_SCRIPT": str(fake), "AGENTGATEWAY_BIN": str(fake)}
+        {
+            "FAKE_AGW_LOG": str(log),
+            "FAKE_AGW_SCRIPT": str(fake),
+            "AGENTGATEWAY_BIN": str(fake),
+            "FAKE_AGW_VERSION": VERSION.lstrip("v"),
+        }
     )
     return e
 
@@ -175,7 +206,7 @@ def test_broken_base_config_fails(env, docs):
     replace_once(docs, "  discovery: disabled\n", "  discovery: disabled\n  notAField: true\n")
     result = run(env, docs)
     assert result.returncode == 1
-    assert "ERROR: step 3 config: agentgateway v1.6.0 rejected the config" in result.stderr
+    assert f"ERROR: step 3 config: agentgateway {VERSION} rejected the config" in result.stderr
     assert "unknown field `notAField`" in result.stderr
     assert "4 of 4 configs" in result.stderr
 
@@ -228,17 +259,17 @@ def test_excerpt_that_drifted_from_its_file_fails(env, docs):
 
 
 def test_page_naming_two_versions_fails(env, docs):
-    replace_once(docs, "agentgateway:v1.6.0 -f", "agentgateway:v1.7.0 -f")
+    replace_once(docs, f"agentgateway:{VERSION} -f", "agentgateway:v0.0.1 -f")
     result = run(env, docs)
     assert result.returncode == 1
-    assert "more than one agentgateway version: v1.6.0, v1.7.0" in result.stderr
+    assert f"more than one agentgateway version: v0.0.1, {VERSION}" in result.stderr
 
 
 def test_binary_of_another_version_fails(env):
-    env["FAKE_AGW_VERSION"] = "1.5.0"
+    env["FAKE_AGW_VERSION"] = "0.0.1"
     result = run(env)
     assert result.returncode == 1
-    assert "is version '1.5.0', but the page names v1.6.0" in result.stderr
+    assert f"is version '0.0.1', but the page names {VERSION}" in result.stderr
 
 
 def test_container_runtime_uses_pinned_image(env, tmp_path):
@@ -254,7 +285,7 @@ def test_container_runtime_uses_pinned_image(env, tmp_path):
         json.loads(line)
         for line in (Path(env["FAKE_AGW_LOG"]) / "docker-calls.jsonl").read_text().splitlines()
     ]
-    image = f"ghcr.io/agentgateway/agentgateway:v1.6.0@{DIGEST}"
+    image = f"ghcr.io/agentgateway/agentgateway:{VERSION}@{DIGEST}"
     assert calls[0] == ["pull", "--quiet", image]
     assert len(calls) == 5
     for call in calls[1:]:

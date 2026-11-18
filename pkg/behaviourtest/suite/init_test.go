@@ -2,9 +2,12 @@ package suite
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,11 +17,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -33,10 +40,16 @@ func (p *panickingSCM) CreateIssue(context.Context, string, string, string, stri
 func (p *panickingSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
 	return nil
 }
+func (p *panickingSCM) EnsureLabel(context.Context, string, string, string) error {
+	return nil
+}
 func (p *panickingSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
 	return nil, nil
 }
 func (p *panickingSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
+	return nil, nil
+}
+func (p *panickingSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
 	return nil, nil
 }
 func (p *panickingSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
@@ -184,8 +197,20 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
 		PlaybackCommitted:          true,
 		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
+		JiraPollCLIOutput:          "{\n  \"dispatches\": []\n}\n",
+		JiraPollCLIExitCode:        1,
+		JiraPollCLIOutputPath:      "/tmp/jira-poll-output.json",
+		JiraPollerLog:              "WARNING: skipping event x for issue PROJ-1",
+		MintProbe:                  &world.MintProbe{Forge: "github"},
+		BotRoleProbe:               &world.BotRoleProbe{Forge: "github"},
 	}
 	resetScenarioWorld(w)
+	assert.Nil(t, w.MintProbe)
+	assert.Nil(t, w.BotRoleProbe)
+	assert.Equal(t, "", w.JiraPollCLIOutput)
+	assert.Equal(t, 0, w.JiraPollCLIExitCode)
+	assert.Equal(t, "", w.JiraPollCLIOutputPath)
+	assert.Equal(t, "", w.JiraPollerLog)
 	assert.Equal(t, 0, w.PRNumber)
 	assert.Equal(t, "", w.DispatchAgent)
 	assert.Equal(t, 0, w.IssueNumber)
@@ -271,7 +296,7 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 		IssueNumber: 42, // scenario field — should be zeroed by reset
 	}
 
-	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario")
+	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario", "features/a.feature")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -283,13 +308,14 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 	assert.False(t, w.ScenarioStart.IsZero(), "ScenarioStart should be set")
 	assert.Equal(t, w.ScenarioStart, w.ScenarioBegin, "ScenarioBegin should be set")
 	assert.Equal(t, "a scenario", w.ScenarioName)
+	assert.Equal(t, "features/a.feature", w.ScenarioURI)
 }
 
 func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
 	driver := newFakeDriver(3)
 	template := &world.World{Org: "test-org", Driver: driver}
 
-	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario")
+	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario", "features/a.feature")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -303,7 +329,7 @@ func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
 func TestBeforeScenario_NilDriver(t *testing.T) {
 	template := &world.World{Org: "test-org"}
 
-	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario")
+	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario", "features/a.feature")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -319,7 +345,7 @@ func TestBeforeScenario_PlaybackDriverGetsRepoHint(t *testing.T) {
 	// SetRepoHint on PlaybackDriver is a no-op (pool repos have stable
 	// names), so this only verifies that beforeScenario's type assertion
 	// finds the PlaybackDriver and calls it without error.
-	ctx, err := beforeScenario(context.Background(), nil, template, "A Playback Scenario")
+	ctx, err := beforeScenario(context.Background(), nil, template, "A Playback Scenario", "features/a.feature")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -329,12 +355,13 @@ func TestBeforeScenario_PlaybackDriverGetsRepoHint(t *testing.T) {
 
 func TestAfterScenario_NilWorld(t *testing.T) {
 	// When Before fails (e.g. tag skip), the After hook receives a context
-	// with no World. It should pass through the original error unchanged.
+	// with no World. It returns nil: godog keeps the scenario's own error
+	// (here ErrSkip) as the result when the hook reports no error.
 	origErr := godog.ErrSkip
 	ctx := context.Background() // no World stored
 
 	_, err := afterScenario(ctx, nil, origErr)
-	assert.Equal(t, origErr, err, "original error should be preserved")
+	assert.NoError(t, err, "the hook returns only its own error")
 }
 
 func TestAfterScenario_DeallocatesRepo(t *testing.T) {
@@ -374,20 +401,27 @@ func TestAfterScenario_DoubleDeallocateSurfacesError(t *testing.T) {
 	assert.Contains(t, err.Error(), "deallocating repo")
 }
 
-func TestAfterScenario_PreservesOriginalError(t *testing.T) {
+// TestAfterScenario_FailedScenarioWithCleanTeardownReturnsNil checks
+// the #9469 contract: the hook does not echo the scenario's own error
+// (godog would prefix it with "after scenario hook failed:" and make a
+// step failure read as a teardown failure), yet the failure is still
+// recorded and the repo still deallocated.
+func TestAfterScenario_FailedScenarioWithCleanTeardownReturnsNil(t *testing.T) {
 	driver := newFakeDriver(2)
 
 	name, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
 
-	w := &world.World{LeasedRepoName: name}
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{LeasedRepoName: name, ScenarioName: "step fails", Failures: rec}
 	ctx := world.WithWorld(context.Background(), w)
 
 	origErr := assert.AnError
 	_, err = afterScenario(ctx, driver, origErr)
-	// Original error is preserved; deallocation error (if any) is logged
-	// but not returned when there is already an error from the scenario.
-	assert.Equal(t, origErr, err)
+	assert.NoError(t, err, "a clean teardown returns no hook error")
+	assert.Equal(t, 1, driver.deallocated)
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "step fails")
+	assert.Equal(t, origErr.Error(), record.Message, "the step failure is still recorded")
 }
 
 func TestAfterScenario_DeallocatesOnCleanupPanic(t *testing.T) {
@@ -479,7 +513,7 @@ func TestAfterScenario_FailedScenarioWritesFailureSummaryBeforeDeallocating(t *t
 
 	origErr := fmt.Errorf("harness agent did not complete")
 	_, err = afterScenario(ctx, driver, origErr)
-	assert.Equal(t, origErr, err)
+	assert.NoError(t, err)
 	assert.Equal(t, 1, summaryAtDealloc, "the failure summary must exist before the repo is deallocated")
 }
 
@@ -511,6 +545,132 @@ func TestAfterScenario_DeallocationFailureWritesFailureSummary(t *testing.T) {
 	assert.Contains(t, string(data), "deallocating repo")
 }
 
+// TestAfterScenario_SkipAfterLeaseDeallocationFailureWritesSummary checks
+// that a scenario skipped after it took a lease (godog.ErrSkip from a
+// step) and whose deallocation then fails is treated like a passing one:
+// the deallocation failure is returned, recorded and gets a failure
+// summary, since the skip itself recorded nothing.
+func TestAfterScenario_SkipAfterLeaseDeallocationFailureWritesSummary(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(2)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	// Deallocate before After — the hook's own deallocation then fails.
+	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
+
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{LeasedRepoName: name, ScenarioName: "skipped but leaks", Failures: rec}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err = afterScenario(ctx, driver, godog.ErrSkip)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deallocating repo")
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "skipped but leaks")
+	assert.Contains(t, record.Message, "deallocating repo")
+
+	matches, globErr := filepath.Glob(filepath.Join(artifactDir, "debug-scenario-*", "failure-summary.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, matches, 1)
+	data, readErr := os.ReadFile(matches[0])
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "Scenario: skipped but leaks")
+	assert.Contains(t, string(data), "deallocating repo")
+}
+
+// TestAfterScenario_SkippedScenarioCleanTeardownRecordsNothing checks
+// that a scenario skipped after it took a lease, whose deallocation
+// succeeds, records no failure and writes no failure summary.
+func TestAfterScenario_SkippedScenarioCleanTeardownRecordsNothing(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(1)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{LeasedRepoName: name, ScenarioName: "skipped cleanly", Failures: rec}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err = afterScenario(ctx, driver, godog.ErrSkip)
+	require.NoError(t, err)
+
+	assert.Empty(t, rec.Snapshot(), "a skip with a clean teardown is not a failure")
+	assert.Equal(t, 1, driver.deallocated, "the lease is still returned")
+	entries, err := os.ReadDir(artifactDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "a skip with a clean teardown writes no failure summary")
+}
+
+// countingListerCI is a ci.Driver that lists no workflow runs and counts
+// the listings; every other method panics (embedded nil interface).
+type countingListerCI struct {
+	ci.Driver
+	mu    sync.Mutex
+	lists int
+}
+
+func (c *countingListerCI) ListRecentRuns(context.Context, string, string, int) ([]forge.WorkflowRun, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lists++
+	return nil, nil
+}
+
+// TestAfterScenario_NotDispatchedPlusDeallocationFailure checks that a
+// scenario that failed because no workflow run was dispatched, and whose
+// deallocation then fails, records both failures but collects failure
+// logs once: the dispatch grace wait runs once, not again for the
+// teardown failure. The context is already cancelled so the grace wait
+// returns at once instead of sleeping.
+func TestAfterScenario_NotDispatchedPlusDeallocationFailure(t *testing.T) {
+	// The grace budget is process-global; start from a fresh one.
+	steps.ResetDispatchGraceForTest(t)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(2)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	// Deallocate before After — the hook's own deallocation then fails.
+	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
+
+	rec := &behaviourfail.Recorder{}
+	lister := &countingListerCI{}
+	w := &world.World{
+		LeasedRepoName: name, Org: "org", RepoName: name, CI: lister,
+		ScenarioName: "never dispatched", Failures: rec,
+	}
+	ctx, cancel := context.WithCancel(world.WithWorld(context.Background(), w))
+	cancel()
+
+	scenarioErr := fmt.Errorf("waiting for issue-open workflow: %w",
+		&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Event: "issues"})
+	_, err = afterScenario(ctx, driver, scenarioErr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deallocating repo")
+
+	records := rec.Snapshot()
+	require.Len(t, records, 2, "the step failure and the deallocation failure are both recorded")
+	assert.Contains(t, records[0].Message, "was not dispatched")
+	assert.Contains(t, records[1].Message, "deallocating repo")
+	for _, r := range records {
+		assert.Equal(t, behaviourfail.Scenario, r.Class)
+	}
+
+	matches, globErr := filepath.Glob(filepath.Join(artifactDir, "debug-scenario-*", "failure-summary.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, matches, 1)
+	data, readErr := os.ReadFile(matches[0])
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(data), "Dispatch diagnostics:"), "the grace wait runs once")
+	assert.Equal(t, 1, strings.Count(string(data), "the grace period was cut short"))
+	assert.Equal(t, 2, lister.lists, "one dispatch listing and one failure-log listing, not repeated for the teardown failure")
+}
+
 func TestAfterScenario_NoFailureSummaryForPassingOrSkippedScenario(t *testing.T) {
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
@@ -519,12 +679,219 @@ func TestAfterScenario_NoFailureSummaryForPassingOrSkippedScenario(t *testing.T)
 		w := &world.World{ScenarioName: "fine"}
 		ctx := world.WithWorld(context.Background(), w)
 		_, err := afterScenario(ctx, nil, scenarioErr)
-		assert.Equal(t, scenarioErr, err)
+		assert.NoError(t, err)
 	}
 
 	entries, err := os.ReadDir(artifactDir)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "only failed scenarios write a failure summary")
+}
+
+// --- failure classification recording (afterScenario records every
+// non-skip failure with its class; see recordScenarioFailure) ---
+
+// captureLogf returns a World.Logf that appends formatted lines to logs.
+func captureLogf(logs *[]string) func(string, ...any) {
+	return func(format string, args ...any) {
+		*logs = append(*logs, fmt.Sprintf(format, args...))
+	}
+}
+
+// failureClassLines returns the labelled [failure-class] log lines.
+func failureClassLines(logs []string) []string {
+	var labelled []string
+	for _, line := range logs {
+		if strings.Contains(line, "[failure-class]") {
+			labelled = append(labelled, line)
+		}
+	}
+	return labelled
+}
+
+// requireRecordedFailure asserts the recorder holds exactly one failure
+// record with the given class, the "scenario" source label, and the given
+// scenario name, returning that record.
+func requireRecordedFailure(t *testing.T, rec *behaviourfail.Recorder, class behaviourfail.Class, scenario string) behaviourfail.FailureRecord {
+	t.Helper()
+	records := rec.Snapshot()
+	require.Len(t, records, 1)
+	assert.Equal(t, class, records[0].Class)
+	assert.Equal(t, "scenario", records[0].Source)
+	assert.Equal(t, scenario, records[0].Scenario)
+	return records[0]
+}
+
+// TestAfterScenario_RecordsRateLimitScenarioFailureAsInfrastructure
+// checks that a scenario failing with a rate-limit error records exactly
+// one infrastructure failure with the redacted error message, and logs
+// one labelled line naming the scenario and its class.
+func TestAfterScenario_RecordsRateLimitScenarioFailureAsInfrastructure(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(1)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+
+	rec := &behaviourfail.Recorder{}
+	var logs []string
+	w := &world.World{
+		LeasedRepoName: name,
+		ScenarioName:   "collaborator invite rate limited",
+		Failures:       rec,
+		Logf:           captureLogf(&logs),
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	scenarioErr := fmt.Errorf("add label: %w", &gh.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Message:    "too many requests",
+	})
+	_, err = afterScenario(ctx, driver, scenarioErr)
+	assert.NoError(t, err)
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Infrastructure, "collaborator invite rate limited")
+	assert.Contains(t, record.Message, "add label")
+	assert.Contains(t, record.Message, "too many requests")
+
+	lines := failureClassLines(logs)
+	require.Len(t, lines, 1, "one labelled line per failed scenario")
+	assert.Contains(t, lines[0], `"collaborator invite rate limited"`)
+	assert.Contains(t, lines[0], "infrastructure")
+}
+
+// TestAfterScenario_RecordsAssertionScenarioFailureAsScenario checks
+// that a scenario failing with a plain assertion error records exactly
+// one scenario failure — the conservative default that keeps product
+// regressions visible instead of retried.
+func TestAfterScenario_RecordsAssertionScenarioFailureAsScenario(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	rec := &behaviourfail.Recorder{}
+	var logs []string
+	w := &world.World{
+		ScenarioName: "issue gets labelled",
+		Failures:     rec,
+		Logf:         captureLogf(&logs),
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	scenarioErr := errors.New("issue 42 missing label")
+	_, err := afterScenario(ctx, nil, scenarioErr)
+	assert.NoError(t, err)
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "issue gets labelled")
+	assert.Equal(t, "issue 42 missing label", record.Message)
+
+	lines := failureClassLines(logs)
+	require.Len(t, lines, 1, "one labelled line per failed scenario")
+	assert.Contains(t, lines[0], ": scenario")
+}
+
+// TestAfterScenario_SkippedScenarioRecordsNothing checks that a skipped
+// scenario leaves the run's failure recorder untouched — skips are not
+// failures.
+func TestAfterScenario_SkippedScenarioRecordsNothing(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	rec := &behaviourfail.Recorder{}
+	var logs []string
+	w := &world.World{
+		ScenarioName: "skipped by tag",
+		Failures:     rec,
+		Logf:         captureLogf(&logs),
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, nil, godog.ErrSkip)
+	assert.NoError(t, err)
+
+	assert.Nil(t, rec.Snapshot())
+	infrastructure, scenario := rec.Counts()
+	assert.Zero(t, infrastructure)
+	assert.Zero(t, scenario)
+	assert.Empty(t, failureClassLines(logs))
+}
+
+// TestAfterScenario_RecordsDeallocationFailureOnPassingScenario checks
+// that the deferred deallocation failure which fails an otherwise
+// passing scenario is recorded — same source label and scenario name as
+// a scenario failure, with the deallocation origin in the message.
+func TestAfterScenario_RecordsDeallocationFailureOnPassingScenario(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(2)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	// Deallocate before After — the hook's own deallocation then fails.
+	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
+
+	rec := &behaviourfail.Recorder{}
+	var logs []string
+	w := &world.World{
+		LeasedRepoName: name,
+		ScenarioName:   "passes but leaks",
+		Failures:       rec,
+		Logf:           captureLogf(&logs),
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err = afterScenario(ctx, driver, nil)
+	require.Error(t, err)
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "passes but leaks")
+	assert.Contains(t, record.Message, "deallocating repo")
+
+	lines := failureClassLines(logs)
+	require.Len(t, lines, 1, "one labelled line per failed scenario")
+	assert.Contains(t, lines[0], ": scenario")
+}
+
+// TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsBoth
+// checks that when the scenario already failed, the deallocation error
+// is still recorded beside it: the scenario error here is
+// infrastructure-classified, so the scenario-classified teardown
+// failure is what keeps the run non-retryable — an infrastructure
+// retry cannot mask it (#8036's no-masking contract). The World
+// carries no Logf, which also covers that recording works without a
+// console logger.
+func TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsBoth(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(2)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	// Deallocate before After — the hook's own deallocation fails too,
+	// and both failures must be recorded.
+	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
+
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{
+		LeasedRepoName: name,
+		ScenarioName:   "fails and leaks",
+		Failures:       rec,
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	scenarioErr := fmt.Errorf("add label: %w", &gh.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Message:    "too many requests",
+	})
+	_, err = afterScenario(ctx, driver, scenarioErr)
+	require.Error(t, err, "a teardown failure beside a step error is the hook's own error")
+	assert.Contains(t, err.Error(), "deallocating repo")
+	assert.NotContains(t, err.Error(), "too many requests", "the step error is not echoed back")
+
+	records := rec.Snapshot()
+	require.Len(t, records, 2, "the scenario failure and the teardown failure are both recorded")
+	assert.Equal(t, behaviourfail.Infrastructure, records[0].Class)
+	assert.Contains(t, records[0].Message, "add label")
+	assert.Equal(t, behaviourfail.Scenario, records[1].Class)
+	assert.Contains(t, records[1].Message, "deallocating repo")
 }
 
 // TestBeforeToAfter_MalformedCapabilityTagWritesFailureSummary checks that a
@@ -536,13 +903,13 @@ func TestBeforeToAfter_MalformedCapabilityTagWritesFailureSummary(t *testing.T) 
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 
 	template := &world.World{Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"}}
-	ctx, beforeErr := beforeScenario(context.Background(), []string{"@requires:capability:"}, template, "malformed tag scenario")
+	ctx, beforeErr := beforeScenario(context.Background(), []string{"@requires:capability:"}, template, "malformed tag scenario", "features/a.feature")
 	require.Error(t, beforeErr)
 	require.NotErrorIs(t, beforeErr, godog.ErrSkip)
 	require.NotNil(t, world.FromContext(ctx), "the failed Before hook must still attach a World")
 
 	_, err := afterScenario(ctx, nil, fmt.Errorf("before scenario hook failed: %w", beforeErr))
-	require.Error(t, err)
+	require.NoError(t, err)
 
 	matches, globErr := filepath.Glob(filepath.Join(artifactDir, "debug-scenario-*", "failure-summary.txt"))
 	require.NoError(t, globErr)
@@ -557,7 +924,265 @@ func TestBeforeToAfter_MalformedCapabilityTagWritesFailureSummary(t *testing.T) 
 // returning ErrSkip without a World, so the After hook does nothing for it.
 func TestBeforeScenario_SkipDoesNotAttachWorld(t *testing.T) {
 	template := &world.World{Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"}}
-	ctx, err := beforeScenario(context.Background(), []string{"@skip:per-repo"}, template, "skipped")
+	ctx, err := beforeScenario(context.Background(), []string{"@skip:per-repo"}, template, "skipped", "features/a.feature")
 	require.ErrorIs(t, err, godog.ErrSkip)
 	assert.Nil(t, world.FromContext(ctx))
+}
+
+// fakeLeaseDriver is a fakeDriver that also leases by (org, repo).
+type fakeLeaseDriver struct {
+	*fakeDriver
+	released []string
+	err      error
+}
+
+func (f *fakeLeaseDriver) AllocateLease(ctx context.Context) (install.RepoLease, error) {
+	name, err := f.AllocateRepo(ctx)
+	return install.RepoLease{Org: "halfsend-05", Repo: name}, err
+}
+
+func (f *fakeLeaseDriver) DeallocateLease(_ context.Context, org, repo string) error {
+	f.released = append(f.released, org+"/"+repo)
+	return f.err
+}
+
+func TestAfterScenario_DeallocatesLeaseWithItsOrg(t *testing.T) {
+	driver := &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}
+	w := &world.World{LeasedRepoName: "test-repo-01", LeasedRepoOrg: "halfsend-05", Org: "halfsend-05"}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released)
+	assert.Zero(t, driver.deallocated, "a lease is released by org and repo, not by name")
+
+	driver.err = errors.New("release failed")
+	_, err = afterScenario(ctx, driver, nil)
+	require.ErrorContains(t, err, "deallocating repo: release failed")
+}
+
+func TestResetScenarioWorld_ClearsLease(t *testing.T) {
+	w := &world.World{LeasedRepoName: "test-repo-01", LeasedRepoOrg: "halfsend-02", MintURL: "https://mint"}
+	w.LeaseOwned = func(context.Context) (bool, error) { return true, nil }
+	resetScenarioWorld(w)
+	assert.Nil(t, w.LeaseOwned)
+	assert.Empty(t, w.LeasedRepoName)
+	assert.Empty(t, w.LeasedRepoOrg)
+	assert.Empty(t, w.MintURL)
+}
+
+// recordingSCM records every mutation scenario cleanup makes. The other
+// scm.Driver methods come from panickingSCM and are no-ops.
+type recordingSCM struct {
+	panickingSCM
+	mutations []string
+}
+
+func (r *recordingSCM) CloseIssue(_ context.Context, owner, repo string, n int) error {
+	r.mutations = append(r.mutations, fmt.Sprintf("close %s/%s#%d", owner, repo, n))
+	return nil
+}
+
+func (r *recordingSCM) DeleteBranch(_ context.Context, owner, repo, branch string) error {
+	r.mutations = append(r.mutations, fmt.Sprintf("delete-branch %s/%s:%s", owner, repo, branch))
+	return nil
+}
+
+func (r *recordingSCM) DeleteRepo(_ context.Context, owner, repo string) error {
+	r.mutations = append(r.mutations, fmt.Sprintf("delete-repo %s/%s", owner, repo))
+	return nil
+}
+
+func (r *recordingSCM) CommitFile(_ context.Context, owner, repo, path, _ string, _ []byte) error {
+	r.mutations = append(r.mutations, fmt.Sprintf("commit %s/%s:%s", owner, repo, path))
+	return nil
+}
+
+// verifyingLeaseDriver is a fakeLeaseDriver that also verifies lease
+// ownership: the slot belongs to whichever holder is currently set.
+type verifyingLeaseDriver struct {
+	*fakeLeaseDriver
+	holder string
+	err    error
+}
+
+func (v *verifyingLeaseDriver) StillOwnsLease(_ context.Context, org, repo string) (bool, error) {
+	if v.err != nil {
+		return false, v.err
+	}
+	return v.holder == org+"/"+repo+"#scenario", nil
+}
+
+func leasedWorldWithResources(scm *recordingSCM) *world.World {
+	return &world.World{
+		LeasedRepoName: "test-repo-01", LeasedRepoOrg: "halfsend-05",
+		Org: "halfsend-05", RepoOwner: "halfsend-05", RepoName: "test-repo-01",
+		SCM:         scm,
+		IssueNumber: 7, CreatedBranches: []string{"agent/7-fix"},
+		ForkOwner: "halfsend-05", ForkRepo: "test-repo-01-fork",
+	}
+}
+
+func TestAfterScenario_ReplacementHolder_CleanupSkippedAndOldLeaseReleased(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := &verifyingLeaseDriver{fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}}
+	w := leasedWorldWithResources(scm)
+	ctx := world.WithWorld(context.Background(), w)
+
+	// Another holder replaced the slot before the After hook.
+	driver.holder = "halfsend-05/test-repo-01#replacement"
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Empty(t, scm.mutations, "cleanup must not touch the replacement holder's resources")
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released,
+		"this scenario's old lease is still released, by the driver's own ownership-checked release")
+}
+
+func TestAfterScenario_OwnedLease_CleansUpBeforeRelease(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := &verifyingLeaseDriver{
+		fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)},
+		holder:          "halfsend-05/test-repo-01#scenario",
+	}
+	w := leasedWorldWithResources(scm)
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Contains(t, scm.mutations, "close halfsend-05/test-repo-01#7")
+	assert.Contains(t, scm.mutations, "delete-branch halfsend-05/test-repo-01:agent/7-fix")
+	assert.Contains(t, scm.mutations, "delete-repo halfsend-05/test-repo-01-fork")
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released)
+}
+
+func TestAfterScenario_UnverifiableLease_FailsClosedButStillReleases(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := &verifyingLeaseDriver{
+		fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)},
+		err:             errors.New("lookup unavailable"),
+	}
+	w := leasedWorldWithResources(scm)
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Empty(t, scm.mutations)
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released)
+}
+
+func TestAfterScenario_LeaseDriverWithoutVerifier_FailsClosed(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}
+	w := leasedWorldWithResources(scm)
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Empty(t, scm.mutations, "a cross-org lease that cannot be verified is not cleaned up by name")
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released)
+}
+
+func TestAfterScenario_NameOnlyLease_CleansUpUnguarded(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := newFakeDriver(1)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	w := leasedWorldWithResources(scm)
+	w.LeasedRepoOrg = ""
+	w.LeasedRepoName, w.RepoName = name, name
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err = afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Contains(t, scm.mutations, "close halfsend-05/test-repo-01#7")
+	assert.Nil(t, w.LeaseOwned, "a name-only lease has no shared slot to lose")
+}
+
+func TestLeaseOwnership(t *testing.T) {
+	ctx := context.Background()
+	assert.Nil(t, leaseOwnership(&verifyingLeaseDriver{fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}}, "", "test-repo-01"))
+
+	v := &verifyingLeaseDriver{
+		fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)},
+		holder:          "o/r#scenario",
+	}
+	owns, err := leaseOwnership(v, "o", "r")(ctx)
+	require.NoError(t, err)
+	assert.True(t, owns)
+	v.holder = "o/r#other"
+	owns, err = leaseOwnership(v, "o", "r")(ctx)
+	require.NoError(t, err)
+	assert.False(t, owns)
+
+	owns, err = leaseOwnership(&fakeLeaseDriver{fakeDriver: newFakeDriver(1)}, "o", "r")(ctx)
+	require.ErrorContains(t, err, "cannot verify lease ownership of o/r")
+	assert.False(t, owns)
+}
+
+// TestRecordScenarioFailure_RedactsWorldTokenWithoutPriorRegistration
+// pins the recording site's redaction ordering (PR #8801 review): the
+// scenario failure's message is redacted with the World's credential
+// literals registered first, so an opaque token that no pattern
+// recognizes is masked even in the very first failure the process
+// records, before any debug-log collection has run.
+func TestRecordScenarioFailure_RedactsWorldTokenWithoutPriorRegistration(t *testing.T) {
+	token := "opaquescefirstrecording4c8d1e6f"
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{
+		Token:        token,
+		ScenarioName: "first recorded failure",
+		Failures:     rec,
+	}
+
+	recordScenarioFailure(w, fmt.Errorf("step failed with token %s", token))
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "first recorded failure")
+	assert.NotContains(t, record.Message, token,
+		"the opaque token must be masked by registration, not by pattern luck")
+	assert.Contains(t, record.Message, "step failed with token")
+}
+
+// TestRecordScenarioFailure_RedactsScenarioName pins that the report's
+// scenario field gets the same redaction as its message: the report writer
+// serializes both as recorded.
+func TestRecordScenarioFailure_RedactsScenarioName(t *testing.T) {
+	token := "opaquescenarioname7b2e9a1c"
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{
+		Token:        token,
+		ScenarioName: "scenario using " + token,
+		Failures:     rec,
+	}
+
+	recordScenarioFailure(w, errors.New("step failed"))
+
+	snapshot := rec.Snapshot()
+	require.Len(t, snapshot, 1)
+	assert.NotContains(t, snapshot[0].Scenario, token)
+	assert.Contains(t, snapshot[0].Scenario, "scenario using")
+}
+
+// TestRecordScenarioFailure_RecordsFeatureFile pins that a scenario
+// failure carries its feature file, which a retried run uses to rerun
+// only the failed scenarios.
+func TestRecordScenarioFailure_RecordsFeatureFile(t *testing.T) {
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{
+		ScenarioName: "labels the issue",
+		ScenarioURI:  "features/triage/labels.feature",
+		Failures:     rec,
+	}
+
+	recordScenarioFailure(w, errors.New("step failed"))
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "labels the issue")
+	assert.Equal(t, "features/triage/labels.feature", record.Feature)
+}
+
+func TestFeatureFile(t *testing.T) {
+	assert.Equal(t, "features/a.feature", featureFile("features/a.feature"))
+	assert.Equal(t, "features/a.feature", featureFile("features/a.feature:12"))
+	assert.Equal(t, "features/a.feature:", featureFile("features/a.feature:"))
+	assert.Equal(t, "c:features/a.feature", featureFile("c:features/a.feature"))
 }

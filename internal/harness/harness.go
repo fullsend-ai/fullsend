@@ -12,6 +12,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/skill"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
@@ -81,11 +82,18 @@ func ChmodPluginDir(dir string) error {
 // content are expanded from the host environment before copying to the sandbox.
 // Use this for env files that contain variable references which must be resolved
 // on the host (because the sandbox does not have those variables set).
+//
+// AllowDurable opts the entry into mounting a credential the run cannot
+// revoke (a service_account key, an authorized_user file, an
+// impersonated_service_account file whose source is not an
+// external_account, or a PEM private key). Without it, fullsend run fails
+// before the sandbox is created when Src holds one.
 type HostFile struct {
-	Src      string `yaml:"src"`                // host path (may use ${VAR} expansion)
-	Dest     string `yaml:"dest"`               // destination path inside the sandbox
-	Expand   bool   `yaml:"expand,omitempty"`   // expand ${VAR} in file content before copying
-	Optional bool   `yaml:"optional,omitempty"` // skip if src path is missing or expands to empty
+	Src          string `yaml:"src"`                     // host path (may use ${VAR} expansion)
+	Dest         string `yaml:"dest"`                    // destination path inside the sandbox
+	Expand       bool   `yaml:"expand,omitempty"`        // expand ${VAR} in file content before copying
+	Optional     bool   `yaml:"optional,omitempty"`      // skip if src path is missing or expands to empty
+	AllowDurable bool   `yaml:"allow_durable,omitempty"` // allow a durable credential the run cannot revoke
 }
 
 // ProviderDef is a declarative definition of an OpenShell provider. Files in
@@ -234,6 +242,12 @@ type TraceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"` // default: true
 }
 
+// RepoReadonly reports whether the checked-out repository is made read-only
+// in the sandbox (default: false).
+func (h *Harness) RepoReadonly() bool {
+	return BoolDefault(h.ReadonlyRepo, false)
+}
+
 // BoolDefault returns the value of a *bool, or the default if nil.
 func BoolDefault(b *bool, def bool) bool {
 	if b == nil {
@@ -361,11 +375,18 @@ func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
 // Harness is the per-agent configuration that the runner reads to provision
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
-	Agent                  string                  `yaml:"agent"`
-	Doc                    string                  `yaml:"doc,omitempty"`
-	Description            string                  `yaml:"description,omitempty"`
-	Role                   string                  `yaml:"role,omitempty"`
-	Slug                   string                  `yaml:"slug,omitempty"`
+	Agent       string `yaml:"agent"`
+	Doc         string `yaml:"doc,omitempty"`
+	Description string `yaml:"description,omitempty"`
+	Role        string `yaml:"role,omitempty"`
+	Slug        string `yaml:"slug,omitempty"`
+	// SchemaVersion is the declared harness schema_version (ADR 0127 Decision 1):
+	// top-level only and forge-agnostic, absent = version 1. It is not a
+	// ForgeConfig field, so it cannot be set under forge: or overlays: — a
+	// schema_version key there is ignored like any unknown key. The named
+	// schemaVersionValue type rejects non-integer values during parsing; read
+	// the effective version through EffectiveSchemaVersion.
+	SchemaVersion          *schemaVersionValue     `yaml:"schema_version,omitempty"`
 	Base                   string                  `yaml:"base,omitempty"`
 	Image                  string                  `yaml:"image,omitempty"`
 	Policy                 string                  `yaml:"policy,omitempty"`
@@ -385,7 +406,7 @@ type Harness struct {
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
 	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
-	ReadonlyRepo           bool                    `yaml:"readonly_repo,omitempty"`
+	ReadonlyRepo           *bool                   `yaml:"readonly_repo,omitempty"` // nil = unset: inherited from base, else false
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
@@ -395,27 +416,43 @@ type Harness struct {
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
 
+	// AllowCIVariableCredential downgrades the GitLab CI/CD-variable
+	// provider credential warning to an info line. Top level only and not
+	// inherited from a base, so a base cannot silence it for its children.
+	AllowCIVariableCredential bool `yaml:"allow_ci_variable_credential,omitempty"`
+
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
+
+	// issueURLDiags holds the GITHUB_ISSUE_URL diagnostics captured from the
+	// raw harness before ResolveForge/ResolveOverlays (or base flattening)
+	// consumed its forge and overlay blocks, so Lint() can report every
+	// section at its declared position (#8742). Only meaningful when
+	// issueURLDiagsCaptured is true.
+	issueURLDiags         []Diagnostic `yaml:"-"`
+	issueURLDiagsCaptured bool         `yaml:"-"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
+// Parsing is funneled through parseRaw so schema_version rejection applies
+// here identically to every other parse-level entry point (ADR 0127
+// Decision 1).
 func Load(path string) (*Harness, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading harness file: %w", err)
 	}
 
-	var h Harness
-	if err := yaml.Unmarshal(data, &h); err != nil {
-		return nil, fmt.Errorf("parsing harness YAML: %w", err)
+	h, err := parseRaw(data)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := h.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid harness: %w", err)
 	}
 
-	return &h, nil
+	return h, nil
 }
 
 // LoadOpts configures forge-aware and overlay-aware harness loading.
@@ -465,11 +502,16 @@ func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
 }
 
 // parseRaw unmarshals raw YAML bytes into a Harness without validation or
-// forge resolution. Use this when you already have the bytes (e.g. from a
+// forge resolution, rejecting an invalid schema_version under the standard
+// parse wrap (ADR 0127 Decision 1) so every parse-level entry point shares
+// one version check. Use this when you already have the bytes (e.g. from a
 // forge API call); use LoadRaw for filesystem-based loading.
 func parseRaw(data []byte) (*Harness, error) {
 	var h Harness
 	if err := yaml.Unmarshal(data, &h); err != nil {
+		return nil, fmt.Errorf("parsing harness YAML: %w", err)
+	}
+	if err := validateSchemaVersion(h.SchemaVersion); err != nil {
 		return nil, fmt.Errorf("parsing harness YAML: %w", err)
 	}
 	return &h, nil
@@ -642,21 +684,104 @@ func (h *Harness) validateSecurity() error {
 	return nil
 }
 
+// resolvePathWithin joins a relative path to baseDir and rejects one that
+// resolves outside it. Absolute paths, URLs and empty values pass through.
+func resolvePathWithin(baseDir, field, p string) (string, error) {
+	if p == "" || filepath.IsAbs(p) || IsURL(p) {
+		return p, nil
+	}
+	resolved := filepath.Join(baseDir, p)
+	cleanBase := filepath.Clean(baseDir) + string(filepath.Separator)
+	if !strings.HasPrefix(filepath.Clean(resolved), cleanBase) {
+		return "", fmt.Errorf("%s: path %q resolves outside fullsend directory", field, p)
+	}
+	return resolved, nil
+}
+
+// markersWithin reports whether the relative skill directory rel can be
+// read for its declared name without leaving root. os.Root follows
+// symlinks but refuses any component that resolves outside it (the skill
+// directory, an ancestor or the marker file itself) and any symlink with
+// an absolute target, so every spelling of the marker must be reachable or
+// absent. Every spelling is checked, not just the first present one,
+// because declaredName moves on to the next spelling when a present one
+// cannot be read (a directory named SKILL.md). filepath.Join cleans `..`
+// in rel lexically, as the path opened later is cleaned, rather than
+// against a preceding link's target. A missing marker counts as within:
+// there is nothing to read. A nil root is never within. The check and the
+// later read are separate operations: the harness tree is taken as
+// unchanged while a harness is composed.
+func markersWithin(root *os.Root, rel string) bool {
+	if root == nil {
+		return false
+	}
+	for _, marker := range skill.MarkerNames {
+		if _, err := root.Stat(filepath.Join(rel, marker)); err != nil && !os.IsNotExist(err) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveSkillSourcesWithin resolves the relative skill directories of the
+// top-level, forge and overlay lists against baseDir, the directory
+// ResolveRelativeTo resolves them against later. Skill identity is the
+// declared SKILL.md name, which skill.SandboxName reads only from an
+// absolute path, so this runs before any merge compares identities (#7830).
+// An entry whose marker cannot be opened without a symlink leaving baseDir
+// (the directory, a parent or the marker file itself) stays relative: no
+// metadata is read through the link, and its identity is its basename.
+// Absolute entries are allowed anyway, so this is not an error.
+func (h *Harness) resolveSkillSourcesWithin(baseDir string) error {
+	// dispatch passes --config-dir as given, so the root may be relative;
+	// resolvePathWithin's prefix check needs it absolute.
+	if abs, err := filepath.Abs(baseDir); err == nil {
+		baseDir = abs
+	}
+	// A root that cannot be opened resolves nothing: every relative entry
+	// keeps its basename identity, as before.
+	root, err := os.OpenRoot(baseDir)
+	if err == nil {
+		defer root.Close()
+	}
+	resolveList := func(field string, skills []SkillEntry) error {
+		for i := range skills {
+			resolved, err := resolvePathWithin(baseDir, fmt.Sprintf("%s[%d]", field, i), skills[i].Source)
+			if err != nil {
+				return err
+			}
+			if resolved != skills[i].Source && !markersWithin(root, skills[i].Source) {
+				continue
+			}
+			skills[i].Source = resolved
+		}
+		return nil
+	}
+	if err := resolveList("skills", h.Skills); err != nil {
+		return err
+	}
+	for platform, fc := range h.Forge {
+		if fc == nil {
+			continue
+		}
+		if err := resolveList("forge."+platform+".skills", fc.Skills); err != nil {
+			return err
+		}
+	}
+	for i := range h.Overlays {
+		if err := resolveList(fmt.Sprintf("overlays[%d].skills", i), h.Overlays[i].ForgeConfig.Skills); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ResolveRelativeTo resolves all relative paths in the harness against baseDir.
 // Relative paths that resolve outside baseDir are rejected to prevent directory
 // traversal (e.g. ../../etc/shadow). Absolute paths and ${VAR} paths are allowed.
 func (h *Harness) ResolveRelativeTo(baseDir string) error {
-	cleanBase := filepath.Clean(baseDir) + string(filepath.Separator)
-
 	resolve := func(field, p string) (string, error) {
-		if p == "" || filepath.IsAbs(p) || IsURL(p) {
-			return p, nil
-		}
-		resolved := filepath.Join(baseDir, p)
-		if !strings.HasPrefix(filepath.Clean(resolved), cleanBase) {
-			return "", fmt.Errorf("%s: path %q resolves outside fullsend directory", field, p)
-		}
-		return resolved, nil
+		return resolvePathWithin(baseDir, field, p)
 	}
 
 	var err error
@@ -742,19 +867,42 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 // Env.Runner, Env.Sandbox, and HostFiles.Src are defined in the host
 // environment using the provided lookup function. Variables set to an empty
 // string are allowed; only truly unset variables produce an error.
+// validation_loop.preflight_check references are not checked here; the
+// preflight allowlist scan in internal/cli is their single reference gate.
 func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
+	return h.ValidateRunnerEnvSites(lookup, lookup)
+}
+
+// outputFileEnvKey is the runner entry the runner exports verbatim into the
+// sandbox, so it is validated with the sandbox-bound lookup.
+const outputFileEnvKey = "FULLSEND_OUTPUT_FILE"
+
+// ValidateRunnerEnvSites is ValidateRunnerEnvWith with a separate lookup for
+// sandbox-bound sites: Env.Sandbox values, the FULLSEND_OUTPUT_FILE runner
+// entry, and validation_loop.schema. A caller that expands some variables
+// empty at those sites (rather than failing) passes a sandboxLookup that
+// resolves them; every other site uses lookup.
+func (h *Harness) ValidateRunnerEnvSites(lookup, sandboxLookup func(string) (string, bool)) error {
 	references := make(map[string][]string)
-	checkVarRefs := func(source, value string) {
+	check := func(lk func(string) (string, bool), source, value string) {
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
 			varName := match[1]
-			if _, ok := lookup(varName); !ok {
+			if _, ok := lk(varName); !ok {
 				references[varName] = append(references[varName], source)
 			}
 		}
 	}
+	checkVarRefs := func(source, value string) { check(lookup, source, value) }
+	checkRunnerRefs := func(source, key, value string) {
+		if key == outputFileEnvKey {
+			check(sandboxLookup, source, value)
+			return
+		}
+		check(lookup, source, value)
+	}
 
 	for k, v := range h.RunnerEnv {
-		checkVarRefs(fmt.Sprintf("runner_env[%s]", k), v)
+		checkRunnerRefs(fmt.Sprintf("runner_env[%s]", k), k, v)
 	}
 	for i, hf := range h.HostFiles {
 		if hf.Optional {
@@ -763,17 +911,18 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 		checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src)
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
-		checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema)
+		check(sandboxLookup, "validation_loop.schema", h.ValidationLoop.Schema)
 	}
-	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
-		checkVarRefs("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck)
-	}
+	// validation_loop.preflight_check is deliberately not checked here: its
+	// references are validated by the preflight allowlist scan in
+	// internal/cli (runPreflightCheck), the single reference gate for that
+	// field (D9, preflight-check-credential-safety change).
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
-			checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v)
+			checkRunnerRefs(fmt.Sprintf("env.runner[%s]", k), k, v)
 		}
 		for k, v := range h.Env.Sandbox {
-			checkVarRefs(fmt.Sprintf("env.sandbox[%s]", k), v)
+			check(sandboxLookup, fmt.Sprintf("env.sandbox[%s]", k), v)
 		}
 	}
 	if len(references) == 0 {

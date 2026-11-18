@@ -7,12 +7,17 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 const issueOpenEvent = "issues"
 const issueCommentEvent = "issue_comment"
+
+// defaultArtifactAgent is the logical agent whose artifacts are downloaded
+// when a scenario has not dispatched a specific agent.
+const defaultArtifactAgent = "triage"
 
 func triageWorkflowEvent(w *world.World) string {
 	if w.TriageTriggerEvent != "" {
@@ -64,15 +69,17 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 	if err != nil {
 		return err
 	}
-	// The agent workflow uploads `fullsend-<agent>`; follow the harness
-	// this scenario dispatched rather than assuming the triage stage.
-	artifactName := install.PerRepoAgentArtifact
-	if w.DispatchAgent != "" {
-		artifactName = "fullsend-" + w.DispatchAgent
+	// The agent workflow uploads an artifact for its agent; follow the
+	// harness this scenario dispatched rather than assuming the triage stage.
+	// Resolve the logical agent (default triage) so both explicit and
+	// default agents go through the agent-aware download methods.
+	agent := w.DispatchAgent
+	if agent == "" {
+		agent = defaultArtifactAgent
 	}
 
 	tryDownloadRun := func(runID int) error {
-		if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, runID, artifactName, dest); err != nil {
+		if err := ci.DownloadAgentArtifactsFromRun(ctx, w.CI, w.Org, w.RepoName, runID, agent, dest); err != nil {
 			return err
 		}
 		if _, findErr := artifacts.FindOutputFile(dest, marker); findErr != nil {
@@ -108,9 +115,9 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 		}
 	}
 
-	if err := w.CI.DownloadNamedArtifactAfter(ctx, w.Org, w.RepoName, artifactName, w.ScenarioStart, dest); err != nil {
+	if downloadErr := ci.DownloadAgentArtifactsAfter(ctx, w.CI, w.Org, w.RepoName, agent, w.ScenarioStart, dest); downloadErr != nil {
 		_ = os.RemoveAll(dest)
-		return err
+		return downloadErr
 	}
 	if _, err := artifacts.FindOutputFile(dest, marker); err != nil {
 		_ = os.RemoveAll(dest)

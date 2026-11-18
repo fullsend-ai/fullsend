@@ -315,6 +315,40 @@ func TestServiceAccountTokenClient_DuplicateAccountsResolveToLowestID(t *testing
 	assert.Empty(t, sa.createdSAs)
 }
 
+// After a Poller generation handoff the retiring Poller shares the Poller
+// display name and stays in the ownership inventory for cleanup, but a forced
+// or expiry-driven role-token rotation must mint for the recorded managed
+// account, not the older retiring one.
+func TestServiceAccountTokenClient_HandoffThenRotationMintsForRecordedManagedPoller(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	const retiringID, currentID = 10, 20
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+		string(gitlabroles.RolePoller): {ManagedUserID: currentID, Phase: rotationPhaseIdle},
+	}}))
+	require.NoError(t, writePollerGenerations(ctx, fc, "g", "p", PollerGenerationState{CurrentUserID: currentID, RetiringUserID: retiringID}))
+	sa := newFakeSAAPI()
+	sa.accounts = []GitLabServiceAccount{{ID: retiringID, Name: gitlabroles.PollerTokenName}, {ID: currentID, Name: gitlabroles.PollerTokenName}}
+	c := ServiceAccountTokenClient{
+		SA:                sa,
+		Legacy:            &fakeTokens{},
+		ContainmentClient: fc,
+		VerifyToken:       acceptReplacementToken,
+		ManagedAccountIDs: func(ctx context.Context, owner, repo string) ([]int, error) {
+			return ManagedGitLabRoleAccountIDs(ctx, fc, owner, repo)
+		},
+		ManagedAccountNames: func(ctx context.Context, owner, repo string) (map[int]string, error) {
+			return ManagedGitLabRoleAccountNames(ctx, fc, owner, repo)
+		},
+	}
+
+	tok, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.PollerTokenName, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, validRolePATExpiry())
+	require.NoError(t, err)
+	assert.Equal(t, currentID, tok.UserID)
+	assert.Empty(t, sa.createdSAs)
+	assert.NotContains(t, sa.members, int64(retiringID), "the retiring Poller is not touched")
+}
+
 func TestServiceAccountTokenClient_FallsBackToLegacyWhenUnavailable(t *testing.T) {
 	for name, setup := range map[string]func(*fakeSAAPI){
 		"list not found":   func(f *fakeSAAPI) { f.failList = fmt.Errorf("list: %w", forge.ErrNotFound) },

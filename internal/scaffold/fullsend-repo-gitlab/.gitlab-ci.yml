@@ -14,11 +14,13 @@ spec:
       default: ''
     resource_key:
       default: ''
-      # Matches resourceKey()'s "issue-<iid>"/"mr-<iid>" format (or the
-      # empty default), excluding variable-reference syntax — see
-      # internal/poll/dispatch.go (resourceKey). This value is
-      # interpolated into workflow.name below.
-      regex: '^((issue|mr)-[0-9]+)?$'
+      # Matches resourceKey()'s "issue-<iid>"/"mr-<iid>" format, a Jira
+      # work item's "jira-<KEY>" (DispatchJiraEvent), or the empty
+      # default, excluding variable-reference syntax — see
+      # internal/poll/dispatch.go (resourceKey) and
+      # internal/poll/jira_dispatch.go. This value is interpolated into
+      # workflow.name below.
+      regex: '^((issue|mr)-[0-9]+|jira-[A-Z][A-Z0-9_]+-[1-9][0-9]*)?$'
     is_fork:
       default: ''
     originating_url:
@@ -133,6 +135,11 @@ workflow:
     # above, bridged from the stage input, so this is a normal
     # variable truthiness check, not a literal-to-literal comparison.
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    # Child-pipeline agent dispatch (#8438): a poll or dispatcher job
+    # running as the trigger-only account starts the agent pipeline with
+    # its CI_JOB_TOKEN through the pipeline trigger API (source=pipeline,
+    # typed stage input set). Pinned to the protected default branch.
+    - if: $CI_PIPELINE_SOURCE == "pipeline" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $STAGE
     # Webhook dispatcher pipelines (ADR 0125, #7771): GitLab's native
     # "use a webhook" pipeline trigger, URL-pinned to the protected
     # default branch. fullsend-pipeline.yml includes only the dispatcher

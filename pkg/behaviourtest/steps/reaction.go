@@ -74,7 +74,7 @@ func DisableReactionNotifications(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: disable reaction notifications", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: disable reaction notifications", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil

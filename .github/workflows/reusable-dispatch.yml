@@ -24,6 +24,9 @@
 #
 # Security: all user-controlled inputs (comment body, labels, usernames)
 # are passed via env: variables, not interpolated in run: blocks.
+# The route and harness-dispatch jobs need OIDC for mint-backed identity
+# lookup. Callers must grant id-token: write; keep the token within each job
+# and never write it to workflow outputs, logs, or matrix data.
 name: Dispatch
 
 on:
@@ -68,7 +71,7 @@ on:
         required: false
         default: "ubuntu-24.04"
       matrix:
-        description: "Pre-computed harness matrix (skips harness-dispatch if provided). Enables custom pollers to invoke harness agents directly. Format matches fullsend dispatch --output-driver gha-matrix."
+        description: "Pre-computed harness matrix (skips harness-dispatch if provided). Enables custom pollers to invoke harness agents directly. Format matches fullsend dispatch --output-driver gha-matrix (event_payload must be a structured JSON object)."
         required: false
         type: string
         default: ""
@@ -96,10 +99,37 @@ on:
       OTEL_EXPORTER_OTLP_HEADERS:
         required: false
       JIRA_TOKEN:
-        description: "Jira Cloud API token for Jira-based agents"
+        description: >-
+          Ignored. Retired in favour of FULLSEND_JIRA_TOKEN; kept for one
+          release so callers that still pass it do not fail validation.
         required: false
       JIRA_USER_EMAIL:
-        description: "Jira account email for Basic auth"
+        description: >-
+          Ignored. Retired in favour of FULLSEND_JIRA_EMAIL; kept for one
+          release so callers that still pass it do not fail validation.
+        required: false
+      FULLSEND_JIRA_TOKEN:
+        description: >-
+          Scoped Jira API token for status notifications and Jira-consuming
+          agent runs.
+        required: false
+      FULLSEND_JIRA_EMAIL:
+        description: >-
+          Optional Jira account email for status notifications and bot-user
+          Basic auth.
+        required: false
+      FULLSEND_JIRA_CLIENT_ID:
+        description: Atlassian service account OAuth 2.0 client ID.
+        required: false
+      FULLSEND_JIRA_CLIENT_SECRET:
+        description: Atlassian service account OAuth 2.0 client secret.
+        required: false
+      FULLSEND_GITHUB_RUNNER_SECRETS:
+        description: >-
+          JSON object of name to value for host-side scripts (pre_script,
+          post_script, validation_loop). fullsend run resolves the names the
+          harness references in env.runner; the values reach host-side
+          scripts, never the sandbox (ADR 0136).
         required: false
 
 jobs:
@@ -109,10 +139,11 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     permissions:
       contents: read
+      id-token: write
       issues: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.review-skip-publish.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -135,12 +166,25 @@ jobs:
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
             .fullsend/config.yaml
+            .fullsend/config.base.yaml
+            .defaults/action.yml
+            .defaults/.github/actions/mint-token/
+            .defaults/.github/actions/prepare-workspace/
+            .defaults/.github/actions/validate-enrollment/
+            .defaults/.github/scripts/review-diff-hash.sh
+            .defaults/internal/scaffold/fullsend-repo/
+            .fullsend/.defaults/action.yml
+            .fullsend/.defaults/.github/actions/mint-token/
+            .fullsend/.defaults/.github/actions/prepare-workspace/
+            .fullsend/.defaults/.github/actions/validate-enrollment/
+            .fullsend/.defaults/.github/scripts/review-diff-hash.sh
+            .fullsend/.defaults/internal/scaffold/fullsend-repo/
             /OWNERS
             /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
 
       - name: Determine stage
-        id: route
+        id: bash-route
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ inputs.event_action }}
@@ -377,9 +421,11 @@ jobs:
                   fi
                   ;;
                 closed)
-                  # Intentional ungated: any closer may trigger read-only retro
-                  # (lifecycle accounting). See ADR 0054 #5223 note.
-                  STAGE="retro"
+                  # Retro can write repository comments, issues, and labels,
+                  # so require the closer to meet the standard write threshold.
+                  if is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                    STAGE="retro"
+                  fi
                   ;;
               esac
               ;;
@@ -423,54 +469,770 @@ jobs:
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
-      - name: Check for existing PRs
-        id: pr-check
-        if: steps.route.outputs.stage == 'code'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          SOURCE_REPO: ${{ github.repository }}
+      # Do not mint a write-capable token or mutate skip notes when review is
+      # disabled by repository configuration. The full validation steps below
+      # still enforce the same policy for the final routed stage.
+      - name: Check review deduplication guards
+        id: review-dedup-guard
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+        shell: bash
         run: |
           set -euo pipefail
-          # Query for PRs that actually close this issue (Fixes/Closes/Resolves
-          # keywords), not a substring search over title/body — the latter
-          # false-positives on any PR that merely references the issue (#5575).
-          # closedByPullRequestsReferences also returns MERGED PRs regardless of
-          # includeClosedPrs, so filter on .state explicitly. Exclude the code-
-          # agent bot via __typename + login so it can re-dispatch even when it
-          # already has an open PR (#5974); other bots (e.g. Renovate) still
-          # block. See docs/contributing/bot-identities.md for the login format.
-          # NOTE: bot identity is checked in three places — (1) this existing-PR
-          # guard (GraphQL __typename), (2) the fix eligibility script
-          # (.defaults/.github/scripts/check-fix-eligibility.sh — gh pr view
-          # is_bot/login), (3) org-scaffold dispatch.yml:226 (webhook [bot]$
-          # regex). See docs/contributing/bot-identities.md.
-          OWNER="${SOURCE_REPO%%/*}"
-          REPO_NAME="${SOURCE_REPO##*/}"
-          GQL_ERR=$(mktemp)
-          if ! LINKED_PRS=$(gh api graphql -f query='
-            query($owner: String!, $repo: String!, $number: Int!) {
-              repository(owner: $owner, name: $repo) {
-                issue(number: $number) {
-                  closedByPullRequestsReferences(first: 20) {
-                    nodes { number state author { login __typename } }
-                  }
-                }
-              }
-            }' -f owner="${OWNER}" -f repo="${REPO_NAME}" -F number="${ISSUE_NUMBER}" \
-            --jq '[.data.repository.issue.closedByPullRequestsReferences.nodes[]
-                   | select(.state == "OPEN")
-                   | select(.author.__typename != "Bot" or .author.login != "fullsend-ai-coder")]
-                   | map("#\(.number)") | join(", ")' \
-            2>"${GQL_ERR}"); then
-            echo "::warning::Linked-PR query failed for issue #${ISSUE_NUMBER}: $(tr '\n' ' ' < "${GQL_ERR}" | sed 's/::/__/g')"
-            LINKED_PRS=""
+          allowed=true
+          prevalidated=false
+          kill_switch="false"
+          overlay_ks="null"
+          if [[ -f .fullsend/config.yaml ]]; then
+            if ! overlay_ks=$(yq -o=json '.kill_switch' .fullsend/config.yaml 2>/dev/null); then
+              echo "::warning::Could not read the review kill switch; skipping deduplication"
+              allowed=false
+              overlay_ks="null"
+            fi
           fi
-          rm -f "${GQL_ERR}"
-          if [[ -n "${LINKED_PRS}" ]]; then
-            echo "::notice::Skipping code dispatch — issue #${ISSUE_NUMBER} has open PR(s) ${LINKED_PRS}"
-            echo "skipped=true" >> "${GITHUB_OUTPUT}"
+          if [[ "${overlay_ks}" != "null" ]]; then
+            kill_switch="${overlay_ks}"
+          elif [[ -f .fullsend/config.base.yaml ]]; then
+            if ! kill_switch=$(yq -o=json '.kill_switch' .fullsend/config.base.yaml 2>/dev/null); then
+              echo "::warning::Could not read the base review kill switch; skipping deduplication"
+              allowed=false
+              kill_switch="false"
+            fi
           fi
+          kill_switch="${kill_switch,,}"
+          kill_switch="${kill_switch#\"}"
+          kill_switch="${kill_switch%\"}"
+          if [[ "${kill_switch}" == "true" || "${kill_switch}" == "yes" ]]; then
+            echo "::notice::Review kill switch is active; skipping deduplication"
+            allowed=false
+          fi
+
+          if [[ -f .fullsend/config.yaml ]]; then
+            if ! agent_enabled=$(yq -r '.agents[] | select((.name | downcase) == "review") | .enabled' .fullsend/config.yaml 2>/dev/null | tail -1); then
+              echo "::warning::Could not check review agent enablement; skipping deduplication"
+              allowed=false
+            elif [[ "${agent_enabled}" == "false" ]]; then
+              echo "::notice::Review agent is disabled; skipping deduplication"
+              allowed=false
+            fi
+          fi
+          if [[ "${allowed}" == "true" ]]; then
+            prevalidated=true
+          fi
+          echo "allowed=${allowed}" >> "${GITHUB_OUTPUT}"
+          echo "prevalidated=${prevalidated}" >> "${GITHUB_OUTPUT}"
+
+      # The diff check is read-only and must have its canonicalizer before it
+      # runs. Vendored callers already provide it in the caller checkout;
+      # fetch only this script for callers using upstream defaults.
+      - name: Checkout review diff canonicalizer
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .review-diff-defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/scripts/review-diff-hash.sh
+          sparse-checkout-cone-mode: false
+
+      # A synchronize event can be caused by merging the base branch into a
+      # PR without changing the PR's effective diff. Avoid paying for another
+      # full review when the previous review recorded the same complete diff.
+      # Missing or incomplete metadata deliberately fails open.
+      - name: Check unchanged review diff
+        id: review-diff
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "skip=false" >> "${GITHUB_OUTPUT}"
+
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+
+          if ! pr_before=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '{base_sha: .base.sha, head_sha: .head.sha}'); then
+            echo "::warning::Could not read PR base/head metadata; running review"
+            exit 0
+          fi
+          base_before="$(printf '%s' "${pr_before}" | jq -r '.base_sha // ""')"
+          head_before="$(printf '%s' "${pr_before}" | jq -r '.head_sha // ""')"
+          if [[ -z "${base_before}" || -z "${head_before}" ]]; then
+            echo "::warning::PR base or head tree metadata is incomplete; running review"
+            exit 0
+          fi
+          base_sha="${base_before}"
+          head_sha="${head_before}"
+          if ! merge_base_sha=$(gh api "repos/${SOURCE_REPO}/compare/${base_sha}...${head_sha}" --jq '.merge_base_commit.sha // ""'); then
+            echo "::notice::Could not determine the PR merge base; running review"
+            exit 0
+          fi
+          if [[ -z "${merge_base_sha}" ]]; then
+            echo "::notice::PR compare metadata did not include a merge base; running review"
+            exit 0
+          fi
+
+          if ! file_json=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files" \
+            --paginate --jq '.[] | {filename, previous_filename: (.previous_filename // ""), status: (.status // ""), patch}'); then
+            echo "::warning::Could not fetch PR file diffs; running review"
+            exit 0
+          fi
+
+          if ! expected_files=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '.changed_files'); then
+            echo "::warning::Could not verify the complete PR file list; running review"
+            exit 0
+          fi
+          if [[ ! "${expected_files}" =~ ^[0-9]+$ || "${expected_files}" -ge 3000 ]]; then
+            echo "::notice::PR file count cannot be proven complete; running review"
+            exit 0
+          fi
+          actual_files=$(printf '%s\n' "${file_json}" | jq -s 'length')
+          if [[ "${actual_files}" != "${expected_files}" ]]; then
+            echo "::notice::PR file list is incomplete (${actual_files}/${expected_files}); running review"
+            exit 0
+          fi
+
+          if ! base_modes=$(gh api "repos/${SOURCE_REPO}/git/trees/${merge_base_sha}?recursive=1" --jq 'if .truncated then error("base tree truncated") else [.tree[] | select(.type == "blob") | {key: .path, value: .mode}] | from_entries end'); then
+            echo "::notice::Could not verify base file modes; running review"
+            exit 0
+          fi
+          if ! head_modes=$(gh api "repos/${SOURCE_REPO}/git/trees/${head_sha}?recursive=1" --jq 'if .truncated then error("head tree truncated") else [.tree[] | select(.type == "blob") | {key: .path, value: .mode}] | from_entries end'); then
+            echo "::notice::Could not verify head file modes; running review"
+            exit 0
+          fi
+
+          base_modes_file=$(mktemp) || {
+            echo "::warning::Could not create a temporary base-mode file; running review"
+            exit 0
+          }
+          head_modes_file=$(mktemp) || {
+            rm -f "${base_modes_file}"
+            echo "::warning::Could not create a temporary head-mode file; running review"
+            exit 0
+          }
+          trap 'rm -f "${base_modes_file}" "${head_modes_file}"' EXIT
+          if ! printf '%s' "${base_modes}" >"${base_modes_file}" || ! printf '%s' "${head_modes}" >"${head_modes_file}"; then
+            echo "::warning::Could not persist file modes for canonicalization; running review"
+            exit 0
+          fi
+          defaults_dir=".defaults"
+          if [[ -f .fullsend/.defaults/action.yml ]]; then
+            defaults_dir=".fullsend/.defaults"
+          elif [[ ! -f .defaults/.github/scripts/review-diff-hash.sh ]]; then
+            defaults_dir=".review-diff-defaults"
+          fi
+          if ! current_hash=$(printf '%s\n' "${file_json}" | "${defaults_dir}/.github/scripts/review-diff-hash.sh" "${base_modes_file}" "${head_modes_file}"); then
+            echo "::warning::Could not canonicalize PR file diffs; running review"
+            exit 0
+          fi
+          if [[ -z "${current_hash}" ]]; then
+            echo "::notice::PR diff is incomplete or empty; running review"
+            exit 0
+          fi
+
+          if ! pr_after=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '{base_sha: .base.sha, head_sha: .head.sha}'); then
+            echo "::warning::Could not verify PR base/head after diff fetch; running review"
+            exit 0
+          fi
+          base_after="$(printf '%s' "${pr_after}" | jq -r '.base_sha // ""')"
+          head_after="$(printf '%s' "${pr_after}" | jq -r '.head_sha // ""')"
+          if [[ -z "${base_after}" || -z "${head_after}" || "${base_before}" != "${base_after}" || "${head_before}" != "${head_after}" ]]; then
+            echo "::notice::PR base or head changed while fetching the diff; running review"
+            exit 0
+          fi
+          current_head_sha="${head_after}"
+          current_base_sha="${base_after}"
+
+          if ! prior_review=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -s -c '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and (.body | contains("<!-- fullsend:review-agent -->"))
+                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))]
+              | sort_by(.created_at) | last // {}'); then
+            echo "::warning::Could not fetch the previous review; running review"
+            exit 0
+          fi
+          if [[ -z "${prior_review}" || "${prior_review}" == "{}" ]]; then
+            echo "::notice::No app-verified previous review found; running review"
+            exit 0
+          fi
+          prior_body="$(printf '%s' "${prior_review}" | jq -r '.body // ""')"
+          prior_url="$(printf '%s' "${prior_review}" | jq -r '.html_url // ""')"
+
+          prior_section="${prior_body%%<!-- sticky:history-start -->*}"
+          prior_hash="$(printf '%s\n' "${prior_section}" \
+            | sed -nE 's/^<!-- fullsend:review-diff-hash:([0-9a-f]{64}) -->$/\1/p' \
+            | head -1 || true)"
+          if [[ -z "${prior_hash}" ]]; then
+            echo "::notice::Previous review has no complete diff hash; running review"
+            exit 0
+          fi
+          prior_reviewed_head="$(printf '%s\n' "${prior_section}" \
+            | sed -nE 's/^<!-- fullsend:review-head:([0-9a-fA-F]{40,64}) -->$/\1/p' \
+            | head -1 || true)"
+          if [[ -z "${prior_reviewed_head}" ]]; then
+            echo "::notice::Previous review has no verified reviewed HEAD; running review"
+            exit 0
+          fi
+
+          if ! prior_formal_review=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/reviews" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" -s -c '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and ((.submitted_at // "") != ""))]
+              | sort_by(.submitted_at) | last // {}'); then
+            echo "::warning::Could not determine the previous formal review verdict; running review"
+            exit 0
+          fi
+          prior_state="$(printf '%s' "${prior_formal_review}" | jq -r '.state // ""')"
+          prior_commit_sha="$(printf '%s' "${prior_formal_review}" | jq -r '.commit_id // ""')"
+          if [[ "${prior_state}" != "APPROVED" || "${prior_commit_sha}" != "${prior_reviewed_head}" ]]; then
+            echo "::notice::No approved bot review for the reviewed diff; running review"
+            exit 0
+          fi
+
+          if [[ "${current_hash}" == "${prior_hash}" ]]; then
+            if ! final_pr=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '{base_sha: .base.sha, head_sha: .head.sha}'); then
+              echo "::warning::Could not verify PR base/head before skip; running review"
+              exit 0
+            fi
+            final_base_sha="$(printf '%s' "${final_pr}" | jq -r '.base_sha // ""')"
+            final_head_sha="$(printf '%s' "${final_pr}" | jq -r '.head_sha // ""')"
+            if [[ "${final_base_sha}" != "${current_base_sha}" || "${final_head_sha}" != "${current_head_sha}" ]]; then
+              echo "::notice::PR base or head changed before skip; running review"
+              exit 0
+            fi
+            echo "prior_url=${prior_url}" >> "${GITHUB_OUTPUT}"
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::notice::PR effective diff changed; running review"
+          fi
+
+      # CEL routing (#8726). A repository moves a built-in stage's routing
+      # from the bash rules above to a CEL trigger by setting agents[].trigger
+      # on the agent's entry in config.yaml; a harness trigger: never does.
+      # The opt-in step picks the agent whose CEL route covers this event
+      # (review, retro, triage or prioritize) and looks for that entry; only
+      # then do the other cel-* steps install the CLI and let `fullsend
+      # dispatch --route <agent>` decide. Every cel-* step continues on error.
+      # For ordinary events, "Finalize stage" keeps the bash stage when a
+      # step or config fails; for closed-PR retro, it fails closed and clears
+      # the stage. A trigger that compiles but fails to evaluate on the event
+      # is a CEL decision (skip), not a step failure. Without a candidate
+      # entry "Finalize stage" passes the authorized bash stage through.
+      - name: Detect CEL route opt-in
+        id: cel-opt-in
+        if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' || github.event_name == 'issues' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ inputs.event_action }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_IS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
+          BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
+        run: |
+          set -euo pipefail
+          # Pick the one agent whose CEL route covers this event, among those
+          # `fullsend dispatch --route` supports (routableAgents in
+          # internal/cli/dispatch_route.go), and only when bash chose that
+          # stage or none. Adding an agent: its events in the selection below,
+          # its routableAgents entry, and this step's if: widened to the
+          # agent's events.
+          #
+          # The selection picks at most one agent. An event can fit more than
+          # one (a comment on a pull request fits review, retro, triage and
+          # prioritize): the stage bash chose wins when the event fits it.
+          # When bash chose none, a comment's slash command picks retro,
+          # triage or prioritize, and otherwise review takes pull request
+          # comments and triage takes issue comments; an issue event goes to
+          # triage, a closed pull request to retro and any other pull request
+          # event to review.
+          COMMAND=""
+          if [[ -n "${COMMENT_BODY:-}" ]]; then
+            # Same parsing as "Determine stage".
+            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
+          fi
+          PR_CLOSED=false
+          if [[ "${EVENT_NAME}" == "pull_request_target" && "${EVENT_ACTION:-}" == "closed" ]]; then
+            PR_CLOSED=true
+          fi
+          fits=""
+          # review: pull request events other than closed, and comments on a
+          # pull request.
+          if [[ ( "${EVENT_NAME}" == "pull_request_target" && "${PR_CLOSED}" == "false" ) || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]]; then
+            fits+=" review"
+          fi
+          # retro: a closed pull request, and comments on an issue or a pull
+          # request.
+          if [[ "${PR_CLOSED}" == "true" || "${EVENT_NAME}" == "issue_comment" ]]; then
+            fits+=" retro"
+          fi
+          # triage: issue events, and comments on an issue or a pull request.
+          if [[ "${EVENT_NAME}" == "issues" || "${EVENT_NAME}" == "issue_comment" ]]; then
+            fits+=" triage"
+          fi
+          # prioritize: comments on an issue or a pull request.
+          if [[ "${EVENT_NAME}" == "issue_comment" ]]; then
+            fits+=" prioritize"
+          fi
+          agent=""
+          if [[ -n "${BASH_STAGE}" ]]; then
+            if [[ "${fits} " == *" ${BASH_STAGE} "* ]]; then
+              agent="${BASH_STAGE}"
+            fi
+          elif [[ "${EVENT_NAME}" == "issue_comment" ]]; then
+            case "${COMMAND}" in
+              /fs-retro) agent="retro" ;;
+              /fs-triage) agent="triage" ;;
+              /fs-prioritize) agent="prioritize" ;;
+              *)
+                if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                  agent="review"
+                else
+                  agent="triage"
+                fi
+                ;;
+            esac
+          elif [[ "${EVENT_NAME}" == "issues" ]]; then
+            agent="triage"
+          elif [[ "${PR_CLOSED}" == "true" ]]; then
+            agent="retro"
+          elif [[ "${EVENT_NAME}" == "pull_request_target" ]]; then
+            agent="review"
+          fi
+
+          # A candidate is the agent's entry with an agents[].trigger, the only
+          # opt-in (a harness trigger: never routes a built-in), matched the
+          # way config.AgentEntry.DerivedName names entries: the name, else
+          # the source file name without its last #fragment and extension,
+          # case-insensitive. `fullsend dispatch --route` makes the decision.
+          # shellcheck disable=SC2016
+          query='[.agents[]? | select((tag == "!!map")
+            and has("trigger") and ((.trigger | tostring) != "") and ((.trigger | tostring) != "null")
+            and ((has("name") and ((.name | tostring | downcase) == strenv(AGENT)))
+              or (((has("name") | not) or ((.name | tostring) == "") or ((.name | tostring) == "null"))
+                and has("source")
+                and (.source | tostring | sub("#[^#]*$"; "") | test("(?i)(^|/)" + strenv(AGENT) + "(\\.[^./]*)?$")))))] | length'
+          # gha_text makes a value safe inside a ::notice::/::warning::/::error::
+          # message: it drops control characters (CR/LF included), encodes %
+          # and breaks up ::. Copied verbatim into each CEL route step that
+          # prints workflow commands, since steps share no shell state.
+          gha_text() {
+            local v
+            v=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')
+            v=${v//\%/%25}
+            while [[ "${v}" == *::* ]]; do v=${v//::/: :}; done
+            printf '%s' "${v}"
+          }
+          opt_in=false
+          if [[ -n "${agent}" && ! "${agent}" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+            echo "::error::CEL route: invalid agent name '$(gha_text "${agent}")' in the opt-in gate"
+            exit 1
+          fi
+          if [[ -n "${agent}" ]]; then
+            yq_err=$(mktemp)
+            for f in .fullsend/config.yaml .fullsend/config.base.yaml; do
+              if [[ ! -f "${f}" ]]; then
+                continue
+              fi
+              # An unreadable file lets the CLI decide and report it.
+              if ! count=$(AGENT="${agent}" yq "${query}" "${f}" 2>"${yq_err}"); then
+                echo "::warning::CEL route: could not read ${f} with yq ($(gha_text "$(head -c 300 "${yq_err}")")); letting fullsend dispatch decide"
+                opt_in=true
+                break
+              fi
+              if [[ "${count}" != "0" ]]; then
+                opt_in=true
+                break
+              fi
+            done
+            rm -f "${yq_err}"
+          fi
+          {
+            echo "agent=${agent}"
+            echo "opt_in=${opt_in}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout config for CEL route
+        id: cel-config
+        if: steps.cel-opt-in.outputs.opt_in == 'true'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Same trusted ref as the checkout above: the base branch for PR events.
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          path: cel-route
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          sparse-checkout: |
+            .fullsend/
+            /OWNERS
+            /OWNERS_ALIASES
+            .defaults/action.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Detect CLI install mode for CEL route
+        id: cel-cli-mode
+        if: steps.cel-config.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f cel-route/.defaults/action.yml || -f cel-route/.fullsend/.defaults/action.yml ]]; then
+            echo "mode=vendored" >> "${GITHUB_OUTPUT}"
+          else
+            echo "mode=upstream" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # Later runs on the same workflow_sha reuse whichever of this job and
+      # harness-dispatch saved the CLI first.
+      - name: Restore fullsend CLI cache for CEL route
+        id: cel-cli-cache
+        if: steps.cel-config.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ job.workflow_sha }}
+
+      # Vendored installs copy the committed binary directly, so the step does
+      # not depend on where the vendored defaults (.defaults/ or
+      # .fullsend/.defaults/) live.
+      - name: Install fullsend CLI for CEL route (vendored)
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'vendored' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f cel-route/.fullsend/bin/fullsend ]]; then
+            echo "::error::broken --vendor install: vendored marker present but .fullsend/bin/fullsend is missing"
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/fullsend"
+          cp cel-route/.fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
+          chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+          echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+
+      - name: Checkout upstream install action for CEL route
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-actions
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/install-fullsend-cli/
+          sparse-checkout-cone-mode: false
+
+      # Installs from job.workflow_sha, as harness-dispatch does. A caller that
+      # pins fullsend_version runs the agent's job on that version instead, so
+      # the trigger can come from a different agents ref than the one the
+      # agent's job runs.
+      - name: Install fullsend CLI for CEL route (upstream workflow)
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: ./.workflow-actions/.github/actions/install-fullsend-cli
+        with:
+          mode: upstream
+          workflow_repository: ${{ job.workflow_repository }}
+          workflow_sha: ${{ job.workflow_sha }}
+          github_token: ${{ github.token }}
+
+      - name: Expose cached fullsend CLI for CEL route
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/fullsend"
+          mkdir -p "${install_dir}"
+          cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
+          chmod +x "${install_dir}/fullsend"
+          echo "${install_dir}" >> "${GITHUB_PATH}"
+
+      - name: Prepare fullsend CLI cache artifact for CEL route
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fullsend-cache"
+          cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+
+      - name: Save fullsend CLI cache for CEL route
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ job.workflow_sha }}
+
+      - name: Evaluate CEL route
+        id: cel-route
+        if: steps.cel-config.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ inputs.event_action }}
+          ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
+          FULLSEND_MINT_URL: ${{ inputs.mint_url }}
+        run: |
+          set -euo pipefail
+          # gha_text makes a value safe inside a ::notice::/::warning::/::error::
+          # message: it drops control characters (CR/LF included), encodes %
+          # and breaks up ::. Copied verbatim into each CEL route step that
+          # prints workflow commands, since steps share no shell state.
+          gha_text() {
+            local v
+            v=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')
+            v=${v//\%/%25}
+            while [[ "${v}" == *::* ]]; do v=${v//::/: :}; done
+            printf '%s' "${v}"
+          }
+          DECISION_JSON=$(fullsend dispatch \
+            --input-driver gha-event \
+            --config-dir cel-route/.fullsend \
+            --event-action "${EVENT_ACTION}" \
+            --route "${ROUTE_AGENT}")
+          printf '%s\n' "${DECISION_JSON}"
+          DECISION=$(jq -r '.decision // ""' <<<"${DECISION_JSON}")
+          case "${DECISION}" in
+            run|skip|bash) ;;
+            *)
+              echo "::error::Unexpected CEL route decision: $(gha_text "${DECISION}")"
+              exit 1
+              ;;
+          esac
+          REASON=$(jq -r '.reason // ""' <<<"${DECISION_JSON}" | tr -d '\r\n')
+          HARNESS=$(jq -r '.harness // ""' <<<"${DECISION_JSON}" | tr -d '\r\n')
+          {
+            echo "decision=${DECISION}"
+            echo "reason=${REASON}"
+            echo "harness=${HARNESS}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Finalize stage
+        id: route
+        shell: bash
+        env:
+          BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
+          BASH_TRIGGER_SOURCE: ${{ steps.bash-route.outputs.trigger_source }}
+          CLOSED_PULL_REQUEST: ${{ github.event_name == 'pull_request_target' && inputs.event_action == 'closed' }}
+          ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
+          CEL_OPT_IN_OUTCOME: ${{ steps.cel-opt-in.outcome }}
+          CEL_CONFIG_OUTCOME: ${{ steps.cel-config.outcome }}
+          CEL_ROUTE_OUTCOME: ${{ steps.cel-route.outcome }}
+          CEL_ROUTE_DECISION: ${{ steps.cel-route.outputs.decision }}
+          CEL_ROUTE_REASON: ${{ steps.cel-route.outputs.reason }}
+          CEL_ROUTE_HARNESS: ${{ steps.cel-route.outputs.harness }}
+        run: |
+          set -euo pipefail
+          # gha_text makes a value safe inside a ::notice::/::warning::/::error::
+          # message: it drops control characters (CR/LF included), encodes %
+          # and breaks up ::. Copied verbatim into each CEL route step that
+          # prints workflow commands, since steps share no shell state.
+          gha_text() {
+            local v
+            v=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')
+            v=${v//\%/%25}
+            while [[ "${v}" == *::* ]]; do v=${v//::/: :}; done
+            printf '%s' "${v}"
+          }
+          STAGE="${BASH_STAGE}"
+          TRIGGER_SOURCE="${BASH_TRIGGER_SOURCE}"
+
+          # A closed-PR retro cannot fall back to bash when CEL routing fails.
+          fail_closed_pr_retro_on_cel_error() {
+            if [[ "${CLOSED_PULL_REQUEST}" == "true" ]]; then
+              STAGE=""
+              TRIGGER_SOURCE=""
+              echo "::error::CEL routing failed for a closed pull request; skipping retro"
+              return 0
+            fi
+            return 1
+          }
+
+          # The cel-* steps did not run (no routable agent for this event,
+          # or no candidate entry): pass the bash stage through.
+          if [[ "${CEL_OPT_IN_OUTCOME}" == "failure" ]]; then
+            if ! fail_closed_pr_retro_on_cel_error; then
+              echo "::error::CEL route opt-in check failed; keeping the bash stage '$(gha_text "${STAGE}")'. See the CEL route steps."
+            fi
+          elif [[ -n "${CEL_CONFIG_OUTCOME}" && "${CEL_CONFIG_OUTCOME}" != "skipped" ]]; then
+            if [[ ! "${ROUTE_AGENT}" =~ ^[a-z][a-z0-9_-]*$ || "${CEL_CONFIG_OUTCOME}" != "success" || "${CEL_ROUTE_OUTCOME}" != "success" ]]; then
+              if ! fail_closed_pr_retro_on_cel_error; then
+                echo "::error::CEL route failed; keeping the bash stage '$(gha_text "${STAGE}")'. See the CEL route steps."
+              fi
+            else
+              echo "::notice::CEL route (${ROUTE_AGENT}): bash=$(gha_text "${STAGE:-none}") cel=$(gha_text "${CEL_ROUTE_DECISION}") reason=$(gha_text "${CEL_ROUTE_REASON}") harness=$(gha_text "${CEL_ROUTE_HARNESS}")"
+              ROUTE_SOURCE="cel"
+              case "${CEL_ROUTE_DECISION}" in
+                run)
+                  if [[ "${ROUTE_AGENT}" == "retro" && "${BASH_STAGE}" != "retro" ]]; then
+                    STAGE=""
+                    TRIGGER_SOURCE=""
+                    echo "::warning::CEL retro run denied because the Bash route did not authorize retro"
+                  else
+                    STAGE="${ROUTE_AGENT}"
+                  fi
+                  ;;
+                skip)
+                  if [[ "${STAGE}" == "${ROUTE_AGENT}" ]]; then
+                    STAGE=""
+                  fi
+                  ;;
+                *) ROUTE_SOURCE="bash" ;;
+              esac
+              echo "${ROUTE_AGENT}_route=${ROUTE_SOURCE}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              if [[ "${STAGE}" != "${BASH_STAGE}" ]]; then
+                echo "CEL route changed the stage: '${BASH_STAGE}' -> '${STAGE}'"
+              fi
+            fi
+          fi
+
+          echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
+          echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
+
+      # Only obtain a write-capable review token after final routing has
+      # authorized the review stage. The diff check above remains read-only.
+      - name: Checkout upstream defaults for review skip note
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            internal/scaffold/fullsend-repo/
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare workspace for review skip note
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
+        id: review-token-workspace
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          source_repo: ${{ github.repository }}
+
+      # Older vendored prepare-workspace actions use the historical
+      # .defaults path internally. Provide that compatibility path while
+      # the action's defaults_root input is adopted by existing callers.
+      - name: Stage nested defaults compatibility path
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        shell: bash
+        run: ln -s .fullsend/.defaults .defaults
+
+      - name: Prepare workspace for review skip note (nested vendor)
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        id: review-token-workspace-nested
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.fullsend/.defaults/.github/actions/prepare-workspace
+        with:
+          defaults_root: .fullsend/.defaults
+          source_repo: ${{ github.repository }}
+
+      - name: Mint review token for review skip note
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
+        id: review-token
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace.outputs.repo_name }}
+          level: write
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Mint review token for review skip note (nested vendor)
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
+        id: review-token-nested
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.fullsend/.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace-nested.outputs.repo_name }}
+          level: write
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Publish review skip note
+        id: review-skip-publish
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
+          REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+          REVIEW_PRIOR_URL: ${{ steps.review-diff.outputs.prior_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "skipped=false" >> "${GITHUB_OUTPUT}"
+          if [[ -z "${REVIEW_TOKEN}" ]]; then
+            echo "::notice::Review-App token was unavailable; running the full review"
+            exit 0
+          fi
+          skip_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review${REVIEW_PRIOR_URL:+ (${REVIEW_PRIOR_URL})}. No new review findings were generated."
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+          if ! status_comment_id="$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -s -r '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and (.body | startswith("<!-- fullsend:review-skip -->"))
+                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))]
+              | sort_by(.created_at) | last // {} | .id // ""' \
+            | tail -1)"; then
+            echo "::warning::Could not verify an existing review-skip status note; running review"
+            exit 0
+          fi
+          if [[ -n "${status_comment_id}" ]]; then
+            gh api --method PATCH "repos/${SOURCE_REPO}/issues/comments/${status_comment_id}" -f body="${skip_body}" >/dev/null
+          else
+            gh api --method POST "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" -f body="${skip_body}" >/dev/null
+          fi
+          echo "::notice::Skipping review after final routing: synchronize event has the same effective diff as the previous review"
+          echo "skipped=true" >> "${GITHUB_OUTPUT}"
 
       - name: Validate routed stage
         if: steps.route.outputs.stage != ''
@@ -493,16 +1255,47 @@ jobs:
           fi
 
       - name: Check kill switch
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && (steps.review-dedup-guard.outputs.prevalidated != 'true' || steps.route.outputs.stage != 'review')
         run: |
           set -euo pipefail
+          # Mirrors internal/config's IsKillSwitchActive(): if
+          # config.yaml sets kill_switch at all, that value is final
+          # and config.base.yaml is ignored; config.base.yaml is only
+          # consulted when config.yaml is silent on the key.
+          # -o=json normalizes every YAML null spelling (bare key, ~,
+          # Null, NULL) to the literal "null", and the true/false
+          # case variants (True, FALSE, ...) to lowercase. It does not
+          # normalize the YAML 1.1 word booleans yq treats as plain
+          # strings (yes/no/on/off print as quoted JSON strings, e.g.
+          # "yes"), so yes is matched explicitly below, where
+          # go-yaml's lenient *bool decoding also treats it as active.
+          # on/off and the single-letter y/n forms are deliberately
+          # not matched. -o=json also keeps surrounding quotes on any
+          # scalar that was itself quoted in the source YAML (e.g.
+          # kill_switch: "true" prints as the JSON string "true", not
+          # the JSON boolean true), so those quotes are stripped below
+          # before comparing, matching go-yaml's lenient *bool
+          # decoding of a quoted "true"/"yes" scalar.
+          KILL_SWITCH="false"
+          OVERLAY_KS="null"
           if [[ -f .fullsend/config.yaml ]]; then
-            KILL_SWITCH=$(yq '.kill_switch // false' .fullsend/config.yaml)
-            if [[ "$KILL_SWITCH" == "true" ]]; then
-              echo "::error::Kill switch is active — all agent dispatch halted"
-              echo "::error::Set kill_switch: false in .fullsend/config.yaml to resume"
-              exit 1
+            OVERLAY_KS=$(yq -o=json '.kill_switch' .fullsend/config.yaml)
+          fi
+          if [[ "$OVERLAY_KS" != "null" ]]; then
+            KILL_SWITCH="$OVERLAY_KS"
+          elif [[ -f .fullsend/config.base.yaml ]]; then
+            BASE_KS=$(yq -o=json '.kill_switch' .fullsend/config.base.yaml)
+            if [[ "$BASE_KS" != "null" ]]; then
+              KILL_SWITCH="$BASE_KS"
             fi
+          fi
+          KILL_SWITCH="${KILL_SWITCH,,}"
+          KILL_SWITCH="${KILL_SWITCH#\"}"
+          KILL_SWITCH="${KILL_SWITCH%\"}"
+          if [[ "$KILL_SWITCH" == "true" || "$KILL_SWITCH" == "yes" ]]; then
+            echo "::error::Kill switch is active — all agent dispatch halted"
+            echo "::error::Set kill_switch: false in .fullsend/config.yaml or .fullsend/config.base.yaml to resume"
+            exit 1
           fi
 
       - name: Validate agents config
@@ -528,10 +1321,14 @@ jobs:
             exit 1
           fi
           # An enabled entry may omit source when it only tunes a built-in
-          # agent by name (runtime/model/effort; ADR 0091).
-          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null)) | line' .fullsend/config.yaml 2>/dev/null || echo "")
+          # agent by name (runtime/model/effort/subagents, ADR 0091; trigger,
+          # #8726), the settings config.AgentEntry.HasSettings counts. A blank
+          # trigger counts as unset, as on the Go side. trigger is checked for
+          # null explicitly: `//` would also replace an unquoted false, which
+          # Go reads as the CEL expression "false".
+          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null and .subagents == null and ((.trigger == null) or (.trigger | tostring | test("^\\s*$"))))) | line' .fullsend/config.yaml 2>/dev/null || echo "")
           if [[ -n "$BAD_SOURCE" ]]; then
-            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model or effort to tune a built-in agent)"
+            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model, effort, subagents or trigger to tune a built-in agent)"
             exit 1
           fi
           DUPES_ENABLED=$(yq '.agents[] | select(type == "!!map" and .enabled != false) | (.name // "") | select(. != "") | downcase' .fullsend/config.yaml 2>/dev/null | sort | uniq -d)
@@ -545,35 +1342,9 @@ jobs:
             exit 1
           fi
 
-      - name: Check role is enabled
-        id: role-check
-        if: steps.route.outputs.stage != ''
-        env:
-          STAGE: ${{ steps.route.outputs.stage }}
-        run: |
-          set -euo pipefail
-          if [[ ! -f .fullsend/config.yaml ]]; then
-            exit 0
-          fi
-          STAGE_ROLE="$STAGE"
-          case "$STAGE" in
-            code|fix) STAGE_ROLE="coder" ;;
-          esac
-          ROLES=$(yq '.roles[]' .fullsend/config.yaml 2>/dev/null || echo "")
-          if [[ -n "$ROLES" ]] && ! echo "$ROLES" | grep -Fqx "$STAGE_ROLE"; then
-            # Backward compat: "fullsend" in roles implies retro + prioritize
-            if [[ "$STAGE" =~ ^(retro|prioritize)$ ]] && echo "$ROLES" | grep -Fqx "fullsend"; then
-              echo "::notice::Stage '$STAGE' allowed via 'fullsend' role — if customizing roles, add '$STAGE' explicitly"
-            else
-              echo "::notice::Stage '$STAGE' skipped — role '$STAGE_ROLE' not in configured roles"
-              echo "skipped=true" >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-          fi
-
       - name: Check agent is enabled
         id: agent-check
-        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true'
+        if: steps.route.outputs.stage != '' && (steps.review-dedup-guard.outputs.prevalidated != 'true' || steps.route.outputs.stage != 'review')
         env:
           STAGE: ${{ steps.route.outputs.stage }}
         run: |
@@ -601,7 +1372,7 @@ jobs:
 
       - name: Resolve PR head for issue_comment events
         id: pr-head
-        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
+        if: steps.route.outputs.stage != '' && steps.agent-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
@@ -746,6 +1517,7 @@ jobs:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           REPO_FULL_NAME: ${{ github.repository }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
@@ -769,6 +1541,11 @@ jobs:
           agent: triage
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
+          runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -873,13 +1650,6 @@ jobs:
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
-          # Reaches the harness pre-script inside fullsend run, which reads it
-          # for its --force override of the existing-PR check (pre-script
-          # output protocol, issue #4718). The override is not end-to-end:
-          # the route job's own "Check for existing PRs" step above gates
-          # stage=code first and does not honor --force, so a /fs-code
-          # --force comment is stopped before this value is ever read.
-          # env-quoted, never interpolated into run: blocks.
           COMMENT_BODY: ${{ fromJSON(needs.route.outputs.event_payload).comment.body }}
           REPO_FULL_NAME: ${{ github.repository }}
           CODE_ALLOWED_TARGET_BRANCHES: ''
@@ -907,6 +1677,11 @@ jobs:
           agent: code
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
+          runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -990,6 +1765,49 @@ jobs:
           FULLSEND_DIR: .fullsend
         run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-prior-review.sh"
 
+      # A previous unchanged-diff run leaves a PR-visible status note. Once
+      # this full review is actually dispatched, that note must not continue
+      # to look like the current verdict. Keep the marker for provenance, but
+      # replace the stale message with an explicit superseded notice.
+      - name: Supersede prior review skip note
+        if: steps.app-token.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+          REVIEW_HEAD_SHA: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+          if [[ ! "${REVIEW_HEAD_SHA}" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+            REVIEW_HEAD_SHA="unknown head"
+          fi
+          superseded_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend's earlier unchanged-diff skip note was superseded by a full review for commit ${REVIEW_HEAD_SHA}."
+          comment_ids=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -r -s '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and (.body | startswith("<!-- fullsend:review-skip -->"))
+                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))
+              | .id] | .[]' )
+          while IFS= read -r comment_id; do
+            [[ -z "${comment_id}" ]] && continue
+            gh api --method PATCH "repos/${SOURCE_REPO}/issues/comments/${comment_id}" \
+              -f body="${superseded_body}" >/dev/null
+          done <<<"${comment_ids}"
+
       - name: Setup agent environment
         env:
           AGENT_PREFIX: REVIEW_
@@ -1036,6 +1854,11 @@ jobs:
           agent: review
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
+          runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1205,7 +2028,7 @@ jobs:
 
           FIX_COMMITS="$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/commits" \
             --paginate 2>/dev/null \
-            | jq -s 'add | [.[] | select(.commit.author.name == "fullsend-fix")] | length')" \
+            | jq -s --arg bot_email "${GIT_BOT_EMAIL}" -f .defaults/.github/scripts/count-fix-commits.jq)" \
             || { echo "::warning::Could not count prior fix commits — defaulting to cap"; FIX_COMMITS="${ITERATION_CAP:-5}"; }
           ITERATION=$(( FIX_COMMITS + 1 ))
           echo "Fix iteration: ${ITERATION} (${FIX_COMMITS} previous fix commits)" >&2
@@ -1299,6 +2122,11 @@ jobs:
           agent: fix
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
+          runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1408,6 +2236,11 @@ jobs:
           agent: retro
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
+          runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1503,6 +2336,11 @@ jobs:
           agent: prioritize
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
+          runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1517,6 +2355,7 @@ jobs:
     permissions:
       actions: write
       contents: read
+      id-token: write
       pull-requests: read
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
@@ -1652,6 +2491,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ inputs.event_action }}
+          FULLSEND_MINT_URL: ${{ inputs.mint_url }}
         run: |
           set -euo pipefail
           if [[ "${{ steps.triggers.outputs.has_triggers }}" != "true" ]]; then
@@ -1738,7 +2578,7 @@ jobs:
       - name: Write dispatch event payload
         shell: bash
         env:
-          EVENT_PAYLOAD: ${{ matrix.event_payload }}
+          EVENT_PAYLOAD: ${{ toJSON(matrix.event_payload) }}
         run: |
           set -euo pipefail
           mkdir -p .fullsend/dispatch
@@ -1801,9 +2641,28 @@ jobs:
         id: dispatch-env
         shell: bash
         env:
-          EVENT_PAYLOAD: ${{ matrix.event_payload }}
+          EVENT_PAYLOAD: ${{ toJSON(matrix.event_payload) }}
+          # Pass only agent names, not the event payloads in the full matrix.
+          # The matrix can exceed a process environment entry's size limit.
+          MATRIX_AGENT_NAMES: ${{ toJSON(fromJSON(inputs.matrix != '' && inputs.matrix || needs.harness-dispatch.outputs.matrix).include.*.agent) }}
+          MATRIX_AGENT: ${{ matrix.agent }}
+          MATRIX_JOB_INDEX: ${{ strategy.job-index }}
         run: |
           set -euo pipefail
+          if [[ ! "${MATRIX_AGENT}" =~ ^[a-zA-Z0-9_-]+$ || ! "${MATRIX_JOB_INDEX}" =~ ^[0-9]+$ ]]; then
+            echo "::error::matrix agent and job index must be valid"
+            exit 1
+          fi
+          AGENT_OCCURRENCES=$(printf '%s' "${MATRIX_AGENT_NAMES}" | jq --arg agent "${MATRIX_AGENT}" '[.[] | select(. == $agent)] | length')
+          ARTIFACT_NAME="fullsend-${MATRIX_AGENT}"
+          if (( AGENT_OCCURRENCES > 1 )); then
+            FIRST_AGENT_INDEX=$(printf '%s' "${MATRIX_AGENT_NAMES}" | jq --arg agent "${MATRIX_AGENT}" 'index($agent)')
+            if [[ "${FIRST_AGENT_INDEX}" != "${MATRIX_JOB_INDEX}" ]]; then
+              # Dots are excluded from valid agent names, so this readable
+              # suffix cannot overlap another agent's legacy artifact name.
+              ARTIFACT_NAME="fullsend-${MATRIX_AGENT}.matrix-${MATRIX_JOB_INDEX}"
+            fi
+          fi
           URL=$(printf '%s' "${EVENT_PAYLOAD}" | jq -r '.issue.html_url // .pull_request.html_url // empty')
           if [[ -z "${URL}" ]]; then
             echo "::error::event_payload missing issue or pull_request html_url"
@@ -1826,6 +2685,7 @@ jobs:
             echo
             echo "${DELIM}"
             echo "issue_number=${ISSUE_NUMBER}"
+            echo "artifact_name=${ARTIFACT_NAME}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Run harness agent
@@ -1856,18 +2716,23 @@ jobs:
           # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
           # read by the runner under its own name; unused in the oidc mode.
           FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
-          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
+          role: ${{ matrix.role }}
+          runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: .fullsend
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}
-          status-comment-id: ${{ fromJSON(matrix.event_payload).comment.id }}
+          status-comment-id: ${{ matrix.event_payload.comment.id }}
           mint-url: ${{ inputs.mint_url }}
-          pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
+          pr-head-sha: ${{ matrix.event_payload.pull_request.head.sha || '' }}
+          artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}

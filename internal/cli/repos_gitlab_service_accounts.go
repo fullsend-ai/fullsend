@@ -253,9 +253,11 @@ func verifyGitLabRoleTokenExpiry(expiresAt string, now time.Time) error {
 
 // gitlabTriggerOwnerFor returns the Poller trigger owner for a live GitLab
 // client, or nil (mint as the client's own identity) otherwise. The live
-// owner does not implement repos.GitLabPollerQuiescenceVerifier, so new
-// trigger creation and rotation stay deferred and polling remains the
-// dispatch path.
+// owner implements repos.GitLabPollerHandoff, so new trigger creation and
+// rotation mint through a fresh Poller generation that is demoted and
+// verified at Developer before its runtime credential is published; it does
+// not implement repos.GitLabPollerQuiescenceVerifier, so the current Poller is
+// never re-elevated.
 func gitlabTriggerOwnerFor(client forge.Client) repos.GitLabTriggerOwner {
 	glClient, ok := client.(*gitlab.LiveClient)
 	if !ok {

@@ -2,6 +2,7 @@ package scaffold
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,9 +68,23 @@ type callerJob struct {
 	Concurrency *jobConcurrency   `yaml:"concurrency"`
 }
 
+// jobConcurrency decodes cancel-in-progress as a yaml.Node so tests can tell a
+// literal YAML boolean (tag !!bool) from a quoted string such as "true" (tag
+// !!str), which a Go bool field would decode identically.
 type jobConcurrency struct {
-	Group            string `yaml:"group"`
-	CancelInProgress bool   `yaml:"cancel-in-progress"`
+	Group            string    `yaml:"group"`
+	CancelInProgress yaml.Node `yaml:"cancel-in-progress"`
+}
+
+// assertLiteralTrue asserts that node is the unquoted YAML boolean true.
+func assertLiteralTrue(t *testing.T, node yaml.Node, context string) {
+	t.Helper()
+	assert.Equal(t, yaml.ScalarNode, node.Kind,
+		"%s: cancel-in-progress must be set to a scalar value", context)
+	assert.Equal(t, "!!bool", node.Tag,
+		"%s: cancel-in-progress must be a literal YAML boolean, not a quoted string (got %q)", context, node.Value)
+	assert.Equal(t, "true", node.Value,
+		"%s: cancel-in-progress must be true", context)
 }
 
 // reusableStageWorkflow includes workflow-level concurrency on reusable agent workflows.
@@ -122,7 +137,18 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 		groupPrefix: "fullsend-prioritize-",
 		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
 	},
+	// harness-run pins today's group key. When #7475 changes the key, update
+	// these fragments in the same PR.
+	"harness-run": {
+		groupPrefix: "fullsend-harness-",
+		groupMust:   []string{"matrix.agent", "github.repository", "matrix.status_repo", "matrix.status_number"},
+	},
 }
+
+// dispatchNonAgentJobs lists reusable-dispatch.yml jobs that intentionally
+// carry no concurrency expectation. Every other job in the workflow must have
+// an entry in dispatchStageConcurrencyExpectations.
+var dispatchNonAgentJobs = []string{"route", "harness-dispatch"}
 
 // stepDeclRe matches a YAML step declaration line: "      - name: <marker>".
 var stepDeclRe = regexp.MustCompile(`(?m)^      - name: (.+)$`)
@@ -599,6 +625,326 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 	})
 }
 
+// TestRetiredJiraSecretsNotForwarded pins the retirement of the JIRA_TOKEN
+// and JIRA_USER_EMAIL secrets (#9413): no workflow or scaffold template
+// forwards them, and reusable-dispatch.yml keeps both workflow_call
+// declarations, optional and described as ignored, for one release so a
+// caller that still passes them does not fail validation.
+func TestRetiredJiraSecretsNotForwarded(t *testing.T) {
+	retired := []string{"JIRA_TOKEN", "JIRA_USER_EMAIL"}
+	for _, tc := range []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/templates/jira-poll-per-repo.yaml", loadScaffoldFile("templates/jira-poll-per-repo.yaml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"reusable-prioritize.yml", loadRepoFile(".github/workflows/reusable-prioritize.yml")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := string(tc.content(t))
+			for _, name := range retired {
+				assert.NotContains(t, body, "secrets."+name+" }}", "%s must not forward the retired %s secret", tc.name, name)
+			}
+		})
+	}
+
+	var parsed struct {
+		On struct {
+			WorkflowCall struct {
+				Secrets map[string]struct {
+					Description string `yaml:"description"`
+					Required    bool   `yaml:"required"`
+				} `yaml:"secrets"`
+			} `yaml:"workflow_call"`
+		} `yaml:"on"`
+	}
+	require.NoError(t, yaml.Unmarshal(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t), &parsed))
+	for _, name := range retired {
+		secret, ok := parsed.On.WorkflowCall.Secrets[name]
+		require.True(t, ok, "reusable-dispatch.yml must keep declaring %s for one release", name)
+		assert.False(t, secret.Required, "%s must stay optional", name)
+		assert.True(t, strings.HasPrefix(secret.Description, "Ignored."), "%s must be described as ignored, got %q", name, secret.Description)
+	}
+}
+
+// TestJiraCredentialSecretThreading validates that the scoped Jira credentials
+// reach every fullsend run that may post status to a Jira-originated work item.
+// Both secrets are optional because service-account tokens omit the email.
+func TestJiraCredentialSecretThreading(t *testing.T) {
+	const token = "FULLSEND_JIRA_TOKEN"
+	const email = "FULLSEND_JIRA_EMAIL"
+	forward := func(name string) string {
+		return name + ": ${{ secrets." + name + " }}"
+	}
+
+	for _, tc := range []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/templates/jira-poll-per-repo.yaml", loadScaffoldFile("templates/jira-poll-per-repo.yaml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"prioritize.yml", loadRepoFile(".github/workflows/prioritize.yml")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := string(tc.content(t))
+			for _, name := range []string{token, email, "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+				assert.Contains(t, body, forward(name), "%s must forward %s", tc.name, name)
+			}
+		})
+	}
+
+	for _, wf := range []string{".github/workflows/reusable-dispatch.yml", ".github/workflows/reusable-prioritize.yml"} {
+		t.Run(wf, func(t *testing.T) {
+			body := string(loadRepoFile(wf)(t))
+			var parsed reusableWorkflow
+			require.NoError(t, yaml.Unmarshal([]byte(body), &parsed), "%s must be valid YAML", wf)
+			for _, name := range []string{token, email, "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+				secret, ok := parsed.On.WorkflowCall.Secrets[name]
+				require.True(t, ok, "%s must declare %s as a workflow_call secret", wf, name)
+				assert.False(t, secret.Required, "%s must keep %s optional", wf, name)
+			}
+			markers := []string{"Run prioritize agent"}
+			if wf == ".github/workflows/reusable-dispatch.yml" {
+				markers = []string{
+					"Run triage agent", "Run code agent", "Run review agent",
+					"Run fix agent", "Run retro agent", "Run prioritize agent",
+					"Run harness agent",
+				}
+			}
+			for _, marker := range markers {
+				t.Run(marker, func(t *testing.T) {
+					section := extractStepSection(t, body, marker)
+					payloadExpr := "fromJSON(needs.route.outputs.event_payload)"
+					if marker == "Run harness agent" {
+						payloadExpr = "matrix.event_payload"
+					} else if wf == ".github/workflows/reusable-prioritize.yml" {
+						payloadExpr = "fromJSON(inputs.event_payload)"
+					}
+					assert.Contains(t, section, "jira-token: ${{ "+payloadExpr+"._normalized_event.source.system == 'jira' && secrets."+token+" || '' }}", "%s must pass the Jira token only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-email: ${{ "+payloadExpr+"._normalized_event.source.system == 'jira' && secrets."+email+" || '' }}", "%s must pass the optional Jira email only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-client-id: ${{ "+payloadExpr+"._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}", "%s must pass the OAuth client ID only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-client-secret: ${{ "+payloadExpr+"._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}", "%s must pass the OAuth client secret only for Jira-originated runs", marker)
+				})
+			}
+		})
+	}
+
+	action := string(loadRepoFile("action.yml")(t))
+	assert.Contains(t, action, "  jira-token:\n", "action.yml must declare jira-token")
+	assert.Contains(t, action, "  jira-email:\n", "action.yml must declare jira-email")
+	assert.Contains(t, action, "FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}")
+	assert.Contains(t, action, "FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}")
+	assert.Contains(t, action, "unset FULLSEND_JIRA_EMAIL\n", "an omitted email must select service-account Bearer auth")
+	assert.Contains(t, action, "unset FULLSEND_JIRA_EMAIL_INPUT\n", "the temporary email input must not reach child processes")
+
+	// Both the run step and the orphaned-status finalizer call Jira-backed
+	// code paths, so each must receive and normalize the credentials.
+	for _, name := range []string{"Run fullsend", "Finalize orphaned status comment"} {
+		start := strings.Index(action, "\n    - name: "+name+"\n")
+		require.GreaterOrEqual(t, start, 0, "action.yml must have a %s step", name)
+		step := action[start+1:]
+		if next := strings.Index(step[1:], "\n    - name: "); next >= 0 {
+			step = step[:next+1]
+		}
+		assert.Contains(t, step, "FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}", "%s must receive the Jira token", name)
+		assert.Contains(t, step, "FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}", "%s must receive the optional Jira email", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_EMAIL\n", "%s: an omitted email must select service-account Bearer auth", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_EMAIL_INPUT\n", "%s: the temporary email input must not reach child processes", name)
+		assert.Contains(t, step, "FULLSEND_JIRA_CLIENT_ID: ${{ inputs.jira-client-id }}", "%s must receive the optional Jira OAuth client ID", name)
+		assert.Contains(t, step, "FULLSEND_JIRA_CLIENT_SECRET: ${{ inputs.jira-client-secret }}", "%s must receive the optional Jira OAuth client secret", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_CLIENT_ID\n", "%s: an omitted client ID must be absent, not empty", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_CLIENT_SECRET\n", "%s: an omitted client secret must be absent, not empty", name)
+	}
+	assert.Contains(t, action, "  jira-client-id:\n", "action.yml must declare jira-client-id")
+	assert.Contains(t, action, "  jira-client-secret:\n", "action.yml must declare jira-client-secret")
+}
+
+// TestRunnerSecretsThreading validates the in-repo half of the
+// FULLSEND_GITHUB_RUNNER_SECRETS channel (ADR 0136): the scaffold shim forwards
+// the secret with its one fixed line, the composite action reads its
+// runner_secrets input only in the staging step, and the Run fullsend
+// step receives the staged file's path, never the value.
+func TestRunnerSecretsThreading(t *testing.T) {
+	shim := string(loadScaffoldFile("templates/shim-per-repo.yaml")(t))
+	assert.Contains(t, shim, "FULLSEND_GITHUB_RUNNER_SECRETS: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}",
+		"scaffold shim must forward FULLSEND_GITHUB_RUNNER_SECRETS")
+
+	action := string(loadRepoFile("action.yml")(t))
+	assert.Contains(t, action, "  runner_secrets:\n", "action.yml must declare the runner_secrets input")
+	// action.yml steps sit at four-space indent, so extractStepSection's
+	// workflow-job pattern does not apply; slice each step by hand.
+	actionStep := func(name string) string {
+		t.Helper()
+		start := strings.Index(action, "\n    - name: "+name+"\n")
+		require.GreaterOrEqual(t, start, 0, "action.yml must have a %s step", name)
+		step := action[start+1:]
+		if next := strings.Index(step[1:], "\n    - name: "); next >= 0 {
+			step = step[:next+1]
+		}
+		return step
+	}
+
+	stage := actionStep("Stage runner secrets")
+	assert.Contains(t, stage, "id: runner-secrets\n")
+	assert.Contains(t, stage, "FULLSEND_GITHUB_RUNNER_SECRETS: ${{ inputs.runner_secrets }}",
+		"the staging step must carry runner_secrets in its own env")
+	assert.Contains(t, stage, "umask 077", "the staged file must be readable by the job user only")
+	assert.Equal(t, strings.Count(action, "inputs.runner_secrets"), strings.Count(stage, "inputs.runner_secrets"),
+		"runner_secrets must reach no composite step other than Stage runner secrets")
+
+	run := actionStep("Run fullsend")
+	assert.Contains(t, run, "FULLSEND_GITHUB_RUNNER_SECRETS_FILE: ${{ steps.runner-secrets.outputs.path }}",
+		"Run fullsend step must receive the staged file path")
+	assert.NotContains(t, run, "FULLSEND_GITHUB_RUNNER_SECRETS:", "Run fullsend step must not receive the bundle itself")
+
+	cleanup := actionStep("Remove staged runner secrets")
+	assert.Contains(t, cleanup, "if: always() && steps.runner-secrets.outputs.path != ''")
+	assert.Less(t, strings.Index(action, stage), strings.Index(action, run), "staging must precede Run fullsend")
+	assert.Less(t, strings.Index(action, run), strings.Index(action, cleanup), "cleanup must follow Run fullsend")
+
+	prioritize := string(loadScaffoldFile(".github/workflows/prioritize.yml")(t))
+	assert.Contains(t, prioritize, "FULLSEND_GITHUB_RUNNER_SECRETS: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}",
+		"scaffold prioritize caller must forward FULLSEND_GITHUB_RUNNER_SECRETS")
+
+	// Every fullsend run step in the reusable workflows passes the secret,
+	// and each workflow declares it, so no stage silently drops it.
+	for _, wf := range []string{".github/workflows/reusable-dispatch.yml", ".github/workflows/reusable-prioritize.yml"} {
+		body := string(loadRepoFile(wf)(t))
+		assert.Contains(t, body, "\n      FULLSEND_GITHUB_RUNNER_SECRETS:\n", "%s must declare FULLSEND_GITHUB_RUNNER_SECRETS", wf)
+		runSteps := strings.Count(body, "\n          agent: ")
+		require.Positive(t, runSteps, "%s must have fullsend run steps", wf)
+		assert.Equal(t, runSteps, strings.Count(body, "runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}"),
+			"%s: every fullsend run step must pass runner_secrets", wf)
+	}
+}
+
+// TestJiraSecretsActionWiring validates the Jira repository-secret channel
+// (#9079) from the scaffold shim through reusable-dispatch.yml to the composite
+// action. The secrets stay separate from runner_secrets and are forwarded only
+// for Jira-originated runs.
+func TestJiraSecretsActionWiring(t *testing.T) {
+	action := string(loadRepoFile("action.yml")(t))
+	var doc struct {
+		Inputs map[string]struct {
+			Required bool   `yaml:"required"`
+			Default  string `yaml:"default"`
+		} `yaml:"inputs"`
+		Runs struct {
+			Steps []struct {
+				Name string            `yaml:"name"`
+				Env  map[string]string `yaml:"env"`
+				Run  string            `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(action), &doc))
+
+	wantEnv := map[string]string{
+		"jira-token":         "FULLSEND_JIRA_TOKEN",
+		"jira-email":         "FULLSEND_JIRA_EMAIL",
+		"jira-client-id":     "FULLSEND_JIRA_CLIENT_ID",
+		"jira-client-secret": "FULLSEND_JIRA_CLIENT_SECRET",
+	}
+	for input, envName := range wantEnv {
+		in, ok := doc.Inputs[input]
+		require.True(t, ok, "action.yml must declare the %s input", input)
+		assert.False(t, in.Required, "%s must be optional: non-Jira runs have no Jira secrets", input)
+		assert.Empty(t, in.Default, "%s must default to empty", input)
+
+		ref := "${{ inputs." + input + " }}"
+		stepEnvName := envName
+		if input == "jira-email" {
+			stepEnvName = "FULLSEND_JIRA_EMAIL_INPUT"
+		}
+		var readers []string
+		for _, st := range doc.Runs.Steps {
+			for k, v := range st.Env {
+				if strings.Contains(v, "inputs."+input) {
+					readers = append(readers, st.Name)
+					assert.Equal(t, stepEnvName, k, "%s must reach %s as %s", input, st.Name, stepEnvName)
+					assert.Equal(t, ref, v)
+				}
+			}
+			assert.NotContains(t, st.Run, "inputs."+input, "%s must be consumed through env:, never interpolated into run:", input)
+		}
+		assert.Equal(t, []string{"Run fullsend", "Finalize orphaned status comment"}, readers,
+			"%s must reach both Jira-consuming action steps", input)
+	}
+
+	for _, st := range doc.Runs.Steps {
+		if st.Name != "Run fullsend" && st.Name != "Finalize orphaned status comment" {
+			continue
+		}
+		emailNormalize := "if [[ -n \"${FULLSEND_JIRA_EMAIL_INPUT}\" ]]; then\n  export FULLSEND_JIRA_EMAIL=\"${FULLSEND_JIRA_EMAIL_INPUT}\"\nelse\n  unset FULLSEND_JIRA_EMAIL\nfi\nunset FULLSEND_JIRA_EMAIL_INPUT"
+		assert.Contains(t, st.Run, emailNormalize, "%s must omit an empty email and remove its temporary input", st.Name)
+		if st.Name == "Run fullsend" {
+			tokenUnset := "if [[ -z \"${FULLSEND_JIRA_TOKEN}\" ]]; then\n  unset FULLSEND_JIRA_TOKEN\nfi"
+			assert.Contains(t, st.Run, tokenUnset, "Run fullsend must unset an empty Jira token")
+		}
+		for _, name := range []string{"FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+			unset := "if [[ -z \"${" + name + ":-}\" ]]; then\n  unset " + name + "\nfi"
+			assert.Contains(t, st.Run, unset, "%s must unset an empty %s", st.Name, name)
+		}
+	}
+
+	dispatchContent := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
+	var dispatch reusableWorkflow
+	require.NoError(t, yaml.Unmarshal(dispatchContent, &dispatch))
+	for _, secretName := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		secret, ok := dispatch.On.WorkflowCall.Secrets[secretName]
+		require.True(t, ok, "reusable-dispatch.yml must declare %s", secretName)
+		assert.False(t, secret.Required, "%s must be optional for non-Jira runs", secretName)
+	}
+
+	harnessRun := extractStepSection(t, string(dispatchContent), "Run harness agent")
+	withIndex := strings.Index(harnessRun, "\n        with:\n")
+	require.NotEqual(t, -1, withIndex, "Run harness agent must have a with: block")
+	assert.NotContains(t, harnessRun[:withIndex], "FULLSEND_JIRA_",
+		"Jira secrets must not be passed through env:")
+	with := harnessRun[withIndex:]
+	for input, secretName := range map[string]string{
+		"jira-token":         "FULLSEND_JIRA_TOKEN",
+		"jira-email":         "FULLSEND_JIRA_EMAIL",
+		"jira-client-id":     "FULLSEND_JIRA_CLIENT_ID",
+		"jira-client-secret": "FULLSEND_JIRA_CLIENT_SECRET",
+	} {
+		assert.Contains(t, with, fmt.Sprintf("          %s: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.%s || '' }}", input, secretName),
+			"Run harness agent must pass %s as the %s action input only for Jira events", secretName, input)
+	}
+
+	shim := string(loadScaffoldFile("templates/shim-per-repo.yaml")(t))
+	for _, secretName := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		assert.Contains(t, shim, fmt.Sprintf("      %s: ${{ secrets.%s }}", secretName, secretName),
+			"per-repo shim must forward %s to reusable-dispatch.yml", secretName)
+	}
+}
+
+// TestJiraPollWorkflowSecretThreading validates the GitHub poller workflow
+// contract and its scaffold caller. OAuth credentials must reach the poll
+// step, while the caller also forwards them to reusable-dispatch for Jira
+// run-status updates.
+func TestJiraPollWorkflowSecretThreading(t *testing.T) {
+	content := string(loadRepoFile(".github/workflows/reusable-poll-jira.yml")(t))
+	var parsed reusableWorkflow
+	require.NoError(t, yaml.Unmarshal([]byte(content), &parsed))
+	for _, name := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		secret, ok := parsed.On.WorkflowCall.Secrets[name]
+		require.True(t, ok, "reusable-poll-jira.yml must declare %s", name)
+		assert.False(t, secret.Required, "%s must be optional so either credential type can be used", name)
+		assert.Contains(t, content, name+": ${{ secrets."+name+" }}", "poll step must receive %s", name)
+	}
+
+	caller := string(loadScaffoldFile("templates/jira-poll-per-repo.yaml")(t))
+	for _, name := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		assert.Contains(t, caller, name+": ${{ secrets."+name+" }}", "managed poll caller must forward %s", name)
+	}
+}
+
 // TestOTELVariableForwarding validates that OTEL variables (#5886) are
 // injected into the env: block of every agent run step. Variables are
 // auto-visible via vars. context so they don't need secrets: threading,
@@ -679,9 +1025,23 @@ func TestReusableDispatchStageConcurrency(t *testing.T) {
 				assert.Contains(t, job.Concurrency.Group, fragment,
 					"job %q concurrency group should reference %q", stage, fragment)
 			}
-			assert.True(t, job.Concurrency.CancelInProgress,
-				"job %q should cancel in-progress runs when a newer dispatch arrives", stage)
+			assertLiteralTrue(t, job.Concurrency.CancelInProgress,
+				fmt.Sprintf("job %q should cancel in-progress runs when a newer dispatch arrives", stage))
 		})
+	}
+
+	nonAgent := make(map[string]bool, len(dispatchNonAgentJobs))
+	for _, name := range dispatchNonAgentJobs {
+		nonAgent[name] = true
+		_, ok := caller.Jobs[name]
+		assert.True(t, ok,
+			"non-agent job %q is not in reusable-dispatch.yml; remove the stale entry from dispatchNonAgentJobs", name)
+	}
+
+	for name := range caller.Jobs {
+		_, pinned := dispatchStageConcurrencyExpectations[name]
+		assert.True(t, pinned || nonAgent[name],
+			"job %q in reusable-dispatch.yml has no concurrency expectation; add it to dispatchStageConcurrencyExpectations or list it in dispatchNonAgentJobs", name)
 	}
 }
 
@@ -703,8 +1063,8 @@ func TestReusableAgentWorkflowConcurrency(t *testing.T) {
 				assert.Contains(t, wf.Concurrency.Group, fragment,
 					"reusable-%s.yml concurrency group should reference %q", stage, fragment)
 			}
-			assert.True(t, wf.Concurrency.CancelInProgress,
-				"reusable-%s.yml should cancel in-progress runs", stage)
+			assertLiteralTrue(t, wf.Concurrency.CancelInProgress,
+				fmt.Sprintf("reusable-%s.yml should cancel in-progress runs", stage))
 
 			callerExpect := dispatchStageConcurrencyExpectations[stage]
 			require.NotEmpty(t, callerExpect.groupPrefix, "missing dispatch expectation for %s", stage)
@@ -732,8 +1092,8 @@ func TestThinCallerStageConcurrency(t *testing.T) {
 				assert.Contains(t, wf.Concurrency.Group, fragment,
 					"%s concurrency group should reference %q", path, fragment)
 			}
-			assert.True(t, wf.Concurrency.CancelInProgress,
-				"%s should cancel in-progress runs when a newer dispatch arrives", path)
+			assertLiteralTrue(t, wf.Concurrency.CancelInProgress,
+				fmt.Sprintf("%s should cancel in-progress runs when a newer dispatch arrives", path))
 		})
 	}
 }
@@ -746,6 +1106,65 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Regexp(t, `(?s)/fs-review\)\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
+}
+
+// TestReusableDispatchJobsReceiveMintOIDC validates permissions and mint URL
+// wiring for both gha-event dispatch steps (#8814). The OIDC token remains
+// job-local and is not copied into outputs, logs, or matrix data.
+func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
+	type workflowStep struct {
+		Name string            `yaml:"name"`
+		Run  string            `yaml:"run"`
+		Env  map[string]string `yaml:"env"`
+	}
+	type workflowJob struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Outputs     map[string]string `yaml:"outputs"`
+		Steps       []workflowStep    `yaml:"steps"`
+	}
+	var workflow struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	for _, tc := range []struct {
+		jobName  string
+		stepName string
+	}{
+		{jobName: "route", stepName: "Evaluate CEL route"},
+		{jobName: "harness-dispatch", stepName: "Run fullsend dispatch"},
+	} {
+		t.Run(tc.jobName, func(t *testing.T) {
+			job, ok := workflow.Jobs[tc.jobName]
+			require.True(t, ok, "job %q must exist", tc.jobName)
+			assert.Equal(t, "write", job.Permissions["id-token"],
+				"job %q must be able to request an OIDC token", tc.jobName)
+
+			var dispatch workflowStep
+			for _, step := range job.Steps {
+				if step.Name == tc.stepName {
+					dispatch = step
+					break
+				}
+			}
+			require.NotEmpty(t, dispatch.Name, "job %q must include step %q", tc.jobName, tc.stepName)
+			assert.Contains(t, dispatch.Run, "--input-driver gha-event",
+				"step %q must use the GitHub event driver", tc.stepName)
+			assert.Equal(t, "${{ inputs.mint_url }}", dispatch.Env["FULLSEND_MINT_URL"],
+				"step %q must receive the configured mint URL", tc.stepName)
+			for name, value := range job.Outputs {
+				assert.NotContains(t, name, "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+					"job %q output names must not expose the OIDC request token", tc.jobName)
+				assert.NotContains(t, value, "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+					"job %q outputs must not expose the OIDC request token", tc.jobName)
+			}
+		})
+	}
+	assert.NotContains(t, string(content), "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+		"the workflow must not copy the OIDC request token into logs or matrix data")
 }
 
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch
@@ -882,6 +1301,10 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"human PR auto-fix requires write+ on the PR author")
 			assert.Regexp(t, `(?s)PR_USER_LOGIN.*\[bot\].*STAGE="fix".*fullsend-fix.*has_repo_permission "\$\{PR_USER_LOGIN\}" write`, s)
 
+			// Fix iteration count comes from the tested filter in .github/scripts,
+			// which trusts the Authored-by trailer only from the App bot.
+			assert.Contains(t, s, `jq -s --arg bot_email "${GIT_BOT_EMAIL}" -f .defaults/.github/scripts/count-fix-commits.jq`)
+
 			// ready-to-code is a mutation path: bot handoff OR write+ (default min)
 			assert.Regexp(t, `(?s)ready-to-code".*\\\[bot\\\]\$.*is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}"`, s,
 				"ready-to-code must check bot bypass before write+ gate")
@@ -890,8 +1313,8 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 			assert.NotRegexp(t, `(?s)ready-to-code".*is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}" triage`, s,
 				"ready-to-code must not accept triage min on the mutation path")
 
-			// Retro on PR close remains intentionally ungated (documented)
-			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*\n\s+STAGE="retro"`, s)
+			// Retro on PR close uses the standard write gate on the closing actor.
+			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Retro can write.*\n\s+if is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}"; then\s*\n\s+STAGE="retro"`, s)
 
 			// OWNERS role→permission mapping: approvers in write|triage arm,
 			// reviewers in triage-only arm, connected by ;;&  (pattern-retest).
@@ -973,9 +1396,8 @@ func TestShimScaffoldBranchFilter(t *testing.T) {
 }
 
 // TestShimPerRepoSlashCommandFilter validates that the per-repo shim template
-// filters issue_comment events with both a /fs- prefix check and a bot-type
-// guard, preserving defense-in-depth while short-circuiting non-slash-command
-// comments at the workflow level (#6738).
+// forwards /fs- issue comments regardless of actor type while keeping
+// /fs-fix-stop human-only (#8894).
 func TestShimPerRepoSlashCommandFilter(t *testing.T) {
 	content := loadScaffoldFile("templates/shim-per-repo.yaml")(t)
 
@@ -987,8 +1409,15 @@ func TestShimPerRepoSlashCommandFilter(t *testing.T) {
 	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
 		"per-repo shim dispatch job must filter issue_comment events to /fs-* slash commands")
 
-	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
-		"per-repo shim must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+	assert.NotContains(t, job.If, "github.event.comment.user.type",
+		"per-repo shim dispatch job must forward /fs-* comments regardless of actor type")
+
+	stopFix, ok := wf.Jobs["stop-fix"]
+	require.True(t, ok, "per-repo shim must have a stop-fix job")
+	assert.Contains(t, stopFix.If, "github.event.comment.user.type != 'Bot'",
+		"/fs-fix-stop must remain human-only")
+	assert.Contains(t, stopFix.If, "github.event.comment.body == '/fs-fix-stop'",
+		"stop-fix must remain limited to the /fs-fix-stop command")
 }
 
 // TestShimPerRepoNoFullsendAlias validates that the per-repo dispatch
@@ -1013,7 +1442,8 @@ func TestShimPerRepoNoFullsendAlias(t *testing.T) {
 }
 
 // TestLiveShimSlashCommandFilter validates that the live fullsend.yaml workflow
-// uses both a /fs- prefix filter and bot-type guard for defense-in-depth (#6738).
+// forwards /fs- issue comments regardless of actor type and keeps /fs-fix-stop
+// human-only (#8894).
 func TestLiveShimSlashCommandFilter(t *testing.T) {
 	content := loadRepoFile(".github/workflows/fullsend.yaml")(t)
 
@@ -1025,8 +1455,56 @@ func TestLiveShimSlashCommandFilter(t *testing.T) {
 	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
 		"fullsend.yaml dispatch job must filter issue_comment events to /fs-* slash commands")
 
-	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
-		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+	assert.NotContains(t, job.If, "github.event.comment.user.type",
+		"fullsend.yaml dispatch job must forward /fs-* comments regardless of actor type")
+
+	stopFix, ok := wf.Jobs["stop-fix"]
+	require.True(t, ok, "fullsend.yaml must have a stop-fix job")
+	assert.Contains(t, stopFix.If, "github.event.comment.user.type != 'Bot'",
+		"/fs-fix-stop must remain human-only")
+	assert.Contains(t, stopFix.If, "github.event.comment.body == '/fs-fix-stop'",
+		"stop-fix must remain limited to the /fs-fix-stop command")
+}
+
+func TestShimDispatchConditionCopiesMatch(t *testing.T) {
+	var template, live callerWorkflow
+	require.NoError(t, yaml.Unmarshal(loadScaffoldFile("templates/shim-per-repo.yaml")(t), &template))
+	require.NoError(t, yaml.Unmarshal(loadRepoFile(".github/workflows/fullsend.yaml")(t), &live))
+
+	templateDispatch, ok := template.Jobs["dispatch"]
+	require.True(t, ok, "per-repo shim template must have a dispatch job")
+	liveDispatch, ok := live.Jobs["dispatch"]
+	require.True(t, ok, "live fullsend.yaml must have a dispatch job")
+	assert.Equal(t, templateDispatch.If, liveDispatch.If,
+		"live and scaffold dispatch conditions must stay aligned")
+}
+
+func TestPerRepoShimAdmitsEmptyBodyReviewEvents(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{name: "live", content: loadRepoFile(".github/workflows/fullsend.yaml")},
+		{name: "template", content: loadScaffoldFile("templates/shim-per-repo.yaml")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var wf callerWorkflow
+			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
+			job, ok := wf.Jobs["dispatch"]
+			require.True(t, ok)
+			assert.Contains(t, job.If, "github.event_name != 'pull_request_review'")
+			assert.NotContains(t, job.If, "github.event.action == 'submitted'",
+				"the workflow trigger already limits review events to submitted actions")
+			assert.NotContains(t, job.If, "github.event.review.state != 'commented'",
+				"empty-body commented reviews can carry substantive inline feedback")
+			assert.NotContains(t, job.If, "github.event.review.body != ''",
+				"empty-body commented reviews must reach custom review_submitted triggers")
+			assert.NotContains(t, job.If, "github.event.review.user.login",
+				"shim must preserve review events used by custom harness triggers")
+		})
+	}
 }
 
 // TestDispatchPRHeadResolution validates that reusable-dispatch.yml contains
@@ -1056,9 +1534,6 @@ func TestDispatchPRHeadResolution(t *testing.T) {
 			assert.Contains(t, s, "id: pr-head",
 				"resolve step must have id: pr-head")
 
-			assert.Contains(t, s, `steps.pr-check.outputs.skipped != 'true'`,
-				"resolve step if: must include pr-check guard")
-
 			assert.Contains(t, s, `'.pull_request = $pr'`,
 				"must merge PR JSON into event_payload via jq")
 
@@ -1070,41 +1545,6 @@ func TestDispatchPRHeadResolution(t *testing.T) {
 
 			assert.Contains(t, s, "continuing without PR context",
 				"API failure for non-fix/review stages must warn and continue")
-		})
-	}
-}
-
-// TestDispatchPRCheckBotFilter validates that the existing-PR guard in both
-// dispatch workflows uses __typename + login for bot detection (not bare login
-// string comparison), and includes matched PR numbers in the skip notice (#5974).
-func TestDispatchPRCheckBotFilter(t *testing.T) {
-	type workflowCase struct {
-		name    string
-		content func(t *testing.T) []byte
-	}
-
-	cases := []workflowCase{
-		{
-			"reusable-dispatch.yml",
-			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
-		},
-	}
-
-	for _, wc := range cases {
-		t.Run(wc.name, func(t *testing.T) {
-			s := string(wc.content(t))
-
-			assert.Contains(t, s, `author { login __typename }`,
-				"GraphQL query must request both login and __typename for bot detection")
-
-			assert.Contains(t, s, `select(.author.__typename != "Bot" or .author.login != "fullsend-ai-coder")`,
-				"bot filter must exclude only the code-agent bot via __typename + login — see docs/contributing/bot-identities.md")
-
-			assert.Contains(t, s, `map("#\(.number)") | join(", ")`,
-				"jq must format PR numbers as #N, #M — bare .[].number silently truncates multi-PR notices")
-
-			assert.Regexp(t, `::notice::.*\$\{LINKED_PRS\}`, s,
-				"skip notice must include the matched PR number(s)")
 		})
 	}
 }
@@ -1122,6 +1562,257 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"fullsend run step must pass PR_HEAD_SHA env from input")
 	assert.Contains(t, s, "PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}",
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
+}
+
+// TestActionArtifactNameInput validates that action.yml accepts an exact
+// artifact name for collision-proof matrix uploads while retaining the
+// legacy default for standalone callers (#8961).
+func TestActionArtifactNameInput(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	var action struct {
+		Inputs map[string]struct {
+			Default *string `yaml:"default"`
+		} `yaml:"inputs"`
+		Runs struct {
+			Steps []struct {
+				Name string            `yaml:"name"`
+				With map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &action))
+
+	nameInput, ok := action.Inputs["artifact-name"]
+	require.True(t, ok, "action.yml must declare the artifact-name input")
+	require.NotNil(t, nameInput.Default, "artifact-name must declare a default")
+	assert.Empty(t, *nameInput.Default, "artifact-name must default to empty for existing callers")
+
+	var name string
+	found := false
+	for _, step := range action.Runs.Steps {
+		if step.Name == "Upload fullsend artifacts" {
+			name = step.With["name"]
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "action.yml must have an Upload fullsend artifacts step")
+	assert.Equal(t,
+		"${{ inputs.artifact-name || format('fullsend-{0}', inputs.agent) }}",
+		name, "upload must prefer the exact artifact-name and keep the legacy fallback")
+}
+
+func TestReusableDispatchArtifactNamesUseCompactAgentList(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	workflow := string(content)
+	stepStart := strings.Index(workflow, "      - name: Export dispatch context env\n")
+	require.NotEqual(t, -1, stepStart, "harness-run must compute its artifact name")
+	stepEnd := strings.Index(workflow[stepStart:], "\n      - name: Run harness agent")
+	require.NotEqual(t, -1, stepEnd, "artifact naming step must precede the agent action")
+	step := workflow[stepStart : stepStart+stepEnd]
+	assert.Contains(t, step, "MATRIX_AGENT_NAMES: ${{ toJSON(fromJSON(inputs.matrix != '' && inputs.matrix || needs.harness-dispatch.outputs.matrix).include.*.agent) }}")
+	assert.NotContains(t, step, "MATRIX_JSON:", "the step must not receive event payloads for every matrix row")
+	assert.Contains(t, workflow, "artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}",
+		"the computed per-row name must be passed to the composite action")
+
+	script := extractReusableDispatchStepScript(t, "harness-run", "Export dispatch context env")
+	nameStart := strings.Index(script, `if [[ ! "${MATRIX_AGENT}" =~ ^[a-zA-Z0-9_-]+$`)
+	require.NotEqual(t, -1, nameStart, "the step must validate the matrix agent and job index")
+	nameEnd := strings.Index(script[nameStart:], "\nURL=$(printf")
+	require.NotEqual(t, -1, nameEnd, "artifact naming must finish before event payload parsing")
+	script = "set -euo pipefail\n" + script[nameStart:nameStart+nameEnd] + "\nprintf '%s\\n' \"$ARTIFACT_NAME\"\n"
+
+	repeated := `["code","code","code-0"]`
+	unique := `["ci-retry","ci-retry-1"]`
+	rows := []struct {
+		agent  string
+		index  string
+		names  string
+		wanted string
+	}{
+		{agent: "code", index: "0", names: repeated, wanted: "fullsend-code"},
+		{agent: "code", index: "1", names: repeated, wanted: "fullsend-code.matrix-1"},
+		{agent: "code-0", index: "2", names: repeated, wanted: "fullsend-code-0"},
+		{agent: "ci-retry", index: "0", names: unique, wanted: "fullsend-ci-retry"},
+		{agent: "ci-retry-1", index: "1", names: unique, wanted: "fullsend-ci-retry-1"},
+	}
+	seen := make(map[string]bool)
+	for _, row := range rows {
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Env = append(os.Environ(), "MATRIX_AGENT="+row.agent, "MATRIX_JOB_INDEX="+row.index,
+			"MATRIX_AGENT_NAMES="+row.names)
+		output, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s", output)
+		name := strings.TrimSpace(string(output))
+		assert.Equal(t, row.wanted, name)
+		assert.False(t, seen[name], "matrix artifact name %q collided", name)
+		seen[name] = true
+	}
+
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(), "MATRIX_AGENT=ci.retry", "MATRIX_JOB_INDEX=0", `MATRIX_AGENT_NAMES=["ci.retry"]`)
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err, "agent names containing the reserved dot separator must be rejected")
+	assert.Contains(t, string(output), "matrix agent and job index must be valid")
+}
+
+func TestChainingGuideFindsArtifactOnLaterAPIPages(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "guides", "user", "chaining-follow-up-workflows.md"))
+	require.NoError(t, err)
+	const stepName = "Check this run is a ${{ env.AGENT }} run"
+	marker := "      - name: " + stepName
+	stepStart := strings.Index(string(doc), marker)
+	require.NotEqual(t, -1, stepStart, "guide must include the documented artifact lookup step")
+	runMarker := "        run: |\n"
+	runStart := strings.Index(string(doc)[stepStart:], runMarker)
+	require.NotEqual(t, -1, runStart, "artifact lookup step must include a shell script")
+	runStart += stepStart + len(runMarker)
+	var script strings.Builder
+	for _, line := range strings.Split(string(doc)[runStart:], "\n") {
+		if strings.TrimSpace(line) == "" {
+			script.WriteByte('\n')
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent < 10 {
+			break
+		}
+		script.WriteString(line[10:])
+		script.WriteByte('\n')
+	}
+	require.Contains(t, script.String(), "gh api --paginate", "the artifact lookup must request every API page")
+
+	binDir := t.TempDir()
+	ghStub := `#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" --paginate "* ]]; then
+  for i in {1..30}; do printf 'fullsend-unrelated-%s\n' "$i"; done
+  printf 'fullsend-ci-retry.matrix-31\n'
+else
+  for i in {1..30}; do printf 'fullsend-unrelated-%s\n' "$i"; done
+fi
+`
+	ghPath := filepath.Join(binDir, "gh")
+	require.NoError(t, os.WriteFile(ghPath, []byte(ghStub), 0o755))
+	outputPath := filepath.Join(t.TempDir(), "github-output")
+	cmd := exec.Command("bash", "-c", script.String())
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "GITHUB_REPOSITORY=org/repo",
+		"RUN_ID=123", "AGENT=ci-retry", "GITHUB_OUTPUT="+outputPath)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	result, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "fullsend-ci-retry.matrix-31",
+		"the workflow must match an artifact returned only by a later API page")
+}
+
+func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	s := string(content)
+
+	assert.Contains(t, s, "  role:\n    description:",
+		"action.yml must declare the optional role supplied by matrix dispatch")
+	assert.Contains(t, s, "SUPPLIED_ROLE: ${{ inputs.role }}",
+		"reconcile step must receive the supplied role")
+	assert.Contains(t, s, "RESOLVED_ROLE=\"${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}\"",
+		"reconciliation must use the supplied role when an early failure prevents the harness from reporting one")
+}
+
+func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	var action struct {
+		Runs struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &action))
+
+	var script string
+	for _, step := range action.Runs.Steps {
+		if step.Name == "Finalize orphaned status comment" {
+			script = step.Run
+			break
+		}
+	}
+	require.NotEmpty(t, script)
+
+	run := func(t *testing.T, supportsReviewRun bool, eventName, eventJSON, prHeadInput string) []string {
+		t.Helper()
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "bin")
+		require.NoError(t, os.Mkdir(bin, 0o755))
+		outputPath := filepath.Join(dir, "reconcile-args")
+		eventPath := filepath.Join(dir, "event.json")
+		if eventJSON != "" {
+			require.NoError(t, os.WriteFile(eventPath, []byte(eventJSON), 0o644))
+		}
+
+		help := ":"
+		if supportsReviewRun {
+			// Keep writing after the matching flag: grep -q closes its input
+			// early, which would make this producer fail with SIGPIPE.
+			help = "printf '%s\\n' --review-run; for _ in $(seq 1 100000); do printf 'more help output\\n'; done"
+		}
+		fake := "#!/usr/bin/env bash\nset -euo pipefail\n" +
+			"if [[ \"${1:-}\" == reconcile-status && \"${2:-}\" == --help ]]; then " + help + "; exit 0; fi\n" +
+			"printf '%s\\n' \"$@\" > \"${RECONCILE_ARGS:?}\"\n"
+		require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(fake), 0o755))
+
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Env = append(os.Environ(),
+			"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"RECONCILE_ARGS="+outputPath,
+			"MINT_URL=https://mint.example.com",
+			"AGENT=review",
+			"STATUS_REPO=org/repo",
+			"STATUS_NUMBER=7",
+			"RUN_ID=run-1",
+			"RUN_URL=",
+			"JOB_STATUS=cancelled",
+			"HARNESS_ROLE=",
+			"SUPPLIED_ROLE=",
+			"WAS_SKIPPED=false",
+			"PR_HEAD_SHA_INPUT="+prHeadInput,
+			"FULLSEND_DIR="+dir,
+			"FULLSEND_JIRA_TOKEN=",
+			"FULLSEND_JIRA_EMAIL_INPUT=",
+			"GITHUB_WORKSPACE="+dir,
+			"GITHUB_SHA=merge-or-base",
+			"GITHUB_EVENT_NAME="+eventName,
+			"GITHUB_EVENT_PATH="+eventPath,
+		)
+		result, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s", result)
+		args, err := os.ReadFile(outputPath)
+		require.NoError(t, err)
+		return strings.Fields(string(args))
+	}
+
+	assert.Contains(t, run(t, true, "workflow_dispatch", "", "explicit-head"), "--review-run", "a supporting CLI must receive --review-run even when help continues after the flag")
+	assert.NotContains(t, run(t, false, "workflow_dispatch", "", "explicit-head"), "--review-run", "older CLIs must still reconcile without the unknown flag")
+
+	nativeEvent := `{"pull_request":{"number":7,"head":{"sha":"native-head"}}}`
+	assert.Contains(t, run(t, true, "pull_request", nativeEvent, "explicit-head"), "explicit-head",
+		"the workflow input takes precedence over the native event")
+	for _, eventName := range []string{"pull_request", "pull_request_target"} {
+		t.Run(eventName, func(t *testing.T) {
+			args := run(t, true, eventName, nativeEvent, "")
+			assert.Contains(t, args, "native-head")
+			assert.NotContains(t, args, "merge-or-base")
+		})
+	}
+	wrappedEvent := `{"inputs":{"event_payload":"{\"pull_request\":{\"head\":{\"sha\":\"wrapped-head\"}}}"}}`
+	assert.Contains(t, run(t, true, "workflow_dispatch", wrappedEvent, ""), "wrapped-head",
+		"workflow dispatch continues to extract the embedded PR head")
+	assert.NotContains(t, run(t, true, "pull_request", `{"pull_request":{"number":7}}`, ""), "--sha",
+		"an unknown PR head must not be compared with the live HEAD")
 }
 
 // TestReusableDispatchPRHeadSHAPassthrough validates that agent jobs in
@@ -1278,52 +1969,6 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 				"%s per-repo shim must not filter on label prefix — BYOA harness agents may use arbitrary labels", tc.name)
 			assert.Nil(t, job.Concurrency,
 				"%s per-repo shim must not have job-level concurrency (ADR 0034: per-role groups live in reusable-dispatch.yml)", tc.name)
-		})
-	}
-}
-
-// TestRoleCheckCaseBranches validates the role-check step's case mapping and
-// backward-compat logic in reusable-dispatch.yml (#2298).
-func TestRoleCheckCaseBranches(t *testing.T) {
-	type workflowCase struct {
-		name    string
-		content func(t *testing.T) []byte
-	}
-
-	cases := []workflowCase{
-		{
-			"reusable-dispatch.yml",
-			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
-		},
-	}
-
-	for _, wc := range cases {
-		t.Run(wc.name, func(t *testing.T) {
-			s := string(wc.content(t))
-
-			// code|fix must map to coder
-			assert.Contains(t, s, `code|fix) STAGE_ROLE="coder"`,
-				"code|fix should map to coder role")
-
-			// retro and prioritize must NOT be remapped to fullsend
-			assert.NotContains(t, s, `retro|prioritize) STAGE_ROLE="fullsend"`,
-				"retro/prioritize must not be remapped to fullsend (#2298)")
-
-			// backward compat: fullsend in roles implies retro + prioritize
-			assert.Regexp(t, `\^\(retro\|prioritize\)\$`, s,
-				"backward-compat regex should match retro and prioritize")
-			assert.Contains(t, s, `grep -Fqx "fullsend"`,
-				"backward-compat should check for fullsend in roles")
-
-			// compat path must emit a notice, not silently pass
-			assert.Regexp(t, `(?s)grep -Fqx "fullsend".*::notice::Stage`, s,
-				"backward-compat path must emit a ::notice:: annotation")
-
-			// stages that pass through unmapped must not be remapped
-			assert.NotRegexp(t, `triage\).*STAGE_ROLE=`, s,
-				"triage must not be remapped")
-			assert.NotRegexp(t, `review\).*STAGE_ROLE=`, s,
-				"review must not be remapped")
 		})
 	}
 }
@@ -1561,4 +2206,97 @@ func TestGCPSetupOccursInsideSingleRun(t *testing.T) {
 		assert.Equal(t, "${{ inputs.gcp_project_id }}", steps["Run fullsend"].Env["FULLSEND_GCP_PROJECT_ID"])
 		assert.Equal(t, 1, runInvocations)
 	})
+}
+
+// TestWorkflowDispatchInputsHaveDescriptions guards #7903: SchemaStore's
+// workflow schema (check-jsonschema before SchemaStore #5277) rejects a
+// workflow_dispatch input without a description, failing adopters' lint.
+func TestWorkflowDispatchInputsHaveDescriptions(t *testing.T) {
+	check := func(t *testing.T, name string, raw []byte) {
+		var wf struct {
+			On yaml.Node `yaml:"on"`
+		}
+		require.NoError(t, yaml.Unmarshal(raw, &wf), "%s: invalid YAML", name)
+		if wf.On.Kind != yaml.MappingNode { // on: push / [push, pull_request]
+			return
+		}
+		var on struct {
+			WorkflowDispatch struct {
+				Inputs map[string]struct {
+					Description string `yaml:"description"`
+				} `yaml:"inputs"`
+			} `yaml:"workflow_dispatch"`
+		}
+		require.NoError(t, wf.On.Decode(&on), "%s: invalid on:", name)
+		for input, def := range on.WorkflowDispatch.Inputs {
+			assert.NotEmpty(t, strings.TrimSpace(def.Description),
+				"%s: workflow_dispatch input %q needs a description", name, input)
+		}
+	}
+
+	checked := 0
+	require.NoError(t, fs.WalkDir(content, "fullsend-repo", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.Contains(path, ".github/workflows/") {
+			return err
+		}
+		raw, err := content.ReadFile(path)
+		require.NoError(t, err)
+		check(t, path, raw)
+		checked++
+		return nil
+	}))
+
+	repoWorkflows, err := filepath.Glob(filepath.Join("..", "..", ".github", "workflows", "*.y*ml"))
+	require.NoError(t, err)
+	for _, path := range repoWorkflows {
+		raw, err := os.ReadFile(path)
+		require.NoError(t, err)
+		check(t, path, raw)
+		checked++
+	}
+	require.Greater(t, checked, 1, "expected to scan scaffold and repo workflows")
+}
+
+// TestTriageAgentStepExportsAppSet verifies the triage job's "Run triage
+// agent" step exports FULLSEND_APP_SET with the same expression as the
+// review job's run step (#9568). agents/triage.md trusts an earlier triage
+// comment only when its GitHub App is one of the install's triage App names
+// (fullsend-ai/agents#2037), which includes ${FULLSEND_APP_SET}-triage when
+// the variable is set; without the export, an install with a custom App set
+// matches none of its own triage comments.
+func TestTriageAgentStepExportsAppSet(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string            `yaml:"name"`
+				Env  map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	agentStepEnv := func(job, stepName string) map[string]string {
+		for _, step := range workflow.Jobs[job].Steps {
+			if step.Name == stepName {
+				return step.Env
+			}
+		}
+		t.Fatalf("job %q must have a %q step", job, stepName)
+		return nil
+	}
+
+	const wantExpr = "${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}"
+
+	reviewEnv := agentStepEnv("review", "Run review agent")
+	require.Contains(t, reviewEnv, "FULLSEND_APP_SET",
+		"reference: the review job's run step exports FULLSEND_APP_SET")
+
+	triageEnv := agentStepEnv("triage", "Run triage agent")
+	require.Contains(t, triageEnv, "FULLSEND_APP_SET",
+		`the triage job's "Run triage agent" step must export FULLSEND_APP_SET`)
+	assert.Equal(t, wantExpr, triageEnv["FULLSEND_APP_SET"],
+		"the triage step's FULLSEND_APP_SET must match the review step's entry")
 }

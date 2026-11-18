@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
@@ -32,6 +33,69 @@ func ManagedGitLabRoleAccountIDs(ctx context.Context, client forge.Client, owner
 	for _, rs := range state.Roles {
 		if rs.ManagedUserID > 0 {
 			ids = append(ids, rs.ManagedUserID)
+		}
+	}
+	generationIDs, err := ManagedGitLabPollerGenerationAccountIDs(ctx, client, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range generationIDs {
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// ManagedGitLabPollerGenerationAccountIDs lists the Poller accounts recorded
+// in the generation document: the current Poller, the superseded Poller still
+// retiring, and the pending replacement. A cutover replaces the managed Poller
+// account in rotation state before it records the new current generation, so
+// without the document's current ID the previous Poller drops out of every
+// destructive credential inventory, uninstall, and cleanup during that
+// window, and without the retiring and pending IDs the superseded or
+// interrupted account drops out afterwards, while their credentials may still
+// be usable (#8243). The IDs are deduplicated. An absent document records
+// none; an unreadable one fails closed.
+func ManagedGitLabPollerGenerationAccountIDs(ctx context.Context, client forge.Client, owner, repo string) ([]int, error) {
+	st, err := loadPollerGenerations(ctx, client, owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("reading recorded GitLab Poller generation accounts: %w", err)
+	}
+	var ids []int
+	add := func(id int64) {
+		if id > 0 && !slices.Contains(ids, int(id)) {
+			ids = append(ids, int(id))
+		}
+	}
+	add(st.CurrentUserID)
+	add(st.RetiringUserID)
+	for _, id := range st.AbandonedUserIDs {
+		add(id)
+	}
+	if st.Pending != nil {
+		add(st.Pending.UserID)
+	}
+	return ids, nil
+}
+
+// GitLabPollerGenerationReconcileAccountIDs lists the recorded Poller accounts
+// whose project membership install must keep at Developer: the current Poller,
+// the superseded Poller still retiring, and the abandoned replacements. It
+// omits the pending replacement, which reconcilePendingPollerGeneration
+// handles with its handoff phase. Its runtime credentials stay valid until
+// retirement, so an elevated membership on any of these accounts must be
+// restored by an ordinary install (#8243). An absent document records none;
+// an unreadable one fails closed.
+func GitLabPollerGenerationReconcileAccountIDs(ctx context.Context, client forge.Client, owner, repo string) ([]int64, error) {
+	st, err := loadPollerGenerations(ctx, client, owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("reading recorded GitLab Poller generation accounts: %w", err)
+	}
+	var ids []int64
+	for _, id := range append([]int64{st.CurrentUserID, st.RetiringUserID}, st.AbandonedUserIDs...) {
+		if id > 0 && !slices.Contains(ids, id) {
+			ids = append(ids, id)
 		}
 	}
 	return ids, nil

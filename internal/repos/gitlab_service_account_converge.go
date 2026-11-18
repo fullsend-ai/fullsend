@@ -67,6 +67,21 @@ func (c ServiceAccountTokenClient) AppendGitLabServiceAccountStatus(ctx context.
 			}
 		}
 	}
+	// Generation-document accounts (current, retiring, pending, abandoned
+	// Pollers) are managed too: rotation state names only the current managed
+	// account, so without them a retiring Poller is reported managed=false and
+	// skips the effective-access drift check while its credential may still be
+	// usable. They are not in backing: a retiring or abandoned account may
+	// legitimately be gone.
+	generationIDs, genErr := ManagedGitLabPollerGenerationAccountIDs(ctx, client, owner, repo)
+	if genErr != nil {
+		return serviceAccountStatusUnverified(status, "gitlab-service-accounts", "Poller generation account ownership could not be verified")
+	}
+	for _, id := range generationIDs {
+		if _, ok := owned[id]; !ok {
+			owned[id] = true
+		}
+	}
 	for _, id := range frozen {
 		if _, ok := owned[id]; ok {
 			owned[id] = false
@@ -491,7 +506,7 @@ func (c ServiceAccountTokenClient) withProjectExclusions(ctx context.Context, ow
 // withRecordedOwnership returns a client whose managed-account allowlist is
 // the durable ownership in state, already read under the project lease, when
 // no ownership resolver is configured. A configured resolver is kept.
-func (c ServiceAccountTokenClient) withRecordedOwnership(state rotationStateFile) ServiceAccountTokenClient {
+func (c ServiceAccountTokenClient) withRecordedOwnership(state rotationStateFile, extra ...int) ServiceAccountTokenClient {
 	if c.ManagedAccountIDs != nil {
 		return c
 	}
@@ -499,6 +514,11 @@ func (c ServiceAccountTokenClient) withRecordedOwnership(state rotationStateFile
 	for _, rs := range state.Roles {
 		if rs.ManagedUserID > 0 {
 			ids = append(ids, rs.ManagedUserID)
+		}
+	}
+	for _, id := range extra {
+		if id > 0 && !slices.Contains(ids, id) {
+			ids = append(ids, id)
 		}
 	}
 	c.ManagedAccountIDs = func(context.Context, string, string) ([]int, error) { return ids, nil }
@@ -568,6 +588,18 @@ func (c ServiceAccountTokenClient) DeleteManagedServiceAccounts(ctx context.Cont
 			owned[rs.ManagedUserID] = true
 		}
 	}
+	// The generation document also owns accounts that rotation state does not
+	// record: the superseded (retiring) Poller after a handoff, the pending
+	// replacement, and abandoned replacements (#8243). They are verified and
+	// deleted like any owned account, and the supplied-account exclusions below
+	// apply to them as well. An unreadable document fails closed.
+	generationIDs, err := ManagedGitLabPollerGenerationAccountIDs(ctx, client, owner, repo)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range generationIDs {
+		owned[id] = true
+	}
 	// Exclusions are project-wide even when a caller has no exclusion callback.
 	// excludedIDs holds recorded exclusions and resolved supplied owners.
 	for _, id := range excludedIDs {
@@ -582,7 +614,7 @@ func (c ServiceAccountTokenClient) DeleteManagedServiceAccounts(ctx context.Cont
 		}
 		return 0, nil
 	}
-	accounts, err := c.withRecordedOwnership(state).managedServiceAccountList(ctx, owner, repo, true)
+	accounts, err := c.withRecordedOwnership(state, generationIDs...).managedServiceAccountList(ctx, owner, repo, true)
 	if err != nil {
 		if serviceAccountsAbsent(err) && len(owned) == 0 {
 			return 0, nil

@@ -143,7 +143,7 @@ func TestManagedGitLabRoleAccountNamesFailsClosed(t *testing.T) {
 
 	t.Run("negative account ID", func(t *testing.T) {
 		fc := forge.NewFakeClient()
-		fc.VariableValues["g/p/"+forge.VarGitLabRoleRotation] = `{"roles":{"coder":{"managed_user_id":-77}}}`
+		fc.VariableValues["g/p/"+forge.VarGitLabRoleRotation] = `{"version":2,"roles":{"coder":{"managed_user_id":-77}}}`
 		names, err := ManagedGitLabRoleAccountNames(ctx, fc, "g", "p")
 		require.ErrorContains(t, err, "must not be negative")
 		assert.Nil(t, names)

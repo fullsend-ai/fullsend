@@ -3,6 +3,7 @@ package security
 import (
 	"encoding/json"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -70,6 +71,38 @@ func TestGenerateHooksConfig_AllDefaults(t *testing.T) {
 	assert.Len(t, chainedHooks, 1)
 	assert.Contains(t, chainedHooks[0].(map[string]any)["command"], "posttool_chain.py")
 	assert.NotContains(t, string(data), "canary_posttool.py")
+}
+
+func TestGenerateHooksConfigPinned_PinsInterpreterAndPath(t *testing.T) {
+	data, err := GenerateHooksConfigPinned(SandboxHookConfigFromHarness(&harness.Harness{Agent: "test.md"}),
+		"/opt/py thon/bin/python3", "/usr/local/bin:/usr/bin")
+	require.NoError(t, err)
+
+	var settings struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	require.NoError(t, json.Unmarshal(data, &settings))
+	n := 0
+	for _, groups := range settings.Hooks {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				n++
+				assert.True(t, strings.HasPrefix(h.Command,
+					"PATH='/usr/local/bin:/usr/bin' '/opt/py thon/bin/python3' -E -s -B "+SandboxHooksDir+"/"), h.Command)
+			}
+		}
+	}
+	assert.NotZero(t, n)
+}
+
+func TestGenerateHooksConfig_DefaultIsolatesPythonEnvironment(t *testing.T) {
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(&harness.Harness{Agent: "test.md"}))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "'python3' -E -s -B "+SandboxHooksDir+"/tirith_check.py")
 }
 
 func TestGenerateHooksConfig_TirithDisabled(t *testing.T) {
@@ -140,6 +173,37 @@ func TestHookFiles_AllDefaults(t *testing.T) {
 	for name, content := range files {
 		assert.NotEmpty(t, content, "hook %s should have content", name)
 	}
+}
+
+func TestHookFiles_TirithRepoPolicy(t *testing.T) {
+	policy := []byte("approval_rules:\n  - rule_ids: [package_lookup_incomplete]\n")
+	base := SandboxHookConfigFromHarness(&harness.Harness{Agent: "test.md"})
+
+	t.Run("staged next to the scripts when set", func(t *testing.T) {
+		cfg := base.WithTirithRepoPolicy(policy)
+		assert.Equal(t, policy, cfg.TirithRepoPolicy())
+		files := HookFiles(cfg)
+		assert.Len(t, files, 10)
+		assert.Equal(t, policy, files[TirithRepoPolicyFile])
+		// The policy is data, not a hook: nothing schedules it.
+		for _, g := range HookPlan(cfg) {
+			assert.NotContains(t, g.Scripts, TirithRepoPolicyFile)
+		}
+	})
+
+	t.Run("absent when none was set", func(t *testing.T) {
+		assert.Nil(t, base.TirithRepoPolicy())
+		assert.NotContains(t, HookFiles(base), TirithRepoPolicyFile)
+		assert.NotContains(t, HookFiles(base.WithTirithRepoPolicy([]byte{})), TirithRepoPolicyFile)
+	})
+
+	t.Run("absent when tirith is disabled", func(t *testing.T) {
+		off := false
+		cfg := SandboxHookConfigFromHarness(&harness.Harness{Security: &harness.SecurityConfig{
+			SandboxHooks: &harness.SandboxHooks{Tirith: &harness.TirithConfig{Enabled: &off}},
+		}}).WithTirithRepoPolicy(policy)
+		assert.NotContains(t, HookFiles(cfg), TirithRepoPolicyFile)
+	})
 }
 
 func TestHookFiles_SSRFDisabled(t *testing.T) {

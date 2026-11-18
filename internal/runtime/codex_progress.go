@@ -77,9 +77,8 @@ type codexThreadStartedEvent struct {
 //     part. Claude Code and pi report cache and reasoning as counters
 //     *disjoint* from input/output (Anthropic's convention), which is what
 //     RunMetrics means and what the renderer sums for its total. Passing
-//     codex's numbers through unchanged double-counted every cached and
-//     reasoning token — the live fixture's 41,615 real tokens rendered as
-//     ~83,000. codexUsage.counters() subtracts the subsets.
+//     codex's numbers through unchanged double-counts every cached and
+//     reasoning token. codexUsage.counters() subtracts the subsets.
 type codexUsage struct {
 	InputTokens           int `json:"input_tokens"`
 	CachedInputTokens     int `json:"cached_input_tokens"`

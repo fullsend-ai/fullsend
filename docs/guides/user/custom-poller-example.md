@@ -49,16 +49,16 @@ jobs:
       - name: Poll Jira and build dispatch matrix
         id: dispatch
         env:
-          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
-          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
+          FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
+          FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
+          FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
           TARGET_REPO: ${{ github.repository }}
         run: |
+          # The Jira site, project, and query come from tracker.jira in
+          # .fullsend/config.yaml (see the note below this workflow).
           fullsend poll \
             --input-driver jira-poll \
-            --jira-url "${JIRA_BASE_URL}" \
-            --jira-project MYPROJECT \
-            --jql 'project=MYPROJECT and statusCategory != Done and updated > -1week and type=Bug' \
             --target-repo "${TARGET_REPO}" \
             --output dispatches.json \
             --fullsend-dir .fullsend
@@ -90,9 +90,27 @@ jobs:
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
       OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
-      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
+      FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
+      FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
+      FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
 ```
+
+The poller reads the Jira site, project, and query from `tracker.jira` in
+`.fullsend/config.yaml`, and polls only when `poll.enabled` is `true`. It
+always scopes the query to the project:
+
+```yaml
+tracker:
+  jira:
+    base_url: https://myteam.atlassian.net
+    project: MYPROJECT
+    poll:
+      enabled: true
+      query: 'statusCategory != Done AND updated > -1w AND type = Bug'
+```
+
+See [Jira Integration § Custom JQL](jira-integration.md#custom-jql).
 
 ## Matrix Format
 
@@ -105,13 +123,15 @@ The `matrix` input (a GitHub Actions [matrix strategy](https://docs.github.com/e
       "agent": "agent-name",
       "source_repo": "org/repo",
       "role": "harness",
-      "event_payload": "{...}",
+      "event_payload": { ... },
       "status_repo": "org/repo",
       "status_number": "123"
     }
   ]
 }
 ```
+
+> **Note:** The `event_payload` field must be a structured JSON object matching the output of `fullsend dispatch --output-driver gha-matrix`, not an escaped JSON string literal.
 
 ## Prerequisites
 
@@ -121,14 +141,22 @@ Your external repository needs these variables and secrets configured:
 - `FULLSEND_MINT_URL` - Token mint service URL
 - `FULLSEND_GCP_REGION` - GCP region for Vertex AI
 - `OTEL_EXPORTER_OTLP_ENDPOINT` - [OpenTelemetry](../../glossary.md#otel-primary-facts) endpoint (optional)
-- `JIRA_BASE_URL` - Jira instance URL (if using Jira agents)
+- `JIRA_BASE_URL` - Jira instance URL for non-Jira runs that reference it. Jira-sourced runs ignore it and use `tracker.jira.base_url` from config (see [Jira connection variables in agent runs](jira-integration.md#jira-connection-variables-in-agent-runs))
 
 **Secrets:**
 - `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation (WIF) provider
 - `FULLSEND_GCP_PROJECT_ID` - GCP project ID
 - `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - [OTEL](../../glossary.md#otel-primary-facts) auth headers (optional)
-- `JIRA_TOKEN` - Jira API token (if using Jira agents)
-- `JIRA_USER_EMAIL` - Jira user email (if using Jira agents)
+- `FULLSEND_JIRA_TOKEN` - Scoped Jira API token for the Jira poller, status
+  notifications, and Jira agents. For an Atlassian service account OAuth
+  credential, set `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`
+  instead; the two cannot be set together. The sandbox `jira` provider can
+  mint tokens from the client credentials now, but the built-in triage and
+  code agents still need the token until
+  [fullsend-ai/agents#1926](https://github.com/fullsend-ai/agents/issues/1926).
+- `FULLSEND_JIRA_EMAIL` - The bot account's email. Set it when the token
+  belongs to a bot account (Basic auth); omit it for a service account's token
+  (Bearer auth). Without it, a bot account's token fails with 401.
 
 ## How It Works
 
@@ -145,6 +173,16 @@ Required permissions:
 - `contents: write` - needed by code/fix agents
 - `packages: read` - needed by code/fix agents
 - `actions: write`, `id-token: write`, `issues: write`, `pull-requests: write` - needed by all agents
+
+`id-token: write` lets GitHub Actions issue the job a short-lived [OpenID
+Connect (OIDC) token](how-fullsend-authenticates.md). Fullsend uses this token
+to identify the calling workflow during dispatch and to mint short-lived
+[GitHub App installation tokens](../../glossary.md#installation-token) for
+agents.
+Grant it in the caller workflow or on the job that calls
+`reusable-dispatch.yml`; the reusable workflow cannot add permissions that the
+caller did not grant. Keep the OIDC token inside the job. Do not copy it into
+workflow outputs, the dispatch matrix, or logs.
 
 ## Authorization
 

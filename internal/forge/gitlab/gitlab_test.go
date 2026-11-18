@@ -424,6 +424,114 @@ func TestGetPipelineVariablesMinimumOverrideRole(t *testing.T) {
 	assert.Equal(t, forge.PipelineVarOverrideDeveloper, role)
 }
 
+func TestGetJobTokenRepositoryPushAllowed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body map[string]any
+		want bool
+	}{
+		"disabled": {body: map[string]any{"id": 42, "ci_push_repository_for_job_token_allowed": false}, want: false},
+		"enabled":  {body: map[string]any{"id": 42, "ci_push_repository_for_job_token_allowed": true}, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				json.NewEncoder(w).Encode(tc.body)
+			})
+
+			allowed, err := client.GetJobTokenRepositoryPushAllowed(context.Background(), "mygroup", "myrepo")
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, allowed)
+		})
+	}
+}
+
+func TestGetJobTokenRepositoryPushAllowed_UnreportedIsNotSupported(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"id": 42})
+	})
+
+	_, err := client.GetJobTokenRepositoryPushAllowed(context.Background(), "mygroup", "myrepo")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotSupported)
+}
+
+func TestGetJobTokenRepositoryPushAllowed_Errors(t *testing.T) {
+	t.Run("forbidden", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"403 Forbidden"}`)
+		})
+		_, err := client.GetJobTokenRepositoryPushAllowed(context.Background(), "owner", "repo")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forge.ErrForbidden)
+	})
+	t.Run("malformed", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"ci_push_repository_for_job_token_allowed": "yes"}`)
+		})
+		_, err := client.GetJobTokenRepositoryPushAllowed(context.Background(), "owner", "repo")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode job token repository push setting")
+	})
+}
+
+func TestGetPushRuleBranchNameRegex(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want string
+	}{
+		"regex set":         {body: `{"id": 1, "branch_name_regex": "master"}`, want: "master"},
+		"regex unset":       {body: `{"id": 1, "branch_name_regex": null}`, want: ""},
+		"regex empty":       {body: `{"id": 1, "branch_name_regex": ""}`, want: ""},
+		"no push rule null": {body: `null`, want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo/push_rule", func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				fmt.Fprint(w, tc.body)
+			})
+
+			got, err := client.GetPushRuleBranchNameRegex(context.Background(), "mygroup", "myrepo")
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestGetPushRuleBranchNameRegex_Errors(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+		check  func(t *testing.T, err error)
+	}{
+		"not found": {status: http.StatusNotFound, body: `{"message":"404 Not Found"}`, check: func(t *testing.T, err error) {
+			assert.True(t, forge.IsNotFound(err))
+		}},
+		"forbidden": {status: http.StatusForbidden, body: `{"message":"403 Forbidden"}`, check: func(t *testing.T, err error) {
+			assert.ErrorIs(t, err, forge.ErrForbidden)
+		}},
+		"malformed": {status: http.StatusOK, body: `{"branch_name_regex": 7}`, check: func(t *testing.T, err error) {
+			assert.Contains(t, err.Error(), "decode push rule")
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/owner%2Frepo/push_rule", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			})
+			_, err := client.GetPushRuleBranchNameRegex(context.Background(), "owner", "repo")
+			require.Error(t, err)
+			tc.check(t, err)
+		})
+	}
+}
+
 func TestGetPipelineVariablesMinimumOverrideRole_NotFound(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/owner%2Fgone", func(w http.ResponseWriter, r *http.Request) {
@@ -838,6 +946,49 @@ func TestCreateBranchFromSHA_GenericError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create branch feature-branch from SHA")
 	assert.False(t, forge.IsAlreadyExists(err), "non-400 error should not be ErrAlreadyExists")
+}
+
+func TestCreateBranchFromSHA_SHANotInRepo(t *testing.T) {
+	client, mux := setupTest(t)
+
+	handlerCalled := false
+	// Response GitLab returns when the SHA is an upstream commit that an
+	// unsynced fork does not contain (#8841).
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Failed to create branch 'feature-branch': invalid reference name 'abc123sha'",
+		})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	assert.True(t, handlerCalled, "expected the branches handler to be invoked")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err), "expected ErrNotFound, got: %v", err)
+	assert.False(t, forge.IsAlreadyExists(err))
+	assert.Contains(t, err.Error(), "invalid reference name")
+}
+
+func TestCreateBranchFromSHA_OtherBadRequest(t *testing.T) {
+	client, mux := setupTest(t)
+
+	handlerCalled := false
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Branch name is invalid",
+		})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	assert.True(t, handlerCalled, "expected the branches handler to be invoked")
+	require.Error(t, err)
+	assert.False(t, forge.IsNotFound(err), "unrelated 400 should not be ErrNotFound")
+	assert.False(t, forge.IsAlreadyExists(err), "unrelated 400 should not be ErrAlreadyExists")
 }
 
 func TestGetRef(t *testing.T) {

@@ -112,14 +112,14 @@ func TestAdoptionProposal_NotesSettingsTheManifestCannotHold(t *testing.T) {
 func TestOverlayDifference_MultilineAndAdded(t *testing.T) {
 	cur, err := overlayMapping([]byte("roles:\n  - triage\n  - fix\n"))
 	require.NoError(t, err)
-	next, err := overlayMapping([]byte("roles:\n  - triage\ncreate_issues:\n  allow_targets:\n    repos:\n      - fullsend-ai/fullsend\n"))
+	next, err := overlayMapping([]byte("roles:\n  - triage\ntracker:\n  github:\n    allowed_targets:\n      repos:\n        - fullsend-ai/fullsend\n"))
 	require.NoError(t, err)
 	got := overlayDifference(cur, next)
 	assert.Contains(t, got, "- roles:")
 	assert.Contains(t, got, "- fix")
 	assert.Contains(t, got, "-     - fix", "removed list items keep their indentation")
 	assert.Contains(t, got, "+ roles:")
-	assert.Contains(t, got, "+ create_issues:")
+	assert.Contains(t, got, "+ tracker:")
 	assert.Equal(t, "", overlayDifference(cur, cur))
 }
 
@@ -165,9 +165,10 @@ func TestZeroByteOverlayRequiresAdoption(t *testing.T) {
 		m := newConvergeManifest("acme/api")
 		fc := newFakeClientForBatch("acme/api")
 		fc.FileContents[path] = []byte{}
-		err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "adoption required")
+		adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+		require.NoError(t, err)
+		require.Len(t, adoption, 1)
+		assert.Contains(t, adoption[0].Guidance, "adoption required")
 	})
 	t.Run("writeback leaves manifest alone", func(t *testing.T) {
 		m := newConvergeManifest("acme/api")
@@ -305,57 +306,6 @@ func TestStatus_NoComponentsOverlayDrift(t *testing.T) {
 	})
 }
 
-func TestEnsureManagedConfigDefaults_ExplicitRolesEqualToInheritedArePersisted(t *testing.T) {
-	ctx := context.Background()
-	roles := []string{"triage", "fix"}
-
-	t.Run("equal to defaults.config roles", func(t *testing.T) {
-		m := newConvergeManifest("acme/api")
-		m.Defaults.Config = mustManagedConfig(t, "roles: [triage, fix]\ncreate_issues:\n  allow_targets:\n    repos: [fullsend-ai/fullsend]\n")
-		names, err := EnsureManagedConfigDefaults(ctx, ManagedConfigWritebackConfig{
-			Manifest: m, Roles: roles, RolesExplicit: true,
-		}, newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"acme/api"}, names)
-		declared, ok := m.GitHub.Repos[0].Config.ExplicitRoles()
-		require.True(t, ok, "the entry must declare the explicit roles itself")
-		assert.Equal(t, roles, declared)
-	})
-	t.Run("equal to code default roles", func(t *testing.T) {
-		m := newConvergeManifest("acme/api")
-		def, _ := m.ResolveConfig("acme", "api")
-		names, err := EnsureManagedConfigDefaults(ctx, ManagedConfigWritebackConfig{
-			Manifest: m, Roles: def.Managed.ConfigRoles(), RolesExplicit: true,
-		}, newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"acme/api"}, names)
-		_, ok := m.GitHub.Repos[0].Config.ExplicitRoles()
-		assert.True(t, ok)
-	})
-	t.Run("entry that already declares them is unchanged", func(t *testing.T) {
-		m := newConvergeManifest("acme/api")
-		m.GitHub.Repos[0].Config = mustManagedConfig(t, "roles: [triage, fix]\ncreate_issues:\n  allow_targets:\n    repos: [fullsend-ai/fullsend]\n")
-		names, err := EnsureManagedConfigDefaults(ctx, ManagedConfigWritebackConfig{
-			Manifest: m, Roles: roles, RolesExplicit: true,
-		}, newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
-		require.NoError(t, err)
-		assert.Empty(t, names)
-	})
-	t.Run("glob-covered repo gets its own entry", func(t *testing.T) {
-		m := &Manifest{Version: 1, Defaults: testInferenceDefaults(), GitHub: &PlatformConfig{
-			Repos: []RepoEntry{{Name: "acme/*", Config: mustManagedConfig(t, "roles: [triage, fix]\n")}},
-		}}
-		names, err := EnsureManagedConfigDefaults(ctx, ManagedConfigWritebackConfig{
-			Manifest: m, RepoFilter: []string{"acme/api"}, Roles: roles, RolesExplicit: true,
-		}, newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"acme/api"}, names)
-		require.Len(t, m.GitHub.Repos, 2)
-		_, ok := m.GitHub.Repos[1].Config.ExplicitRoles()
-		assert.True(t, ok)
-	})
-}
-
 func TestManagedConfigExplicitRoles(t *testing.T) {
 	var zero = newConvergeManifest("acme/api").GitHub.Repos[0].Config
 	_, ok := zero.ExplicitRoles()
@@ -365,65 +315,6 @@ func TestManagedConfigExplicitRoles(t *testing.T) {
 	got, ok := mustManagedConfig(t, "roles: [fix]\n").ExplicitRoles()
 	assert.True(t, ok)
 	assert.Equal(t, []string{"fix"}, got)
-}
-
-func TestRequireWritableManifestForNewRepos(t *testing.T) {
-	ctx := context.Background()
-	url := "https://example.com/repos.yaml"
-	newManifest := func() *Manifest {
-		return &Manifest{Version: 1, Defaults: testInferenceDefaults(), GitHub: &PlatformConfig{MintURL: "https://mint.example.com"}}
-	}
-
-	t.Run("writable manifest passes", func(t *testing.T) {
-		fc := newFakeClientForBatch("acme/new")
-		require.NoError(t, RequireWritableManifestForNewRepos(ctx, newManifest(), "", ForgeGitHub,
-			[]RepoEntry{{Name: "acme/new"}}, newTestClientFactory(fc), nil, false))
-		require.NoError(t, RequireWritableManifestForNewRepos(ctx, newManifest(), url, ForgeGitHub,
-			nil, newTestClientFactory(fc), nil, false), "nothing to add")
-	})
-	t.Run("https manifest suggests the exact entry", func(t *testing.T) {
-		fc := newFakeClientForBatch("acme/new")
-		err := RequireWritableManifestForNewRepos(ctx, newManifest(), url, ForgeGitHub,
-			[]RepoEntry{{Name: "acme/new"}}, newTestClientFactory(fc), []string{"triage", "fix"}, true)
-		require.Error(t, err)
-		msg := err.Error()
-		assert.Contains(t, msg, "read-only")
-		assert.Contains(t, msg, "no changes were made")
-		for _, want := range []string{"github.repos", "- name: acme/new", "config:", "create_issues:", "- fullsend-ai/fullsend", "roles:", "- fix"} {
-			assert.Contains(t, msg, want)
-		}
-	})
-	t.Run("remotely loaded manifest is read-only without a path", func(t *testing.T) {
-		m := newManifest()
-		m.sourceRemote = true
-		err := RequireWritableManifestForNewRepos(ctx, m, "", ForgeGitHub,
-			[]RepoEntry{{Name: "acme/new"}}, newTestClientFactory(newFakeClientForBatch("acme/new")), nil, false)
-		require.Error(t, err)
-	})
-	t.Run("an existing overlay and globs get no injected config", func(t *testing.T) {
-		fc := newFakeClientForBatch("acme/new")
-		fc.FileContents["acme/new/"+preset.OverlayPath] = []byte(managedConfigMarker + "{}\n")
-		err := RequireWritableManifestForNewRepos(ctx, newManifest(), url, ForgeGitHub,
-			[]RepoEntry{{Name: "acme/new"}, {Name: "other/*"}, {Name: "malformed"}}, newTestClientFactory(fc), nil, false)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "- name: acme/new")
-		assert.Contains(t, err.Error(), "- name: other/*")
-		assert.NotContains(t, err.Error(), "create_issues")
-	})
-	t.Run("overlay read error", func(t *testing.T) {
-		fc := newFakeClientForBatch("acme/new")
-		fc.GetFileContentErrors = map[string]error{"acme/new/" + preset.OverlayPath: fmt.Errorf("boom")}
-		err := RequireWritableManifestForNewRepos(ctx, newManifest(), url, ForgeGitHub,
-			[]RepoEntry{{Name: "acme/new"}}, newTestClientFactory(fc), nil, false)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "boom")
-	})
-	t.Run("client factory error", func(t *testing.T) {
-		err := RequireWritableManifestForNewRepos(ctx, newManifest(), url, ForgeGitHub,
-			[]RepoEntry{{Name: "acme/new"}}, failingFactory{}, nil, false)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no client")
-	})
 }
 
 func TestHasYAMLComments(t *testing.T) {

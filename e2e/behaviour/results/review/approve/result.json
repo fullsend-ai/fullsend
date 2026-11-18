@@ -4,6 +4,14 @@
   "repo": "owner/repo",
   "head_sha": "5fcdfb95cc5d61819a8e1f5bf60db024cf88b5f0",
   "body": "<!-- **Head SHA:** 5fcdfb95cc5d61819a8e1f5bf60db024cf88b5f0 -->\n\n## Review\n\nThe TOCTOU race from the previous review round is fixed: the delete path now re-checks the entry under the write lock before removing it, so a concurrent write can no longer be silently discarded. No further concerns.",
+  "dispositions": [
+    {
+      "id": "f_PRIOR",
+      "status": "resolved_by_change",
+      "rationale": "The TOCTOU race is fixed: getHandler re-checks the entry under the write lock before deleting it.",
+      "evidence": "main.go getHandler"
+    }
+  ],
   "risk_assessment": {
     "score": 1,
     "level": "low",

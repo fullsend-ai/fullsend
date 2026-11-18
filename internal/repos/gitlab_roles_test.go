@@ -363,7 +363,7 @@ func TestProvisionGitLabRoleCredentials_BackfillSkipsExistingRotationState(t *te
 	// A genuine in-progress recovery state already exists for poller.
 	// The backfill must never overwrite it with a fresh idle entry.
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"phase":"distributing","incoming_id":9,"outgoing_ids":[5],"distributed_at":"2025-01-01T00:00:00Z"}}}`, true))
+		`{"version":2,"roles":{"poller":{"phase":"distributing","incoming_id":9,"outgoing_ids":[5],"distributed_at":"2025-01-01T00:00:00Z"}}}`, true))
 
 	_, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{
 		Owner:    "group",
@@ -685,7 +685,7 @@ func TestCheckOrphanVars_GitLabRoleArtifactsNotFlagged(t *testing.T) {
 	fc.VariableValues["owner/repo/"+forge.SecretForgeToken] = "x"
 	fc.VariableValues["owner/repo/"+forge.SecretDispatch] = "x"
 	fc.VariableValues["owner/repo/"+forge.VarGitLabRoleRegistry] = `{"roles":[]}`
-	fc.VariableValues["owner/repo/"+forge.VarGitLabRoleRotation] = `{"roles":{}}`
+	fc.VariableValues["owner/repo/"+forge.VarGitLabRoleRotation] = `{"version":2,"roles":{}}`
 	fc.VariableValues["owner/repo/"+forge.SecretGitLabPollerToken] = "x"
 	fc.VariableValues["owner/repo/"+forge.SecretGitLabAnalystToken] = "x"
 	fc.VariableValues["owner/repo/"+forge.SecretGitLabCoderToken] = "x"

@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
-	"github.com/fullsend-ai/fullsend/internal/owners"
 )
 
 // Options configures a dispatch run.
@@ -44,28 +44,16 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 	if dirCfg.IsKillSwitchActive() {
 		return nil, nil
 	}
-
-	// Compute the effective role for the auth gate without mutating the
-	// caller's event. The OWNERS-upgraded role is used only for
-	// IsAuthorized; downstream CEL evaluation sees the original
-	// collaborator-API role.
-	repoRoot := filepath.Dir(opts.ConfigDir)
-	effectiveRole := opts.Event.Actor.Role
-	if pr, ok := dirCfg.(config.PerRepoConfigReader); ok && pr.IsOwnersFileAuthEnabled() && opts.Event.Actor.ID != "" {
-		ownersPath := filepath.Join(repoRoot, "OWNERS")
-		aliasesPath := filepath.Join(repoRoot, "OWNERS_ALIASES")
-		role, err := owners.Resolve(ownersPath, aliasesPath, opts.Event.Actor.ID)
-		if err != nil {
-			log.Printf("harness dispatch: OWNERS resolution failed for %s: %v", opts.Event.Actor.ID, err)
-		} else if role != owners.RoleNone {
-			effectiveRole = owners.MapToActorRole(role, effectiveRole)
-			log.Printf("harness dispatch: OWNERS file resolved user %s as %s", opts.Event.Actor.ID, role)
-		}
+	if err := config.ValidateRuntimeAuthorization(dirCfg); err != nil {
+		return nil, fmt.Errorf("invalid authorization config: %w", err)
 	}
 
-	authCheck := *opts.Event
-	authCheck.Actor.Role = effectiveRole
-	if !IsAuthorized(&authCheck) {
+	// The OWNERS-upgraded role is used only for the event-level and
+	// per-harness auth checks; downstream CEL evaluation sees the original
+	// collaborator-API role.
+	authCheck := AuthCheckEvent(opts.ConfigDir, dirCfg, opts.Event)
+	authOpts := AuthOptionsFor(dirCfg)
+	if !IsEventAuthorizedWith(&authCheck, authOpts) {
 		return nil, nil
 	}
 
@@ -74,10 +62,13 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, err
 	}
 
+	candidates = FilterAuthorizedHarnessesWith(candidates, &authCheck, authOpts)
+
 	matched, err := MatchHarnesses(candidates, opts.Event)
 	if err != nil {
 		return nil, err
 	}
+	matched = dropGitHubRoutedBuiltins(matched, opts.Event)
 
 	var refs []ExecutionRef
 	for _, m := range matched {
@@ -89,4 +80,27 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		refs = append(refs, ref)
 	}
 	return refs, nil
+}
+
+// dropGitHubRoutedBuiltins removes matched harnesses registered under a
+// built-in agent name (config.ValidAgentNames, case-insensitive) when the
+// event comes from GitHub. On GitHub the built-in stages are already routed
+// by the route job in reusable-dispatch.yml; dispatching an override of a
+// built-in agent here as well would run it twice. Other sources are left
+// untouched: Jira polling has no stage routing and registers built-in names
+// with triggers on purpose.
+func dropGitHubRoutedBuiltins(matched []TriggeredHarness, event *normevent.Event) []TriggeredHarness {
+	if event.Source.System != normevent.SystemGitHub {
+		return matched
+	}
+	builtins := config.ValidAgentNames()
+	var kept []TriggeredHarness
+	for _, m := range matched {
+		if slices.Contains(builtins, strings.ToLower(m.Name)) {
+			log.Printf("harness dispatch: %s is a built-in agent; its GitHub stage routing handles this event", m.Name)
+			continue
+		}
+		kept = append(kept, m)
+	}
+	return kept
 }

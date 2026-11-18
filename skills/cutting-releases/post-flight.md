@@ -28,7 +28,9 @@ all downstream consumers.
 gh release view <tag>
 ```
 
-Check that the title, changelog, and binary assets look correct.
+Check that the title, changelog, and binary assets look correct. Breaking
+commits (`!` in the subject) should be listed first under **Breaking
+Changes**.
 Verify the release is not marked as a draft.
 
 ## B2. Verify agents validation and tag

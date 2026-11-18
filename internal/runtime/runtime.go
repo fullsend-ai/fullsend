@@ -28,6 +28,19 @@ type RunMetrics struct {
 	// whose cost is dominated by children is legible in metrics.json;
 	// runtimes without sub-agents leave it nil and the totals stand alone.
 	PerModelUsage map[string]ModelUsage `json:"per_model_usage,omitempty"`
+	// FallbackFrom lists, in the order they were tried, the models the run
+	// moved off before Model took over (#8426): models the Vertex project
+	// did not serve, and on Claude Code any model its own --fallback-model
+	// handling left (a "model_fallback" event, for example on overload).
+	// Empty when the first model ran.
+	FallbackFrom []string `json:"fallback_from,omitempty"`
+	// FallbackReasons says why the run moved off each FallbackFrom entry,
+	// at the same index: "not_served" when the runner retried because the
+	// Vertex project does not serve the model, "claude_code:<trigger>"
+	// when Claude Code switched itself (its model_fallback trigger, for
+	// example "claude_code:last_resort"). Add entries with recordFallback
+	// so the two stay aligned.
+	FallbackReasons []string `json:"fallback_reasons,omitempty"`
 }
 
 // ModelUsage is one model's token and cost contribution to a run. Requests
@@ -67,10 +80,17 @@ type RunParams struct {
 	Effort        string
 	// FallbackModels is the ordered overload/retirement fallback chain
 	// (FULLSEND_FALLBACK_MODELS). Claude Code passes it as --fallback-model;
-	// runtimes without the capability ignore it with a warning.
+	// runtimes without the capability ignore it with a warning. On Claude
+	// Code and pi it also replaces an alias's built-in chain
+	// (ImplicitFallbackModels) when the alias is not served.
 	FallbackModels []string
 	RepoDir        string
-	FullsendDir    string
+	// HostRepoDir is the runner-side path of the target repository, the
+	// directory uploaded into the sandbox at RepoDir. The dummy runtime's
+	// checkout_branch op runs its git remote access there, because
+	// sandboxes cannot fetch from the forge; other runtimes ignore it.
+	HostRepoDir string
+	FullsendDir string
 	// PluginDirs are the sandbox-side directories Claude Code is pointed at
 	// with --plugin-dir, one per Claude-format plugin the runner uploaded.
 	PluginDirs []string
@@ -85,6 +105,16 @@ type RunParams struct {
 	Timeout           time.Duration
 	OutputPath        string           // if set, tee stream-json stdout to this file
 	OnEvent           func(AgentEvent) // if non-nil, called with normalized events during Run
+	// ProgressVerbosity is the live progress log level (ADR 0163) for the
+	// runtime's default renderer, used when OnEvent is nil. Empty means
+	// full. A caller that sets OnEvent applies the level in its own
+	// renderer instead.
+	ProgressVerbosity string
+	// StderrPath is where the agent CLI's stderr goes at the quiet progress
+	// level, instead of the job log. The runner sets it to AgentStderrFile
+	// beside OutputPath. Other levels ignore it. Empty at quiet drops the
+	// stderr.
+	StderrPath string
 	// Prompt overrides DefaultAgentPrompt. The validation loop sets it on a
 	// retry iteration to inject the previous iteration's failure so the agent
 	// can self-correct instead of re-running blindly. See #1050, #6494.
@@ -143,6 +173,14 @@ func (te TranscriptError) DisplayMessage() string {
 		msg = fmt.Sprintf("agent terminated with error (subtype: %s)", sanitizeOutput(truncateError(te.Subtype)))
 	}
 	return msg
+}
+
+// QuietDisplayMessage returns the transcript error as printed at the quiet
+// progress level (ADR 0163): the error type (subtype), if it is a known
+// one (quietErrorType), without ErrorMessage. Telemetry keeps using
+// DisplayMessage.
+func (te TranscriptError) QuietDisplayMessage() string {
+	return fmt.Sprintf("agent terminated with error (subtype: %s)", quietErrorType(te.Subtype, "unknown"))
 }
 
 // Runtime is an agent execution backend (LLM tool-use loop) inside the sandbox.
@@ -269,4 +307,30 @@ func GenAISystemFor(rt Runtime, model, agentModel string, aliases map[string]str
 		}
 	}
 	return rt.System()
+}
+
+// LaunchEnvExporter is an optional Runtime extension for runtimes whose
+// launch command (buildXRunCommand) exports environment variables beyond
+// the runtime's EnvExports: names the executed agent process sees but that
+// are set in the command string itself rather than by the runtime method.
+// LaunchEnvExports returns the bare variable names (no "export " prefix, no
+// value), including conditionally exported names — the flat union is the
+// contract: a consumer asks "can this runtime set it?", not "does it always
+// set it?". Runtimes whose launch commands export nothing beyond EnvExports
+// (dummy, dummy-playback) must not implement this.
+// TestLaunchEnvExportsMatchLaunchCommands derives each list from the
+// runtime's launch commands, so a declaration cannot omit a name the
+// commands export or keep one they no longer do.
+type LaunchEnvExporter interface {
+	Runtime
+	LaunchEnvExports() []string
+}
+
+// LaunchEnvExportsFor returns the launch-command environment names for rt,
+// or nil when the runtime does not implement LaunchEnvExporter.
+func LaunchEnvExportsFor(rt Runtime) []string {
+	if l, ok := rt.(LaunchEnvExporter); ok {
+		return l.LaunchEnvExports()
+	}
+	return nil
 }
