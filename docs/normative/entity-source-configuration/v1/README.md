@@ -92,14 +92,16 @@ Connection kinds and endpoints determine where credentials are sent. Only
 configuration layers designated trusted by the repository's configuration
 policy may set or change them; event data, harnesses, and untrusted overlays
 MUST NOT. At minimum, trusted layers include managed `repos.yaml` values and
-`.fullsend/` configuration read from the protected default branch under
-[ADR 0033](../../../ADRs/0033-per-repo-installation-mode.md). PR-head config,
-harness content, and event data cannot designate themselves as trusted endpoint
-overrides. Credential bindings MUST be provisioned for the canonical provider
-endpoint and tenant, and the resolver MUST refuse to send a credential to any
-other endpoint even when the connection name and kind match. Changing an
-endpoint requires a separately provisioned credential binding for that host;
-the old host's credential, grants, and cached evidence do not transfer.
+`.fullsend/` configuration selected by the workflow: for a pull request, the
+PR target branch head, as described by
+[ADR 0033](../../../ADRs/0033-per-repo-installation-mode.md). The PR source
+branch's config, harness content, and event data cannot designate themselves
+as trusted endpoint overrides. Credential bindings MUST be provisioned for the
+canonical provider endpoint and tenant, and the resolver MUST refuse to send a
+credential to any other endpoint even when the connection name and kind match.
+Changing an endpoint requires a separately provisioned credential binding for
+that host; the old host's credential, grants, and cached evidence do not
+transfer.
 
 For example, a GitHub.com clone selects the `github` provider. Setting
 `connections.github.base_url` to a GitHub Enterprise URL makes that instance
@@ -565,6 +567,15 @@ implicit grant. Binding a Jira project as an input or output does not itself
 grant creation rights there. Policies replace as whole values; grants cannot
 move to another instance merely by reusing a connection alias.
 
+`allowed_targets` is part of trusted repository configuration and uses the
+same workflow-selected revision as connection settings. On pull-request runs,
+that is the PR target branch head; configuration changes present only on the PR
+source branch do not change creation policy. This is the existing repository
+configuration trust boundary; it requires no separate per-field trust or layer
+mechanism. Untrusted overlays, harness content, and event data MUST NOT add or
+replace creation grants or remove an inherited restriction. Legacy `tracker`
+`allowed_targets` grants follow the same rule before translation.
+
 Lookup scope supplies the ordinary destination choices. An explicit work-item
 creation destination outside that lookup scope is allowed only when the
 connection's separate `allowed_targets` policy covers it, the operation selects
@@ -754,6 +765,13 @@ Implementations MUST cover at least these observable cases:
   credentials are bound to the canonical endpoint and tenant; changing the host
   requires a separately provisioned binding and never sends the previous host's
   credential to the new endpoint.
+- Pull-request workflows resolve connection and creation-policy configuration
+  from the PR target branch head. A destination grant present only on the PR
+  source branch cannot widen a same-endpoint `allowed_targets` policy, replace
+  or remove an inherited restriction, or affect grants translated from legacy
+  `tracker` configuration. The existing repository configuration trust
+  boundary provides this behavior; no additional per-field trust mechanism is
+  required.
 - Kind defaults and per-slot inheritance resolve correctly; all binding values
   are lists, source defaults to `[native]`, and an omitted target copies the
   final source list. Explicit targets win, copied names must support the target
