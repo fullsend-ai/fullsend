@@ -497,7 +497,7 @@ func TestCodexConfigGuard_Executes(t *testing.T) {
 	dir := t.TempDir()
 	r := CodexRuntime{}
 
-	good, err := renderCodexConfig(dir, "/sandbox/workspace/repo", "body", "", nil, "", "")
+	good, err := renderCodexConfig(dir, "/sandbox/workspace/repo", "body", "", nil, "", "", false)
 	require.NoError(t, err)
 	digests := codexRunnerHeldDigestSet{ConfigTOML: codexAssetSHA256(good)}
 	guard := strings.ReplaceAll(codexConfigGuard(r, digests), sandbox.SandboxCodexConfig, dir)

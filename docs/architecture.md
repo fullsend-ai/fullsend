@@ -55,7 +55,7 @@ sole supported installation model
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
 - Installation model: the CLI installs per repository only (`fullsend github setup <owner/repo>`, `fullsend admin install <owner/repo>` (deprecated), `fullsend repos install`); per-org CLI installation was removed ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)). The concrete layers of the ordered layer stack (vendor-binary, secrets, inference, and the per-org workflows layer) were removed along with per-org mode; `internal/layers` keeps only the `Layer` interface and shared helpers, and the CLI no longer orchestrates a layer stack ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
 - Dispatch: each repository's `.github/workflows/fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` via `workflow_call`; that workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function or Cloudflare Worker) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager (GCF mint), Worker secrets (CF mint), or the local filesystem (standalone mint), not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
-- Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim workflow. No long-lived secrets flow through the shim — OIDC tokens are issued by the GitHub runtime and scoped to the workflow run ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
+- Shim workflow security (target state): the shim's PR events run on `pull_request`, only for same-repo PRs (head repository id equals the base repository id); fork PRs are reviewed when someone authorized for `/fs-review` (triage access or higher, or an OWNERS approver or reviewer) comments it. Same-repo authors already have write access and are trusted with the secrets the PR-branch shim receives; fork runs get no secrets; the dispatch workflow takes the base side for every checkout and runs no PR code. The mint accepts only OIDC tokens whose `job_workflow_ref` names an allowed workflow host repository ([ADR 0164](ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md), superseding the `pull_request_target` shim of [ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
 - Installer scaffold: per-repo installs deploy content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants. The per-org dispatch, repo-maintenance, and enrollment-reconciliation scaffolds were removed with the rest of per-org mode ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
 - Reusable workflows: each repository's `fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` (`fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml`), which runs every agent stage as an inline job; the only standalone stage workflow is `reusable-prioritize.yml`, called by the explicit prioritize thin caller. The per-org thin stage callers and `reusable-{code,fix,review,retro,triage}.yml` were removed with per-org mode (the per-org architecture described in the linked ADRs is historical and deprecated). Infrastructure patches ship once upstream and propagate to all repositories without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)). **Vendoring** (`vendor: true` in `repos.yaml` for `repos install`, `--vendor` for `github setup`; [ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)) commits workflows and agent content at install time; layered installs (default) fetch upstream at runtime.
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from the (now removed per-org) `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
@@ -375,20 +375,27 @@ flowchart TB
   ([ADR 0158](ADRs/0158-overlays-may-grant-runtime-fetch-within-the-config-allowlist.md)).
   Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
-- Decided, not yet implemented: extend the runner-owned native Codex child
-  policy to V2. Bootstrap requires the `Agent` tool,
-  harness security and a direct-route parent selecting V1 or V2 in the bundled
-  model catalog (absent means V1); other parents keep delegation off. The
-  runner binds child models and effort, registers roles and admits only
-  fresh-context spawns after checking runner-held digests. V2 configuration
-  removes direct messaging and model overrides, with hook denial as a
-  backstop; spawn and permitted control calls map to `Agent`. Every child of
-  a V2 parent inherits V2 tools, so depth one relies on hook enforcement and
-  its documented fail-open limits. V2 child results must pass the ADR 0100
-  PostToolUse chain before entering the parent's context; V2 delegation stays
-  experimental until this path is implemented and verified live. Aggregate
-  spawn/admission reconciliation remains after-the-fact detection: unused
-  admissions or missing/altered child session logs can hide unauthorized spawns
+- The runner-owned native Codex child policy covers collaboration V1 and V2.
+  Bootstrap requires the `Agent` tool, harness security and a direct-route
+  parent selecting V1 or V2 in the bundled model catalog (absent means V1);
+  other parents keep delegation off. The runner binds child models and effort,
+  registers roles and admits only fresh-context spawns after checking
+  runner-held digests. V2 configuration removes direct messaging, with hook
+  denial as a backstop, and hides model overrides from the spawn schema, which
+  only the hook enforces; spawn and permitted control calls map to `Agent`.
+  Codex gives a child of a V2 parent the V2 tools only when the child's own
+  model selects V2, so a V2 parent delegates only when no child model does; a
+  spawn the hook did not screen can still name a model or use a rewritten role
+  file, and for it depth one rests on the hook. A V2 child's final message
+  passes the ADR 0100 PostToolUse chain at `SubagentStop`, before Codex
+  delivers it; a block makes the child continue, told only to reply with a
+  fixed withheld notice, and nothing else passes for the rest of its turn.
+  That gate fails open when its hook process fails, an errored child's error
+  text is not screened, and a child that never replies with the notice runs,
+  and spends tokens, until the parent interrupts it or the run ends.
+  Aggregate spawn/admission reconciliation remains after-the-fact
+  detection: unused admissions or missing/altered child session logs can hide
+  unauthorized spawns
   ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md),
   [ADR 0159](ADRs/0159-codex-subagents-on-collaboration-v2.md),
   [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
@@ -846,7 +853,7 @@ ADR 0002: [Building block 7](ADRs/0002-initial-fullsend-design.md#7-test-artifac
 
 ### 8. code agent runtime
 
-Implements changes, runs local/CI-equivalent tests, handles check failures, and opens or updates a PR. Review dispatch is triggered automatically by `pull_request_target` events.
+Implements changes, runs local/CI-equivalent tests, handles check failures, and opens or updates a PR. Review dispatch is triggered automatically by `pull_request_target` events today; the decided target state is same-repo `pull_request` events ([ADR 0164](ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md)).
 ADR 0002: [Building block 8](ADRs/0002-initial-fullsend-design.md#8-implementation-agent-runtime).
 
 ### 9. PR sandbox / CI mirror

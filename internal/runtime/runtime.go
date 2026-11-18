@@ -105,6 +105,16 @@ type RunParams struct {
 	Timeout           time.Duration
 	OutputPath        string           // if set, tee stream-json stdout to this file
 	OnEvent           func(AgentEvent) // if non-nil, called with normalized events during Run
+	// ProgressVerbosity is the live progress log level (ADR 0163) for the
+	// runtime's default renderer, used when OnEvent is nil. Empty means
+	// full. A caller that sets OnEvent applies the level in its own
+	// renderer instead.
+	ProgressVerbosity string
+	// StderrPath is where the agent CLI's stderr goes at the quiet progress
+	// level, instead of the job log. The runner sets it to AgentStderrFile
+	// beside OutputPath. Other levels ignore it. Empty at quiet drops the
+	// stderr.
+	StderrPath string
 	// Prompt overrides DefaultAgentPrompt. The validation loop sets it on a
 	// retry iteration to inject the previous iteration's failure so the agent
 	// can self-correct instead of re-running blindly. See #1050, #6494.
@@ -163,6 +173,14 @@ func (te TranscriptError) DisplayMessage() string {
 		msg = fmt.Sprintf("agent terminated with error (subtype: %s)", sanitizeOutput(truncateError(te.Subtype)))
 	}
 	return msg
+}
+
+// QuietDisplayMessage returns the transcript error as printed at the quiet
+// progress level (ADR 0163): the error type (subtype), if it is a known
+// one (quietErrorType), without ErrorMessage. Telemetry keeps using
+// DisplayMessage.
+func (te TranscriptError) QuietDisplayMessage() string {
+	return fmt.Sprintf("agent terminated with error (subtype: %s)", quietErrorType(te.Subtype, "unknown"))
 }
 
 // Runtime is an agent execution backend (LLM tool-use loop) inside the sandbox.

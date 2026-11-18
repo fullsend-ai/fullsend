@@ -100,6 +100,13 @@ type PerRepoConfigReader interface {
 	// map, merged per key through the parent chain. nil means no
 	// per-source levels.
 	ConfigArtifactsBySource() map[string]string
+	// ConfigProgressVerbosity returns the effective progress.verbosity
+	// level (ADR 0163); the code default is "full".
+	ConfigProgressVerbosity() string
+	// ConfigProgressBySource returns the effective progress.by_source
+	// map, merged per key through the parent chain. nil means no
+	// per-source levels.
+	ConfigProgressBySource() map[string]string
 	// IsOwnersFileAuthEnabled reports whether the owners_file
 	// authorization provider is listed.
 	IsOwnersFileAuthEnabled() bool

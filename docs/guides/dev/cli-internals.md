@@ -71,6 +71,7 @@ fullsend
 │   │   ├── --jira-email <email>             #   FULLSEND_JIRA_EMAIL for repos whose tracker.jira.poll.enabled is true (optional; CLI-only)
 │   │   ├── --jira-client-id <id>            #   FULLSEND_JIRA_CLIENT_ID instead of --jira-token (CLI-only)
 │   │   ├── --jira-client-secret <secret>    #   FULLSEND_JIRA_CLIENT_SECRET instead of --jira-token (CLI-only; never logged)
+│   │   ├── --rotate-trace-signing-key       #   New trace signing key pair for GitHub repos; the first rotation gives an existing install its keys
 │   │   ├── --fullsend-binary <path>         #   Pre-built binary to vendor (requires a selected repo with vendor: true)
 │   │   ├── --fullsend-source <path>         #   Source checkout to vendor from (requires a selected repo with vendor: true)
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON

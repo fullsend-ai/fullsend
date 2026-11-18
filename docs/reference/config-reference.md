@@ -139,6 +139,12 @@ artifacts:
   by_source:                         # Per run source (event.source.system); stricter level wins
     jira: metadata                   # e.g. runs started from a Jira issue
 
+# ── Live progress log ────────────────────────────────────────
+progress:
+  verbosity: full                    # Every run: full (default) | tools | quiet
+  by_source:                         # Per run source (event.source.system); stricter level wins
+    jira: quiet                      # e.g. runs started from a Jira issue
+
 # ── Trace context ────────────────────────────────────────────
 trace_context:                       # Trace-context keys of this repository (ADR 0154)
   installation_id: 0f1e2d3c4b5a69788796a5b4c3d2e1f0  # 32 lowercase hex characters, not all zero
@@ -1043,30 +1049,141 @@ repository's normal review and CODEOWNERS.
 level, what `metadata` still publishes and what follow-up workflows lose, see
 [Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md).
 
+### `progress`
+
+Limits what `fullsend run` prints to the CI job log while an agent runs, and
+the GitHub Actions annotations that come with it
+([ADR 0163](../ADRs/0163-repo-config-limits-live-progress-log.md)). On a
+public repository, anyone can read the job log until log retention expires.
+
+```yaml
+progress:
+  verbosity: full         # every run: full (default) | tools | quiet
+  by_source:              # per run source; the stricter level wins
+    jira: quiet           # runs started from a Jira issue
+```
+
+| Level | The log shows |
+|---|---|
+| `full` | Everything, as before. This is the default, so an unset block leaves the log unchanged. |
+| `tools` | Everything except the model's reasoning and replies: tool lines, task and status progress, token counts, errors, validation output and the result. Tool lines and task labels can still carry text from the source, so use `quiet` for a source that isn't public. |
+| `quiet` | Only lines fullsend writes from its own fields. Text from the agent or the source is left out; see the lists below. |
+
+At `quiet`:
+
+- **Shown:** the heartbeat, the model, event kinds and states (`Task — running`,
+  `Status: hook — running`; a value fullsend does not set itself prints as
+  `other`), token counts, cost, error types and transcript error types
+  (an unknown type prints as `other`), validation passed or failed, output file, transcript and scan finding
+  counts, failed step names, and the result.
+- **Left out:** reasoning, replies, tool lines, task labels, status details,
+  error messages, plugin and retry messages, validation output, output file
+  and transcript names, the error text of a failed extraction step and the
+  agent CLI's stderr. No notice carries agent or source text: the notices that
+  remain hold fullsend's own fields, such as `Agent completed (4m12s)`.
+- **Errors:** transcript `::error::` annotations carry the error type only.
+  Once the run has started (from sandbox setup on), its final error prints as
+  this fixed message, and telemetry keeps the full text:
+
+  ```text
+  agent run failed (error details are not printed at progress level quiet; see telemetry or the run artifact)
+  ```
+
+  A setup error before that, such as a config or provider error, prints in
+  full. The level covers the job log only: the status comment on the issue or
+  pull request still carries the full run error
+  ([#9627](https://github.com/fullsend-ai/fullsend/issues/9627)).
+
+**Agent CLI stderr at `quiet`.** The agent CLI (Claude Code, pi, Codex or
+OpenCode) writes its own diagnostics to stderr, and they can quote what the
+agent read. At `quiet`, fullsend writes that stderr to `agent-stderr.log` in
+the iteration directory, next to `output.jsonl`, instead of the job log. The
+log gets one line with the count, never the text, even when the run fails:
+
+```text
+Agent CLI stderr: 3 line(s) kept out of the log at quiet, in agent-stderr.log
+```
+
+The file follows the same [`artifacts`](#artifacts) rule as the transcripts:
+`all` uploads it, while `metadata` and `none` leave it out. At `full` and
+`tools`, stderr goes to the job log as before.
+
+Only the printed log changes. Telemetry spans, Level 3 content capture
+([ADR 0050](../ADRs/0050-distributed-tracing-instrumentation.md)), the
+validation feedback that the next iteration gets, and the run artifact still
+receive everything. To keep reasoning and tool content under `quiet`, export
+it over OTLP to a backend you control (see
+[Distributed tracing](../guides/infrastructure/distributed-tracing.md)), and
+set [`artifacts`](#artifacts) separately for the run artifact.
+
+- **`verbosity`** — The level for every run. Unset means `full`.
+- **`by_source`** — Levels for runs started from one source. Keys follow the
+  same rules as [`artifacts.by_source`](#artifacts): the normalized event's
+  `source.system`, lowercase with no surrounding spaces, and open strings, so
+  a later adapter's source name works with no schema change.
+
+**Resolution.** The stricter level wins: the runner uses the stricter of
+`verbosity` and the `by_source` entry for the run's source, where `quiet` is
+stricter than `tools`, which is stricter than `full`. A source with no entry
+gets `verbosity`.
+
+- `fullsend run` finds the run's source the same way as
+  [`artifacts`](#artifacts): a valid normalized event, else a native GitHub
+  event.
+- A run whose source is unknown gets the strictest of `verbosity` and every
+  `by_source` entry.
+- When the level isn't `full`, the run prints one line naming the level and
+  how it was chosen, for example:
+
+```text
+Progress log: quiet (run source "jira" from the normalized event)
+```
+
+**Fails closed.** If the level can't be resolved, for example because of an
+invalid level or a `by_source` key that isn't lowercase, the run logs at
+`quiet`. An event file that can't be read or parsed doesn't get that far: the
+run stops before it starts the agent, with `reading event file ...` or
+`parsing event file ...`.
+
+**Layers.** Across `config.base.yaml` and `config.yaml`, an explicit
+`verbosity` overrides and `by_source` merges per key. The `fullsend repos`
+safety gate ([ADR 0122](../ADRs/0122-declarative-repo-configuration.md))
+treats lowering an effective level toward `full` as a relaxation, as it does
+for `artifacts`.
+
+Logs written by pre-scripts and post-scripts aren't covered; those scripts are
+the repository owner's own code.
+
 ### `trace_context`
 
 The repository's trace-context keys
 ([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)):
 its installation ID, the public keys that verify its trace-context envelopes,
 and the name of the secret that holds its private signing key. Every value in
-the block is public. No fullsend command generates these keys or creates the
-secret, and nothing signs or verifies an envelope with them; the
-[Trace Context Reference](trace-context.md#implementation-scope) lists what is
-implemented.
+the block is public. `fullsend repos install` generates the keys of GitHub
+repositories (see
+[Trace Context Reference — Key lifecycle](trace-context.md#key-lifecycle)).
+Nothing signs or verifies an envelope with them yet.
 
 - **`installation_id`** — Identifies the repository's key set: exactly 32
-  lowercase hex characters (128 bits), not all zero.
+  lowercase hex characters (128 bits), not all zero. Install keeps it through
+  recovery, rotation and reinstall while the `repos.yaml` entry keeps its
+  `trace_context`; a fully uninstalled repository declared again without it
+  starts a new installation.
 - **`signing_key.secret`** — The secret that holds the private signing key. It
   must be exactly `FULLSEND_TRACE_SIGNING_KEY`. The key itself never appears in
   configuration.
 - **`verification_keys.active`** — The public key of the current signing key:
   standard base64, with padding, of a 32-byte Ed25519 public key.
 - **`verification_keys.retained`** — Optional. Earlier public keys, in the same
-  form, so that envelopes signed with their private keys still verify.
+  form, so that envelopes signed with their private keys still verify. Within
+  an installation, install never removes one; enrolling a fully uninstalled
+  repository again replaces the whole block.
 
-A concrete repository entry in `repos.yaml` declares the block as
-`config.trace_context`, and `fullsend repos install` renders it into the managed
-`.fullsend/config.yaml`. Only a concrete repository entry may declare it:
+On GitHub, `fullsend repos install` records the block in the repository's
+concrete `repos.yaml` entry as `config.trace_context`. Install renders the
+block into the managed `.fullsend/config.yaml`. Commit the `repos.yaml`
+changes install makes. Only a concrete repository entry may declare it:
 manifest validation rejects it in `defaults.config`, `github.config`,
 `gitlab.config` and glob entries. `repos install` also rejects a configuration
 preset or an existing `.fullsend/config.base.yaml` that contains it, and

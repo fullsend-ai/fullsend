@@ -54,7 +54,10 @@ The tests lay the rollouts out under a temporary sessions tree as
 and the findings log beside the tree as `.security/findings.jsonl`. `spawn_admissions.jsonl` is
 that log for a run whose spawn guard admitted three spawns and denied one, in the adapter's
 `log_finding` shape, plus one `secret_redact_posttool` finding; `countCodexSpawnAdmissions`
-counts the three `codex_spawn_guard_admit` lines by name.
+counts the three `codex_spawn_guard_admit` lines by name. The V2 child head the
+read-command test writes (`codexV2RolloutLine`) is modelled on a 0.166.0 harness
+capture, with synthetic ids: `parent_thread_id` at the top level and again under
+`source.subagent.thread_spawn`, beside the spawn's `depth` and `agent_path`.
 
 ## Event structs
 

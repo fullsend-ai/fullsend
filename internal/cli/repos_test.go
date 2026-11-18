@@ -1154,7 +1154,12 @@ func TestReposInstallCmd_FullsendBinarySourceFlags(t *testing.T) {
 	assert.Equal(t, "", sourceFlag.DefValue)
 }
 
+// Install checks the vendoring flags after its forge reads, so this command
+// test selects no repository: the run reaches the check without the forge,
+// and the token stub makes any forge access fail instead of using the host's
+// credentials.
 func TestReposInstallCmd_VendorArtifactsWithoutDeclaredVendor(t *testing.T) {
+	stubMissingGitHubToken(t)
 	for _, flag := range []string{"--fullsend-binary", "--fullsend-source"} {
 		t.Run(flag, func(t *testing.T) {
 			cmd := newRootCmd()
@@ -1162,7 +1167,7 @@ func TestReposInstallCmd_VendorArtifactsWithoutDeclaredVendor(t *testing.T) {
 			cmd.SetErr(io.Discard)
 			cmd.SetArgs([]string{
 				"repos", "install",
-				"--manifest", writeTestManifest(t, testManifestYAML),
+				"--manifest", writeTestManifest(t, emptyReposManifestYAML),
 				flag, "/tmp/fullsend",
 			})
 			err := cmd.Execute()

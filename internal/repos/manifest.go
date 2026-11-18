@@ -282,6 +282,12 @@ type ResolvedRepo struct {
 	Repo  string
 	Forge string
 	Entry RepoEntry
+	// glob names the glob entry that selected the repository in glob
+	// expansion, such as "acme/api*", and is empty otherwise. For a concrete
+	// selection that expansion missed, lookupManifestEntry finds the
+	// covering glob the way carveOutForForge does: ignoring case, the first
+	// in its forge section.
+	glob string
 }
 
 // ResolvedConfig is the fully resolved configuration for a single
@@ -1203,6 +1209,7 @@ func (m *Manifest) ExpandGlobsFor(ctx context.Context, clients ForgeClientFactor
 					Repo:  repo.Name,
 					Forge: p.name,
 					Entry: entry,
+					glob:  g.entry.Name,
 				}
 			}
 		}
@@ -1699,7 +1706,28 @@ func (m *Manifest) VendorSelected(filter []string) (bool, error) {
 // up needing a trailer. Even so, a glob entry that an earlier glob entry
 // fully covers can never win resolution, so it is ignored (see
 // globShadowedByEarlier).
-func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
+//
+// skip names repositories (owner/repo, any case) that get no scaffold
+// commit, such as those install skips: an explicit entry or a concrete
+// filter pattern in skip needs no trailer. A glob entry still counts, as it
+// may select other repositories.
+func (m *Manifest) SignoffForgesFor(filter, skip []string) ([]string, error) {
+	skipped := make(map[string]bool, len(skip))
+	for _, name := range skip {
+		skipped[strings.ToLower(name)] = true
+	}
+	if len(filter) > 0 {
+		var kept []string
+		for _, pattern := range filter {
+			if isGlob(pattern) || !skipped[strings.ToLower(pattern)] {
+				kept = append(kept, pattern)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, nil
+		}
+		filter = kept
+	}
 	var forges []string
 	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
 		platform := m.PlatformFor(forgeName)
@@ -1707,7 +1735,7 @@ func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
 			continue
 		}
 		for i, e := range platform.Repos {
-			if globShadowedByEarlier(platform.Repos[:i], e) {
+			if globShadowedByEarlier(platform.Repos[:i], e) || (!isGlob(e.Name) && skipped[strings.ToLower(e.Name)]) {
 				continue
 			}
 			needed, err := m.entryNeedsSignoff(forgeName, e, filter)

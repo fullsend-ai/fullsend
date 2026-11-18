@@ -5233,7 +5233,7 @@ func TestExtractOutputFiles_OpenshellFailureIsAnError(t *testing.T) {
 		"  echo 'sandbox is not ready' >&2\n  exit 1",
 		"  exit 0")
 
-	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sandbox is not ready")
 	assert.Empty(t, got)
@@ -5242,7 +5242,7 @@ func TestExtractOutputFiles_OpenshellFailureIsAnError(t *testing.T) {
 func TestExtractOutputFiles_EmptyOutputIsNotAnError(t *testing.T) {
 	stubOpenshellForExtract(t, "  exit 0", "  exit 0")
 
-	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir(), false)
 	assert.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -5252,7 +5252,7 @@ func TestExtractOutputFiles_ListedButNoneCopiedIsAnError(t *testing.T) {
 		"  echo /sandbox/output/agent-result.json\n  exit 0",
 		"  echo 'sandbox is not ready' >&2\n  exit 1")
 
-	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "1 listed, none copied")
 	assert.Empty(t, got)
@@ -5264,7 +5264,7 @@ func TestExtractOutputFiles_CopiesListedFiles(t *testing.T) {
 		"  printf '{}' > \"$5/$(basename \"$4\")\"\n  exit 0")
 
 	localDir := t.TempDir()
-	got, err := ExtractOutputFiles("sb", "/sandbox/output", localDir)
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", localDir, false)
 	require.NoError(t, err)
 	want := filepath.Join(localDir, "agent-result.json")
 	assert.Equal(t, []string{want}, got)
@@ -5498,4 +5498,55 @@ func runGit(t *testing.T, dir string, env []string, args ...string) (string, err
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// stderrToFile points os.Stderr at a temp file while fn runs and returns
+// what was written.
+func stderrToFile(t *testing.T, fn func()) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	require.NoError(t, err)
+	prev := os.Stderr
+	os.Stderr = f
+	defer func() { os.Stderr = prev }()
+	fn()
+	require.NoError(t, f.Close())
+	data, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
+	return string(data)
+}
+
+// The per-file lines name paths the agent chose and quote copy errors. At
+// quiet (ADR 0163) only the count prints; otherwise the lines print as
+// before.
+func TestExtractOutputFiles_QuietPrintsCountOnly(t *testing.T) {
+	stubOpenshellForExtract(t,
+		"  printf '%s\\n' /sandbox/output/ok.json /sandbox/output/SECRET-FAIL.json /sandbox/output/../SECRET-escape.json\n  exit 0",
+		"  case \"$4\" in *FAIL*) echo SECRET-DL-ERR >&2; exit 1 ;; esac\n  printf '{}' > \"$5/$(basename \"$4\")\"\n  exit 0")
+
+	var got []string
+	var err error
+	out := stderrToFile(t, func() { got, err = ExtractOutputFiles("sb", "/sandbox/output", t.TempDir(), true) })
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+	assert.Equal(t, "  2 output file(s) skipped or failed to copy\n", out)
+
+	out = stderrToFile(t, func() { got, err = ExtractOutputFiles("sb", "/sandbox/output", t.TempDir(), false) })
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+	assert.Contains(t, out, "Failed to copy SECRET-FAIL.json: ")
+	assert.Contains(t, out, "Skipping (dir rejected): ../SECRET-escape.json: ")
+	assert.NotContains(t, out, "output file(s) skipped")
+}
+
+// Quiet with every file copied prints nothing.
+func TestExtractOutputFiles_QuietAllCopiedPrintsNothing(t *testing.T) {
+	stubOpenshellForExtract(t,
+		"  echo /sandbox/output/agent-result.json\n  exit 0",
+		"  printf '{}' > \"$5/$(basename \"$4\")\"\n  exit 0")
+	out := stderrToFile(t, func() {
+		_, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir(), true)
+		require.NoError(t, err)
+	})
+	assert.Empty(t, out)
 }
