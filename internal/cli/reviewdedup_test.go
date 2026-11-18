@@ -1,0 +1,125 @@
+package cli
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
+)
+
+type reviewDedupInfoSequenceClient struct {
+	*forge.FakeClient
+	infos []forge.PullRequestInfo
+	index int
+}
+
+func (c *reviewDedupInfoSequenceClient) GetPullRequestInfo(_ context.Context, _, _ string, _ int) (*forge.PullRequestInfo, error) {
+	info := c.infos[c.index]
+	if c.index < len(c.infos)-1 {
+		c.index++
+	}
+	return &info, nil
+}
+
+func TestReviewHashAndHead_IgnoresStickyHistory(t *testing.T) {
+	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	head := "0123456789012345678901234567890123456789"
+	body := "<!-- fullsend:review-agent -->\n" +
+		"<!-- fullsend:review-diff-hash:" + hash + " -->\n" +
+		"<!-- fullsend:review-head:" + head + " -->\nfindings\n" +
+		"<details><summary>Previous run</summary><!-- sticky:history-start -->\n" +
+		"<!-- fullsend:review-diff-hash:" + "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" + " -->\n<!-- sticky:history-end --></details>"
+
+	gotHash, gotHead := reviewHashAndHead(body)
+	assert.Equal(t, hash, gotHash)
+	assert.Equal(t, head, gotHead)
+}
+
+func TestDecideReviewDedup_SkipsMatchingApprovedReview(t *testing.T) {
+	const head = "0123456789012345678901234567890123456789"
+	const base = "abcdefabcdefabcdefabcdefabcdefabcdefabcdef"
+	fc := forge.NewFakeClient()
+	fc.PullRequestInfos = map[string]forge.PullRequestInfo{}
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{}
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	fc.PRReviews = map[string][]forge.PullRequestReview{}
+	fc.PullRequestInfos["o/r/1"] = forge.PullRequestInfo{Number: 1, BaseSHA: base, HeadSHA: head, ChangedFiles: 1}
+	fc.PRFileDiffs["o/r/1"] = []forge.PullRequestFileDiff{{
+		Path: "file.go", Status: "modified", Patch: "@@ -1 +1 @@\n-old\n+new", OldMode: "100644", NewMode: "100644", ModesVerified: true,
+	}}
+	fc.IssueComments["o/r/1"] = []forge.IssueComment{{
+		HTMLURL: "https://github.com/o/r/issues/1#issuecomment-1", Author: "fullsend-ai-review[bot]",
+		AppClientID: "client", CreatedAt: "2026-01-01T00:00:00Z",
+		Body: "<!-- fullsend:review-agent -->\n<!-- fullsend:review-diff-hash:" + "" + " -->",
+	}}
+	// Fill the hash from the same canonicalizer used by post-review.
+	diffs, err := fc.ListPullRequestFileDiffs(context.Background(), "o", "r", 1)
+	require.NoError(t, err)
+	hash, err := pullRequestDiffHashFromDiffs(diffs, nil)
+	require.NoError(t, err)
+	fc.IssueComments["o/r/1"][0].Body = "<!-- fullsend:review-agent -->\n<!-- fullsend:review-diff-hash:" + hash + " -->\n<!-- fullsend:review-head:" + head + " -->"
+	fc.PRReviews["o/r/1"] = []forge.PullRequestReview{{User: "fullsend-ai-review[bot]", State: "APPROVED", CommitID: head, SubmittedAt: "2026-01-01T00:00:01Z"}}
+
+	client := &reviewDedupInfoSequenceClient{FakeClient: fc, infos: []forge.PullRequestInfo{
+		{Number: 1, BaseSHA: base, HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ChangedFiles: 1},
+		{Number: 1, BaseSHA: base, HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ChangedFiles: 1},
+		{Number: 1, BaseSHA: base, HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ChangedFiles: 1},
+	}}
+	var result reviewDedupResult
+	require.NoError(t, decideReviewDedup(context.Background(), client, "o", "r", 1, "fullsend-ai", "client", &result))
+	assert.True(t, result.Skip)
+	assert.Equal(t, "https://github.com/o/r/issues/1#issuecomment-1", result.PriorURL)
+
+	client.index = 0
+	client.infos[2].HeadSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	result = reviewDedupResult{}
+	require.NoError(t, decideReviewDedup(context.Background(), client, "o", "r", 1, "fullsend-ai", "client", &result))
+	assert.False(t, result.Skip, "a head change before the final check must fail open")
+}
+
+func TestHasApprovedReview_UsesLatestBotReviewWithoutAppMetadata(t *testing.T) {
+	const head = "0123456789012345678901234567890123456789"
+	reviews := []forge.PullRequestReview{
+		{User: "fullsend-ai-review[bot]", State: "APPROVED", CommitID: head, SubmittedAt: "2026-01-01T00:00:01Z"},
+		{User: "fullsend-ai-review[bot]", State: "CHANGES_REQUESTED", CommitID: head, SubmittedAt: "2026-01-01T00:00:01Z"},
+	}
+	assert.False(t, hasApprovedReview(reviews, "fullsend-ai", "fullsend-ai", head))
+	reviews[1].State = "APPROVED"
+	assert.True(t, hasApprovedReview(reviews, "fullsend-ai", "fullsend-ai", head))
+}
+
+func TestDecideReviewDedup_FailsOpenWhenModesAreUnverified(t *testing.T) {
+	const head = "0123456789012345678901234567890123456789"
+	fc := forge.NewFakeClient()
+	fc.PullRequestInfos = map[string]forge.PullRequestInfo{}
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{}
+	fc.PRFileDiffModes = map[string]bool{"o/r/1": false}
+	fc.PullRequestInfos["o/r/1"] = forge.PullRequestInfo{Number: 1, BaseSHA: "base", HeadSHA: head, ChangedFiles: 1}
+	fc.PRFileDiffs["o/r/1"] = []forge.PullRequestFileDiff{{Path: "file.go", Status: "modified", Patch: "@@ -1 +1 @@", ModesVerified: false}}
+
+	var result reviewDedupResult
+	require.NoError(t, decideReviewDedup(context.Background(), fc, "o", "r", 1, "fullsend-ai", "client", &result))
+	assert.False(t, result.Skip)
+}
+
+func TestSupersedeReviewSkip_UpdatesOnlyVerifiedBotNotes(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {
+			{ID: 1, Author: "o-review[bot]", AppClientID: "client", Body: reviewSkipMarker + "\nold"},
+			{ID: 2, Author: "o-review[bot]", AppClientID: "other", Body: reviewSkipMarker + "\nleave me alone"},
+			{ID: 3, Author: "human", AppClientID: "client", Body: reviewSkipMarker + "\nleave me alone"},
+		},
+	}
+
+	require.NoError(t, supersedeReviewSkip(context.Background(), fc, "o", "r", 1,
+		"0123456789012345678901234567890123456789", "o", "fullsend-ai", "client"))
+
+	comments := fc.IssueComments["o/r/1"]
+	assert.Contains(t, comments[0].Body, "superseded by a full review")
+	assert.Equal(t, reviewSkipMarker+"\nleave me alone", comments[1].Body)
+	assert.Equal(t, reviewSkipMarker+"\nleave me alone", comments[2].Body)
+}

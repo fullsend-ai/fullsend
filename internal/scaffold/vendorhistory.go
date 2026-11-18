@@ -16,6 +16,7 @@ var historicalVendoredInfraPaths = []string{
 	".github/scripts/check-agents-gate-pin-test.sh",
 	".github/scripts/check-agents-gate-pin.sh",
 	".github/scripts/check-fix-eligibility-test.sh",
+	".github/scripts/review-diff-hash.sh",
 	".github/scripts/redact-behaviour-artifacts-test.sh",
 	".github/scripts/redact-behaviour-artifacts.sh",
 }
