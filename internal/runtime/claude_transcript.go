@@ -135,3 +135,14 @@ func emitTranscriptErrors(w io.Writer, summaries []TranscriptError) {
 		fmt.Fprintf(w, "::error title=Agent Error (%s)::%s\n", sanitizeOutput(s.Source), s.DisplayMessage())
 	}
 }
+
+// EmitQuietTranscriptErrors writes one ::error:: annotation per transcript
+// error at the quiet progress level (ADR 0163): the error type only. The
+// error message and the transcript name are left out, since the message
+// can quote text the agent read. A failed run still shows up on the run
+// summary page.
+func EmitQuietTranscriptErrors(w io.Writer, summaries []TranscriptError) {
+	for _, s := range summaries {
+		fmt.Fprintf(w, "::error title=Agent Error::%s\n", s.QuietDisplayMessage())
+	}
+}

@@ -654,7 +654,9 @@ func toolResultText(raw json.RawMessage) (text string, partial bool) {
 
 // progressParser reads NDJSON from Claude Code's stream-json output and emits
 // progress updates via the printer. It is a thin wrapper around parseClaudeStream
-// that creates an EventRenderer and populates RunMetrics.
+// that creates an EventRenderer and populates RunMetrics. Only tests call it,
+// and it renders at the full progress level; ClaudeRuntime.Run builds its own
+// renderer at RunParams.ProgressVerbosity (ADR 0163).
 func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error {
 	renderer := NewEventRenderer(printer)
 	return parseClaudeStream(r, func(evt AgentEvent) {

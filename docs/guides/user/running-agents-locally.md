@@ -886,6 +886,7 @@ Its layout:
   iteration-1/
     output/                  # Agent output files (agent-result.json, etc.)
     transcripts/             # Agent conversation transcripts (.jsonl)
+    agent-stderr.log         # Agent CLI stderr, at progress level quiet only
   metrics.json               # Behavioral metrics (tokens, cost, duration)
   security/
     findings.jsonl           # Security scan findings

@@ -2,6 +2,7 @@ package repos
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,12 +22,12 @@ import (
 // asserted. The uninstall lists intentionally carry names install never
 // writes, so that repositories installed by earlier versions are still cleaned
 // up: the superseded poller variables in gitlabRetiredLegacyVars, the
-// forge.VarLegacy* names, and the GitLab role-credential secrets. They also
-// carry the trace signing key (ADR 0154), which install does not write. Two
-// further omissions are deliberate and documented at their definitions —
-// gitlabUninstallVars excludes the legacy shared forge token, and
-// gitlabUninstallSecrets excludes the unprefixed OPENAI_API_KEY because other
-// jobs in the same project may depend on it.
+// forge.VarLegacy* names, and the GitLab role-credential secrets. The GitLab
+// uninstall list also carries the trace signing key (ADR 0154), which install
+// does not write on GitLab. Two further omissions are deliberate and
+// documented at their definitions — gitlabUninstallVars excludes the legacy
+// shared forge token, and gitlabUninstallSecrets excludes the unprefixed
+// OPENAI_API_KEY because other jobs in the same project may depend on it.
 //
 // One consequence worth stating: the secret check does not catch a name added
 // to inferenceSecretsForAuth that installSecretsForForge never writes. Only
@@ -37,12 +38,15 @@ import (
 // variable builders, which the parity check therefore cannot discover on its
 // own. GitLab's FULLSEND_DISPATCH_SECRET is written by seedGitLabPollState
 // (install.go, GitLab branch only) through poll.EnsureDispatchSecret, and is
-// cleaned up from gitlabUninstallVars.
+// cleaned up from gitlabUninstallVars. On GitHub, convergeTraceSigningKey
+// writes FULLSEND_TRACE_SIGNING_KEY_ID next to the trace signing key
+// (ADR 0154), and uninstallVariables deletes it.
 //
 // This list is itself hand-maintained, which is the very thing these tests
 // exist to discourage. It is the narrow cost of keeping the check in the test
 // package; if install grows another out-of-band value, add it here.
 var installSideExtras = map[string][]string{
+	ForgeGitHub: {forge.VarTraceSigningKeyID},
 	ForgeGitLab: {forge.SecretDispatch},
 }
 
@@ -65,14 +69,16 @@ func parityInstallConfig(forgeName, auth string) InstallConfig {
 // installSideSecretExtras names repository secrets install provisions outside
 // installSecretsForForge, which the secret parity check cannot discover on its
 // own. convergeJiraPoll writes the Jira polling credentials (jiraSecretValues)
-// for repos whose effective tracker.jira.poll.enabled is true on both forges.
+// for repos whose effective tracker.jira.poll.enabled is true on both forges,
+// and on GitHub convergeTraceSigningKey writes FULLSEND_TRACE_SIGNING_KEY
+// (ADR 0154).
 // Hand-maintained, like installSideExtras: add any further out-of-band secret.
 var installSideSecretExtras = func() map[string][]string {
 	var names []string
 	for name := range jiraSecretValues(ConvergeConfig{JiraToken: "token", JiraEmail: "email"}) {
 		names = append(names, name)
 	}
-	return map[string][]string{ForgeGitHub: names, ForgeGitLab: names}
+	return map[string][]string{ForgeGitHub: append(slices.Clone(names), forge.SecretTraceSigningKey), ForgeGitLab: names}
 }()
 
 func TestInstallUninstallVariableParity(t *testing.T) {

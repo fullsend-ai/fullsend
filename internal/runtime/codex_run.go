@@ -591,7 +591,9 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 
 	cmd := buildCodexRunCommand(params, model, effort, hooksEnabled, digests)
 
-	stderr := &codexStderrDrops{w: os.Stderr}
+	agentStderr, endAgentStderr := openAgentStderr(params, printer)
+	defer endAgentStderr()
+	stderr := &codexStderrDrops{w: agentStderr}
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, stderr)
 	if err != nil {
 		return -1, err
@@ -624,7 +626,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 
 	handler := params.OnEvent
 	if handler == nil {
-		renderer := NewEventRenderer(printer)
+		renderer := newEventRendererAt(printer, params.ProgressVerbosity)
 		handler = renderer.Handle
 	}
 
@@ -662,7 +664,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		// Under --debug codex's stderr went to the sandbox log instead.
 		dropped, backfillFailed, derr := codexCountDroppedInLog(params.SandboxName)
 		if derr != nil {
-			printer.StepWarn("Could not read codex's log for dropped stream notifications: " + redactSummary(sanitizeOutput(derr.Error())))
+			printer.StepWarn(detailWarning("Could not read codex's log for dropped stream notifications", redactSummary(sanitizeOutput(derr.Error())), params.ProgressVerbosity))
 		}
 		stderr.Dropped += dropped
 		stderr.BackfillFailed += backfillFailed
@@ -699,7 +701,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	if digests.delegating() || len(foldIDs) > 0 {
 		n, ferr := r.foldCodexChildUsage(params.SandboxName, foldIDs, metrics)
 		if ferr != nil {
-			printer.StepWarn("Sub-agent usage not fully counted: " + redactSummary(sanitizeOutput(ferr.Error())))
+			printer.StepWarn(detailWarning("Sub-agent usage not fully counted", redactSummary(sanitizeOutput(ferr.Error())), params.ProgressVerbosity))
 		}
 		if n > 0 {
 			printer.StepInfo(fmt.Sprintf("%d sub-agent thread(s) folded into the run metrics", n))
@@ -747,7 +749,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		if msg == "" {
 			msg = "stream ended without a completed turn (" + lastResult.Subtype + ")"
 		}
-		printer.StepWarn("codex exited 0 but the stream reports an error: " + sanitizeOutput(msg))
+		printer.StepWarn(exitedZeroStreamError("codex", msg, lastResult.Subtype, params.ProgressVerbosity))
 		return 1, nil
 	}
 	return exitCode, nil

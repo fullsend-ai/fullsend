@@ -823,6 +823,18 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 	return validateAgentEntries(agents, allowlist, true, true)
 }
 
+// ValidateAgentEntriesAt is ValidateAgentEntries for a subset of a
+// config's agents list: positions[i] is agents[i]'s index in the full
+// list, and errors report it as agents[N] so they point at the entry in
+// config.yaml rather than its index within the subset. positions must
+// have one element per entry.
+func ValidateAgentEntriesAt(agents []AgentEntry, positions []int, allowlist []string) error {
+	if len(positions) != len(agents) {
+		return fmt.Errorf("internal error: %d agent positions for %d agent entries", len(positions), len(agents))
+	}
+	return validateAgentEntriesAt(agents, positions, allowlist, true, true)
+}
+
 // validateAgentEntries is ValidateAgentEntries with two checks made
 // conditional for repos.yaml config overlay validation (ADR 0122), where
 // the resolved allowlist or the parent's registered agents may not be
@@ -841,6 +853,13 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 // self-contained agent list (a per-repo config with its full parent
 // chain resolved).
 func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowlist, requireBuiltinName bool) error {
+	return validateAgentEntriesAt(agents, nil, allowlist, enforceAllowlist, requireBuiltinName)
+}
+
+// validateAgentEntriesAt is validateAgentEntries reporting agents[k] as
+// agents[positions[k]] when positions is non-nil (see
+// ValidateAgentEntriesAt).
+func validateAgentEntriesAt(agents []AgentEntry, positions []int, allowlist []string, enforceAllowlist, requireBuiltinName bool) error {
 	// seen tracks agent names for duplicate detection. Each state
 	// (enabled/disabled) is tracked independently so that exactly one
 	// disable-then-enable or enable-then-disable pair is accepted while
@@ -850,7 +869,12 @@ func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowl
 		seenDisabled bool
 	}
 	seen := make(map[string]seenState, len(agents))
-	for i, entry := range agents {
+	for k, entry := range agents {
+		// i is the index errors report for the entry.
+		i := k
+		if positions != nil {
+			i = positions[k]
+		}
 		// A suppression-only entry (enabled: false, no source) is valid —
 		// it exists solely to disable a scaffold default by name.
 		if entry.Source == "" && !entry.IsEnabled() {
@@ -1058,6 +1082,10 @@ type perRepoConfig struct {
 	// content overrides the parent layer; by_source merges per key.
 	Artifacts *ArtifactsConfig `yaml:"artifacts,omitempty"`
 
+	// Progress limits what the live progress log shows (ADR 0163).
+	// verbosity overrides the parent layer; by_source merges per key.
+	Progress *ProgressConfig `yaml:"progress,omitempty"`
+
 	// TraceContextBlock is the trace_context block (ADR 0154). It backs
 	// the TraceContext() accessor and is named distinctly from it because
 	// Go forbids a field and method sharing a name on the same type.
@@ -1197,6 +1225,7 @@ type perRepoConfigMarshal struct {
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 	Models                 *ModelsConfig             `yaml:"models,omitempty"`
 	Artifacts              *ArtifactsConfig          `yaml:"artifacts,omitempty"`
+	Progress               *ProgressConfig           `yaml:"progress,omitempty"`
 	TraceContext           *TraceContextConfig       `yaml:"trace_context,omitempty"`
 }
 
@@ -1228,6 +1257,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	}
 	if !c.Artifacts.IsZero() {
 		h.Artifacts = c.Artifacts
+	}
+	if !c.Progress.IsZero() {
+		h.Progress = c.Progress
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -1366,6 +1398,9 @@ func (c *perRepoConfig) validateLocalFields() error {
 		return err
 	}
 	if err := validateArtifacts(c.Artifacts); err != nil {
+		return err
+	}
+	if err := validateProgress(c.Progress); err != nil {
 		return err
 	}
 	if err := ValidateTraceContext(c.TraceContextBlock); err != nil {
