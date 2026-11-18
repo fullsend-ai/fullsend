@@ -970,10 +970,10 @@ case "$ROLE" in
 esac
 ```
 
-`fullsend run` exports `FULLSEND_BOT_ROLE_URL`, `FULLSEND_BOT_ROLE_TOKEN` and
-`FULLSEND_ENTITY_ID` to every pre- and post-script; `fullsend bot-role` reads
-the first two and needs nothing else, so scripts never handle a credential
-themselves. The semantics:
+`fullsend run` exports `FULLSEND_BOT_ROLE_URL` and `FULLSEND_BOT_ROLE_TOKEN`
+to every pre- and post-script, and `FULLSEND_ENTITY_ID` on GitHub runs whose
+issue or pull request it resolved; `fullsend bot-role` reads the first two
+and needs nothing else, so scripts never handle a credential themselves. The semantics:
 
 - `--entity` is the canonical ID of the entity the run handles, as the
   [normalized entity spec](../../normative/normalized-entity/v1/README.md#scope-and-identity)
