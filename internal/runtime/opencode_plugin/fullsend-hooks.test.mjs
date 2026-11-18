@@ -44,6 +44,63 @@ test("Bash restrictions reject composed/hidden commands and environment override
   }
 });
 
+test("restricted Bash rejects variable-setting and shell-state builtins", async (t) => {
+  const builtins = ["read", "getopts", "mapfile", "readarray", "shopt", "ulimit"];
+  for (const policy of [
+    { bashAllowlist: [...builtins, "gh"] },
+    { permission: { bash: { "*": "allow" } } },
+  ]) {
+    const h = await setup(t, policy);
+    for (const command of [
+      "read PATH; gh pr list", "read -r PATH; gh pr list", "getopts a PATH; gh pr list",
+      "mapfile PATH; gh pr list", "readarray PATH; gh pr list",
+      "shopt -s expand_aliases", "ulimit -n 1",
+    ]) {
+      await assert.rejects(h.before("bash", { command }), /environment assignments and shell wrappers/, command);
+    }
+  }
+});
+
+test("restricted Bash rejects printf variable assignment after removing argument quotes", async (t) => {
+  for (const policy of [
+    { bashAllowlist: ["printf", "gh"] },
+    { permission: { bash: { "*": "deny", "printf *": "allow", "gh *": "allow" } } },
+  ]) {
+    const h = await setup(t, policy);
+    for (const command of [
+      "printf -v PATH %s /sandbox/workspace/x; gh pr list",
+      "printf -vPATH %s /sandbox/workspace/x; gh pr list",
+      "printf '-v' 'PATH' %s /sandbox/workspace/x; gh pr list",
+      "printf -'v'PATH %s /sandbox/workspace/x; gh pr list",
+      "printf -v IFS %s ,; gh pr list",
+    ]) {
+      await assert.rejects(h.before("bash", { command }), /printf variable assignment/, command);
+    }
+    for (const command of [
+      "printf '%s' safe", "printf -- -v PATH", "printf '%s' -v PATH",
+      "printf '%s' 'literal -v PATH'", "printf '%s' safe; gh pr list",
+    ]) await h.before("bash", { command });
+  }
+});
+
+test("printf cannot obtain its assignment option through an unknown expansion", async (t) => {
+  const h = await setup(t, { bashAllowlist: ["printf", "gh"] });
+  // A workspace file named -v can supply the option through a pathname expansion.
+  writeFileSync(path.join(h.workspace, "-v"), "");
+  for (const command of [
+    'printf "$FLAGS" PATH %s /sandbox/workspace/x; gh pr list',
+    'printf "${FLAGS}" PATH %s /sandbox/workspace/x; gh pr list',
+    'printf "${EMPTY}"-v PATH %s /sandbox/workspace/x; gh pr list',
+    "printf * PATH %s /sandbox/workspace/x; gh pr list",
+    "printf -? PATH %s /sandbox/workspace/x; gh pr list",
+    "printf -[v] PATH %s /sandbox/workspace/x; gh pr list",
+  ]) await assert.rejects(h.before("bash", { command }), /printf option expansion/, command);
+  for (const command of [
+    'printf "%s" "$VALUE"', 'printf "%s" "${VALUE}"',
+    "printf '$FLAGS' PATH", "printf '*' PATH", "printf -- * PATH",
+  ]) await h.before("bash", { command });
+});
+
 test("parent tool and trusted policy ceilings apply to every session", async (t) => {
   const h = await setup(t, { tools: ["Bash", "Task"], permission: { bash: { "*": "deny", "gh *": "allow", "gh secret*": "deny" }, task: "allow" } });
   await h.before("bash", { command: "gh issue list" });
