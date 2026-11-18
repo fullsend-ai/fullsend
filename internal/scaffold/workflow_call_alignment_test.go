@@ -67,6 +67,10 @@ func TestStartupFailureReportingGuards(t *testing.T) {
 	assert.Contains(t, dispatchText, "steps.fork_guard.outputs.policy_skip != 'true'")
 	assert.Contains(t, dispatchText, "steps.eligibility.outputs.policy_skip != 'true'")
 	assert.Contains(t, dispatchText, "steps.review-body.outputs.policy_skip != 'true'")
+	assert.NotContains(t, dispatchText, "fromJSON(matrix.event_payload)",
+		"matrix.event_payload is already a structured object")
+	assert.Contains(t, dispatchText, "source-system: ${{ matrix.event_payload._normalized_event.source.system || 'github' }}")
+	assert.Contains(t, dispatchText, "status-comment-id: ${{ matrix.event_payload.comment.id }}")
 	harnessFailureSection := extractStepSection(t, dispatchText, "Report harness dispatch failure")
 	assert.Contains(t, harnessFailureSection, `FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"`)
 	assert.Contains(t, harnessFailureSection, `FULLSEND_FAILURE_STABLE_MARKER="true"`)
