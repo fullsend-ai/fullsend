@@ -259,7 +259,7 @@ func newGroupPoolDriver(t *testing.T, layout PoolLayout) *groupPoolDriver {
 		gp.mints[group.index] = append(gp.mints[group.index], md)
 		return md, func() { gp.cleanups.Add(1) }, nil
 	}
-	d, err := buildPoolDriver(testPoolConfig(t, layout), gp.plan, newMint, playbackSetupOpts(), traceStart{})
+	d, err := buildPoolDriver(testPoolConfig(t, layout), gp.plan, newMint, playbackInstallOpts(), traceStart{})
 	require.NoError(t, err)
 	gp.composedDriver = d.(*composedDriver)
 	return gp
