@@ -127,10 +127,15 @@ func runBotRole(ctx context.Context, login string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// A failed write means the caller never received a complete answer, so
+	// it must not be reported as success: the command exits non-zero and a
+	// script fails closed instead of trusting an outcome it never saw.
+	outcome := botidentity.MintOutcomeNoMatch
 	if res.Recognized() {
-		fmt.Fprintln(stdout, res.Role)
-	} else {
-		fmt.Fprintln(stdout, botidentity.MintOutcomeNoMatch)
+		outcome = res.Role
+	}
+	if _, err := fmt.Fprintln(stdout, outcome); err != nil {
+		return fmt.Errorf("failed to print the bot-role outcome: %w", err)
 	}
 	return nil
 }
