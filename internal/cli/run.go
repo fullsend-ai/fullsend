@@ -984,6 +984,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}()
 	if targetRepo != "" {
+		// Export an absolute path: the pre-script, validation script and
+		// post-script run in different working directories, so a relative
+		// value such as "." would name a different directory in each (#9537).
+		absTargetRepo, err := filepath.Abs(targetRepo)
+		if err != nil {
+			return fmt.Errorf("resolving target repo path: %w", err)
+		}
+		targetRepo = absTargetRepo
 		setFlagEnv("TARGET_REPO_DIR", targetRepo)
 	}
 	if sOpts.statusRepo != "" {
