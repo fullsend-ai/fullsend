@@ -55,8 +55,10 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 		// Masking a member value can hide a private-key block that spans
 		// members: a sensitive member name masks the BEGIN marker, leaving the
 		// key body and END marker behind in a form the rewritten scan can no
-		// longer recognize. Detect the block in the original framing first.
-		if bytes.Contains(trimmed, []byte("BEGIN")) && len(privateKeyFindings(findings)) == 0 && privateKeyRe.Match(trimmed) {
+		// longer recognize. Every block the leaf scan did not account for
+		// individually means the original framing must be checked.
+		unhandled := len(privateKeyRe.FindAllIndex(trimmed, -1)) - len(privateKeyFindings(findings))
+		if bytes.Contains(trimmed, []byte("BEGIN")) && unhandled > 0 {
 			return preserveTrailingNewline([]byte(failClosedInvalidJSON), doc),
 				append(findings, Finding{
 					Scanner:  "secret_redactor",
@@ -141,11 +143,17 @@ func redactJSONOutput(clean []byte, p *Pipeline) ([]byte, []Finding) {
 // that framing, so the records it covers are replaced with valid fail-closed
 // markers and every other record is left as sanitized.
 func SanitizeJSONLines(content []byte, p *Pipeline) ([]byte, []Finding, error) {
+	// A private-key block that spans records has to be detected on the original
+	// framing: per-record masking of a sensitive member removes the BEGIN
+	// marker, after which neither the record scan nor the whole-stream scan can
+	// recognize the block.
+	content, crossRecordFindings := failClosedCrossRecordPrivateKeys(content)
 	var (
 		out      bytes.Buffer
 		findings []Finding
 		spans    []recordSpan
 	)
+	findings = append(findings, crossRecordFindings...)
 	for len(content) > 0 {
 		line := content
 		newline := bytes.IndexByte(content, '\n')
@@ -211,6 +219,76 @@ func SanitizeJSONLines(content []byte, p *Pipeline) ([]byte, []Finding, error) {
 // stream, excluding its trailing newline.
 type recordSpan struct {
 	start, end int
+}
+
+// failClosedCrossRecordPrivateKeys replaces every record covered by a
+// private-key block that crosses record boundaries with a valid marker. Match
+// offsets come straight from the original stream, so localization is exact.
+func failClosedCrossRecordPrivateKeys(content []byte) ([]byte, []Finding) {
+	matches := privateKeyRe.FindAllIndex(content, -1)
+	if len(matches) == 0 {
+		return content, nil
+	}
+	spans := jsonLineSpans(content)
+	if len(spans) == 0 {
+		return content, nil
+	}
+	covered := make([]bool, len(spans))
+	var findings []Finding
+	for _, match := range matches {
+		if bytes.IndexByte(content[match[0]:match[1]], '\n') < 0 {
+			continue
+		}
+		findings = append(findings, Finding{
+			Scanner:  "secret_redactor",
+			Name:     "private_key",
+			Severity: "critical",
+			Detail:   "Private key block spans records and cannot be localized; output removed",
+		})
+		for i, span := range spans {
+			if span.end > match[0] && span.start < match[1] {
+				covered[i] = true
+			}
+		}
+	}
+	if len(findings) == 0 {
+		return content, nil
+	}
+	var out bytes.Buffer
+	cursor := 0
+	for i, span := range spans {
+		if !covered[i] {
+			continue
+		}
+		out.Write(content[cursor:span.start])
+		out.WriteString(failClosedCrossRecordJSON)
+		cursor = span.end
+	}
+	out.Write(content[cursor:])
+	return out.Bytes(), findings
+}
+
+// jsonLineSpans returns the byte range of every non-empty line in content,
+// excluding its trailing CR/LF framing.
+func jsonLineSpans(content []byte) []recordSpan {
+	var spans []recordSpan
+	for start := 0; start < len(content); {
+		end := bytes.IndexByte(content[start:], '\n')
+		if end < 0 {
+			end = len(content)
+		} else {
+			end += start
+		}
+		lineEnd := end
+		if lineEnd > start && content[lineEnd-1] == '\r' {
+			lineEnd--
+		}
+		if len(bytes.TrimSpace(content[start:lineEnd])) > 0 {
+			spans = append(spans, recordSpan{start: start, end: lineEnd})
+		}
+		start = end + 1
+	}
+	return spans
 }
 
 // failClosedRecordSpans replaces the records a whole-stream redaction changed

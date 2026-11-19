@@ -628,9 +628,11 @@ private-key block spanning members is detected in the original framing before
 masking a member value can hide its BEGIN marker.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
-rewriting that framing, so only the records it covers are replaced. When those
-records cannot be identified unambiguously — their contents also appear
-elsewhere in the stream — every record fails closed.
+rewriting that framing, so only the records it covers are replaced. A
+private-key block spanning records is detected on the original stream, before
+per-record masking can remove its BEGIN marker. When the covered records
+cannot be identified unambiguously — their contents also appear elsewhere in
+the stream — every record fails closed.
 
 Some content cannot be redacted in place. A JSON document or JSONL record is
 replaced with a valid fail-closed marker instead — never with corrupted

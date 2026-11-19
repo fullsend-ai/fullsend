@@ -400,10 +400,11 @@ func TestSanitizeJSONLines_RepeatedCleanRecordInsideCrossRecordMatch(t *testing.
 
 	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
 	require.Len(t, lines, 4, "record count must not change")
-	for _, line := range lines {
-		assert.True(t, json.Valid([]byte(line)), "each record must stay valid JSON: %s", line)
+	for _, line := range lines[:3] {
+		assert.True(t, json.Valid([]byte(line)), "each replaced record must stay valid JSON: %s", line)
 		assert.Contains(t, line, "output removed")
 	}
+	assert.Equal(t, `{"value":"middle"}`, lines[3], "the repeated clean record outside the match must survive")
 }
 
 // TestSanitizeJSONDocument_SensitiveBeginMemberFailsClosed pins that masking a
@@ -561,6 +562,64 @@ func TestLineBounded(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, lineBounded(data, tc.start, tc.end))
+		})
+	}
+}
+
+// TestSanitizeJSONDocument_LeafAndSplitPrivateKeysFailClosed pins that a
+// handled leaf block does not exempt a second, framing-spanning block in the
+// same document.
+func TestSanitizeJSONDocument_LeafAndSplitPrivateKeysFailClosed(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := []byte(`{"note":"` + begin + `\nMIIEleafkeymaterial\n` + end + `",` +
+		`"key_start":"` + begin + `","payload":"MIIEspanningkeymaterial","tail":"` + end + `"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+	assert.NotContains(t, string(out), "MIIEleafkeymaterial")
+	assert.Contains(t, string(out), "output removed")
+}
+
+// TestSanitizeJSONLines_SensitiveBeginRecordFailsClosed pins that a
+// cross-record private key is detected on the original stream, before masking
+// a sensitive-named member removes its BEGIN marker.
+func TestSanitizeJSONLines_SensitiveBeginRecordFailsClosed(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	records := []string{
+		"{\"key_start\":\"" + begin + "\"}",
+		"{\"payload\":\"MIIEspanningkeymaterial\"}",
+		"{\"tail\":\"" + end + "\"}",
+	}
+	for name, tc := range map[string]struct {
+		sep     string
+		trailer string
+	}{
+		"lf":                  {sep: "\n", trailer: "\n"},
+		"crlf":                {sep: "\r\n", trailer: "\r\n"},
+		"no trailing newline": {sep: "\n", trailer: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			content := []byte(strings.Join(records, tc.sep) + tc.trailer)
+
+			out, findings, err := SanitizeJSONLines(content, p)
+			require.NoError(t, err)
+			require.NotEmpty(t, findings)
+			assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+			assert.NotContains(t, string(out), "END RSA")
+
+			lines := strings.Split(strings.TrimSuffix(strings.TrimSuffix(string(out), "\n"), "\r"), tc.sep)
+			require.Len(t, lines, 3, "record count must not change")
+			for _, line := range lines {
+				assert.True(t, json.Valid([]byte(line)), "each record must stay valid JSON: %s", line)
+				assert.Contains(t, line, "output removed")
+			}
 		})
 	}
 }
