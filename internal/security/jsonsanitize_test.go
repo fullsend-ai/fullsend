@@ -27,6 +27,107 @@ func TestSanitizeJSONDocument_DuplicateKeyEarlierOccurrenceRedacted(t *testing.T
 	assert.Contains(t, string(out), `"note":"clean"`, "the surviving duplicate value must be preserved")
 }
 
+// TestSanitizeJSONDocument_DuplicateKeysSurviveRewrite pins that the
+// token-preserving walk keeps duplicate keys and their order when another
+// member forces a rewrite.
+func TestSanitizeJSONDocument_DuplicateKeysSurviveRewrite(t *testing.T) {
+	p := OutputPipeline()
+	doc := []byte(`{"a":1,"a":2,"token":"ghp_FAKEtesttoken000000000000000000000000"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.Contains(t, string(out), `"a":1,"a":2`, "duplicate members must keep their order")
+	assert.NotContains(t, string(out), "ghp_FAKEtesttoken")
+}
+
+// TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersFailsClosed pins that a
+// private key spread over several members is detected in the bytes that are
+// actually written. Scanning only the re-encoded form missed it: encoding a map
+// sorts keys, and with the END marker sorted before the BEGIN marker the
+// pattern no longer matched the original key material.
+func TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersFailsClosed(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	// Reverse the members' sort order so a map re-encode would emit END before
+	// BEGIN and hide the block from a serialized scan.
+	doc := []byte(`{"z_begin":"` + begin + `","m_body":"MIIEpAIBAAKCAQEA0123456789abcdef","a_end":"` + end + `"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings, "a framing-spanning private key must produce a finding")
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "BEGIN RSA")
+	assert.NotContains(t, string(out), "MIIEpAIBAAKCAQEA")
+	assert.Contains(t, string(out), "output removed", "an unmappable match must fail closed")
+}
+
+// TestSanitizeJSONDocument_FramingSecretInCleanDocumentFailsClosed pins that a
+// document with no leaf findings is still scanned in its written form. A
+// runtime secret spanning two member boundaries is visible only in the raw
+// bytes, and the previous no-findings path returned those bytes untouched.
+func TestSanitizeJSONDocument_FramingSecretInCleanDocumentFailsClosed(t *testing.T) {
+	ResetRuntimeSecretsForTest()
+	t.Cleanup(ResetRuntimeSecretsForTest)
+	const secret = `","field2":"`
+	require.True(t, RegisterRuntimeSecret(secret))
+
+	p := OutputPipeline()
+	doc := []byte(`{"field1":"foo","field2":"bar"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings, "a framing-spanning secret must produce a finding")
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), secret)
+}
+
+// TestSanitizeJSONDocument_CrossMemberPrivateKeyWithLeafSecretFailsClosed pins
+// that a leaf secret and a framing-spanning private key in the same document
+// are both handled: the rewrite keeps member order, so the framing-spanning
+// block is still visible in the rewritten bytes.
+func TestSanitizeJSONDocument_CrossMemberPrivateKeyWithLeafSecretFailsClosed(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := []byte(`{"z_begin":"` + begin + `","m_body":"MIIEpAIBAAKCAQEA0123456789abcdef","a_end":"` + end + `",` +
+		`"token":"ghp_FAKEtesttoken000000000000000000000000"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "ghp_FAKEtesttoken")
+	assert.NotContains(t, string(out), "PRIVATE KEY-----")
+}
+
+// TestSanitizeJSONDocument_DuplicateKeySanitizedKeyCollision pins that a
+// sanitized key never steals the name of an existing clean member, and that
+// intentional duplicate keys still survive.
+func TestSanitizeJSONDocument_DuplicateKeySanitizedKeyCollision(t *testing.T) {
+	ResetRuntimeSecretsForTest()
+	t.Cleanup(ResetRuntimeSecretsForTest)
+	const secret = "abcdefghijk"
+	require.True(t, RegisterRuntimeSecret(secret))
+
+	p := OutputPipeline()
+	doc := []byte(`{"` + secret + `":1,"***":2,"d":0,"d":1}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), secret)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(out, &decoded))
+	assert.Equal(t, float64(2), decoded["***"], "the clean key must keep its own value")
+	assert.Equal(t, float64(1), decoded["***_1"], "the sanitized key must be disambiguated")
+	assert.Equal(t, 2, strings.Count(string(out), `"d":`), "intentional duplicate keys must survive")
+}
+
 // TestSanitizeJSONLines_CrossRecordRuntimeSecretFailsClosed pins that a
 // runtime secret spanning two individually valid records is not discarded.
 func TestSanitizeJSONLines_CrossRecordRuntimeSecretFailsClosed(t *testing.T) {
@@ -51,9 +152,44 @@ func TestSanitizeJSONLines_CrossRecordRuntimeSecretFailsClosed(t *testing.T) {
 	}
 }
 
+// TestSanitizeJSONLines_DisjointCrossRecordMatchesKeepCleanRecord pins that
+// only the records a cross-record match touches are replaced. A single
+// first-to-last changed region used to swallow every record between two
+// disjoint matches.
+func TestSanitizeJSONLines_DisjointCrossRecordMatchesKeepCleanRecord(t *testing.T) {
+	ResetRuntimeSecretsForTest()
+	t.Cleanup(ResetRuntimeSecretsForTest)
+	const first = `one"}` + "\n" + `{"b`
+	const second = `three"}` + "\n" + `{"d`
+	require.True(t, RegisterRuntimeSecret(first))
+	require.True(t, RegisterRuntimeSecret(second))
+
+	p := OutputPipeline()
+	content := []byte(
+		"{\"a\":\"one\"}\n" +
+			"{\"b\":\"two\"}\n" +
+			"{\"clean\":\"middle\"}\n" +
+			"{\"c\":\"three\"}\n" +
+			"{\"d\":\"four\"}\n")
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.NotContains(t, string(out), first)
+	assert.NotContains(t, string(out), second)
+
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	require.Len(t, lines, 5, "record count must not change")
+	assert.Equal(t, `{"clean":"middle"}`, lines[2], "the clean record between two matches must survive")
+	for _, i := range []int{0, 1, 3, 4} {
+		assert.True(t, json.Valid([]byte(lines[i])), "each replaced record must stay valid JSON: %s", lines[i])
+		assert.Contains(t, lines[i], "output removed")
+	}
+}
+
 // TestSanitizeJSONDocument_BackstopRedactsSecondRuntimeSecret pins that a
 // runtime secret exposed only by serializing the parsed document is still
-// redacted when another runtime secret was already found in a leaf.
+// handled when another runtime secret was already found in a leaf.
 func TestSanitizeJSONDocument_BackstopRedactsSecondRuntimeSecret(t *testing.T) {
 	ResetRuntimeSecretsForTest()
 	t.Cleanup(ResetRuntimeSecretsForTest)
@@ -73,24 +209,28 @@ func TestSanitizeJSONDocument_BackstopRedactsSecondRuntimeSecret(t *testing.T) {
 	assert.NotContains(t, string(out), serializedSecret)
 }
 
-// TestSanitizeJSONStructure_KeyRemovedEntirelyIsReplaced pins that a JSON key
+// TestSanitizeJSONDocument_KeyRemovedEntirelyIsReplaced pins that a JSON key
 // made only of removable characters never survives sanitization.
-func TestSanitizeJSONStructure_KeyRemovedEntirelyIsReplaced(t *testing.T) {
+func TestSanitizeJSONDocument_KeyRemovedEntirelyIsReplaced(t *testing.T) {
 	p := OutputPipeline()
 	for name, key := range map[string]string{
 		"null byte":     "\x00",
 		"bidi override": "\u202e",
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, findings := SanitizeJSONStructure(map[string]any{key: "value"}, p)
+			doc, err := json.Marshal(map[string]string{key: "value"})
+			require.NoError(t, err)
+
+			out, findings, err := SanitizeJSONDocument(doc, p)
+			require.NoError(t, err)
 			require.NotEmpty(t, findings)
-			result := got.(map[string]any)
-			require.Len(t, result, 1)
-			for gotKey := range result {
-				assert.NotContains(t, gotKey, key)
-				assert.Equal(t, redactedJSONKey, gotKey)
-			}
-			assert.Equal(t, "value", result[redactedJSONKey])
+			assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+			assert.NotContains(t, string(out), `\u0000`)
+			assert.NotContains(t, string(out), `\u202e`)
+
+			var decoded map[string]string
+			require.NoError(t, json.Unmarshal(out, &decoded))
+			assert.Equal(t, "value", decoded[redactedJSONKey])
 		})
 	}
 }
@@ -120,8 +260,8 @@ func TestSanitizeJSONLines_SingleRecordPEMKeepsCleanRecords(t *testing.T) {
 	assert.NotContains(t, lines[1], "MIIEpAIBAAKCAQEA")
 }
 
-// TestSanitizeJSONDocument_AlreadyMaskedValueNotRemasked pins that the
-// serialized backstop leaves an existing mask placeholder intact.
+// TestSanitizeJSONDocument_AlreadyMaskedValueNotRemasked pins that rescanning a
+// document leaves an existing mask placeholder intact.
 func TestSanitizeJSONDocument_AlreadyMaskedValueNotRemasked(t *testing.T) {
 	p := OutputPipeline()
 	doc := []byte(`{"body":"Guard against null values with token_usage = metrics.get(\"token_usage\") or {}"}`)
@@ -161,29 +301,48 @@ func TestSanitizeJSONDocument_DuplicateKeyNestedContainers(t *testing.T) {
 	assert.Equal(t, false, decoded.(map[string]any)["tail"])
 }
 
-// TestSanitizeJSONStructure_ScalarAndContainerCoverage exercises every scalar
-// branch and nested collection of the structural walker.
-func TestSanitizeJSONStructure_ScalarAndContainerCoverage(t *testing.T) {
+// TestSanitizeJSONDocument_ScalarAndContainerCoverage exercises every scalar
+// branch and nested collection of the walker.
+func TestSanitizeJSONDocument_ScalarAndContainerCoverage(t *testing.T) {
 	ResetRuntimeSecretsForTest()
 	t.Cleanup(ResetRuntimeSecretsForTest)
 	const numericSecret = "123456789012"
 	require.True(t, RegisterRuntimeSecret(numericSecret))
 
 	p := OutputPipeline()
-	input := map[string]any{
-		"list":    []any{"plain", json.Number("42"), json.Number(numericSecret), true, nil},
-		"nested":  map[string]any{"deep": []any{map[string]any{"value": "plain"}}},
-		"counter": json.Number("7"),
-	}
-	got, findings := SanitizeJSONStructure(input, p)
-	require.NotEmpty(t, findings)
+	doc := []byte(`{"list":["plain",42,` + numericSecret + `,true,null],` +
+		`"nested":{"deep":[{"value":"plain"}]},"counter":7}`)
 
-	encoded, err := encodeJSONDocument(got, false)
+	out, findings, err := SanitizeJSONDocument(doc, p)
 	require.NoError(t, err)
-	assert.True(t, json.Valid(encoded))
-	assert.NotContains(t, string(encoded), numericSecret)
-	assert.Contains(t, string(encoded), "42", "clean numbers must keep their precision")
-	assert.Contains(t, string(encoded), `"counter":7`)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), numericSecret)
+	assert.Contains(t, string(out), "42", "clean numbers must keep their precision")
+	assert.Contains(t, string(out), `"counter":7`)
+}
+
+// TestSanitizeJSONDocument_CleanKeyWinsSanitizedCollision pins that a secret key
+// whose mask collides with an existing clean member never steals that member's
+// name or value.
+func TestSanitizeJSONDocument_CleanKeyWinsSanitizedCollision(t *testing.T) {
+	const secret = "ghp_FAKEtesttoken000000000000000000000000"
+	const masked = "ghp_..."
+	p := OutputPipeline()
+	doc := []byte(`{"` + secret + `":"secretkeyval","` + masked + `":"plainval"}`)
+
+	for range 20 {
+		out, findings, err := SanitizeJSONDocument(doc, p)
+		require.NoError(t, err)
+		require.NotEmpty(t, findings)
+		assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+
+		var decoded map[string]string
+		require.NoError(t, json.Unmarshal(out, &decoded))
+		assert.Equal(t, "plainval", decoded[masked], "clean key must retain its name and value")
+		assert.Len(t, decoded, 2)
+		assert.NotContains(t, string(out), secret)
+	}
 }
 
 // TestSanitizeJSONDocument_LeavesUnsupportedInputAlone pins the fallback
@@ -218,6 +377,79 @@ func TestSanitizeJSONLines_NonJSONRecordsRedacted(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(out), "\n"), "line framing must be preserved")
 }
 
+// TestSanitizeJSONLines_PreservesBlankAndCleanRecords pins that blank lines and
+// clean non-JSON records survive a stream that also contains a secret.
+func TestSanitizeJSONLines_PreservesBlankAndCleanRecords(t *testing.T) {
+	p := OutputPipeline()
+	content := []byte("plain prose without secrets\n" +
+		"\n" +
+		"{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\"}\n")
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	require.Len(t, lines, 3, "blank lines and record count must be preserved")
+	assert.Equal(t, "plain prose without secrets", lines[0])
+	assert.Empty(t, lines[1])
+	assert.NotContains(t, lines[2], "ghp_FAKEtesttoken")
+}
+
+// TestSanitizeJSONDocument_TextRedactionThatBreaksJSONFailsClosed pins that a
+// framing-spanning secret whose in-place redaction would leave invalid JSON is
+// replaced with a valid marker instead of corrupted syntax.
+func TestSanitizeJSONDocument_TextRedactionThatBreaksJSONFailsClosed(t *testing.T) {
+	ResetRuntimeSecretsForTest()
+	t.Cleanup(ResetRuntimeSecretsForTest)
+	// Spans the closing quote, comma and next key, so masking it breaks the
+	// document.
+	const secret = `"v1","k2"`
+	require.True(t, RegisterRuntimeSecret(secret))
+
+	p := OutputPipeline()
+	doc := []byte(`{"k1":"v1","k2":"v2"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), secret)
+	assert.Contains(t, string(out), "output removed")
+}
+
+// TestSanitizeJSONDocument_TopLevelScalars pins that scalar documents are
+// handled without inventing structure.
+func TestSanitizeJSONDocument_TopLevelScalars(t *testing.T) {
+	p := OutputPipeline()
+	for name, doc := range map[string]string{
+		"number": "42",
+		"true":   "true",
+		"null":   "null",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, findings, err := SanitizeJSONDocument([]byte(doc), p)
+			require.NoError(t, err)
+			assert.Empty(t, findings)
+			assert.Equal(t, doc, string(out))
+		})
+	}
+}
+
+// TestSanitizeJSONLines_LastRecordWithoutNewline pins that a final record
+// without a trailing newline is still sanitized and keeps its framing.
+func TestSanitizeJSONLines_LastRecordWithoutNewline(t *testing.T) {
+	p := OutputPipeline()
+	content := []byte(`{"token":"ghp_FAKEtesttoken000000000000000000000000"}`)
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.NotContains(t, string(out), "ghp_FAKEtesttoken")
+	assert.False(t, strings.HasSuffix(string(out), "\n"), "no newline must be invented")
+	assert.True(t, json.Valid(out), "the record must stay valid JSON: %s", out)
+}
+
 // TestSanitizeJSONLines_PreservesCRLFFraming pins that CRLF records keep their
 // carriage returns across a rewrite.
 func TestSanitizeJSONLines_PreservesCRLFFraming(t *testing.T) {
@@ -229,6 +461,28 @@ func TestSanitizeJSONLines_PreservesCRLFFraming(t *testing.T) {
 	require.NotEmpty(t, findings)
 	assert.Equal(t, 2, strings.Count(string(out), "\r\n"), "CRLF framing must be preserved")
 	assert.NotContains(t, string(out), "ghp_FAKEtesttoken")
+}
+
+// TestSanitizeJSONDocument_TrailingNewlinePreserved pins that a rewritten
+// document keeps the file's own line framing.
+func TestSanitizeJSONDocument_TrailingNewlinePreserved(t *testing.T) {
+	p := OutputPipeline()
+	for name, doc := range map[string]string{
+		"lf":   "{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\"}\n",
+		"crlf": "{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\"}\r\n",
+		"none": "{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\"}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, findings, err := SanitizeJSONDocument([]byte(doc), p)
+			require.NoError(t, err)
+			require.NotEmpty(t, findings)
+			assert.NotContains(t, string(out), "ghp_FAKEtesttoken")
+
+			want := map[string]string{"lf": "\n", "crlf": "\r\n", "none": ""}[name]
+			assert.True(t, strings.HasSuffix(string(out), "}"+want), "trailing framing must be preserved: %q", out)
+			assert.Equal(t, strings.Count(doc, "\n"), strings.Count(string(out), "\n"))
+		})
+	}
 }
 
 // TestSanitizeJSONDocument_CleanDuplicateKeyDocumentUnchanged pins that a
@@ -243,9 +497,9 @@ func TestSanitizeJSONDocument_CleanDuplicateKeyDocumentUnchanged(t *testing.T) {
 	assert.Equal(t, string(doc), string(out), "a clean duplicate-key document must not be reformatted")
 }
 
-// TestSanitizeJSONDocument_DuplicateKeyRawTextFinding covers a duplicate-key
-// document whose only match exists in the serialized form: the leaves are
-// individually clean, so the raw-text scan finds and redacts it.
+// TestSanitizeJSONDocument_DuplicateKeyRawTextFinding covers a document whose
+// match exists in the serialized form: the leaves are individually clean, so
+// the raw-text scan finds and redacts it.
 func TestSanitizeJSONDocument_DuplicateKeyRawTextFinding(t *testing.T) {
 	p := OutputPipeline()
 	doc := []byte(`{"password": "secretvalue123", "dup": 1, "dup": 2}`)

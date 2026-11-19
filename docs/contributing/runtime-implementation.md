@@ -617,18 +617,22 @@ origins and warnings are documented in
 `scanOutputFiles` runs the output pipeline (Unicode normalization, then secret
 redaction) over every file under `output/` except the skips above and
 `security/findings.jsonl`. Valid JSON is sanitized structurally so redaction
-never changes its syntax: object keys and scalar leaves are scanned
-individually, and a document with duplicate keys goes through a
-token-preserving walk so every decoded occurrence is scanned, including an
-earlier value that map decoding would drop. `.jsonl`/`.ndjson` files are
-sanitized one record at a time to preserve the record framing; a secret that
-spans records cannot be redacted without rewriting that framing, so only the
-records it covers are replaced.
+never changes its syntax: every object key and scalar leaf is scanned
+individually through a token-preserving walk that keeps member order and
+duplicate keys, so an earlier value that map decoding would drop is still
+scanned, and a secret spanning JSON framing stays visible in the rewritten
+bytes. A sanitized key that would collide with a different member is
+disambiguated (`<key>_<N>`). The bytes actually written are scanned as well, so
+a secret that only exists in the serialized form is still caught.
+`.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
+record framing; a secret that spans records cannot be redacted without
+rewriting that framing, so only the records it covers are replaced.
 
 Some content cannot be redacted in place. A JSON document or JSONL record is
 replaced with a valid fail-closed marker instead — never with corrupted
-syntax — when a private-key block or a cross-record match spans JSON
-framing, or when a text redaction would leave invalid JSON. Markers look
+syntax — when a secret spans JSON framing (such as a private-key block split
+across members), when a match spans record boundaries, or when a text
+redaction would leave the document invalid. Markers look
 like `{"error":"output removed because …"}` and are logged as findings in
 `security/findings.jsonl`.
 

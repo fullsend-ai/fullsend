@@ -515,23 +515,6 @@ func TestScanOutputFiles_BackstopDoesNotRemaskExistingMask(t *testing.T) {
 	assert.Equal(t, first, second)
 }
 
-func TestSanitizeJSONStructure_CleanKeyWinsSanitizedCollision(t *testing.T) {
-	const sanitized = "ghp_..."
-	pipeline := security.OutputPipeline()
-	input := map[string]any{
-		"ghp_FAKEtesttoken000000000000000000000000": "secretkeyval",
-		sanitized: "plainval",
-	}
-	for range 20 {
-		got, findings := security.SanitizeJSONStructure(input, pipeline)
-		require.NotEmpty(t, findings)
-		result := got.(map[string]any)
-		assert.Equal(t, "plainval", result[sanitized], "clean key must retain its name and value")
-		assert.NotContains(t, result, "ghp_FAKEtesttoken000000000000000000000000")
-		assert.Len(t, result, 2)
-	}
-}
-
 // TestScanOutputFiles_CleanJSON verifies that clean JSON files with no findings
 // remain completely untouched byte-for-byte.
 func TestScanOutputFiles_CleanJSON(t *testing.T) {
@@ -576,29 +559,4 @@ func TestScanOutputFiles_NumericRuntimeSecretRedacted(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(gotJSONL)), "\n")
 	require.Len(t, lines, 1)
 	assert.True(t, json.Valid([]byte(lines[0])))
-}
-
-func TestHasDuplicateJSONKeys(t *testing.T) {
-	tests := []struct {
-		name string
-		json string
-		want bool
-	}{
-		{"no duplicates", `{"a": 1, "b": 2}`, false},
-		{"duplicate top-level", `{"a": 1, "a": 2}`, true},
-		{"nested duplicate", `{"parent": {"x": 1, "x": 2}}`, true},
-		{"nested no duplicate", `{"p1": {"x": 1}, "p2": {"x": 1}}`, false},
-		{"array with duplicate in object", `[{"k": 1, "k": 2}]`, true},
-		{"array with separate objects", `[{"k": 1}, {"k": 2}]`, false},
-		{"value matches key name", `{"a": "a", "b": "a"}`, false},
-		{"array values inside object", `{"a": [1, 2], "b": 3}`, false},
-		{"out-of-range number before duplicate keys", `{"large": 1e1000, "dup": 1, "dup": 2}`, true},
-		{"out-of-range number without duplicates", `{"large": 1e1000, "no_dup": 1}`, false},
-		{"malformed json", `{"a": `, false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, security.HasDuplicateJSONKeys([]byte(tc.json)))
-		})
-	}
 }

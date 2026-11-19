@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"regexp"
-	"sort"
 	"strconv"
 )
 
@@ -34,67 +33,32 @@ const redactedJSONKey = "redacted"
 // and the caller must leave it untouched. A document that is not valid JSON is
 // returned unchanged with no findings so the caller can fall back to a text
 // scan.
+//
+// The document is rewritten by a token-preserving walk rather than decoded into
+// a map and re-encoded: that keeps member order and duplicate keys, so a
+// secret that spans JSON framing is still visible in the rewritten bytes.
 func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	trimmed := bytes.TrimSpace(doc)
 	if len(trimmed) == 0 || !json.Valid(trimmed) {
 		return doc, nil, nil
 	}
-	if HasDuplicateJSONKeys(trimmed) {
-		return sanitizeDuplicateKeyDocument(trimmed, doc, p)
-	}
-
-	dec := json.NewDecoder(bytes.NewReader(trimmed))
-	dec.UseNumber()
-	var value any
-	if err := dec.Decode(&value); err != nil {
-		// json.Valid accepted the text, so this is a decoder limit rather than
-		// a syntax error. Keep the bytes and let the caller text-scan it.
-		return doc, nil, nil
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return doc, nil, nil
-	}
-
-	sanitized, findings := SanitizeJSONStructure(value, p)
-	multiline := bytes.Contains(bytes.TrimRight(doc, "\r\n"), []byte("\n"))
-	encoded, err := encodeJSONDocument(sanitized, multiline)
-	if err != nil {
-		return nil, findings, err
-	}
-	if len(findings) == 0 {
-		// A secret can appear only once the decoded leaves are re-serialized,
-		// for example a runtime secret that spans two adjacent values.
-		out, backstop := backstopSerializedJSON(encoded, doc, p)
-		return preserveTrailingNewline(out, doc), backstop, nil
-	}
-	out, backstop := backstopSerializedJSON(encoded, encoded, p)
-	return preserveTrailingNewline(out, doc), append(findings, backstop...), nil
-}
-
-// sanitizeDuplicateKeyDocument sanitizes a document that contains duplicate
-// object keys. Decoding it into a map would drop the earlier occurrences, so
-// every key and value is scanned through a token-preserving walk instead.
-func sanitizeDuplicateKeyDocument(trimmed, doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	rebuilt, findings, err := rewriteJSONTokens(trimmed, p)
 	if err != nil {
-		return nil, nil, err
+		// json.Valid accepted the text and the walk uses the same scanner, so
+		// this is a decoder limit rather than a syntax error. Return the error
+		// so the caller fails closed instead of writing unscanned bytes.
+		return nil, nil, fmt.Errorf("could not sanitize JSON document: %w", err)
 	}
-	if len(findings) == 0 {
-		// Nothing in the decoded leaves matched, so scan the raw text for
-		// patterns that only exist in the serialized form, such as a JSON
-		// field whose value is not otherwise recognizable.
-		res := p.Scan(string(trimmed))
-		if len(res.Findings) == 0 {
-			return doc, nil, nil
-		}
-		if res.Sanitized == "" || !json.Valid([]byte(res.Sanitized)) {
-			return preserveTrailingNewline([]byte(failClosedInvalidJSON), doc), res.Findings, nil
-		}
-		return preserveTrailingNewline([]byte(res.Sanitized), doc), res.Findings, nil
+	out := doc
+	if len(findings) > 0 {
+		out = rebuilt
 	}
-	out, backstop := backstopSerializedJSON(rebuilt, rebuilt, p)
-	return preserveTrailingNewline(out, doc), append(findings, backstop...), nil
+	// Scan the bytes that will actually be written. The walk above already
+	// scanned every decoded key and leaf, so a match here spans JSON framing
+	// (for example a PEM block split across members) and cannot be mapped back
+	// to a single leaf.
+	sanitizedOut, outputFindings := redactJSONOutput(out, p)
+	return preserveTrailingNewline(sanitizedOut, doc), append(findings, outputFindings...), nil
 }
 
 // preserveTrailingNewline drops the newline json.Encoder always appends and
@@ -112,13 +76,13 @@ func preserveTrailingNewline(encoded, doc []byte) []byte {
 	}
 }
 
-// backstopSerializedJSON scans serialized JSON for secrets that only become
-// visible once the parsed form is written back out. Such a match no longer
-// maps to a single leaf, so it is applied only when the redacted text is still
-// valid JSON; otherwise the document fails closed with a valid marker.
-// clean is returned unchanged when the scan finds nothing.
-func backstopSerializedJSON(serialized, clean []byte, p *Pipeline) ([]byte, []Finding) {
-	res := p.Scan(string(serialized))
+// redactJSONOutput scans the bytes about to be written for secrets that only
+// appear in the serialized form. Such a match does not map to a single leaf, so
+// it is applied only when the redacted text is still valid JSON; otherwise the
+// document fails closed with a valid marker. clean is returned unchanged when
+// the scan finds nothing.
+func redactJSONOutput(clean []byte, p *Pipeline) ([]byte, []Finding) {
+	res := p.Scan(string(clean))
 	if len(res.Findings) == 0 {
 		return clean, nil
 	}
@@ -213,30 +177,32 @@ type recordSpan struct {
 	start, end int
 }
 
-// failClosedRecordSpans replaces every record that intersects the region the
-// whole-stream scan rewrote with a valid fail-closed marker. Records outside
-// that region are copied through untouched, so a single cross-record match
-// never discards unrelated records.
+// failClosedRecordSpans replaces the records a whole-stream redaction changed
+// with a valid fail-closed marker. Records the redaction did not touch are
+// copied through unchanged, so two disjoint cross-record matches never discard
+// the clean records between them.
+//
+// The per-record pass has already handled every match a single record could
+// account for, so a remaining match spans a record boundary. Redaction masks
+// every occurrence of a match, so a record that still appears byte-for-byte in
+// the sanitized stream cannot carry one of the secrets just removed.
 func failClosedRecordSpans(stream []byte, spans []recordSpan, scan ScanResult) []byte {
 	sanitized := []byte(scan.Sanitized)
-	// Only reuse the redacted stream when redaction left the same number of
-	// independently parseable records. A match that consumed the JSON framing
-	// between two records would otherwise silently drop them.
-	if len(sanitized) > 0 && validJSONLines(sanitized, len(spans)) {
-		return sanitized
-	}
-	start, end := changedRegion(stream, sanitized)
-	if start >= end {
-		// The scan reported a finding but nothing in the bytes changed, so it
-		// cannot be localized: fail closed for every record.
-		start, end = 0, len(stream)
-	}
+
 	var out bytes.Buffer
 	cursor := 0
+	searchFrom := 0
 	for _, span := range spans {
-		if span.end <= start || span.start >= end {
+		record := stream[span.start:span.end]
+		if idx := bytes.Index(sanitized[searchFrom:], record); idx >= 0 {
+			searchFrom += idx + len(record)
+			out.Write(stream[cursor:span.end])
+			cursor = span.end
 			continue
 		}
+		// The record is not present verbatim, so a match covered part of it (or
+		// the scan reported a finding without changing bytes, which cannot be
+		// localized at all). Either way it must not be written as-is.
 		out.Write(stream[cursor:span.start])
 		out.WriteString(failClosedCrossRecordJSON)
 		cursor = span.end
@@ -245,43 +211,11 @@ func failClosedRecordSpans(stream []byte, spans []recordSpan, scan ScanResult) [
 	return out.Bytes()
 }
 
-// changedRegion returns the half-open byte range that differs between a and b.
-// It is approximate for length-changing edits, which is enough to find the
-// records a cross-record match covers.
-func changedRegion(a, b []byte) (int, int) {
-	limit := min(len(a), len(b))
-	start := 0
-	for start < limit && a[start] == b[start] {
-		start++
-	}
-	end := 0
-	for end < limit-start && a[len(a)-1-end] == b[len(b)-1-end] {
-		end++
-	}
-	return start, len(a) - end
-}
-
-// validJSONLines reports whether data holds exactly want non-empty lines, each
-// valid JSON.
-func validJSONLines(data []byte, want int) bool {
-	count := 0
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		trimmed := bytes.TrimSpace(line)
-		if len(trimmed) == 0 {
-			continue
-		}
-		if !json.Valid(trimmed) {
-			return false
-		}
-		count++
-	}
-	return count == want
-}
-
 // rewriteJSONTokens walks every token in doc, sanitizes each object key and
 // scalar value, and renders a valid JSON document. Unlike map decoding it
-// keeps duplicate keys and every occurrence, so a secret in an earlier,
-// overwritten value is still found and redacted.
+// keeps member order and duplicate keys, so a secret in an earlier, overwritten
+// value is still found, and a secret spanning JSON framing stays visible in the
+// rewritten bytes.
 func rewriteJSONTokens(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	dec.UseNumber()
@@ -336,13 +270,21 @@ func writeSanitizedJSONValue(dec *json.Decoder, buf *bytes.Buffer, p *Pipeline, 
 	}
 }
 
+// jsonMember is one object member whose value has been rendered but whose name
+// is not final yet. Names are resolved once the whole object has been read so a
+// sanitized name can never collide with a clean key that appears later.
+type jsonMember struct {
+	originalKey  string
+	sanitizedKey string
+	rendered     []byte
+}
+
 // writeSanitizedJSONContainer writes the members of an object or array,
 // preserving member order and duplicate keys.
 func writeSanitizedJSONContainer(dec *json.Decoder, buf *bytes.Buffer, p *Pipeline, findings *[]Finding, delim json.Delim) error {
 	switch delim {
 	case '{':
-		buf.WriteByte('{')
-		first := true
+		var members []jsonMember
 		for dec.More() {
 			keyTok, err := dec.Token()
 			if err != nil {
@@ -354,20 +296,30 @@ func writeSanitizedJSONContainer(dec *json.Decoder, buf *bytes.Buffer, p *Pipeli
 			}
 			sanitizedKey, keyFindings := sanitizeJSONKey(key, p)
 			*findings = append(*findings, keyFindings...)
-			if !first {
-				buf.WriteByte(',')
-			}
-			if err := writeJSONString(buf, sanitizedKey); err != nil {
+			var rendered bytes.Buffer
+			if err := writeSanitizedJSONValue(dec, &rendered, p, findings, sanitizedKey); err != nil {
 				return err
 			}
-			buf.WriteByte(':')
-			if err := writeSanitizedJSONValue(dec, buf, p, findings, sanitizedKey); err != nil {
-				return err
-			}
-			first = false
+			members = append(members, jsonMember{
+				originalKey:  key,
+				sanitizedKey: sanitizedKey,
+				rendered:     rendered.Bytes(),
+			})
 		}
 		if _, err := dec.Token(); err != nil { // consume '}'
 			return err
+		}
+		assignJSONMemberNames(members)
+		buf.WriteByte('{')
+		for i, m := range members {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if err := writeJSONString(buf, m.sanitizedKey); err != nil {
+				return err
+			}
+			buf.WriteByte(':')
+			buf.Write(m.rendered)
 		}
 		buf.WriteByte('}')
 		return nil
@@ -393,6 +345,43 @@ func writeSanitizedJSONContainer(dec *json.Decoder, buf *bytes.Buffer, p *Pipeli
 	}
 }
 
+// assignJSONMemberNames resolves the member names of one object. Clean keys keep
+// their names, and a sanitized name that would collide with a different key is
+// disambiguated. Repeats of the same original duplicate key keep sharing one
+// name, so intentional duplicate keys survive sanitization.
+func assignJSONMemberNames(members []jsonMember) {
+	claimed := make(map[string]string, len(members))
+	for _, m := range members {
+		if m.sanitizedKey == m.originalKey {
+			claimed[m.sanitizedKey] = m.originalKey
+		}
+	}
+	renamed := make(map[string]string, len(members))
+	for i := range members {
+		m := &members[i]
+		if m.sanitizedKey == m.originalKey {
+			continue
+		}
+		if target, ok := renamed[m.originalKey]; ok {
+			m.sanitizedKey = target
+			continue
+		}
+		target := m.sanitizedKey
+		if owner, taken := claimed[target]; taken && owner != m.originalKey {
+			for n := 1; ; n++ {
+				cand := fmt.Sprintf("%s_%d", m.sanitizedKey, n)
+				if _, exists := claimed[cand]; !exists {
+					target = cand
+					break
+				}
+			}
+		}
+		renamed[m.originalKey] = target
+		claimed[target] = m.originalKey
+		m.sanitizedKey = target
+	}
+}
+
 // writeJSONString appends s to buf as a JSON string literal without escaping
 // HTML characters, so legitimate markup survives sanitization.
 func writeJSONString(buf *bytes.Buffer, s string) error {
@@ -404,109 +393,6 @@ func writeJSONString(buf *bytes.Buffer, s string) error {
 	}
 	buf.Write(bytes.TrimSuffix(encoded.Bytes(), []byte("\n")))
 	return nil
-}
-
-// encodeJSONDocument renders v as JSON, indented when the original document was
-// multi-line so the rewritten file keeps its shape.
-func encodeJSONDocument(v any, multiline bool) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if multiline {
-		enc.SetIndent("", "  ")
-	}
-	if err := enc.Encode(v); err != nil {
-		return nil, fmt.Errorf("could not encode sanitized JSON: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
-// SanitizeJSONStructure recursively visits all keys and scalar values in parsed
-// JSON data, scans each one with the pipeline, and returns the sanitized value
-// together with every finding. The result is always structurally valid JSON.
-func SanitizeJSONStructure(v any, p *Pipeline) (any, []Finding) {
-	switch val := v.(type) {
-	case string:
-		res := p.Scan(val)
-		if len(res.Findings) > 0 {
-			// An empty sanitized value means everything was removed; that is a
-			// valid replacement for a string leaf.
-			return res.Sanitized, res.Findings
-		}
-		return val, nil
-	case map[string]any:
-		newMap := make(map[string]any, len(val))
-		keys := make([]string, 0, len(val))
-		for k := range val {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		// Reserve clean original names before assigning sanitized names so a
-		// secret key can never steal a legitimate key's name/value slot.
-		for _, k := range keys {
-			if keyRes := p.Scan(k); len(keyRes.Findings) == 0 {
-				newMap[k] = nil
-			}
-		}
-		var findings []Finding
-		for _, k := range keys {
-			item := val[k]
-			keyRes := p.Scan(k)
-			keyNeedsSanitization := len(keyRes.Findings) > 0
-			sanitizedKey := k
-			if keyNeedsSanitization {
-				findings = append(findings, keyRes.Findings...)
-				sanitizedKey = keyRes.Sanitized
-				if sanitizedKey == "" {
-					// The whole key was removable characters; never restore it.
-					sanitizedKey = redactedJSONKey
-				}
-			}
-			targetKey := sanitizedKey
-			if !keyNeedsSanitization {
-				targetKey = k
-			}
-			if _, exists := newMap[targetKey]; exists && keyNeedsSanitization {
-				for i := 1; ; i++ {
-					cand := fmt.Sprintf("%s_%d", sanitizedKey, i)
-					if _, exists := newMap[cand]; !exists {
-						targetKey = cand
-						break
-					}
-				}
-			}
-			if strVal, ok := item.(string); ok {
-				out, stringFindings := sanitizeJSONString(strVal, sanitizedKey, p)
-				findings = append(findings, stringFindings...)
-				newMap[targetKey] = out
-				continue
-			}
-			newVal, f := SanitizeJSONStructure(item, p)
-			findings = append(findings, f...)
-			newMap[targetKey] = newVal
-		}
-		return newMap, findings
-	case []any:
-		newSlice := make([]any, len(val))
-		var findings []Finding
-		for i, item := range val {
-			newVal, f := SanitizeJSONStructure(item, p)
-			findings = append(findings, f...)
-			newSlice[i] = newVal
-		}
-		return newSlice, findings
-	case json.Number:
-		res := p.Scan(val.String())
-		if len(res.Findings) > 0 {
-			if res.Sanitized == "" {
-				return "", res.Findings
-			}
-			return res.Sanitized, res.Findings
-		}
-		return val, nil
-	default:
-		return val, nil
-	}
 }
 
 // sanitizeJSONKey sanitizes one object key. A key whose sanitized value is
@@ -546,63 +432,4 @@ func sanitizeJSONString(value, memberKey string, p *Pipeline) (string, []Finding
 		out = masked
 	}
 	return out, findings
-}
-
-// HasDuplicateJSONKeys parses content token by token and reports whether any
-// JSON object within the payload contains duplicate keys.
-func HasDuplicateJSONKeys(content []byte) bool {
-	dec := json.NewDecoder(bytes.NewReader(content))
-	dec.UseNumber()
-	var stack []*jsonContainerFrame
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			return false
-		}
-		switch t := tok.(type) {
-		case json.Delim:
-			switch t {
-			case '{':
-				stack = append(stack, &jsonContainerFrame{
-					isObject:     true,
-					expectingKey: true,
-					keys:         make(map[string]bool),
-				})
-			case '[':
-				stack = append(stack, &jsonContainerFrame{isObject: false})
-			case '}', ']':
-				if len(stack) > 0 {
-					stack = stack[:len(stack)-1]
-				}
-				if len(stack) > 0 && stack[len(stack)-1].isObject {
-					stack[len(stack)-1].expectingKey = true
-				}
-			}
-		case string:
-			if len(stack) > 0 && stack[len(stack)-1].isObject {
-				top := stack[len(stack)-1]
-				if top.expectingKey {
-					if top.keys[t] {
-						return true
-					}
-					top.keys[t] = true
-					top.expectingKey = false
-				} else {
-					top.expectingKey = true
-				}
-			}
-		default:
-			if len(stack) > 0 && stack[len(stack)-1].isObject {
-				stack[len(stack)-1].expectingKey = true
-			}
-		}
-	}
-}
-
-// jsonContainerFrame tracks one open object or array while scanning for
-// duplicate keys.
-type jsonContainerFrame struct {
-	isObject     bool
-	expectingKey bool
-	keys         map[string]bool
 }
