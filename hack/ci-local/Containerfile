@@ -1,6 +1,6 @@
 # Local replica of the fullsend CI toolchain (.github/workflows/lint.yml,
 # mint-cf-worker-test.yml, site-build.yml): ubuntu-24.04 runner, Go, Python +
-# the pre-commit stack, Node, lychee, pinact. Build it with
+# the pre-commit stack, Node, lychee, pinact, yq. Build it with
 # `hack/ci-local/ci-local build-image`: the versions are read from go.mod and
 # lint.yml and passed in as build args, so this file pins none of them.
 # Digest-pinned like images/*; Renovate keeps the digest current.
@@ -31,8 +31,12 @@ ARG LYCHEE_VERSION
 ARG LYCHEE_SHA256_AMD64
 ARG PINACT_VERSION
 ARG PINACT_SHA256_AMD64
+ARG YQ_VERSION
+ARG YQ_SHA256_AMD64
+ARG YQ_SHA256_ARM64
 RUN for v in GO_VERSION PYTHON_VERSION NODE_VERSION PIP_PACKAGES LYCHEE_VERSION \
-        LYCHEE_SHA256_AMD64 PINACT_VERSION PINACT_SHA256_AMD64; do \
+        LYCHEE_SHA256_AMD64 PINACT_VERSION PINACT_SHA256_AMD64 \
+        YQ_VERSION YQ_SHA256_AMD64 YQ_SHA256_ARM64; do \
       eval "x=\${$v}"; [ -n "$x" ] || { echo "build arg $v is not set; build with hack/ci-local/ci-local build-image" >&2; exit 1; }; \
     done
 
@@ -84,9 +88,10 @@ RUN uv venv --python "${PYTHON_VERSION}" /opt/venv \
     && VIRTUAL_ENV=/opt/venv uv pip install ${PIP_PACKAGES} \
     && chmod -R a+rX /opt/uv-python /opt/venv
 
-# lychee + pinact (lint.yml "Install lychee" / "Install pinact"). On amd64 the
-# checksum is the one lint.yml pins; lint.yml pins no arm64 checksum, so other
-# architectures use the release's own checksum file.
+# lychee + pinact + yq (lint.yml "Install lychee" / "Install pinact" /
+# "Install yq"). On amd64 the checksum is the one lint.yml pins. lychee and
+# pinact have no arm64 pin in lint.yml, so other architectures use the
+# release's own checksum file; yq pins both architectures in lint.yml.
 RUN set -e; \
     case "$TARGETARCH" in amd64) a=x86_64 ;; arm64) a=aarch64 ;; *) a=$TARGETARCH ;; esac; \
     name="lychee-${a}-unknown-linux-gnu.tar.gz"; \
@@ -100,6 +105,15 @@ RUN set -e; \
     if [ "$TARGETARCH" = amd64 ]; then s=$PINACT_SHA256_AMD64; else s=$(sumof "$rel/pinact_${PINACT_VERSION}_checksums.txt" "$name"); fi; \
     fetch "$rel/$name" "$s"; \
     tar -xzf /tmp/dl -C /usr/local/bin pinact; rm /tmp/dl
+RUN set -e; \
+    name="yq_linux_${TARGETARCH}.tar.gz"; \
+    url="https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/$name"; \
+    if [ "$TARGETARCH" = amd64 ]; then s=$YQ_SHA256_AMD64; else s=$YQ_SHA256_ARM64; fi; \
+    fetch "$url" "$s"; \
+    tar -xzf /tmp/dl -C /tmp; rm /tmp/dl; \
+    mv /tmp/yq_linux_${TARGETARCH} /usr/local/bin/yq; \
+    chmod 0755 /usr/local/bin/yq; \
+    rm -f /tmp/yq.1 /tmp/install-man-page.sh
 
 # CI=true: matches Actions and makes `make ensure-hooks` a no-op, so running
 # lint never installs git hooks into the host checkout.

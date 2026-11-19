@@ -105,8 +105,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # checkout@v7 blocks fork PR checkouts on pull_request_target by default.
-          # Safe here: only .fullsend/ config is read, no fork code is executed,
-          # and credentials are not persisted.
+          # Safe here: trusted config under .fullsend/ is read; the vendored or
+          # workflow-pinned mint URL resolver may run later with id-token scope.
+          # Credentials are not persisted.
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
@@ -140,6 +141,49 @@ jobs:
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
+      - name: Prepare mint URL resolver script
+        id: mint-resolver-script
+        run: |
+          set -euo pipefail
+          RESOLVER=""
+          if [[ -f .defaults/.github/scripts/resolve-effective-mint-url.sh ]]; then
+            RESOLVER=".defaults/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ -n "${RESOLVER}" ]]; then
+            echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "fetched=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout workflow mint URL resolver
+        if: steps.mint-resolver-script.outputs.fetched == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-mint-resolver
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/resolve-effective-mint-url.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve effective mint URL
+        id: resolve-mint
+        env:
+          FALLBACK_MINT_URL: ${{ inputs.mint_url }}
+        run: |
+          set -euo pipefail
+          RESOLVER="${{ steps.mint-resolver-script.outputs.path }}"
+          if [[ -z "${RESOLVER}" ]]; then
+            RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ ! -f "${RESOLVER}" ]]; then
+            echo "::error::resolve-effective-mint-url.sh is missing from vendored defaults and workflow repository"
+            exit 1
+          fi
+          bash "${RESOLVER}"
 
       - name: Validate enrollment and extract repository metadata
         id: repo-parts
@@ -203,6 +247,6 @@ jobs:
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: .fullsend
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ steps.resolve-mint.outputs.mint_url }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

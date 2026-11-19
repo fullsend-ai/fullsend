@@ -157,6 +157,9 @@ resolve_versions() {
   add LYCHEE_SHA256_AMD64 "$(grep -m1 -E 'lychee\.tar\.gz.*sha256sum' "$wf" | grep -oE '[0-9a-f]{64}')" lint.yml
   add PINACT_VERSION "$(grep -m1 -oE 'pinact/releases/download/v[0-9.]+/' "$wf" | sed -E 's#.*/v##; s#/$##')" lint.yml
   add PINACT_SHA256_AMD64 "$(grep -m1 -E 'pinact\.tar\.gz.*sha256sum' "$wf" | grep -oE '[0-9a-f]{64}')" lint.yml
+  add YQ_VERSION "$(grep -m1 -oE 'mikefarah/yq/releases/download/v[0-9.]+/' "$wf" | sed -E 's#.*/v##; s#/$##')" lint.yml
+  add YQ_SHA256_AMD64 "$(grep -m1 -E 'yq\.tar\.gz.*sha256sum' "$wf" | grep -oE '[0-9a-f]{64}')" lint.yml
+  add YQ_SHA256_ARM64 "$(grep -m1 -E 'yq_linux_arm64\.tar\.gz.*sha256sum' "$wf" | grep -oE '[0-9a-f]{64}')" lint.yml
   # Docker and rootful Podman run as the host uid:gid (user_args); build
   # runner with those ids so whoami/id -un resolve. keep-id adds its own
   # passwd entry.
