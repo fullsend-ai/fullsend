@@ -1017,7 +1017,15 @@ type probeOIDC struct {
 	header   map[string]any // overrides of the valid header; a nil value removes the field
 	wrongKey bool           // sign with a key GitHub does not publish
 	noJWKS   bool           // the signing-key endpoint fails
+	keyForm  string         // how the JWKS publishes the key: "" for x5c only, "ne" for n and e only, "none" for neither
 }
+
+// Forms of the published key in the fake JWKS (probeOIDC.keyForm).
+const (
+	probeKeyX5C  = ""
+	probeKeyNE   = "ne"
+	probeKeyNone = "none"
+)
 
 type probeKeys struct {
 	published, other *rsa.PrivateKey
@@ -1087,10 +1095,18 @@ func signedProbeOIDC(t *testing.T, o probeOIDC) (token, jwks string) {
 	require.NoError(t, err)
 
 	if !o.noJWKS {
-		b, err := json.Marshal(map[string]any{"keys": []map[string]any{{
-			"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "probe-test-kid",
-			"x5c": []string{base64.StdEncoding.EncodeToString(keys.cert)},
-		}}})
+		jwk := map[string]any{"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "probe-test-kid"}
+		switch o.keyForm {
+		case probeKeyX5C:
+			jwk["x5c"] = []string{base64.StdEncoding.EncodeToString(keys.cert)}
+		case probeKeyNE:
+			jwk["n"] = base64.RawURLEncoding.EncodeToString(keys.published.N.Bytes())
+			jwk["e"] = base64.RawURLEncoding.EncodeToString(big.NewInt(int64(keys.published.E)).Bytes())
+		case probeKeyNone:
+		default:
+			t.Fatalf("unknown key form %q", o.keyForm)
+		}
+		b, err := json.Marshal(map[string]any{"keys": []map[string]any{jwk}})
 		require.NoError(t, err)
 		jwks = string(b)
 	}
@@ -1246,6 +1262,41 @@ func TestMintProbeWorkflowScript_VerifiesOIDCToken(t *testing.T) {
 		assert.Equal(t, "denied", res.Outcome)
 		assert.True(t, res.OIDCVerified)
 	})
+}
+
+// TestMintProbeWorkflowScript_JWKSKeyForms covers the forms GitHub publishes a
+// signing key in: the probe verifies the token from the key's x5c certificate
+// and, for a key without x5c, from its RSA n and e values.
+func TestMintProbeWorkflowScript_JWKSKeyForms(t *testing.T) {
+	for _, tool := range []string{"jq", "openssl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
+		}
+	}
+
+	for name, tc := range map[string]struct {
+		oidc   probeOIDC
+		reason string // "" when the token verifies
+	}{
+		"x5c key":                    {oidc: probeOIDC{keyForm: probeKeyX5C}},
+		"x5c key, other signer":      {oidc: probeOIDC{keyForm: probeKeyX5C, wrongKey: true}, reason: "signature does not verify"},
+		"n and e key":                {oidc: probeOIDC{keyForm: probeKeyNE}},
+		"n and e key, other signer":  {oidc: probeOIDC{keyForm: probeKeyNE, wrongKey: true}, reason: "signature does not verify"},
+		"key without x5c or n and e": {oidc: probeOIDC{keyForm: probeKeyNone}, reason: "no signing key for the token's kid"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, _, _ := runMintProbeScript(t, probeScriptRun{oidc: tc.oidc, mintStatus: "401", mintBody: `{"error":"authentication failed"}`, revoke: "ok"})
+			if tc.reason == "" {
+				assert.Equal(t, "denied", res.Outcome, "the mint is called with the verified token")
+				assert.True(t, res.OIDCVerified)
+				return
+			}
+			assert.Equal(t, "error", res.Outcome)
+			assert.Equal(t, "oidc", res.Error)
+			assert.False(t, res.OIDCVerified)
+			assert.Equal(t, "the OIDC token failed verification: "+tc.reason, res.Message)
+		})
+	}
 }
 
 // TestMintProbeWorkflowScript_DoesNotEchoResult keeps the mint's response
