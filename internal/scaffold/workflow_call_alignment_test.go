@@ -1245,11 +1245,15 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 // still pass TestRouteJobPayloadEmbedsNormalizedEvent): the step must invoke
 // the normalizer with --print-event, --event-action and --config-dir, and
 // neither it nor any step of the payload-cli install ladder may set
-// continue-on-error — the embed fails closed by design (AISDLC-505).
+// continue-on-error — the embed fails closed by design (AISDLC-505). Every
+// payload step must also gate on the review-skip guard the job-level `stage`
+// output uses, so an unchanged-diff synchronize push (review skipped, no stage
+// job) runs neither the ladder nor the payload step.
 func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 	type workflowStep struct {
 		Name            string `yaml:"name"`
 		Run             string `yaml:"run"`
+		If              string `yaml:"if"`
 		ContinueOnError any    `yaml:"continue-on-error"`
 	}
 	type workflowJob struct {
@@ -1296,6 +1300,12 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 		default:
 			assert.Fail(t, "step %q must not set continue-on-error (got %v): the payload embed fails closed", step.Name, v)
 		}
+	}
+
+	const reviewSkipGuard = "steps.review-skip-publish.outputs.skipped != 'true'"
+	for _, step := range ladder {
+		assert.Contains(t, step.If, reviewSkipGuard,
+			"step %q must gate on the review-skip guard like the job-level `stage` output, so an unchanged-diff synchronize push with the review skipped runs no payload work", step.Name)
 	}
 }
 
