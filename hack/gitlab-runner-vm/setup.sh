@@ -1231,9 +1231,17 @@ install_os_update() {
   # While the hold file exists, gitlab-runner cannot start: not through
   # Restart=always after os-update.sh's graceful SIGQUIT, and not at boot
   # after an update reboot, until the runner passes its health check.
+  # ConditionPathExists= alone is not enough: systemd does not re-check unit
+  # conditions for an automatic restart (the unit is still "activating" in
+  # its auto-restart state), so Restart=always brought the runner back
+  # mid-drain (#9690). ExecCondition= runs on every start, including
+  # automatic restarts, and a start it skips is not restarted again.
   sudo tee "${GITLAB_RUNNER_OVERRIDE_DIR}/os-update-hold.conf" > /dev/null <<EOF
 [Unit]
 ConditionPathExists=!${hold_file}
+
+[Service]
+ExecCondition=/usr/bin/test ! -e ${hold_file}
 EOF
 
   sudo tee "${SYSTEMD_SYSTEM_DIR}/fullsend-os-update.service" > /dev/null <<EOF
