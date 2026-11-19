@@ -3837,6 +3837,32 @@ func convergeRepoCredentials(ctx context.Context, d convergeDiscovery, wifProvid
 	return actions, nil
 }
 
+// supersedePinOnlyRefFiles merges content-drift repairs into files, the
+// scaffold files already queued. A repair for a pin-only ref path (see
+// collectConvergeScaffoldFiles) replaces that queued file in place, so one
+// run delivers both the new pin and any template change shipped with it,
+// such as a changed shim trigger (#9714). A shim repair rendered at the
+// other workflow extension (.yml vs .yaml) replaces the queued shim at its
+// installed path instead of adding a second shim. Other repairs are
+// appended.
+func supersedePinOnlyRefFiles(files, driftFiles []forge.TreeFile, pinOnly map[string]bool, workflowPaths []string) []forge.TreeFile {
+	for _, df := range driftFiles {
+		idx := slices.IndexFunc(files, func(f forge.TreeFile) bool {
+			if !pinOnly[f.Path] {
+				return false
+			}
+			return f.Path == df.Path ||
+				(slices.Contains(workflowPaths, f.Path) && slices.Contains(workflowPaths, df.Path))
+		})
+		if idx < 0 {
+			files = append(files, df)
+			continue
+		}
+		files[idx].Content = df.Content
+	}
+	return files
+}
+
 // collectConvergeScaffoldFiles plans atomic scaffold and configuration delivery.
 // It returns the planned files and actions without writing credentials.
 func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg ConvergeConfig, refResolver *RefResolver, progress ProgressFunc) ([]forge.TreeFile, []ComponentAction, error) {
@@ -3858,11 +3884,10 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 	}
 
 	// A ref upgrade only rewrites the shim's version marker. When the
-	// installed GitHub shim cannot forward FULLSEND_OPENAI_API_KEY, queueing
-	// that marker-only rewrite would also exclude the shim from content-drift
-	// repair and deliver a shim that still cannot use the selected credential.
-	// Leave the shim to content-drift repair, which renders the full template
-	// at the target ref.
+	// installed GitHub shim cannot forward FULLSEND_OPENAI_API_KEY, that
+	// marker-only rewrite would deliver a shim that still cannot use the
+	// selected credential. Leave the shim to content-drift repair, which
+	// renders the full template at the target ref.
 	refFiles, legacyErr := withoutLegacyOpenAIConsumer(ctx, resolved, refFiles)
 	if legacyErr != nil {
 		return allScaffoldFiles, actions, legacyErr
@@ -3917,8 +3942,28 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 	// structure changed between releases while the ref stayed the
 	// same). This is the gap that caused #6576: converge only checked
 	// presence, not content, so stale-but-present files were skipped.
+	//
+	// On GitHub every ref file is a pin-only rewrite (see
+	// convergeRefFiles), so content drift still checks those paths and
+	// may supersede them with the full template at the target ref. The
+	// dry run queues no ref files, so this also gives both runs the same
+	// skip set (#9714).
+	driftCoveredPaths := refFileSet
+	var pinOnlyPaths map[string]bool
+	if resolved.Forge != ForgeGitLab && len(refFiles) > 0 {
+		pinOnlyPaths = make(map[string]bool, len(refFiles))
+		for _, f := range refFiles {
+			pinOnlyPaths[f.Path] = true
+		}
+		driftCoveredPaths = make(map[string]bool, len(refFileSet))
+		for p := range refFileSet {
+			if !pinOnlyPaths[p] {
+				driftCoveredPaths[p] = true
+			}
+		}
+	}
 	contentDriftFiles, contentDriftActions := convergeContentDriftFiles(
-		ctx, resolved, cfg, refResolver, refFileSet,
+		ctx, resolved, cfg, refResolver, driftCoveredPaths,
 		DriftConfig{
 			ReviewAppClientID: d.reviewClientID,
 			AgentRunnerTags:   gitlabAgentRunnerTags(cfg.Manifest),
@@ -3938,7 +3983,8 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 	if len(contentErrors) > 0 {
 		return allScaffoldFiles, actions, fmt.Errorf("convergence errors: %s", strings.Join(contentErrors, "; "))
 	}
-	allScaffoldFiles = append(allScaffoldFiles, contentDriftFiles...)
+	allScaffoldFiles = supersedePinOnlyRefFiles(allScaffoldFiles, contentDriftFiles,
+		pinOnlyPaths, resolved.ForgeConfig.WorkflowPaths)
 
 	// Root input migration uses the wrapper that will actually be committed,
 	// including ref upgrades, repairs and remote pinned templates.

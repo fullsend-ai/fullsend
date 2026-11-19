@@ -1246,6 +1246,147 @@ func TestConverge_RefUpgradeWithThinCallers(t *testing.T) {
 	}
 }
 
+// TestConverge_RefUpgradeDeliversFullShimTemplate covers #9714: a ref
+// upgrade of a shim whose template also changed (pull_request_target →
+// pull_request) must deliver the full template at the new pin in one
+// pass, not a pin-only rewrite that leaves content drift for a second run.
+// The dry run must report the same shim repair.
+func TestConverge_RefUpgradeDeliversFullShimTemplate(t *testing.T) {
+	const shimPath = ".github/workflows/fullsend.yaml"
+	setup := func(t *testing.T) *forge.FakeClient {
+		t.Helper()
+		fc := newFakeClientForBatch("acme/api")
+		markFullyInstalled(fc, "acme", "api")
+		populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+		shim := string(fc.FileContents["acme/api/"+shimPath])
+		oldShim := strings.Replace(shim, "\n  pull_request:\n", "\n  pull_request_target:\n", 1)
+		if oldShim == shim {
+			t.Fatal("shim template has no pull_request trigger to rewrite")
+		}
+		fc.FileContents["acme/api/"+shimPath] = []byte(oldShim)
+		return fc
+	}
+	manifest := func() *Manifest {
+		m := newConvergeManifest("acme/api")
+		m.GitHub.FullsendRef = "v2.0.0"
+		return m
+	}
+
+	t.Run("live", func(t *testing.T) {
+		fc := setup(t)
+		var committed []forge.TreeFile
+		commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+			committed = files
+			return nil
+		}
+		cfg := withoutInferenceInputs(convergeCfgWithDefaults(manifest()))
+		if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress); err != nil {
+			t.Fatalf("Converge() error: %v", err)
+		}
+
+		var shims []forge.TreeFile
+		for _, f := range committed {
+			if slices.Contains(GitHubForgeConfig().WorkflowPaths, f.Path) {
+				shims = append(shims, f)
+			}
+		}
+		if len(shims) != 1 {
+			t.Fatalf("committed %d shim files, want exactly 1", len(shims))
+		}
+		got := string(shims[0].Content)
+		if strings.Contains(got, "pull_request_target:") || !strings.Contains(got, "\n  pull_request:\n") {
+			t.Errorf("committed shim does not use the pull_request trigger:\n%s", got)
+		}
+		if ref := extractWorkflowRef(shims[0].Content, GitHubForgeConfig()); ref != "v2.0.0" {
+			t.Errorf("committed shim ref = %q, want v2.0.0", ref)
+		}
+
+		// The commit leaves no shim content drift for a second run.
+		fc.FileContents["acme/api/"+shims[0].Path] = shims[0].Content
+		expected, err := BuildScaffoldFiles(InstallConfig{
+			Owner: "acme", Repo: "api", Forge: ForgeGitHub,
+			Roles: []string{"triage"}, MintURL: "https://mint.example.com",
+			UpstreamRef: "v2.0.0", UpstreamTag: "v2.0.0",
+			ManagedConfig: emptyManagedOverlay(t),
+		})
+		if err != nil {
+			t.Fatalf("BuildScaffoldFiles: %v", err)
+		}
+		drifted, err := CheckFileContentDrift(context.Background(), fc, "acme", "api",
+			GitHubForgeConfig(), ForgeGitHub, expected)
+		if err != nil {
+			t.Fatalf("CheckFileContentDrift: %v", err)
+		}
+		for _, d := range drifted {
+			if d.InstalledPath == shims[0].Path {
+				t.Errorf("shim %s still drifts after one converge pass", d.InstalledPath)
+			}
+		}
+	})
+
+	t.Run("dry-run", func(t *testing.T) {
+		fc := setup(t)
+		sc := &fakeScaffoldCommit{}
+		cfg := withoutInferenceInputs(convergeCfgWithDefaults(manifest()))
+		cfg.DryRun = true
+		result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+		if err != nil {
+			t.Fatalf("Converge() error: %v", err)
+		}
+		if len(result.Results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(result.Results))
+		}
+		var refUpgrade, shimRepair bool
+		for _, a := range result.Results[0].Actions {
+			if a.Component == "ref" && a.Action == "upgrade" {
+				refUpgrade = true
+			}
+			if a.Component == shimPath && a.Action == "update" {
+				shimRepair = true
+			}
+		}
+		if !refUpgrade || !shimRepair {
+			t.Errorf("dry run actions: ref upgrade=%v, shim repair=%v; want both", refUpgrade, shimRepair)
+		}
+	})
+}
+
+func TestSupersedePinOnlyRefFiles(t *testing.T) {
+	wfPaths := GitHubForgeConfig().WorkflowPaths
+	queued := []forge.TreeFile{
+		{Path: ".github/workflows/fullsend.yml", Content: []byte("pin-only shim"), Mode: "100644"},
+		{Path: ".github/workflows/prioritize.yml", Content: []byte("pin-only caller"), Mode: "100644"},
+		{Path: ".github/workflows/repaired.yml", Content: []byte("repair"), Mode: "100644"},
+	}
+	pinOnly := map[string]bool{queued[0].Path: true, queued[1].Path: true}
+	drift := []forge.TreeFile{
+		{Path: ".github/workflows/fullsend.yaml", Content: []byte("full shim"), Mode: "100644"},
+		{Path: ".github/workflows/prioritize.yml", Content: []byte("full caller"), Mode: "100644"},
+		{Path: ".fullsend/other.yaml", Content: []byte("other"), Mode: "100644"},
+	}
+
+	got := supersedePinOnlyRefFiles(slices.Clone(queued), drift, pinOnly, wfPaths)
+	want := []forge.TreeFile{
+		{Path: ".github/workflows/fullsend.yml", Content: []byte("full shim"), Mode: "100644"},
+		{Path: ".github/workflows/prioritize.yml", Content: []byte("full caller"), Mode: "100644"},
+		{Path: ".github/workflows/repaired.yml", Content: []byte("repair"), Mode: "100644"},
+		{Path: ".fullsend/other.yaml", Content: []byte("other"), Mode: "100644"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d files, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Path != want[i].Path || string(got[i].Content) != string(want[i].Content) {
+			t.Errorf("file %d = %s %q, want %s %q", i, got[i].Path, got[i].Content, want[i].Path, want[i].Content)
+		}
+	}
+
+	// Without pin-only paths every repair is appended.
+	if got := supersedePinOnlyRefFiles(slices.Clone(queued), drift, nil, wfPaths); len(got) != len(queued)+len(drift) {
+		t.Errorf("nil pinOnly: got %d files, want %d", len(got), len(queued)+len(drift))
+	}
+}
+
 func TestConverge_SameRefNoCommit(t *testing.T) {
 	repoNames := []string{"acme/api"}
 	fc := newFakeClientForBatch(repoNames...)
