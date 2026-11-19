@@ -40,7 +40,8 @@ type BootstrapInput interface {
 	// AgentSubagents returns the per-agent subagents map from the merged
 	// config agents: entry for this run's agent. Keys are persona names
 	// (or "default"); values are model references (nil = tombstone).
-	// Used by the pi runtime to resolve each persona's model (#7031).
+	// Used by the pi and Claude Code runtimes to resolve each persona's
+	// model (#7031, #9692) and by codex for its child models.
 	AgentSubagents() map[string]*string
 	// ParentModel returns the model this run's agent actually runs on --
 	// after the agents: entry, --model and the alias remap -- or "" when

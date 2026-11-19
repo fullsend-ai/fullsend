@@ -130,6 +130,15 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
 	configDir := r.ConfigDir()
 
+	// Persona routing (ADR 0104), only behind a live agents[].subagents
+	// entry: each persona becomes an agent file with the runner-resolved
+	// model, and the agent definition gains the runtime note naming them.
+	// Resolved before any sandbox call, so a config error fails fast.
+	personaFiles, agentData, err := claudePersonas(input, agentData, claudeGatewayRunFor(sandboxName) != nil)
+	if err != nil {
+		return err
+	}
+
 	// On the gateway route a gateway/ model in the frontmatter must reach
 	// Claude Code as an explicit --model without the prefix.
 	agentModel := AgentDefinitionModel(agentPath)
@@ -153,6 +162,11 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 
 	if err := uploadBytes(sandboxName, fmt.Sprintf("%s/agents/%s", configDir, agentDest), agentData); err != nil {
 		return fmt.Errorf("copying agent definition: %w", err)
+	}
+	for _, p := range personaFiles {
+		if err := uploadBytes(sandboxName, fmt.Sprintf("%s/agents/%s.md", configDir, p.Name), p.Data); err != nil {
+			return fmt.Errorf("copying persona %q: %w", p.Name, err)
+		}
 	}
 
 	if err := uploadHarnessSkills(sandboxName, configDir+"/skills", input.SkillDirs()); err != nil {
