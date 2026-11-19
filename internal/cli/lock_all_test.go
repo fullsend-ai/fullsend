@@ -1098,6 +1098,52 @@ func TestLockAll_RejectedConfigDoesNotPruneConfigOnlyEntry(t *testing.T) {
 	assert.Equal(t, string(before), string(after), "lock file must be unchanged when config is rejected")
 }
 
+func TestLockAll_AgentDiscoveryFailureDoesNotPrune(t *testing.T) {
+	// When config.yaml loads but its agents cannot be resolved, the run must
+	// fail instead of treating every config-registered agent as removed and
+	// pruning its lock entry.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "custom"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "bar.yaml"),
+		[]byte("agent: agents/bar.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "custom", "foo.yaml"),
+		[]byte("agent: agents/foo.md\nrole: test\n"),
+		0o644,
+	))
+	orgConfig := "version: \"1\"\n" +
+		"agents:\n" +
+		"  - source: custom/foo.yaml\n" +
+		"  - name: triage\n" +
+		"    trigger: \"this is ((( not cel\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	lockPath := filepath.Join(dir, "lock.yaml")
+	require.NoError(t, lock.Save(lockPath, &lock.LockFile{
+		Harnesses: map[string]lock.HarnessLock{
+			"foo": {Source: "harness/foo.yaml", SHA256: "abc123"},
+		},
+	}))
+	before, err := os.ReadFile(lockPath)
+	require.NoError(t, err)
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	err = runLockAll(context.Background(), dir, "", false, resolveFlags{offline: true}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "discovering config-registered agents")
+	assert.Contains(t, err.Error(), "triage")
+	assert.NotContains(t, buf.String(), "Pruned lock entry")
+
+	after, err := os.ReadFile(lockPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "lock file must be unchanged when agent discovery fails")
+}
+
 func TestRunLock_RejectedConfigFails(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
