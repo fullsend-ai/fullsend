@@ -52,6 +52,10 @@ branches. Domain dispatch and assessment semantics remain in adapters.
 
 The journal retains stable operation identities, input bindings, work bounds,
 effect intents and separate scheduling, execution and publication receipts.
+Execution receipts retain recovery state and references to runs and available
+traces; detailed execution history remains in run telemetry. The journal
+determines what work needs recovery, while telemetry records what happened
+within a run. Correlation mechanisms remain an implementation choice.
 Conditional updates, integrity checks and ownership fencing prevent competing
 or superseded workers from accepting results or admitting new effects. An
 external request admitted before ownership loss remains in-flight until its
@@ -83,8 +87,14 @@ not a coordinator agent.
 
 Only authorized trusted host code writes the journal. Assessment workers
 receive admitted context without journal-write credentials. Journal state
-contains bounded identities, digests and receipts; artifact publication policy
-still applies. Journal contents grant no authority, and integrity failure
+contains bounded identities, digests and receipts. Workflow integrators must
+ensure journal contents and retained evidence are accessible only to readers
+authorized for that data; journal storage may use a separate private repository.
+Artifact publication filters do not protect journal commits. With artifact
+levels of `metadata` or `none`, evidence needed for recovery requires a separate
+store permitted by the source's disclosure and retention policies. Its location
+and access controls are integration choices. Journal contents grant no
+authority, and integrity failure
 stops scheduling and publication rather than resetting state and repeating work.
 
 ## Entity state and journal state
