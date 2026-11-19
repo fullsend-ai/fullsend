@@ -229,8 +229,11 @@ process environment.) These names are **not** inherited from that environment:
 A script receives the Jira secrets, the reserved Jira names and the OTLP headers only when the
 harness declares them under `env.runner`, for example
 `FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`. The bot-role helper names are the exception: an
-`env.runner` entry for one is dropped, and `fullsend run` injects the names itself when it starts
-the helper, so declaring one delivers nothing. A script that reads the `JIRA_*` names gets them
+`env.runner` entry with a literal value for one is dropped, and `fullsend run` injects the names
+itself when it starts the helper, so declaring one delivers nothing. A `${...}` reference to
+`FULLSEND_BOT_ROLE_URL` or `FULLSEND_BOT_ROLE_TOKEN` also fails run validation (and
+`fullsend lint`) instead of resolving, because the pair is denied at every harness expansion
+site. A script that reads the `JIRA_*` names gets them
 mapped from the Jira repository secrets: `JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`,
 `JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"`. `fullsend run` itself still reads these names for its
 own Jira client and trace export. Earlier releases passed them to every script. See
@@ -253,12 +256,15 @@ Outside `env.runner`, the Jira repository secrets expand as follows:
 
 The runner-owned bot-role helper names `FULLSEND_BOT_ROLE_URL` and
 `FULLSEND_BOT_ROLE_TOKEN` expand empty at the same sandbox-bound sites
-(`env.sandbox` values, expanded `host_files` content, `FULLSEND_OUTPUT_FILE`)
-and in provider values: a nested `fullsend run` started by a pre- or
-post-script inherits the outer run's helper variables in its process
-environment, and the alias path — a different `env.sandbox` key or staged
-host-file content referencing them — must not carry the outer run's helper
-credential to the inner agent.
+(`env.sandbox` values, expanded `host_files` content, `FULLSEND_OUTPUT_FILE`),
+in provider values, and in `env.runner` and `runner_env` values: a nested
+`fullsend run` started by a pre- or post-script inherits the outer run's
+helper variables in its process environment, and the alias path — a different
+`env.sandbox` key, staged host-file content, or an `env.runner`/`runner_env`
+entry referencing them — must not carry the outer run's helper credential to
+the inner agent. At the `env.runner` and `runner_env` sites the reference
+fails run validation (and `fullsend lint`) instead of resolving to an empty
+string, the same fail-closed refusal the OIDC credential names get.
 
 For a Jira-sourced run, `fullsend run` sets three connection variables before env expansion,
 replacing any inherited value:
