@@ -1021,18 +1021,11 @@ how the repository was set up:
   `template fetch at the target ref failed: delivering the pin upgrade only;
   run install again to deliver template changes`. Run it again once the
   fetch works to deliver the trigger.
-- **Single repositories set up with `fullsend github setup`:** `repos install`
-  needs a manifest, so upgrade the CLI and re-run setup with no flags:
-
-  ```bash
-  fullsend self-update        # or download the release
-  fullsend github setup "$OWNER/$REPO"
-  ```
-
-  The re-run opens one setup PR that rewrites the trigger and the workflow
-  pin, and it keeps `.fullsend/config.yaml`. See
-  [Syncing workflow templates](operations.md#syncing-workflow-templates) for
-  what the re-run changes and when to add flags.
+- **Single repositories set up with `fullsend github setup`** and no manifest:
+  upgrade the CLI, re-run `fullsend github setup "$OWNER/$REPO"` with no
+  flags, and merge the setup PR it opens. Follow
+  [Upgrading a single repository](operations.md#upgrading-a-single-repository):
+  the re-run writes repository variables before the PR merges.
 
 Private and internal repositories are not blocked, and a shim that is not
 upgraded keeps working there (the warning appears only in public

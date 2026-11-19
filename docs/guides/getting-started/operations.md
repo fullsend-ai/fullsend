@@ -116,42 +116,66 @@ To upgrade the fullsend CLI, download the latest release from
 [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases), or run
 [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
 
-To upgrade a single repository set up with `fullsend github setup`, upgrade
-the CLI and re-run `github setup` with no flags. This bare re-run is the
-supported single-repo upgrade:
+### Upgrading a single repository
 
-```bash
-fullsend self-update        # or download the release
-fullsend github setup "$OWNER/$REPO"
+Use this route for a repository set up with `fullsend github setup` and not declared in a `repos.yaml` manifest. `fullsend repos install` needs a manifest; manifest repositories follow [Upgrading manifest-managed repositories](#upgrading-manifest-managed-repositories) below.
+
+**You need:** admin access to the repository, and GitHub CLI authentication (`gh auth login`, or `GH_TOKEN` set) with the `repo` and `workflow` scopes.
+
+1. Upgrade the CLI:
+
+   ```bash
+   fullsend self-update        # or download the release
+   ```
+
+2. Preview the re-run. It changes nothing:
+
+   ```bash
+   fullsend github setup "$OWNER/$REPO" --dry-run
+   ```
+
+   Check the repository variables it lists. Variables and secrets are written as soon as step 3 runs, before you merge anything. A `FULLSEND_MINT_URL` or `FULLSEND_GCP_REGION` that you set only as a repository variable goes back to the configuration value or the default; put it in `.fullsend/config.yaml` first. If the install is vendored (the repository has `.fullsend/bin/`), add `--vendor` in step 3; without it the vendored assets are deleted from the default branch right away.
+
+3. Re-run setup with no flags (add `--vendor` for a vendored install):
+
+   ```bash
+   fullsend github setup "$OWNER/$REPO"
+   ```
+
+4. Review and merge the setup PR it prints. The default branch keeps the old shim until you merge.
+
+**What success looks like.** Output from upgrading a v0.56.1 install (shortened, repository name replaced):
+
+```
+→ Setting up per-repo fullsend for owner/repo
+
+    Keeping existing .fullsend/config.yaml unchanged (pass --runtime, --agents, --mint-url or --inference-* to change a key)
+  • Checking token permissions
+  ✓ Token permissions verified
+
+  • Creating scaffold PR for owner/repo (target: main)
+  ✓ Created PR #2: https://github.com/owner/repo/pull/2
+    Merge the PR to apply these changes
+  • Configuring repository variables
+  ✓ Set 5 repository variables
+  • Configuring repository secrets
+  ✓ Set 2 repository secrets
+
+  ✓ Per-repo setup complete for owner/repo
 ```
 
-The re-run opens one setup PR. That PR moves the shim trigger from
-`pull_request_target` to `pull_request` and updates the workflow pin to the
-CLI's release. The re-run also rewrites the repository variables and secrets
-from `.fullsend/config.yaml`. When the file sets no `inference.project` or
-`inference.wif_provider`, the existing GCP secret stays as it is.
+The PR has one commit. It moves the shim trigger and the workflow pins, and leaves `.fullsend/config.yaml` alone:
 
-The re-run keeps your configuration. It does not rewrite
-`.fullsend/config.yaml`, and a custom `FULLSEND_APP_SET` repository variable
-stays as it is.
+```diff
+-  pull_request_target:
++  pull_request:
+-    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@27c1d6ce1d384fa8b85b6789653fb3505d93c9d3  # v0.56.1
++    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@f24e7d3bb03c44371e58653f0fd051ed9c445b0f  # v0.57.0
+```
 
-Add flags only in these cases:
+Add other flags only if the install used `--config` or `--fullsend-ref`, or to change a configuration key; see [Re-running per-repo setup](../../cli/github.md#re-running-per-repo-setup).
 
-- **The install used `--vendor` or `--fullsend-ref`.** Pass the same flag
-  again. A re-run without `--vendor` removes the vendored assets.
-- **A value is set only as a repository variable.** A value such as
-  `FULLSEND_MINT_URL` or `FULLSEND_GCP_REGION` that is set as a repository
-  variable but not in `config.yaml` goes back to the `config.yaml` value or
-  the default. Put the value in `config.yaml`, or pass its flag
-  (`--mint-url`, `--inference-region`).
-- **You want to change a configuration key.** Passing a config flag, such as
-  `--runtime` or `--inference-project`, changes that key in `config.yaml`.
-  Setup then re-serializes the file, so its comments are lost. See
-  [Re-running per-repo setup](../../cli/github.md#github-setup).
-
-`fullsend repos install` needs a manifest. A repository set up with
-`github setup` and not declared in a manifest upgrades with the bare re-run
-above.
+### Upgrading manifest-managed repositories
 
 For manifest-managed installations (including GitLab repos), use `repos install` to converge all repos (including workflow ref upgrades):
 

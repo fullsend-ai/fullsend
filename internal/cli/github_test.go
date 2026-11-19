@@ -1616,10 +1616,18 @@ jobs:
 
 // TestRunGitHubSetupPerRepo_Rerun_UpgradesPullRequestTargetShim covers the
 // documented single-repo upgrade (#9715): a bare re-run of github setup on a
-// repo without a manifest moves the shim from pull_request_target to
-// pull_request in one setup commit and keeps .fullsend/config.yaml.
+// repo without a manifest, whose shim still triggers on pull_request_target,
+// opens one setup PR whose single commit carries the pull_request shim pinned
+// to this CLI's release, and leaves .fullsend/config.yaml out. Setup renders
+// the shim from the embedded template and never reads the existing one, so
+// the fixture only models the repository being upgraded; the assertions pin
+// the result.
 func TestRunGitHubSetupPerRepo_Rerun_UpgradesPullRequestTargetShim(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
+	const releaseSHA = "0123456789abcdef0123456789abcdef01234567"
+	origOverride := upstreamRefOverride
+	upstreamRefOverride = releaseSHA
+	t.Cleanup(func() { upstreamRefOverride = origOverride })
 	client := newRerunSetupClient(t, existingPerRepoConfigForRerun)
 	client.FileContents["acme/widget/.github/workflows/fullsend.yaml"] = []byte(oldPullRequestTargetShim)
 	printer := ui.New(&discardWriter{})
@@ -1631,9 +1639,11 @@ func TestRunGitHubSetupPerRepo_Rerun_UpgradesPullRequestTargetShim(t *testing.T)
 	})
 	require.NoError(t, err)
 	require.Len(t, client.CommittedFilesToBranch, 1, "the upgrade is delivered in one setup commit")
+	require.Len(t, client.CreatedProposals, 1, "the upgrade opens one setup PR")
 
 	shim, present := committedScaffoldFile(client, ".github/workflows/fullsend.yaml")
 	require.True(t, present, "the setup commit delivers the shim")
+	assert.NotEqual(t, oldPullRequestTargetShim, string(shim), "the old shim is replaced")
 	var wf struct {
 		On   map[string]any `yaml:"on"`
 		Jobs map[string]struct {
@@ -1647,7 +1657,8 @@ func TestRunGitHubSetupPerRepo_Rerun_UpgradesPullRequestTargetShim(t *testing.T)
 	dispatch, ok := wf.Jobs["dispatch"]
 	require.True(t, ok, "dispatch job not found")
 	assert.NotContains(t, dispatch.If, "pull_request_target")
-	assert.NotContains(t, dispatch.Uses, "@v0.56.1", "the workflow pin moves off the old release")
+	assert.True(t, strings.HasSuffix(dispatch.Uses, "/reusable-dispatch.yml@"+releaseSHA),
+		"the workflow pin moves to the CLI's release, got %q", dispatch.Uses)
 
 	_, cfgPresent := committedScaffoldFile(client, ".fullsend/config.yaml")
 	assert.False(t, cfgPresent, "the upgrade does not commit .fullsend/config.yaml")
