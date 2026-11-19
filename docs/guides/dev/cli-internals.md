@@ -204,6 +204,17 @@ fullsend
 │   ├── --dry-run                            #   Print what would be posted without API calls
 │   ├── --keep-history                       #   Append previous content as collapsed history (default true)
 │   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
+├── review-dedup                             # Skip unchanged synchronize reviews or supersede prior skip notes
+│   ├── --repo <owner/repo>                  #   Repository in owner/repo format (required)
+│   ├── --pr <int>                           #   Pull request number (required)
+│   ├── --token <string>                     #   Forge token (default: $GH_TOKEN / $GITHUB_TOKEN)
+│   ├── --forge <forge>                      #   Forge backend (default: github)
+│   ├── --base-url <url>                     #   Forge instance URL
+│   ├── --app-set <name>                     #   Review bot app-set name
+│   ├── --app-client-id <id>                 #   Verified review GitHub App client ID
+│   ├── --publish                            #   Publish or update the skip note after a skip decision
+│   ├── --supersede                          #   Mark existing app-verified skip notes as superseded
+│   └── --head-sha <sha>                     #   Head commit included in a superseded skip note
 ├── fetch-review-threads                      # Fetch PR/MR review threads as JSON
 │   ├── --repo <owner/repo>                   #   Repository in owner/repo format (required)
 │   ├── --pr <int>                            #   Pull request / merge request number (required)
