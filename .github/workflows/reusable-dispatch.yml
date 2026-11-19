@@ -1589,6 +1589,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run triage agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -1628,9 +1629,42 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report triage launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="triage"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   code:
     name: Code
@@ -1725,6 +1759,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run code agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -1756,6 +1791,7 @@ jobs:
           FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: code
+          role: coder
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
@@ -1768,9 +1804,43 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report code launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="code"
+          export FULLSEND_FAILURE_ROLE="coder"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   review:
     name: Review
@@ -1905,6 +1975,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run review agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -1949,9 +2020,42 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report review launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="review"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   fix:
     name: Fix
@@ -2021,16 +2125,19 @@ jobs:
           git config --global user.name "${BOT_LOGIN}"
 
       - name: Block fork PRs
+        id: fork_guard
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUM_INPUT: ''
         run: |
+          echo "policy_skip=false" >> "${GITHUB_OUTPUT}"
           HEAD_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.head.repo.full_name // empty')"
           BASE_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.base.repo.full_name // empty')"
           if [[ -n "${HEAD_REPO}" && -n "${BASE_REPO}" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
             echo "::error::Fork PRs are not allowed to trigger the fix agent"
+            echo "policy_skip=true" >> "${GITHUB_OUTPUT}"
             exit 1
           fi
           if [[ -z "${HEAD_REPO}" && -z "${BASE_REPO}" ]]; then
@@ -2045,6 +2152,7 @@ jobs:
               fi
               if [[ "${IS_FORK}" == "true" ]]; then
                 echo "::error::Fork PRs are not allowed to trigger the fix agent"
+                echo "policy_skip=true" >> "${GITHUB_OUTPUT}"
                 exit 1
               fi
             fi
@@ -2120,6 +2228,7 @@ jobs:
           echo "iteration=${ITERATION}" >> "${GITHUB_OUTPUT}"
 
       - name: Check fix eligibility
+        id: eligibility
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
@@ -2174,6 +2283,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run fix agent
+        id: run-agent
         uses: ./.defaults/
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
@@ -2205,6 +2315,7 @@ jobs:
           FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: fix
+          role: coder
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
@@ -2217,9 +2328,43 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ steps.context.outputs.pr_number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report fix launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && steps.fork_guard.outputs.policy_skip != 'true' && steps.eligibility.outputs.policy_skip != 'true' && steps.review-body.outputs.policy_skip != 'true' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="fix"
+          export FULLSEND_FAILURE_ROLE="coder"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   retro:
     name: Retro
@@ -2296,6 +2441,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run retro agent
+        id: run-agent
         uses: ./.defaults/
         env:
           ORIGINATING_URL: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.html_url || fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -2335,9 +2481,42 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report retro launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="retro"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   prioritize:
     name: Prioritize
@@ -2397,6 +2576,7 @@ jobs:
         run: mkdir -p target-repo
 
       - name: Run prioritize agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -2435,7 +2615,38 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
+
+      - name: Report prioritize launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number || fromJSON(needs.route.outputs.event_payload).pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="prioritize"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          export FULLSEND_FAILURE_CATEGORY="workflow setup"
+          bash "${script}"
 
   harness-dispatch:
     name: Harness dispatch
@@ -2447,6 +2658,9 @@ jobs:
       actions: write
       contents: read
       id-token: write
+      # Callers must grant issues: write for startup-failure comments and
+      # pull-requests: read for harness event inspection.
+      issues: write
       pull-requests: read
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
@@ -2469,7 +2683,9 @@ jobs:
             /OWNERS_ALIASES
             .defaults/action.yml
             .defaults/.github/actions/install-fullsend-cli/
+            .defaults/.github/scripts/report-agent-startup-failure.sh
             .fullsend/.defaults/action.yml
+            .fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh
           sparse-checkout-cone-mode: false
 
       - name: Detect registered harness triggers
@@ -2601,6 +2817,38 @@ jobs:
             echo
             echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
+
+      - name: Report harness dispatch failure
+        if: ${{ failure() && !cancelled() && steps.dispatch.outcome != 'success' && (github.event.issue.number != '' || github.event.pull_request.number != '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="harness"
+          export FULLSEND_FAILURE_ROLE="harness"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          export FULLSEND_FAILURE_CATEGORY="workflow setup"
+          export FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"
+          export FULLSEND_FAILURE_STABLE_MARKER="true"
+          bash "${script}"
 
   harness-run:
     name: Harness run (${{ matrix.agent }})
@@ -2786,6 +3034,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Run harness agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ steps.dispatch-env.outputs.issue_url }}
@@ -2826,10 +3075,51 @@ jobs:
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           fullsend-dir: .fullsend
+          github_token: ${{ github.token }}
+          failure-token: ${{ steps.app-token.outputs.token || github.token }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}
+          source-system: ${{ matrix.event_payload._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ matrix.event_payload.comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ matrix.event_payload.pull_request.head.sha || '' }}
           artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}
+      - name: Report harness launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && matrix.status_number != '' && (matrix.event_payload._normalized_event.source.system || 'github') == 'github' && (matrix.status_repo == github.repository || steps.app-token.outcome == 'success') }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ matrix.status_repo }}
+          NUMBER: ${{ matrix.status_number }}
+          AGENT: ${{ matrix.agent }}
+          ROLE: ${{ matrix.role }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="${AGENT}"
+          export FULLSEND_FAILURE_ROLE="${ROLE}"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
+
+      - name: Warn when cross-repository harness failure cannot be reported
+        if: ${{ always() && steps.run-agent.outcome == 'skipped' && matrix.status_number != '' && (matrix.event_payload._normalized_event.source.system || 'github') == 'github' && matrix.status_repo != github.repository && steps.app-token.outcome != 'success' }}
+        run: echo "::warning::Harness startup failure could not be reported because no token authorized for the target repository was available"

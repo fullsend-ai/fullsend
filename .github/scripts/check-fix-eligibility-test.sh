@@ -90,6 +90,8 @@ run_test() {
   local mock_bin
   mock_bin=$(build_mock "${is_bot}" "${login}" "${labels}")
 
+  : > "${TMPDIR}/eligibility-output"
+
   local actual_exit=0 output
   output=$(PATH="${mock_bin}:${PATH}" \
     TRIGGER_SOURCE="${trigger}" \
@@ -97,6 +99,7 @@ run_test() {
     SOURCE_REPO="org/repo" \
     GH_TOKEN="fake" \
     FULLSEND_APP_SET="${app_set}" \
+    GITHUB_OUTPUT="${TMPDIR}/eligibility-output" \
     bash "${SCRIPT}" 2>&1) || actual_exit=$?
 
   if [[ "${actual_exit}" -ne "${expected_exit}" ]]; then
@@ -107,6 +110,17 @@ run_test() {
 
   if [[ -n "${expected_annotation}" ]] && [[ "${output}" != *"${expected_annotation}"* ]]; then
     echo "FAIL: ${name} — expected annotation '${expected_annotation}' not found in output"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local expected_policy=false actual_policy
+  if [[ "${expected_exit}" -eq 1 ]]; then
+    expected_policy=true
+  fi
+  actual_policy="$(grep '^policy_skip=' "${TMPDIR}/eligibility-output" | tail -n 1 || true)"
+  if [[ "${actual_policy}" != "policy_skip=${expected_policy}" ]]; then
+    echo "FAIL: ${name} — expected final policy_skip=${expected_policy} output"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -187,6 +201,7 @@ MOCKEOF
     PR_NUM="999" \
     SOURCE_REPO="org/repo" \
     GH_TOKEN="fake" \
+    GITHUB_OUTPUT="${TMPDIR}/eligibility-output" \
     bash "${SCRIPT}" 2>&1) || actual_exit=$?
 
   if [[ "${actual_exit}" -ne 1 ]]; then
@@ -197,6 +212,14 @@ MOCKEOF
 
   if [[ "${output}" != *"::error::Failed to fetch PR info"* ]]; then
     echo "FAIL: gh pr view failure — expected ::error:: annotation not found in output"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local actual_policy
+  actual_policy="$(grep '^policy_skip=' "${TMPDIR}/eligibility-output" | tail -n 1 || true)"
+  if [[ "${actual_policy}" != "policy_skip=false" ]]; then
+    echo "FAIL: gh pr view failure — expected final policy_skip=false output"
     FAILURES=$((FAILURES + 1))
     return
   fi
