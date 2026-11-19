@@ -281,7 +281,7 @@ func gitlabJiraPollDeferral(ctx context.Context, client forge.Client, owner, rep
 	if err != nil {
 		return "", safeAPIError("reading the pipeline-variable override role", err)
 	}
-	if role != forge.PipelineVarOverrideNoOneAllowed {
+	if !gitlabPipelineVarRoleAccepted(ctx, owner, repo, role) {
 		return fmt.Sprintf("deferring the Jira poll schedule until the pipeline-variable override restriction is established (ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed); rerun repos install once it is", displayPipelineVarRole(role)), nil
 	}
 	return "", nil

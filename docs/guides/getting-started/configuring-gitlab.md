@@ -42,6 +42,9 @@ GitHub repositories use a different command (`fullsend github setup`). See
   be `no_one_allowed` before typed pipeline-input dispatch can activate —
   install/converge refuse runnable template delivery on a weaker, unset,
   or unverifiable setting, even with automatic enforcement requested.
+  A project that cannot use `no_one_allowed` can opt in to a weaker
+  setting; see
+  [Opting in to a relaxed setting](#opting-in-to-a-relaxed-setting).
   Legacy variable-based installations are no longer supported; see
   [Typed-input dispatch migration](#typed-input-dispatch-migration). See
   [GitLab Role-Credential
@@ -171,6 +174,46 @@ and typed pins predating the secured contract are unsupported.
 > polling](#off-system-polling) for pickup on repos where schedule
 > creation already failed and a converge re-run to fix something else
 > isn't an option.
+
+### Opting in to a relaxed setting
+
+Some teams start pipelines with pipeline variables every day, so they cannot
+set **No one allowed**. For such a project, set
+`allow_insecure_pipeline_variables` on its manifest entry
+([ADR 0175](../../ADRs/0175-allow-insecure-gitlab-pipeline-variable-restriction-opt-in.md)):
+
+```bash
+fullsend repos set 'gitlab.repos["group/project"].allow_insecure_pipeline_variables' true
+```
+
+The opt-in is saved in `repos.yaml`, so every later `repos install` and
+`repos status` accepts the weaker setting instead of refusing again. Upgrades
+need no extra step. Fullsend never changes the project setting for an
+opted-in project, and `repos install` prints a warning for each opted-in
+project on every run.
+
+Understand what the opt-in exposes before you set it. Anyone at the role the
+project allows who can run a pipeline on the default branch can set
+`CI_API_V4_URL` to a host they control, or set a file-type `BASH_ENV` variable
+that runs their code inside fullsend jobs. Either way they can read the job
+token, the Poller token, and the role tokens, and act as the fullsend bots on
+that project. Have the project's security owner accept that risk.
+
+The opt-in:
+
+* applies only to a concrete `owner/repo` entry under `gitlab`. A glob entry or
+  a GitHub entry is rejected.
+* lets install deliver runnable jobs, activates typed dispatch, and lets the
+  managed poll schedules (including the Jira poll) run.
+* does not enable the [webhook fast path](#webhook-fast-path) or the trigger
+  account. Both stay deferred, because their trigger credential is only safe
+  while callers cannot inject variables. Agents start from the poll schedules
+  instead.
+* does not accept an instance that does not report the setting at all.
+
+To remove the opt-in, set **No one allowed** in the project, then run
+`fullsend repos set --unset 'gitlab.repos["group/project"].allow_insecure_pipeline_variables'`
+and `fullsend repos install`.
 
 ## Installing Fullsend
 

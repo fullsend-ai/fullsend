@@ -720,6 +720,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
+	// ADR 0175: record the saved allow_insecure_pipeline_variables opt-ins
+	// for every GitLab check this command runs, and warn about each one.
+	ctx = repos.WithGitLabPipelineVarOptIns(ctx, manifest)
+	for _, name := range repos.GitLabPipelineVarOptInRepos(manifest) {
+		printer.StepWarn(repos.GitLabPipelineVarOptInWarning(name))
+	}
 
 	// Forgejo selectors resolve first: an ambiguous, unknown-alias or
 	// undeclared selector fails before any credential lookup or write.
