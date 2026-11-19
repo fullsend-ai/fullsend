@@ -77,6 +77,14 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 		}
 		out["progress"] = progress
 	}
+	// Vault addresses, selected connections and ordered secret paths decide
+	// where runner secrets come from, so a change must show in the view.
+	if conns := r.ConfigConnections(); len(conns) > 0 {
+		out["connections"] = conns
+	}
+	if secrets := r.ConfigSecrets(); len(secrets) > 0 {
+		out["secrets"] = secrets
+	}
 	if tc := r.TraceContext(); tc != nil {
 		out["trace_context"] = tc
 	}

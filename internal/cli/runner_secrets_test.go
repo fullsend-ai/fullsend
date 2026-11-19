@@ -88,6 +88,78 @@ func TestLoadRunnerSecrets_MalformedFileIsStillDeleted(t *testing.T) {
 	assert.False(t, present)
 }
 
+// A Vault-supplied bundle replaces the native one, so a malformed or
+// unreadable native bundle must not fail the run (ADR 0155). Taking the
+// bundle still removes the variables and file up front; only parse reports
+// the problem.
+func TestTakeRunnerSecretsBundle_DefersNativeFailures(t *testing.T) {
+	t.Run("malformed file", func(t *testing.T) {
+		path := writeRunnerSecretsFile(t, `not-json-secret-value`)
+		native := takeRunnerSecretsBundle()
+		assert.NoError(t, native.err)
+		assert.NoFileExists(t, path)
+		_, present := os.LookupEnv(runnerSecretsFileEnv)
+		assert.False(t, present)
+
+		got, err := applyVaultRunnerSecrets(map[string]string{runnerSecretsEnv: `{"DEPLOY_KEY":"vault-bundle-deploy-key"}`}, nil)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"DEPLOY_KEY": "vault-bundle-deploy-key"}, got)
+
+		_, err = native.parse()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), runnerSecretsFileEnv+" must hold a JSON object")
+	})
+	t.Run("unreadable file", func(t *testing.T) {
+		writeRunnerSecretsFile(t, `{}`)
+		t.Setenv(runnerSecretsFileEnv, filepath.Join(t.TempDir(), "absent.json"))
+		native := takeRunnerSecretsBundle()
+		require.Error(t, native.err)
+		_, present := os.LookupEnv(runnerSecretsFileEnv)
+		assert.False(t, present)
+		_, err := native.parse()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reading the "+runnerSecretsFileEnv+" file")
+	})
+	t.Run("conflicting variables", func(t *testing.T) {
+		path := writeRunnerSecretsFile(t, `{"JIRA_API_TOKEN":"jira-token-value"}`)
+		t.Setenv(runnerSecretsEnv, `{"OTHER_KEY":"other-token-value"}`)
+		native := takeRunnerSecretsBundle()
+		assert.NoFileExists(t, path)
+		_, present := os.LookupEnv(runnerSecretsEnv)
+		assert.False(t, present)
+		_, err := native.parse()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not both")
+	})
+	t.Run("nothing delivered", func(t *testing.T) {
+		t.Setenv(runnerSecretsEnv, "")
+		require.NoError(t, os.Unsetenv(runnerSecretsEnv))
+		got, err := takeRunnerSecretsBundle().parse()
+		require.NoError(t, err)
+		assert.Nil(t, got)
+	})
+}
+
+// A bundle file that cannot be deleted leaves plaintext secrets on disk, so
+// takeRunnerSecretsBundle records it as a cleanup failure, apart from the
+// content failures a Vault-supplied bundle may ignore.
+func TestTakeRunnerSecretsBundle_CleanupFailureIsSeparate(t *testing.T) {
+	// A non-empty directory cannot be read as a file or removed.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "keep"), []byte("x"), 0o600))
+	t.Setenv(runnerSecretsFileEnv, dir)
+
+	native := takeRunnerSecretsBundle()
+	require.Error(t, native.cleanupErr)
+	assert.Contains(t, native.cleanupErr.Error(), "deleting the "+runnerSecretsFileEnv+" file")
+	_, present := os.LookupEnv(runnerSecretsFileEnv)
+	assert.False(t, present)
+
+	_, err := native.parse()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting the "+runnerSecretsFileEnv+" file")
+}
+
 func TestLoadRunnerSecrets_MissingFileFails(t *testing.T) {
 	writeRunnerSecretsFile(t, `{}`)
 	t.Setenv(runnerSecretsFileEnv, filepath.Join(t.TempDir(), "absent.json"))
