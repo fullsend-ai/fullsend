@@ -444,14 +444,15 @@ warns that the lock entry does not pin them.
 
 When the lock entry is current (the SHA256 of the harness and its `harness:`
 block matches), dependencies are resolved from the local cache without network
-access. If the harness or the block has changed, `fullsend run` falls back to
-normal network resolution and prints a warning suggesting you re-run
-`fullsend lock <agent>` — a plain lock re-composes the changed entry from the
-URL index's cached copies, so it needs no `--update` (which would re-resolve
-every un-pinned base file from its source). If a cached artifact is missing, the
-error names `fullsend lock <agent> --update` instead, which re-resolves from the
-source and may change the pins — rerunning without `--offline` fetches the
-pinned content and checks it against the lock.
+access. If the harness or the block has changed, or a cached artifact is
+missing, `fullsend run` falls back to normal network resolution and prints a
+warning suggesting you re-run `fullsend lock <agent>` — a plain lock re-composes
+the changed entry from the URL index's cached copies, so it needs no `--update`
+(which would re-resolve every un-pinned base file from its source). When a
+cached artifact is missing, the fallback fetches the pinned content and fails if
+it no longer matches the lock; the error names `fullsend lock <agent> --update`
+only as the way to re-pin to what the source now serves, and rerunning without
+`--offline` fetches the pinned content and checks it against the lock.
 
 A current lock entry also pins the files a URL `base:` (or an agent fetched from
 a URL) names by relative path: agent, policy, skills, skill file overrides,
