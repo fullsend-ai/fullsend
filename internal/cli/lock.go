@@ -338,8 +338,8 @@ func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, f
 			GitHubURL:     forge.ConfiguredGitHubURL(),
 			Config:        harness.BuildConfigMap(orgCfg),
 			SourceURL:     sourceURL,
-			Blocks: blocks,
-			Agent:  agentName,
+			Blocks:        blocks,
+			Agent:         agentName,
 			// --update re-resolves from the source, not the URL index, so an
 			// upstream change is recorded even on the cache that wrote the
 			// lock. Offline-miss errors advise the named command, which
