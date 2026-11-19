@@ -1017,7 +1017,10 @@ upgraded keeps working there (the warning appears only in public
 repositories). Any upgrade to a fullsend version with the new shim installs
 the same `pull_request` shim, with the effects below.
 `fullsend repos install` rewrites the trigger and the workflow pin in one
-commit. After the upgrade:
+commit. If it cannot fetch the templates of the new version, it upgrades
+only the pin and prints `template fetch at the target ref failed: delivering
+the pin upgrade only; run install again to deliver template changes`. Run it
+again once the fetch works to deliver the trigger. After the upgrade:
 
 - **Same-repo PRs** are reviewed automatically, as before, except while the
   PR has a merge conflict: GitHub does not run `pull_request` workflows until
