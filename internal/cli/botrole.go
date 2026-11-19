@@ -38,7 +38,7 @@ type botRoleScriptRequest struct {
 func newBotRoleCmd() *cobra.Command {
 	var entity, comment string
 	cmd := &cobra.Command{
-		Use:   "bot-role --entity <entity.id> --comment <action id>",
+		Use:   "bot-role",
 		Short: "Resolve the registered Fullsend bot role of a comment's actor on this run's entity",
 		Long: `Resolves the registered Fullsend bot role (ADR 0107) of the actor that
 produced a comment on the entity this run handles, through the runner-side
