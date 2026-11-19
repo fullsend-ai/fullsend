@@ -837,9 +837,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f cel-route/.defaults/action.yml || -f cel-route/.fullsend/.defaults/action.yml ]] \
-            && [[ -x cel-route/.fullsend/bin/fullsend ]] \
-            && cel-route/.fullsend/bin/fullsend dispatch --help >/dev/null 2>&1; then
+          if [[ -f cel-route/.defaults/action.yml || -f cel-route/.fullsend/.defaults/action.yml ]]; then
             echo "mode=vendored" >> "${GITHUB_OUTPUT}"
           else
             echo "mode=upstream" >> "${GITHUB_OUTPUT}"
