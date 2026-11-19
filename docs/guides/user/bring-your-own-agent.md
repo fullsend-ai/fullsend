@@ -60,6 +60,11 @@ Next:
    ```
 
    This runs the real sandbox and prints the comment instead of posting it.
+   The generated post-script also treats `FULLSEND_DRY_RUN=1` as a dry run
+   when `POST_LINT_DOCS_DRY_RUN` is unset or empty. `fullsend run` sets
+   `FULLSEND_DRY_RUN=1` when the input source is `external`, from `input_source: external` in the
+   harness or `FULLSEND_INPUT_SOURCE=external` in the environment (see
+   [Harness Field Reference § `input_source`](../../reference/harness-reference.md#field-details)).
    A run that finds nothing to report ends like this:
 
    ```text
@@ -967,10 +972,12 @@ section).
 ### Pass secrets to host-side scripts (GitHub)
 
 A pre-script that calls Jira, CodeRabbit or another service needs a token. This
-channel is an interim one for your own tools on GitHub: external secret manager
-support, read with the job's OIDC token, is the expected successor (long-term
-design in [#6359](https://github.com/fullsend-ai/fullsend/issues/6359)), and
-this secret stays as the fallback when your workflow cannot use GitHub OIDC or a
+channel is the native source for your own tools on GitHub. To keep the bundle in
+Vault instead, select a Vault connection for `FULLSEND_GITHUB_RUNNER_SECRETS`
+through `connections` and `secrets`; Fullsend reads it with the job's OIDC token
+([config reference](../../reference/config-reference.md#connections); broader
+design in [#6359](https://github.com/fullsend-ai/fullsend/issues/6359)). This
+secret stays as the native source when your workflow cannot use GitHub OIDC or a
 WIF provider with your secret manager. Integrations fullsend owns, such as the
 inference gateway, keep their own named secrets. If your repository has the
 Jira secrets `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL`

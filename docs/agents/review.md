@@ -76,7 +76,8 @@ the fast path is not provisioned, review fires once the poller sees an MR whose
 Native `merge_request_event` pipeline dispatch was removed.
 A push to an open MR (GitHub `synchronize`) also triggers automatic review,
 through the poller only, so expect up to one poll interval of delay. The
-webhook dispatcher rejects merge request updates. GitLab records a new diff
+webhook dispatcher ignores merge request updates as non-routable events: the
+job succeeds and nothing is dispatched. GitLab records a new diff
 version on each push. When the newest version moves the MR head and was created
 after the watermark, the poller dispatches review for that head. This includes
 fix-agent pushes to bot-authored MRs, and the fix stage's iteration cap bounds

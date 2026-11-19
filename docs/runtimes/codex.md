@@ -208,7 +208,10 @@ run at once on V2; the depth is one. A runner-owned hook admits a spawn only for
 role with that fresh context and no model or effort override; it denies resume, V2's message and
 follow-up calls, Codex's built-in `explorer` and `worker`, and any spawn from a child. A denied
 spawn is final for that role: the parent runs that
-sub-agent definition itself. A spawn the hook did not admit fails the run after the fact, within
+sub-agent definition itself. A wait works the other way. On V2 Codex refuses a `wait_agent` whose
+`timeout_ms` is over 120000, a max the runner sets in Codex's own config, and the parent waits
+again with a shorter timeout; on V1 Codex has no such setting, and the runtime note asks for the
+same cap. A spawn the hook did not admit fails the run after the fact, within
 the limits named in [Troubleshooting](#troubleshooting): per iteration the runner counts the
 spawns seen in the event stream or in the children's rollouts on disk, each child once, and
 compares the run's total with the admissions the hook recorded. Every child's rollout is saved and redacted like the
