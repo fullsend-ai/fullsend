@@ -846,6 +846,22 @@ func TestRouteBuiltinAgent_HarnessRoleThreshold(t *testing.T) {
 		assert.Equal(t, routeRun, got.Decision, "reason: %s", got.Reason)
 	})
 
+	t.Run("a harness: block's role sets the threshold", func(t *testing.T) {
+		// The block composes for dispatch too, and role is a field it may set.
+		client, policy, agentsURL := routeAgentsRepo(t, routeTestHarnessBody)
+		dir := writeRouteFixture(t, routeFixture{
+			allowlist: []string{agentsURL},
+			agents:    []config.AgentEntry{{Name: "review", Trigger: commentOnly, Harness: harnessBlocks(t, "role: code")[0]}},
+		})
+		got, err := routeBuiltinAgent(context.Background(), routeOpts{
+			agent: "review", configDir: dir, event: routeEvent(t, routeTriageReviewComment),
+			forgeClient: client, fetchPolicy: policy, printer: ui.New(io.Discard),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, routeSkip, got.Decision)
+		assert.Equal(t, "actor not authorized", got.Reason)
+	})
+
 	t.Run("triage user is denied a sourced harness with a write role", func(t *testing.T) {
 		dir := writeRouteFixture(t, sourcedReview(config.AgentEntry{Trigger: commentOnly}, map[string]string{
 			"harness/review.yaml": strings.Replace(routeTestHarnessBody, "role: review", "role: code", 1),

@@ -821,8 +821,8 @@ Scenarios that never lease a repo (for example the CLI mint status scenarios) st
 Runner env (defaults shown):
 
 ```
-BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
-BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
+BEHAVIOUR_SCM=github              # also: gitlab, forgejo (forgejo-dev only); default forgejo when ENVIRONMENT=forgejo-dev
+BEHAVIOUR_CI=githubactions        # also: gitlabci, forgejoactions (forgejo-dev only); default forgejoactions when ENVIRONMENT=forgejo-dev; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
 BEHAVIOUR_APP_SET=fullsend-test # app identities for both mint deployment and github setup; must match the supplied role PEMs
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
@@ -830,7 +830,7 @@ BEHAVIOUR_FAILURE_CLASS_FILE=  # extra direct path for failure-class.json; the r
 BEHAVIOUR_TRACE_COLLECTOR=     # job-scoped OTel Collector: unset = on in GitHub Actions when BEHAVIOUR_ARTIFACT_DIR is set; true/false to force
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
-ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs) or stage (push to main)
+ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), or forgejo-dev (Forgejo driver stubs)
 E2E_GCP_PROJECT_ID=...        # inference project; install resolves (and if needed provisions) inference WIF once per pool repo name
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
 TEST_ACTOR_WRITE_PAT=...      # write-level human-like actor PAT (CI: same-named repo secret)
@@ -838,7 +838,7 @@ TEST_ACTOR_TRIAGE_PAT=...     # triage-level human-like actor PAT
 TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on base)
 ```
 
-`ENVIRONMENT` is `dev` or `stage`. Local runs default to `dev` when unset. CI sets it to match the GitHub Environment on the behaviour job (`dev` on pull requests and the merge queue, `stage` on push to `main`).
+`ENVIRONMENT` is `dev`, `stage`, or `forgejo-dev`. Local runs default to `dev` when unset. `forgejo-dev` selects the Forgejo SCM, CI, and install drivers, which are not-implemented stubs for now (see [Forgejo driver stubs](behaviour-drivers.md#forgejo-driver-stubs)). The standard `behaviour` job sets it to match its GitHub Environment (`dev` on authorized pull requests and the merge queue, `stage` on push to `main`). The separate, non-required `forgejo-behaviour` job selects only `@forgejo` scenarios and always sets `ENVIRONMENT=forgejo-dev`; its GitHub Environment is `forgejo-stage` on push to `main` and `forgejo-dev` otherwise. Promotion to a required check is tracked in [#9656](https://github.com/fullsend-ai/fullsend/issues/9656).
 
 When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
 

@@ -107,9 +107,11 @@ Required repository secrets:
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend github setup --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
-### Behaviour job GitHub Environments
+### Behaviour test GitHub Environments
 
 The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). It skips `workflow_dispatch` and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
+
+The non-required `forgejo-behaviour` job uses the GitHub Environment `forgejo-stage` on pushes to `main` and `forgejo-dev` for authorized pull requests, the merge queue, and `/ok-to-test` runs for authorized fork pull requests. This separates mainline deployments in the Environments view; the job still sets `ENVIRONMENT=forgejo-dev` for every event because there is only one Forgejo driver target. It also sets `BEHAVIOUR_SCM=forgejo`, `BEHAVIOUR_CI=forgejoactions`, and `GODOG_TAGS=@forgejo`. The current job needs no GCP, Cloudflare, or actor credentials. GitHub creates each environment on first use. If future Forgejo-specific secrets are needed, configure them in both environments (or use appropriately scoped repository secrets) and add them to the artifact-redaction step before passing them to the test process.
 
 After the environments exist, restrict `stage` to `main`:
 

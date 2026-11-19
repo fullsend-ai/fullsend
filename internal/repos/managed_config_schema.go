@@ -126,7 +126,7 @@ func resolveManagedConfigSchema(ctx context.Context, fullsendRef, upstreamRef, u
 		return s
 	}
 	if hasMapping {
-		s.Version = config.ManagedConfigSchemaVersion
+		s.Version = config.ManagedConfigSchemaTrackerMapping
 	} else {
 		s.Version = config.ManagedConfigSchemaLegacy
 	}

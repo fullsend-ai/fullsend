@@ -35,7 +35,8 @@ must be replicated independently.
 
 Use the extension points the default agent was designed for. These keep you
 in [configured-default territory](default-vs-custom.md) and require no
-changes to the agent's identity-defining fields. Some rows need a thin
+changes to the agent's identity-defining fields. Some rows need the
+`harness:` block of the agent's `config.yaml` entry or a thin
 `base`-composed harness (still Level 1); others need no harness at all.
 
 | Extension point | What it does | Guide |
@@ -44,10 +45,10 @@ changes to the agent's identity-defining fields. Some rows need a thin
 | Repo skills (`.agents/skills/`) | Domain-specific knowledge for individual agents — linting rules, deployment checklists, label glossaries. No harness required. | [Customizing with Skills](customizing-with-skills.md) |
 | Documented env vars | Per-agent tuning knobs (e.g., `REVIEW_FINDING_SEVERITY_THRESHOLD`). No harness required. | Each agent's [reference page](../../agents/) |
 | `env:` in harness | Add environment variables without changing the agent's identity. Needs a thin `base` harness. | [Harness Field Reference](../../reference/harness-reference.md) |
-| `skills:` in harness | Add skills via `base` composition — concatenated with the base agent's skill list. Needs a thin `base` harness. | [Configuring Agent Behavior](customizing-agents.md#configuration-with-base-composition) |
-| `plugins:` in harness | Add language-server plugins. Needs a thin `base` harness. | [Harness Field Reference](../../reference/harness-reference.md) |
-| `host_files:` in harness | Inject additional files into the sandbox. Needs a thin `base` harness. | [Harness Field Reference](../../reference/harness-reference.md) |
-| Sandbox image layers | Base your image on the default, add tools; point the harness `image:` field at it. Needs a thin `base` harness. | [Extending the sandbox image](customizing-agents.md#extending-the-sandbox-image) |
+| `skills:` in harness | Add skills — concatenated with the base agent's skill list. Needs the `harness:` block of the agent's `config.yaml` entry, or a thin `base` harness. | [Configuring Agent Behavior](customizing-agents.md#configuration-with-base-composition) |
+| `plugins:` in harness | Add language-server plugins. Needs the `harness:` block of the agent's `config.yaml` entry, or a thin `base` harness. | [Harness Field Reference](../../reference/harness-reference.md) |
+| `host_files:` in harness | Inject additional files into the sandbox. Needs the `harness:` block of the agent's `config.yaml` entry, or a thin `base` harness. | [Harness Field Reference](../../reference/harness-reference.md) |
+| Sandbox image layers | Base your image on the default, add tools; point the harness `image:` field at it. Needs the `harness:` block of the agent's `config.yaml` entry, or a thin `base` harness. | [Extending the sandbox image](customizing-agents.md#extending-the-sandbox-image) |
 
 **Evidence to escalate:** show that no combination of these extension points
 produces the behavior you need. Concrete evidence includes:

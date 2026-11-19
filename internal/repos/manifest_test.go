@@ -2523,7 +2523,12 @@ func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *t
 	// WriteManifest) round-trips it unchanged; only the internal
 	// fetch-time source is resolved to an absolute, manifest-relative path.
 	assert.Equal(t, "presets/base.yaml", m.Defaults.ConfigBase.Source)
-	assert.Equal(t, filepath.Join(base, "presets/base.yaml"), m.Defaults.ConfigBase.configSource())
+	// Validate resolves against the symlink-canonicalized manifest directory
+	// (on macOS t.TempDir() lives under /var -> /private/var), so compare
+	// against the canonical form of base.
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(canonicalBase, "presets/base.yaml"), m.Defaults.ConfigBase.configSource())
 
 	escaping := &Manifest{
 		Version:   1,
@@ -2531,7 +2536,7 @@ func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *t
 		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "../outside.yaml"}},
 		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
-	err := escaping.Validate()
+	err = escaping.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "escapes manifest directory")
 

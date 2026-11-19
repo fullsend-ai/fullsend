@@ -108,7 +108,8 @@ the agent's `agents:` entry in `.fullsend/config.yaml` instead. Harness `env.run
 ### Per-agent runtime, model and effort
 
 The `agents:` list is the per-agent place in `config.yaml`: an entry names an
-agent and can set its `runtime`, `model`, `effort`, `subagents` and `trigger`
+agent and can set its `runtime`, `model`, `effort`, `subagents`, a `harness:`
+block of harness settings and `trigger`
 (on `review`, `retro`, `triage` and `prioritize`, decides routing for that
 agent; see
 [Choosing when review runs](guides/user/customizing-agents.md#choosing-when-review-runs),
@@ -161,10 +162,12 @@ agent gets its settings on its own entry.
 
 Precedence: flag > env var > the agent's `agents:` entry > repo-wide `runtime:` / harness
 `model:` `effort:` > default. Entries merge per field across the layered config (`config.yaml`
-over `config.base.yaml`), so a preset base can tune agents too. `fullsend run` validates the
-whole `agents:` list in every layer (names, runtime, model syntax, effort) and fails the run with
-an error naming the file and entry rather than silently skipping a mistyped entry or handing a
-bad value to the runtime.
+over `config.base.yaml`), so a preset base can tune agents too. The `harness:` block is the
+exception: each file's block stays a layer of its own (see the
+[layered config reference](guides/infrastructure/layered-config-reference.md)).
+`fullsend run` validates the whole `agents:` list in every layer (names, runtime, model
+syntax, effort) and fails the run with an error naming the file and entry rather than
+silently skipping a mistyped entry or handing a bad value to the runtime.
 
 A value that came from here shows up as `<config path> agents.<name>` wherever the selection is
 surfaced (plan block, stderr, `metrics.json` — see below); the path is the effective config file.

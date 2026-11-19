@@ -112,6 +112,33 @@ trap release_podman_prune_lock EXIT
 # otherwise be the first rmi target right before the pull below needs it.
 prune_unused_podman_storage "${IMAGE}"
 
+# OpenShell creates a Podman secret for every sandbox. If Podman's secret
+# store is unreadable — e.g. secrets/secrets.json or
+# secrets/filedriver/secretsdata.json under the storage root truncated to
+# zero bytes — every sandbox creation fails with "unexpected end of JSON
+# input", while jobs that never create a sandbox still pass (#9675). A
+# truncated secretsdata.json does not break `podman secret ls`, so probe with
+# a throwaway secret create and rm, the same write OpenShell does per
+# sandbox. Fail prepare as a runner system failure so GitLab reports a runner
+# fault instead of a script failure (a job with `retry: when:
+# runner_system_failure` can then land on another VM), and do it before the
+# image pull. Run it inside the prune-lock section, after the prune and before
+# the pull: the EXIT trap above releases the lock if the probe fails.
+# The probe name is fixed per job, so a probe left by an earlier attempt of
+# this job (create succeeded, rm failed or prepare was killed in between)
+# would make this create fail on a healthy store. Remove any leftover first;
+# a failure here is ignored because the create below reports a real fault.
+# SYSTEM_FAILURE_EXIT_CODE is set by GitLab Runner; fall back to 1.
+secret_probe="fullsend-secret-probe-${JOB_ID}"
+timeout --kill-after=5 30 podman secret rm "${secret_probe}" >/dev/null 2>&1 || true
+if ! secret_err=$(timeout --kill-after=5 30 podman secret create "${secret_probe}" - <<<x 2>&1 >/dev/null) ||
+  ! secret_err=$(timeout --kill-after=5 30 podman secret rm "${secret_probe}" 2>&1 >/dev/null); then
+  echo "ERROR: Podman secret store is unusable on this runner VM: ${secret_err:-podman secret create/rm probe failed}" >&2
+  echo "ERROR: OpenShell cannot create sandboxes until it is repaired; see" \
+    "\"Repairing the Podman secret store\" in hack/gitlab-runner-vm/README.md" >&2
+  exit "${SYSTEM_FAILURE_EXIT_CODE:-1}"
+fi
+
 echo "Pulling image: ${IMAGE}"
 podman pull -- "${IMAGE}"
 
@@ -129,8 +156,10 @@ OPENSHELL_CONFIG="${HOME}/.config/openshell"
 OPENSHELL_MOUNT=()
 if [ -d "${OPENSHELL_CONFIG}" ]; then
   OPENSHELL_STAGING="${STATE_DIR}/openshell-${JOB_ID}"
-  rm -rf "${OPENSHELL_STAGING}"
-  cp -a "${OPENSHELL_CONFIG}" "${OPENSHELL_STAGING}"
+  stage_openshell_config "${OPENSHELL_CONFIG}" "${OPENSHELL_STAGING}" || {
+    echo "ERROR: could not stage ${OPENSHELL_CONFIG} for the job container (openshell-gateway.service: $(openshell_gateway_state))" >&2
+    exit 1
+  }
   OPENSHELL_MOUNT=(-v "${OPENSHELL_STAGING}:/root/.config/openshell:ro,z")
 fi
 

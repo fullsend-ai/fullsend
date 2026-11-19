@@ -123,23 +123,24 @@ secrets:
   by secret name. A more-specific definition replaces the entire matching
   entry; fields within that entry and Vault candidate lists are not merged.
   This keeps connection identity and secret-path precedence explicit.
-- Connection definitions and secret entries must come from trusted
-  configuration revisions. This includes each secret's `connection` selection
-  and complete ordered `vault_secrets` list. A PR-head or event-provided layer
-  cannot define or override these entries, including by removing a trusted
-  Vault selection or omitting its `connection` to restore the native default.
-  A more-specific layer may replace an entry only when that layer is trusted.
-  Fullsend rejects an untrusted override before using the job's OIDC token.
+- Connection definitions and secret entries come from the `.fullsend`
+  configuration that Fullsend's supported workflows load: the PR base commit
+  for pull and merge request and review events, and the default-branch event
+  commit for issue and comment events. This is the same trust boundary used by
+  other sensitive configuration. The CLI does not compare connections or
+  secrets against a Git revision or restrict resolution by event, workflow
+  ref, branch, or caller; callers control their own workflows and checkout
+  choices.
 
 Service-specific endpoint and authentication fields live on the connection;
 secret locators, such as `vault_secrets`, live on each secret entry. Future
 secret services can add their own connection kinds and fields without
 changing the top-level `connections` and `secrets` shape. Connection settings
-include the Vault address, so the job's bearer OIDC token is never sent to an
-address selected by untrusted PR-head or event-provided configuration. The
-Vault address must also pass deployment egress policy. Fullsend requests a
-short-lived Vault token for the current invocation, reads the configured
-values, and neither persists that token nor caches values between
+include the Vault address, which receives the job's bearer OIDC token and
+must also pass deployment egress policy. In Fullsend's supported workflows
+that address comes from the trusted configuration described above. Fullsend
+requests a short-lived Vault token for the current invocation, reads the
+configured values, and neither persists that token nor caches values between
 invocations. There is no static `VAULT_TOKEN` or AppRole-secret fallback.
 
 Vault paths may use `{{forge}}`, `{{repo.host}}`, `{{repo.owner}}`,

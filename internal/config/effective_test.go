@@ -9,7 +9,8 @@ import (
 )
 
 func TestEffectiveYAML_LayersOverlayBaseAndDefaults(t *testing.T) {
-	overlay, err := ParsePerRepoConfigWriter([]byte("kill_switch: true\nruntime: pi\nauthorization:\n  - provider: owners_file\n"))
+	overlay, err := ParsePerRepoConfigWriter([]byte("kill_switch: true\nruntime: pi\nauthorization:\n  - provider: owners_file\n" +
+		"agents:\n  - name: review\n    harness: { timeout_minutes: 90 }\n  - name: code\n    effort: high\n"))
 	require.NoError(t, err)
 	base := []byte(`version: "1"
 keep_history: false
@@ -34,6 +35,11 @@ inference:
 models:
   aliases:
     fast: some-model
+agents:
+  - name: review
+    harness: { timeout_minutes: 30 }
+  - name: code
+    harness: { timeout_minutes: 60 }
 `)
 	layered, err := LayerOnBase(overlay, base)
 	require.NoError(t, err)
@@ -59,6 +65,11 @@ models:
 	assert.Equal(t, "us-east5", inference["region"])
 	assert.Contains(t, inference, "wif_provider")
 	assert.Contains(t, inference, "openai")
+	// Blocks set in both layers compose as two layers, so both are shown, base first.
+	assert.Equal(t, []any{
+		map[string]any{"name": "review", "harness": []any{map[string]any{"timeout_minutes": 30}, map[string]any{"timeout_minutes": 90}}},
+		map[string]any{"name": "code", "effort": "high", "harness": map[string]any{"timeout_minutes": 60}},
+	}, got["agents"])
 }
 
 func TestEffectiveYAML_InheritsInferenceGateway(t *testing.T) {
@@ -129,6 +140,34 @@ func TestEffectiveYAML_JiraPolicyChangesChangeOutput(t *testing.T) {
 		render("authorization:\n  - provider: jira\n"),
 		render("authorization:\n  - provider: jira\n    write: {}\n"),
 		"a set but empty list differs from an unset one")
+}
+
+func TestEffectiveYAML_SecretSourceChangesChangeOutput(t *testing.T) {
+	render := func(doc string) string {
+		overlay, err := ParsePerRepoConfigWriter([]byte(doc))
+		require.NoError(t, err)
+		layered, err := LayerOnBase(overlay, nil)
+		require.NoError(t, err)
+		data, err := EffectiveYAML(layered)
+		require.NoError(t, err)
+		return string(data)
+	}
+	doc := func(addr, path string) string {
+		return "connections:\n  corp:\n    kind: vault\n    vault_address: " + addr + "\n" +
+			"secrets:\n  JIRA_TOKEN:\n    connection: corp\n    vault_secrets:\n      - " + path + "\n"
+	}
+	const addr = "https://vault.example.com"
+	const path = "secret/data/{{repo.host}}/{{repo.full_name}}"
+	got := render(doc(addr, path))
+	assert.Contains(t, got, "connections:")
+	assert.Contains(t, got, addr)
+	assert.Contains(t, got, "secrets:")
+	assert.Contains(t, got, path)
+	assert.NotEqual(t, got, render(doc("https://other.example.com", path)), "a changed Vault address renders differently")
+	assert.NotEqual(t, got, render(doc(addr, "secret/data/other")), "a changed secret path renders differently")
+	assert.NotEqual(t, got, render(""), "removing the sources renders differently")
+	assert.NotContains(t, render(""), "connections:")
+	assert.NotContains(t, render(""), "secrets:")
 }
 
 func TestCloneAuthorizationSlice_DeepCopiesJiraLists(t *testing.T) {

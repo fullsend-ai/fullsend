@@ -14,6 +14,16 @@ fullsend run <agent-name> [flags]
 
 A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration) must have every harness-level `allowed_remote_resources` prefix covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes (the defaults are included when the list is omitted or non-empty; an explicit `allowed_remote_resources: []` stays deny-all and excludes them); `fullsend run` fails naming an uncovered prefix, and fails closed when no repository config (`config.yaml` or `config.base.yaml`) exists. See the [`allow_runtime_fetch` entry](../reference/harness-reference.md) in the harness reference.
 
+When the agent's `agents:` entry in `config.yaml` carries a `harness:` block,
+`fullsend run` composes the block on the agent's harness as a child layer
+([Config Reference — `agents`](../reference/config-reference.md#agents)). The
+block does not inherit the runtime fetch fields of the harness below it, so the
+rule above then applies to the `allowed_remote_resources` list that the block
+sets. A change to the block makes the agent's `lock.yaml` entry stale, like a
+change to the harness file. The block is read from the `config.yaml` at the
+root of `--fullsend-dir`. A run that finds it only in a sibling
+`.fullsend/config.yaml` fails and names the directory to pass.
+
 ## Flags
 
 | Flag | Description |
@@ -59,9 +69,38 @@ Image:     fullsend-sandbox:latest
 
 The **Runtime** line shows which runtime was selected and the config source it was read from. When no `config.yaml` exists, the source reads `default (config not found)`.
 
+## Input source
+
+Every run prints one line before the pre-script. It names the input source and the defaults it changed:
+
+```
+input_source: external (harness); dry run default: on; forge write: github-ro; durable host files: none
+```
+
+The value comes from the harness `input_source` field, then the `FULLSEND_INPUT_SOURCE` environment variable (`external` or `maintainer`; empty counts as unset), then `maintainer`. Any other value stops the run before the pre-script and before the sandbox is created.
+
+The line has four parts:
+
+- `(harness)`, `(env)` or `(default)`: where the value came from.
+- `dry run default`: `on` when the run set `FULLSEND_DRY_RUN=1`, `off (FULLSEND_DRY_RUN is set)` when an external run found a non-empty value already set, and `off` otherwise.
+- `forge write`: the names of the attached forge providers, read-only ones included, or `none`.
+- `durable host files`: the `dest` of each attached durable credential, or `none`.
+
+When the input source is `external`:
+
+- **Dry run is the default.** Unless the host process environment or `env.runner` sets `FULLSEND_DRY_RUN` to a non-empty value, the run sets `FULLSEND_DRY_RUN=1` for the pre-script, post-script and validation script. Scripts that honour it print what they would write instead of writing. Set `FULLSEND_DRY_RUN=0` to write for real.
+- **Forge write needs `allow_forge_write: true`.** Without it, the run stops before the pre-script when it attaches a provider that can write to the forge (type `fullsend-github`, `fullsend-gitlab-rw` or `fullsend-gitlab-forge`), or a declared provider with no definition, whose type cannot be checked.
+
+See [Harness Field Reference § `input_source`](../reference/harness-reference.md#field-details).
+
 ## Runtime selection
 
 The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi uses it for aliased models on the top-level run when Vertex does not serve the model (two specific 404/403 messages, same provider only; sub-agent children get none); codex ignores it with a warning.
+
+A `model` or `effort` set in the `harness:` block of the agent's `agents:`
+entry is a harness value. It ranks where harness `model:` and `effort:` do in
+the order above, and `override_source` reports the model as `harness`. Setting
+either one both on the entry and in its block fails validation.
 
 The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. A value from the config file is labelled with the file path, suffixed ` agents.<name>` when the agent's entry decided. When `models.aliases` in `.fullsend/config.yaml` remaps the alias, the line keeps the alias and its source and adds the remap: `Model: sonnet (from <source>) → claude-sonnet-5 (from <config path> models.aliases)`, with `model: alias "sonnet" remapped to "claude-sonnet-5" from <config path> models.aliases` on stderr. An alias that is not remapped shows the id it resolves to through the runtime's built-in table instead: `Model: haiku (from FULLSEND_MODEL) → claude-haiku-5-5 (built-in default)` on `claude` (`opus`, `sonnet`, `haiku`) and `pi` (those three plus `fable`). Aliased entries in the `Fallback models` line show as `alias → id` (`sonnet → claude-sonnet-5, claude-opus-4-6 (from FULLSEND_FALLBACK_MODELS)`); literal ids print as written; Claude Code and pi use the chain for aliased models when Vertex does not serve the model and ignore it for pinned ids. With no `FULLSEND_FALLBACK_MODELS`, a `claude` or `pi` run on `opus`, `sonnet` or `haiku` (not retargeted) prints the alias's built-in chain instead: `Fallback models: claude-opus-4-6 (built-in for opus, when not served)`. An invalid override — unknown runtime, unknown effort level, an `agents:` entry that names no agent, or a `models.aliases` key or value the block does not accept — fails before the sandbox is created.
 
@@ -604,6 +643,9 @@ them into the sandbox. Matching is case-insensitive. It warns twice:
 - As it writes the sandbox environment, one stderr line per key:
   `WARNING: env.sandbox key "NAME" is reserved (runner infrastructure or security deny-list); skipping`
 
+A reserved name in the `harness:` block of an `agents:` entry fails the run
+instead, in `env.runner` as well as in `env.sandbox`.
+
 `fullsend lint` also reports the load-time warning, and
 `fullsend lint --strict` exits non-zero on it. `fullsend lock` prints the
 load-time warning when it composes a harness. A current lock entry is not
@@ -626,7 +668,11 @@ settings](../reference/harness-reference.md#migrating-proxy-and-certificate-sett
 | `FULLSEND_GITHUB_RUNNER_SECRETS_FILE` | Path to a file holding the object. The composite action writes the `FULLSEND_GITHUB_RUNNER_SECRETS` secret to a mode 0600 file and passes only this path. `fullsend run` deletes the file as soon as it has read it, even when the content is invalid, so for a local run point it at a copy. An empty value means no bundle. |
 | `FULLSEND_GITHUB_RUNNER_SECRETS` | The object inline. Use it for local runs only: in CI the value would stay readable in `/proc/<pid>/environ` for the life of the process. |
 
-Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process. Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
+Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process.
+
+The bundle, and the standalone `JIRA_TOKEN` and OTLP header secrets, can instead be resolved from Vault when the layered config selects a Vault connection through `connections` and `secrets` ([ADR 0155](../ADRs/0155-configure-vault-backed-runner-secrets.md); see [config reference § `connections`](../reference/config-reference.md#connections)). A Vault-supplied bundle replaces the native one, so `fullsend run` does not require the native bundle to be valid then. An explicit Vault selection fails closed rather than falling back to the native value.
+
+Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
 
 ## Related
 
