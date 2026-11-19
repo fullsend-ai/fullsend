@@ -240,7 +240,7 @@ jobs:
           [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
           if [[ ! -f "${script}" ]]; then
             script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
-            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
               printf '%s' "${encoded}" | base64 --decode > "${script}"
               chmod +x "${script}"
             else
