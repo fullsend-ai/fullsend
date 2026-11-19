@@ -1253,7 +1253,11 @@ func TestConverge_RefUpgradeWithThinCallers(t *testing.T) {
 // The dry run must report the same shim repair.
 func TestConverge_RefUpgradeDeliversFullShimTemplate(t *testing.T) {
 	const shimPath = ".github/workflows/fullsend.yaml"
-	setup := func(t *testing.T) *forge.FakeClient {
+	// v2.0.0 resolves to this SHA, so the content-drift template renders
+	// "<sha>  # v2.0.0" while the installed plain-tag pin must stay a plain
+	// tag (withQueuedPin).
+	const targetSHA = "2222222222222222222222222222222222222222"
+	setup := func(t *testing.T, serveTemplates bool) *forge.FakeClient {
 		t.Helper()
 		fc := newFakeClientForBatch("acme/api")
 		markFullyInstalled(fc, "acme", "api")
@@ -1264,6 +1268,24 @@ func TestConverge_RefUpgradeDeliversFullShimTemplate(t *testing.T) {
 			t.Fatal("shim template has no pull_request trigger to rewrite")
 		}
 		fc.FileContents["acme/api/"+shimPath] = []byte(oldShim)
+		fc.Refs[shimOwner+"/"+shimRepo+"/tags/v2.0.0"] = targetSHA
+		if serveTemplates {
+			// Serve the templates at the target ref, as the upstream repo
+			// does, so content drift renders them instead of falling back
+			// to the embedded templates.
+			raw, err := scaffold.FullsendRepoFile("templates/shim-per-repo.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+scaffoldGitHubShimPath+"@v2.0.0"] = raw
+			for _, tc := range scaffold.PerRepoThinCallerPaths() {
+				raw, err := scaffold.FullsendRepoFile(tc)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fc.FileContentsRef[shimOwner+"/"+shimRepo+"/internal/scaffold/fullsend-repo/"+tc+"@v2.0.0"] = raw
+			}
+		}
 		return fc
 	}
 	manifest := func() *Manifest {
@@ -1273,7 +1295,7 @@ func TestConverge_RefUpgradeDeliversFullShimTemplate(t *testing.T) {
 	}
 
 	t.Run("live", func(t *testing.T) {
-		fc := setup(t)
+		fc := setup(t, true)
 		var committed []forge.TreeFile
 		commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
 			committed = files
@@ -1298,7 +1320,10 @@ func TestConverge_RefUpgradeDeliversFullShimTemplate(t *testing.T) {
 			t.Errorf("committed shim does not use the pull_request trigger:\n%s", got)
 		}
 		if ref := extractWorkflowRef(shims[0].Content, GitHubForgeConfig()); ref != "v2.0.0" {
-			t.Errorf("committed shim ref = %q, want v2.0.0", ref)
+			t.Errorf("committed shim ref = %q, want the plain tag v2.0.0 (pin style kept)", ref)
+		}
+		if strings.Contains(got, targetSHA) {
+			t.Errorf("committed shim carries the resolved SHA; the plain-tag pin style must be kept:\n%s", got)
 		}
 
 		// The commit leaves no shim content drift for a second run.
@@ -1324,8 +1349,57 @@ func TestConverge_RefUpgradeDeliversFullShimTemplate(t *testing.T) {
 		}
 	})
 
+	t.Run("template fetch failure keeps the pin-only rewrite", func(t *testing.T) {
+		fc := setup(t, false)
+		var committed []forge.TreeFile
+		commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+			committed = files
+			return nil
+		}
+		var notes []string
+		progress := func(_, _, msg string) { notes = append(notes, msg) }
+		cfg := withoutInferenceInputs(convergeCfgWithDefaults(manifest()))
+		if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, progress); err != nil {
+			t.Fatalf("Converge() error: %v", err)
+		}
+		var shims []forge.TreeFile
+		for _, f := range committed {
+			if slices.Contains(GitHubForgeConfig().WorkflowPaths, f.Path) {
+				shims = append(shims, f)
+			}
+		}
+		if len(shims) != 1 {
+			t.Fatalf("committed %d shim files, want exactly 1", len(shims))
+		}
+		got := string(shims[0].Content)
+		if !strings.Contains(got, "pull_request_target:") {
+			t.Errorf("embedded templates must not replace the shim after a failed fetch:\n%s", got)
+		}
+		if ref := extractWorkflowRef(shims[0].Content, GitHubForgeConfig()); ref != "v2.0.0" {
+			t.Errorf("committed shim ref = %q, want v2.0.0", ref)
+		}
+		if !slices.ContainsFunc(notes, func(n string) bool { return strings.Contains(n, "delivering the pin upgrade only") }) {
+			t.Errorf("no progress note about the pin-only fallback; notes: %q", notes)
+		}
+	})
+
+	t.Run("dry-run after a template fetch failure reports no shim repair", func(t *testing.T) {
+		fc := setup(t, false)
+		cfg := withoutInferenceInputs(convergeCfgWithDefaults(manifest()))
+		cfg.DryRun = true
+		result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+		if err != nil {
+			t.Fatalf("Converge() error: %v", err)
+		}
+		for _, a := range result.Results[0].Actions {
+			if a.Component == shimPath && a.Action == "update" {
+				t.Errorf("dry run reports a shim repair the live run would not deliver: %+v", a)
+			}
+		}
+	})
+
 	t.Run("dry-run", func(t *testing.T) {
-		fc := setup(t)
+		fc := setup(t, true)
 		sc := &fakeScaffoldCommit{}
 		cfg := withoutInferenceInputs(convergeCfgWithDefaults(manifest()))
 		cfg.DryRun = true
@@ -1411,6 +1485,35 @@ func TestSupersedePinOnlyRefFiles_KeepsPinStyle(t *testing.T) {
 				t.Errorf("content = %q, want %q", got[0].Content, want)
 			}
 		})
+	}
+}
+
+func TestWithQueuedPin_NoPin(t *testing.T) {
+	full := []byte("uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc  # v2.0.0\n")
+	if got := withQueuedPin(full, []byte("no pin here\n"), GitHubForgeConfig()); string(got) != string(full) {
+		t.Errorf("queued without a pin: got %q, want full unchanged", got)
+	}
+	if got := withQueuedPin(full, full, ForgeConfig{}); string(got) != string(full) {
+		t.Errorf("no ShimRefPattern: got %q, want full unchanged", got)
+	}
+}
+
+func TestWithoutRefPathRepairs(t *testing.T) {
+	tc := scaffold.PerRepoThinCallerPaths()[0]
+	files := []forge.TreeFile{{Path: ".github/workflows/fullsend.yaml"}, {Path: tc}, {Path: ".fullsend/config.yaml"}}
+	actions := []ComponentAction{
+		{Component: ".github/workflows/fullsend.yaml", Action: "update"},
+		{Component: tc, Action: "update"},
+		{Component: ".fullsend/config.yaml", Action: "update"},
+		{Component: "ref", Action: "upgrade"},
+	}
+	skip := func(p string) bool { return p == ".github/workflows/fullsend.yaml" || p == tc }
+	gotFiles, gotActions := withoutRefPathRepairs(files, actions, skip)
+	if len(gotFiles) != 1 || gotFiles[0].Path != ".fullsend/config.yaml" {
+		t.Errorf("files = %+v, want only .fullsend/config.yaml", gotFiles)
+	}
+	if len(gotActions) != 2 || gotActions[0].Component != ".fullsend/config.yaml" || gotActions[1].Component != "ref" {
+		t.Errorf("actions = %+v", gotActions)
 	}
 }
 

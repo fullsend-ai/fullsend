@@ -3517,6 +3517,12 @@ func convergeScaffoldFiles(ctx context.Context,
 // isUnstampedInstallRef). When neither fullsend_ref nor a release ref is
 // available, the expected content is then still rendered, at
 // config.DefaultUpstreamRef, exactly as that install rendered it.
+//
+// targetTemplates reports whether the expected files were rendered from
+// templates that match the target ref: the remote fetch at the pinned ref
+// succeeded, the install is vendored, or no explicit pin was set. It is
+// false when a GitHub fetch failed and the running binary's embedded
+// templates were used instead.
 func convergeContentDriftFiles(ctx context.Context,
 	resolved ResolvedConfig,
 	cfg ConvergeConfig,
@@ -3524,10 +3530,10 @@ func convergeContentDriftFiles(ctx context.Context,
 	coveredPaths map[string]bool,
 	dcfg DriftConfig,
 	unstampedInstall bool,
-	progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
+	progress ProgressFunc) (files []forge.TreeFile, actions []ComponentAction, targetTemplates bool) {
 
 	repoFullName := resolved.Owner + "/" + resolved.Repo
-	var actions []ComponentAction
+	targetTemplates = true
 
 	targetRef := resolved.FullsendRef
 	if targetRef == "" && cfg.UpstreamRef == "" && !unstampedInstall {
@@ -3538,7 +3544,7 @@ func convergeContentDriftFiles(ctx context.Context,
 		progress(repoFullName, "content-drift",
 			fmt.Sprintf("scaffold content drift not checked: %s.fullsend_ref is not set and this build has no release ref; "+
 				"set %s.fullsend_ref to converge template changes such as runner tags", resolved.Forge, resolved.Forge))
-		return nil, actions
+		return nil, actions, targetTemplates
 	}
 
 	rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
@@ -3565,8 +3571,9 @@ func convergeContentDriftFiles(ctx context.Context,
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
 		} else {
 			if resolved.Forge == ForgeGitLab {
-				return nil, []ComponentAction{{Component: "scaffold", Action: "error", Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", fetchErr)}}
+				return nil, []ComponentAction{{Component: "scaffold", Action: "error", Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", fetchErr)}}, false
 			}
+			targetTemplates = false
 			progress(repoFullName, "content-drift",
 				fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
 		}
@@ -3579,7 +3586,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "error",
 			Detail:    fmt.Sprintf("failed to build expected scaffold for content drift check: %v", buildErr),
 		})
-		return nil, actions
+		return nil, actions, targetTemplates
 	}
 
 	// Content drift detection — shared between dry-run and live paths.
@@ -3595,7 +3602,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "error",
 			Detail:    fmt.Sprintf("content drift check failed: %v", driftErr),
 		})
-		return nil, actions
+		return nil, actions, targetTemplates
 	}
 
 	var repairFiles []forge.TreeFile
@@ -3650,7 +3657,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "error",
 			Detail:    fmt.Sprintf("orphan file check failed: %v", orphanErr),
 		})
-		return repairFiles, actions
+		return repairFiles, actions, targetTemplates
 	}
 	for _, o := range orphanFiles {
 		if coveredPaths[o.Path] {
@@ -3679,7 +3686,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "error",
 			Detail:    fmt.Sprintf("orphan variable check failed: %v", orphanVarErr),
 		})
-		return repairFiles, actions
+		return repairFiles, actions, targetTemplates
 	}
 	for _, o := range orphanVars {
 		actions = append(actions, ComponentAction{
@@ -3691,7 +3698,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			fmt.Sprintf("Orphan variable %s (not in managed set)", o.Name))
 	}
 
-	return repairFiles, actions
+	return repairFiles, actions, targetTemplates
 }
 
 // resolvedRef holds the result of resolving a manifest's fullsend_ref
@@ -3866,6 +3873,14 @@ func supersedePinOnlyRefFiles(files, driftFiles []forge.TreeFile, pinOnly map[st
 	return files
 }
 
+// withoutRefPathRepairs drops the content-drift repairs, and their update
+// actions, for the paths skip selects.
+func withoutRefPathRepairs(files []forge.TreeFile, actions []ComponentAction, skip func(string) bool) ([]forge.TreeFile, []ComponentAction) {
+	files = slices.DeleteFunc(files, func(f forge.TreeFile) bool { return skip(f.Path) })
+	actions = slices.DeleteFunc(actions, func(a ComponentAction) bool { return a.Action == "update" && skip(a.Component) })
+	return files, actions
+}
+
 // withQueuedPin returns full with every fullsend workflow pin replaced by
 // the pin in queued, the pin-only rewrite convergeRefFiles produced. The
 // content-drift template always renders a semver target as "<sha>  # tag",
@@ -3876,7 +3891,7 @@ func withQueuedPin(full, queued []byte, fc ForgeConfig) []byte {
 		return full
 	}
 	m := fc.ShimRefPattern.FindSubmatchIndex(queued)
-	if m == nil {
+	if len(m) < 4 || m[3] < 0 {
 		return full
 	}
 	pin := strings.ReplaceAll(string(queued[m[3]:m[1]]), "$", "$$")
@@ -3982,7 +3997,7 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 			}
 		}
 	}
-	contentDriftFiles, contentDriftActions := convergeContentDriftFiles(
+	contentDriftFiles, contentDriftActions, targetTemplates := convergeContentDriftFiles(
 		ctx, resolved, cfg, refResolver, driftCoveredPaths,
 		DriftConfig{
 			ReviewAppClientID: d.reviewClientID,
@@ -3992,6 +4007,29 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 		unstampedWorkflow(resolved.Forge, d.components),
 		progress,
 	)
+	// The drift templates replace the shim and thin callers on a ref
+	// upgrade only when they match the target ref. After a failed remote
+	// fetch they are the running binary's embedded templates, which can
+	// call inputs the target release lacks: keep the pin-only rewrite and
+	// leave the template change to the next run. Filtering here, before
+	// the actions are recorded, keeps the dry run and the live run in step.
+	if !targetTemplates && resolved.Forge != ForgeGitLab && slices.ContainsFunc(refActions, func(a ComponentAction) bool {
+		return a.Component == "ref" && a.Action == "upgrade"
+	}) {
+		// A live run drops only the repairs that would replace a queued
+		// pin-only file. A shim that withoutLegacyOpenAIConsumer left out
+		// of the queue still needs its drift repair. The dry run queues no
+		// ref files, so it drops the repairs for every ref-upgrade path.
+		skip := func(p string) bool { return pinOnlyPaths[p] }
+		if cfg.DryRun {
+			skip = func(p string) bool {
+				return slices.Contains(resolved.ForgeConfig.WorkflowPaths, p) || slices.Contains(scaffold.PerRepoThinCallerPaths(), p)
+			}
+		}
+		contentDriftFiles, contentDriftActions = withoutRefPathRepairs(contentDriftFiles, contentDriftActions, skip)
+		progress(resolved.Owner+"/"+resolved.Repo, "content-drift",
+			"template fetch at the target ref failed: delivering the pin upgrade only; run install again to deliver template changes")
+	}
 	actions = append(actions, contentDriftActions...)
 
 	var contentErrors []string
