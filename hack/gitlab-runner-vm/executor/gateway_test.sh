@@ -1125,6 +1125,99 @@ else
   fail "prune_unused_podman_storage did not forward the extra keep-ref: $(tr '\n' '|' < "${PRUNE_LOG}")"
 fi
 
+echo "== stage_openshell_config =="
+# The running gateway creates and deletes SQLite files under
+# ~/.config/openshell while prepare.sh stages it; a raw `cp -a` of the tree
+# failed with "cannot stat .../gateway/openshell.db-journal" (#9686).
+if grep -Fq 'stage_openshell_config "${OPENSHELL_CONFIG}"' "${PREPARE}" \
+  && grep -Fq 'openshell_gateway_state' "${PREPARE}" \
+  && ! grep -Fq 'cp -a "${OPENSHELL_CONFIG}"' "${PREPARE}"; then
+  pass "prepare.sh stages the OpenShell config via stage_openshell_config"
+else
+  fail "prepare.sh must stage the OpenShell config via stage_openshell_config, not cp -a"
+fi
+
+STAGE_SRC="${FAKE_HOME}/stage-src"
+STAGE_DEST="${FAKE_HOME}/stage-dest"
+mkdir -p "${STAGE_SRC}/gateways/openshell/mtls" "${STAGE_SRC}/gateway"
+printf 'cfg\n' > "${STAGE_SRC}/gateway.toml"
+printf 'cert\n' > "${STAGE_SRC}/gateways/openshell/mtls/ca.crt"
+printf 'key\n' > "${STAGE_SRC}/gateways/openshell/mtls/tls.key"
+chmod 600 "${STAGE_SRC}/gateways/openshell/mtls/tls.key"
+chmod 700 "${STAGE_SRC}/gateways"
+ln -s openshell "${STAGE_SRC}/gateways/active"
+for f in openshell.db openshell.db-journal openshell.db-wal openshell.db-shm; do
+  printf 'sqlite\n' > "${STAGE_SRC}/gateway/${f}"
+done
+mkdir -p "${STAGE_DEST}/stale"
+
+if stage_openshell_config "${STAGE_SRC}" "${STAGE_DEST}" \
+  && [ "$(cat "${STAGE_DEST}/gateway.toml")" = "cfg" ] \
+  && [ "$(cat "${STAGE_DEST}/gateways/openshell/mtls/ca.crt")" = "cert" ] \
+  && [ "$(cat "${STAGE_DEST}/gateways/openshell/mtls/tls.key")" = "key" ] \
+  && [ "$(stat -c %a "${STAGE_DEST}/gateways/openshell/mtls/tls.key")" = "600" ] \
+  && [ "$(stat -c %a "${STAGE_DEST}/gateways")" = "700" ] \
+  && [ "$(readlink "${STAGE_DEST}/gateways/active")" = "openshell" ] \
+  && [ -d "${STAGE_DEST}/gateway" ] \
+  && [ ! -e "${STAGE_DEST}/stale" ] \
+  && [ -z "$(find "${STAGE_DEST}" -name '*.db*')" ]; then
+  pass "stage_openshell_config copies credentials and config, skips SQLite files"
+else
+  fail "stage_openshell_config staged an unexpected tree: $(cd "${STAGE_DEST}" 2>/dev/null && find . | sort | tr '\n' ' ')"
+fi
+
+rm -f "${STAGE_SRC}/gateway/openshell.db-journal"
+if stage_openshell_config "${STAGE_SRC}" "${STAGE_DEST}" \
+  && [ -f "${STAGE_DEST}/gateways/openshell/mtls/tls.key" ]; then
+  pass "stage_openshell_config succeeds when the gateway journal is absent"
+else
+  fail "stage_openshell_config must not need the gateway journal"
+fi
+
+# A cp shim that deletes "vanishing" before failing (as `cp` sees a file the
+# gateway removed mid-copy) and fails on "unreadable" while leaving it.
+REAL_CP="$(command -v cp)"
+printf '#!/bin/sh\nfor a in "$@"; do last2="$prev"; prev="$a"; done\ncase "$last2" in\n  */vanishing) rm -f "$last2"; echo "cp: cannot stat $last2" >&2; exit 1 ;;\n  */unreadable) echo "cp: cannot open $last2: Permission denied" >&2; exit 1 ;;\nesac\nexec "%s" "$@"\n' \
+  "${REAL_CP}" > "${SHIM_DIR}/cp"
+chmod +x "${SHIM_DIR}/cp"
+hash -r # earlier cp calls cached /usr/bin/cp; pick up the shim
+
+printf 'tmp\n' > "${STAGE_SRC}/gateway/vanishing"
+if stage_openshell_config "${STAGE_SRC}" "${STAGE_DEST}" 2>/dev/null \
+  && [ ! -e "${STAGE_DEST}/gateway/vanishing" ] \
+  && [ -f "${STAGE_DEST}/gateways/openshell/mtls/tls.key" ]; then
+  pass "stage_openshell_config skips a file that vanishes mid-copy"
+else
+  fail "stage_openshell_config must tolerate a file vanishing mid-copy"
+fi
+
+printf 'secret\n' > "${STAGE_SRC}/gateways/openshell/mtls/unreadable"
+if stage_err=$(stage_openshell_config "${STAGE_SRC}" "${STAGE_DEST}" 2>&1); then
+  fail "stage_openshell_config must fail when an existing file cannot be copied"
+elif printf '%s' "${stage_err}" | grep -Fq "could not copy ${STAGE_SRC}/gateways/openshell/mtls/unreadable"; then
+  pass "stage_openshell_config fails with the path when an existing file cannot be copied"
+else
+  fail "stage_openshell_config failure did not name the file: ${stage_err}"
+fi
+rm -f "${SHIM_DIR}/cp"
+hash -r
+
+echo "== openshell_gateway_state =="
+printf '#!/bin/sh\necho "$@" >> "%s"\ncase "$*" in *is-active*) echo activating; exit 3;; esac\nexit 0\n' \
+  "${SYSTEMCTL_LOG}" > "${SHIM_DIR}/systemctl"
+if [ "$(openshell_gateway_state)" = "activating" ]; then
+  pass "openshell_gateway_state reports the unit's systemd state"
+else
+  fail "openshell_gateway_state did not report the unit state: $(openshell_gateway_state)"
+fi
+printf '#!/bin/sh\nexit 1\n' > "${SHIM_DIR}/systemctl"
+if [ "$(openshell_gateway_state)" = "unknown" ]; then
+  pass "openshell_gateway_state reports unknown when systemctl gives no state"
+else
+  fail "openshell_gateway_state should report unknown: $(openshell_gateway_state)"
+fi
+printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${SYSTEMCTL_LOG}" > "${SHIM_DIR}/systemctl"
+
 if [ "${FAILURES}" -ne 0 ]; then
   echo "${FAILURES} case(s) failed" >&2
   exit 1

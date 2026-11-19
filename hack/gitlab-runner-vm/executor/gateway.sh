@@ -468,6 +468,50 @@ wipe_openshell_gateway_store() {
   rm -rf "${root}/gateway" "${root}/tls"
 }
 
+# The per-job gateway unit's systemd state (active, activating, failed,
+# inactive, ...) for error messages; "unknown" when it cannot be read.
+openshell_gateway_state() {
+  local state
+  state=$(user_systemctl is-active openshell-gateway.service 2>/dev/null) || true
+  printf '%s' "${state:-unknown}"
+}
+
+# Copy the runner user's OpenShell config tree ($1) to a per-job staging
+# directory ($2) that prepare.sh mounts read-only into the job container.
+# The gateway is already running and creates and deletes SQLite files in
+# that tree (gateway/openshell.db-journal), so a plain `cp -a` of it fails
+# whenever a file vanishes mid-copy (#9686). SQLite databases and their
+# sidecar files are skipped: the container needs only the CLI's gateway
+# registration and mTLS material, and a live database copied without its
+# journal is not usable anyway. Any other entry that vanishes between
+# listing and copying is skipped too. Every other failure returns non-zero.
+stage_openshell_config() {
+  local src="$1" dest="$2" rel path err
+  rm -rf -- "${dest}"
+  mkdir -p -- "${dest}" || return 1
+  chmod --reference="${src}" -- "${dest}" || return 1
+  while IFS= read -r -d '' rel; do
+    path="${src}/${rel}"
+    if [ -d "${path}" ] && [ ! -L "${path}" ]; then
+      mkdir -p -- "${dest}/${rel}" || return 1
+      if ! chmod --reference="${path}" -- "${dest}/${rel}" 2>/dev/null \
+        && [ -e "${path}" ]; then
+        echo "ERROR: could not copy permissions of ${path}" >&2
+        return 1
+      fi
+      continue
+    fi
+    if ! err=$(cp -a -- "${path}" "${dest}/${rel}" 2>&1); then
+      if [ -e "${path}" ] || [ -L "${path}" ]; then
+        echo "ERROR: could not copy ${path}: ${err}" >&2
+        return 1
+      fi
+    fi
+  done < <(find "${src}" -ignore_readdir_race -mindepth 1 \
+    \( -name '*.db' -o -name '*.db-journal' -o -name '*.db-wal' -o -name '*.db-shm' \) \
+    -prune -o -printf '%P\0')
+}
+
 # Sandboxes are Podman containers labeled openshell.managed=true (OpenShell
 # Podman driver) and named openshell-*. A killed job leaves them behind;
 # the leaked sandbox is what pinned the stale profile on runner-01.
