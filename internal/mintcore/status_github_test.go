@@ -282,3 +282,38 @@ func TestStatusGitHub_PendingMembership_Returns401(t *testing.T) {
 		t.Fatalf("expected 401 for pending membership, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestStatusGitHub_UsesConfiguredAPIBase(t *testing.T) {
+	// MINT_GITHUB_API_URL points the user and team lookups at another
+	// GitHub API, as it does for installation tokens.
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/user":
+			json.NewEncoder(w).Encode(map[string]string{"login": "alice"})
+		case "/api/v3/orgs/org1/teams/devs/memberships/alice":
+			json.NewEncoder(w).Encode(map[string]string{"state": "active"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	t.Setenv("MINT_GITHUB_API_URL", github.URL+"/api/v3/")
+	SetMintHTTPForTest(t, func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Host, "api.github.com") {
+			t.Errorf("called github.com with MINT_GITHUB_API_URL set: %s", req.URL)
+		}
+		return http.DefaultClient.Do(req)
+	})
+
+	StatusGitHubGroup = "org1/devs"
+	t.Cleanup(func() {
+		StatusGitHubGroup = ""
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	if err := validateStatusGitHub(req.Context(), req); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}

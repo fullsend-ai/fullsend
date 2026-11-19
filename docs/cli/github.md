@@ -50,7 +50,7 @@ parses fails the re-run rather than being regenerated.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--mint-url` | | HTTPS endpoint of the token mint service |
+| `--mint-url` | | HTTPS endpoint of the token mint service (plain `http` is accepted only for `localhost` or `127.0.0.1`) |
 | `--inference-provider` | | Inference provider; resolved to `vertex` if unset |
 | `--inference-project` | | GCP project ID for Vertex inference; optional for per-repo setup |
 | `--inference-wif-provider` | | Full WIF provider resource name; optional for per-repo setup |
