@@ -63,7 +63,49 @@ sole supported installation model
 - Declarative managed repository configuration: every repository in `repos.yaml` has a canonical managed `.fullsend/config.yaml` (no `config` key is needed), resolved from `defaults.config`, then `github.config` or `gitlab.config`, then the repository entry's `config` (each accepts every per-repo field, including `runtime` and `allowed_remote_resources`, except `trace_context`, which only a concrete repository entry accepts), and `.fullsend/config.base.yaml` is managed too: it must match the declared `config_base` preset, or not exist when none resolves. An undeclared base stops the run before any write; a markerless overlay stops only that repository (reported as failed, nothing written to it) while the other repositories converge. Every managed write compares the current effective configuration with the proposed overlay over the proposed preset through the runtime accessor chain and rejects an implicit relaxation ([ADR 0122](ADRs/0122-declarative-repo-configuration.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
 - Ready-made configuration presets: `fullsend github setup --config <path-or-url>` commits the preset unchanged as `.fullsend/config.base.yaml` and writes any explicitly-passed persistent setup flags (`--runtime`, `--agents`, `--mint-url`, `--inference-*`) into `.fullsend/config.yaml`, overriding matching preset values; a stub overlay is written only when no persistent flags are passed. Setup warns when an explicit flag restates the inherited base or compiled default, because that overlay pin will not receive later lower-layer updates. `fullsend repos install` converges the same preset through `defaults.config_base` / per-repo `config_base` in `repos.yaml` (optional `sha256`, `none` to disable inheritance), replacing `.fullsend/config.base.yaml` wholesale without clobbering `.fullsend/config.yaml`; install separately converges `.fullsend/config.yaml` from the manifest for every manifest repository (ADR 0122). Shared-infrastructure presets will reduce per-adopter enrollment (target state): mint via `job_workflow_ref` trust per [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); inference authorization model undecided ([ADR 0069](ADRs/0069-ready-made-configuration-presets.md); a preset can carry an inference gateway's `url` and `audience`, with per-repository enrollment enforced by the gateway, per [ADR 0137](ADRs/0137-inference-gateway-credential-route.md)); enrollment remains required until follow-on ADRs land.
-- GitLab event dispatch: hybrid native webhook fast-path (GitLab "use a webhook" pipeline trigger pinned to the protected default branch) plus the cron-poller as reconciliation backstop ([ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)); `fullsend repos install` provisions the fast-path (trigger token, webhook secret, and project webhook) once its readiness gates hold — dispatcher template and scripts on the default branch, protected default branch, and `no_one_allowed` — and defers it until then, while the cron-poller stays in place as the reconciliation backstop; the fast path has shipped, and the [normative event specification's GitLab adapter notes](normative/normalized-event/v1/README.md#gitlab-adapter-notes) record ship-gate status. Native `merge_request_event` dispatch stays removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)); protected CI/CD variables are unavailable on unprotected MR refs. No external webhook-bridge infrastructure. The bot PAT is Developer-level — the current poller credential per [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) — and stored as a protected CI/CD variable; dispatch carries its fields via typed GitLab CI/CD pipeline inputs rather than user-defined pipeline variables, so the variable-restriction control (`ci_pipeline_variables_minimum_override_role=no_one_allowed`) needs no Owner-role credential ([ADR 0131](ADRs/0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md), resolving #7769); runnable typed templates are not delivered until that restriction is already verified, even when automatic enforcement is requested. Managed schedules carry no pipeline variables; job rules select poll mode from the schedule description, and typed activation only reads managed schedules and fails while any still sets a pipeline variable (including an obsolete `FULLSEND_POLL_MODE` override, which must be removed manually). Install and converge refuse legacy variable-based wrappers (for example a `fullsend_ref` pinned before v0.46.0); see [Typed-input dispatch migration](guides/getting-started/configuring-gitlab.md#typed-input-dispatch-migration). Webhook and poller share occurrence-aware dispatch state ([ADR 0132](ADRs/0132-occurrence-aware-shared-poller-state.md)). Poller state lives on dedicated HMAC-signed branches. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- GitLab event dispatch: hybrid native webhook fast-path (GitLab "use a webhook"
+  pipeline trigger pinned to the protected default branch) plus the cron-poller
+  as reconciliation backstop ([ADR
+  0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md));
+  `fullsend repos install` provisions the fast-path (trigger token, webhook
+  secret, and project webhook) once its readiness gates hold — dispatcher
+  template and scripts on the default branch, protected default branch, and
+  `no_one_allowed` — and defers it until then, while the cron-poller stays in
+  place as the reconciliation backstop; the fast path has shipped, and the
+  [normative event specification's GitLab adapter
+  notes](normative/normalized-event/v1/README.md#gitlab-adapter-notes) record
+  ship-gate status. Native `merge_request_event` dispatch stays removed
+  ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)); protected
+  CI/CD variables are unavailable on unprotected MR refs. No external
+  webhook-bridge infrastructure. The bot PAT is Developer-level — the current
+  poller credential per [ADR
+  0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) — and stored as a
+  protected CI/CD variable; dispatch carries its fields via typed GitLab CI/CD
+  pipeline inputs rather than user-defined pipeline variables, so the
+  variable-restriction control
+  (`ci_pipeline_variables_minimum_override_role=no_one_allowed`) needs no
+  Owner-role credential ([ADR
+  0131](ADRs/0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md), resolving
+  #7769); runnable typed templates are not delivered until that restriction is
+  already verified, even when automatic enforcement is requested.
+  `no_one_allowed` stays the default and the recommendation; adopters who cannot
+  apply it may give an explicit opt-in that fullsend saves, so install and
+  converge go ahead with a weaker setting and warn that anyone at the relaxed
+  role who can run a default-branch pipeline can read the Poller and role
+  credentials ([ADR
+  0175](ADRs/0175-allow-insecure-gitlab-pipeline-variable-restriction-opt-in.md),
+  amending ADR 0131; CLI shape tracked in #9597). Managed schedules carry no
+  pipeline variables; job rules select poll mode from the schedule description,
+  and typed activation only reads managed schedules and fails while any still
+  sets a pipeline variable (including an obsolete `FULLSEND_POLL_MODE` override,
+  which must be removed manually). Install and converge refuse legacy
+  variable-based wrappers (for example a `fullsend_ref` pinned before v0.46.0);
+  see [Typed-input dispatch
+  migration](guides/getting-started/configuring-gitlab.md#typed-input-dispatch-migration).
+  Webhook and poller share occurrence-aware dispatch state ([ADR
+  0132](ADRs/0132-occurrence-aware-shared-poller-state.md)). Poller state lives
+  on dedicated HMAC-signed branches. Per-repo only ([ADR
+  0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
 
