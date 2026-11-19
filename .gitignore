@@ -29,3 +29,4 @@ coverage.out
 cmd/mint-wasm/mint.wasm
 # QualityFlow working directory; nothing under it belongs in a commit.
 outputs/
+.uf/feedback/

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,9 +30,31 @@ func TestOpenCodeHookAdapter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, "--test", "opencode_plugin/fullsend-hooks.test.mjs")
-	cmd.Env = append(os.Environ(), "FULLSEND_TEST_ADAPTER="+adapter, "FULLSEND_TEST_PYTHON="+python)
+	policy := openCodeHookPolicy("", "", &piAgentDef{}, nil)
+	cmd.Env = append(os.Environ(), "FULLSEND_TEST_ADAPTER="+adapter, "FULLSEND_TEST_PYTHON="+python, "FULLSEND_TEST_BASH_POLICY="+openCodeHookConfigJSON(policy))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", out)
+}
+
+func TestOpenCodeBashBuiltinInventory(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bash, "--noprofile", "--norc", "-c", "compgen -b -k")
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	for _, name := range strings.Fields(string(out)) {
+		assert.Contains(t, openCodeBashBuiltins, name, "update the shared inventory for this Bash version")
+	}
+	for _, name := range openCodeBashSafeBuiltins {
+		assert.True(t, slices.Contains(openCodeBashBuiltins, name), "safe exceptions must name known builtins")
+	}
+	assert.Equal(t, []string{"cd", "echo", "false", "printf", "pwd", "true"}, openCodeBashSafeBuiltins,
+		"new builtin exceptions need review of their options and shell-state effects")
 }
 
 func TestOpenCodeApplyBashPatternsPreservesTrustedPatterns(t *testing.T) {

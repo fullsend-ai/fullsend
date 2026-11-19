@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,46 @@ func TestOpenCodeRuntimeBootstrap_RejectsBashPatternsBeforeSandboxSetup(t *testi
 			assert.True(t, os.IsNotExist(statErr), "invalid entries must fail before sandbox commands")
 		})
 	}
+}
+
+func TestOpenCodeRuntimeBootstrap_RejectsUnvettedBashBuiltins(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	fakeOpenshellOpenCode(t, logPath, filepath.Join(work, "store"))
+	for _, entry := range openCodeBashBuiltins {
+		if slices.Contains(openCodeBashSafeBuiltins, entry) {
+			continue
+		}
+		t.Run(entry, func(t *testing.T) {
+			definition := strings.Replace(openCodeTestAgentDef, "Bash(gh,jq)", "Bash("+entry+")", 1)
+			err := OpenCodeRuntime{}.Bootstrap(bootstrapInput{
+				sandboxName: "sb", agentPath: writeAgentFile(t, definition),
+			})
+			require.ErrorContains(t, err, "unsupported OpenCode Bash allowlist entry")
+			if openCodeBashProgram.MatchString(entry) {
+				assert.Contains(t, err.Error(), "Bash builtins and reserved words")
+				assert.Contains(t, err.Error(), "use an external program instead")
+			}
+			_, statErr := os.Stat(logPath)
+			assert.True(t, os.IsNotExist(statErr), "unvetted builtins must fail before sandbox commands")
+		})
+	}
+}
+
+func TestOpenCodeRuntimeBootstrap_AllowsVettedBashBuiltins(t *testing.T) {
+	work := t.TempDir()
+	fakeOpenshellOpenCode(t, filepath.Join(work, "log"), filepath.Join(work, "store"))
+	programs := append(slices.Clone(openCodeBashSafeBuiltins), "gh", "jq")
+	definition := strings.Replace(openCodeTestAgentDef, "Bash(gh,jq)", "Bash("+strings.Join(programs, ",")+")", 1)
+	err := OpenCodeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb", agentPath: writeAgentFile(t, definition),
+	})
+	require.NoError(t, err)
+	env, ok := lookupOpenCodeTrustedEnv("sb")
+	require.True(t, ok)
+	assert.Equal(t, programs, env.Hooks.BashAllowlist)
+	assert.Equal(t, openCodeBashBuiltins, env.Hooks.BashBuiltins)
+	assert.Equal(t, openCodeBashSafeBuiltins, env.Hooks.BashSafeBuiltins)
 }
 
 func TestOpenCodeRuntimeBootstrap_EmptyAgentPath(t *testing.T) {

@@ -39,8 +39,10 @@ json.dump({"reason": text}, sys.stdout)
 // and remove argument quotes so neither a prefix nor quoting can hide a denied
 // command from a trusted pattern map. This is deliberately not a general shell
 // parser: unsupported syntax is refused before execution.
-function bashCommands(command, allowParameterExpansion = false) {
+function bashCommands(command, cfg, allowParameterExpansion = false) {
   if (typeof command !== "string" || !command.trim()) deny("empty Bash command");
+  if (!Array.isArray(cfg.bashBuiltins) || !cfg.bashBuiltins.length ||
+      !Array.isArray(cfg.bashSafeBuiltins)) deny("Bash builtin policy unavailable");
   const commands = [];
   let words = [];
   let expandedWords = [];
@@ -65,10 +67,8 @@ function bashCommands(command, allowParameterExpansion = false) {
       const first = words[0];
       if (!allowParameterExpansion && first.includes("/")) deny("Bash policy rejects path-qualified program names with trusted patterns");
       if (!/^[A-Za-z0-9_./-]+$/.test(first) ||
-          ["eval", "exec", "sh", "bash", "source", ".", "command", "builtin", "env", "nohup", "nice", "timeout", "xargs", "time",
-            "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function", "select", "coproc",
-            "export", "unset", "readonly", "set", "trap", "alias", "unalias", "declare", "typeset", "local", "let", "enable", "hash",
-            "read", "getopts", "mapfile", "readarray", "shopt", "ulimit", "test"].includes(first)) {
+          (cfg.bashBuiltins.includes(first) && !cfg.bashSafeBuiltins.includes(first)) ||
+          ["sh", "bash", "env", "nohup", "nice", "timeout", "xargs"].includes(first)) {
         deny("Bash policy rejects environment assignments and shell wrappers");
       }
       if (first === "printf") {
@@ -139,9 +139,9 @@ function bashCommands(command, allowParameterExpansion = false) {
 }
 
 // Enforce Bash(...) program names; pi makes this advisory by default.
-function checkBash(command, allowlist) {
+function checkBash(command, allowlist, cfg) {
   if (!allowlist?.length) return;
-  for (const segment of bashCommands(command, true)) {
+  for (const segment of bashCommands(command, cfg, true)) {
     if (!allowlist.includes(segment.split(" ")[0])) deny("command is outside the Bash allowlist");
   }
 }
@@ -217,7 +217,7 @@ function checkPermission(cfg, tool, args, cwd, worktree, targets) {
       skill: args.name,
     }[tool] ?? "*";
     let values = [value];
-    if (tool === "bash") values = bashCommands(args.command);
+    if (tool === "bash") values = bashCommands(args.command, cfg);
     else if (["read", "write", "edit", "multiedit", "apply_patch"].includes(tool)) {
       const paths = tool === "read" ? [args.filePath ?? args.file_path] : targets;
       values = paths.flatMap((target) => {
@@ -354,7 +354,7 @@ export default async ({ directory, worktree }) => {
       if (cfg.tools && !cfg.tools.includes(canonical) && !(canonical === "Agent" && cfg.tools.includes("Task"))) deny("tool is outside the parent allowlist");
       const targets = writeTargets(input.tool, args);
       checkPermission(cfg, input.tool, args, cwd, permissionRoot, targets);
-      if (input.tool === "bash") checkBash(args.command, cfg.bashAllowlist);
+      if (input.tool === "bash") checkBash(args.command, cfg.bashAllowlist, cfg);
       checkWrites(cfg, targets, cwd);
       return canonical;
     } catch (error) {

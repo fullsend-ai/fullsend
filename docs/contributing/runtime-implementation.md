@@ -436,6 +436,16 @@ grammar, matches each command's unquoted words, and rejects parameter expansion
 when trusted argument patterns are active. Program-name-only allowlists still
 accept simple quoted parameter expansion.
 
+Bootstrap and both restricted adapter modes share the Bash builtin and
+reserved-word inventory in `internal/runtime/opencode_bash.go`. Only `cd`,
+`echo`, `false`, `printf`, `pwd`, and `true` are vetted builtin exceptions;
+`printf` keeps its option and format restrictions. Other builtins, including
+`compgen` and `complete`, cannot bypass command checks through quoted callbacks.
+The runner supplies this policy with the hook configuration; restricted Bash
+fails closed if it is missing. `TestOpenCodeBashBuiltinInventory` checks the
+inventory against the test environment's `compgen -b -k` output. Run it against
+the sandbox's Bash when updating the base image.
+
 Allowed-command assertions inspect successful tool-result content rather than
 matching text in the model's tool inputs. The SSRF probe uses an otherwise
 allowed `touch` followed by a blocked URL, so absence of the file proves the

@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const plugin = (await import(pathToFileURL(process.env.FULLSEND_TEST_ADAPTER))).default;
+const bashPolicy = JSON.parse(process.env.FULLSEND_TEST_BASH_POLICY);
 
 async function setup(t, extra = {}, scripts = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "fullsend-opencode-"));
@@ -22,6 +23,7 @@ async function setup(t, extra = {}, scripts = {}) {
   }
   const cfg = { dir, workspace, python: process.env.FULLSEND_TEST_PYTHON,
     env: { PATH: "/usr/bin:/bin" }, groups: [], digests, tools: null,
+    bashBuiltins: bashPolicy.bashBuiltins, bashSafeBuiltins: bashPolicy.bashSafeBuiltins,
     bashAllowlist: null, permission: { "*": "allow" }, ...extra };
   process.env.FULLSEND_OPENCODE_HOOK_CONFIG = JSON.stringify(cfg);
   const hooks = await plugin({ directory: workspace, worktree: workspace });
@@ -58,6 +60,59 @@ test("restricted Bash rejects variable-setting and shell-state builtins", async 
       "shopt -s expand_aliases", "ulimit -n 1",
     ]) {
       await assert.rejects(h.before("bash", { command }), /environment assignments and shell wrappers/, command);
+    }
+  }
+});
+
+test("restricted Bash permits only vetted builtins from the shared inventory", async (t) => {
+  const blocked = bashPolicy.bashBuiltins.filter((name) => !bashPolicy.bashSafeBuiltins.includes(name));
+  for (const policy of [
+    { bashAllowlist: [...blocked, ...bashPolicy.bashSafeBuiltins] },
+    { permission: { bash: { "*": "allow" } } },
+  ]) {
+    const h = await setup(t, policy);
+    for (const command of blocked) {
+      await assert.rejects(h.before("bash", { command }), /fullsend-hooks/, command);
+    }
+    for (const command of ["echo safe", "printf '%s' safe", "pwd", "true", "false", "cd ."]) {
+      await h.before("bash", { command });
+    }
+  }
+});
+
+test("completion callbacks cannot execute through restricted Bash", async (t) => {
+  const command = "compgen -C 'printf COMPGEN_RAN >&2' x";
+  const registration = "complete -C 'printf COMPLETE_CALLBACK >&2' probe";
+  const shell = (text, cwd) => spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", text], {
+    cwd, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8",
+  });
+  for (const policy of [
+    { bashAllowlist: ["compgen", "complete"] },
+    { permission: { bash: { "*": "deny", "compgen *": "allow", "complete *": "allow" } } },
+  ]) {
+    const h = await setup(t, policy);
+    const result = shell(command, h.workspace);
+    assert.ifError(result.error);
+    assert.match(result.stderr, /COMPGEN_RAN/, "Bash executes the quoted completion command");
+    const complete = shell(`${registration}; complete -p probe`, h.workspace);
+    assert.ifError(complete.error);
+    assert.equal(complete.status, 0, complete.stderr);
+    assert.match(complete.stdout, /complete -C/);
+    assert.equal(complete.stderr, "", "complete registers the callback without executing it");
+    for (const candidate of [command, registration]) {
+      await assert.rejects(h.before("bash", { command: candidate }), /environment assignments and shell wrappers/, candidate);
+    }
+  }
+});
+
+test("restricted Bash fails closed without its runner-held builtin policy", async (t) => {
+  for (const policy of [
+    { bashAllowlist: ["echo"] },
+    { permission: { bash: { "echo *": "allow" } } },
+  ]) {
+    for (const missing of [{ bashBuiltins: null }, { bashBuiltins: [] }, { bashSafeBuiltins: null }]) {
+      const h = await setup(t, { ...policy, ...missing });
+      await assert.rejects(h.before("bash", { command: "echo safe" }), /Bash builtin policy unavailable/);
     }
   }
 });
