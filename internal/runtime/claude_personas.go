@@ -102,7 +102,9 @@ func claudeTrustedModels(configAliases map[string]string, parentModel string, ga
 // run, and returns the persona agent files and the agent definition with
 // the runtime note appended. It returns agentData unchanged and no files
 // when the repo has no live subagents entry, or the agent cannot dispatch
-// (its tools: leave out Agent and Task).
+// (its tools: leave out Agent and Task; the whole subagents block is then
+// ignored, as on pi, so its keys and models are not validated). A live
+// subagents.default with no persona registered is an error.
 func claudePersonas(input BootstrapInput, agentData []byte, gateway bool) ([]claudePersonaFile, []byte, error) {
 	subagentsCfg := input.AgentSubagents()
 	if !claudeSubagentsOptIn(subagentsCfg) {
@@ -127,6 +129,13 @@ func claudePersonas(input BootstrapInput, agentData []byte, gateway bool) ([]cla
 		return nil, nil, err
 	}
 	if len(files) == 0 {
+		// subagents.default reaches only registered personas on Claude Code;
+		// children that name no persona keep Claude Code's own model
+		// resolution. With no persona to apply it to, it would be accepted
+		// and silently do nothing, so fail instead.
+		if subagentsCfg["default"] != nil {
+			return nil, nil, fmt.Errorf("subagents.default: no persona was registered for it to apply to, and Claude Code has no per-run default for children that name no persona; remove subagents.default, or add a persona under the agent's skills")
+		}
 		return nil, agentData, nil
 	}
 	names := make([]string, len(files))
@@ -362,9 +371,9 @@ func claudeToolSpecsByName(frontmatter []byte) map[string]string {
 
 // claudeAgentDispatchAllowlist reports which sub-agent types the agent's
 // tools: let it dispatch. restricted is true when every Agent/Task spec
-// carries arguments, as in Agent(Explore, worker): only the named types may
-// then be dispatched. A bare Agent or Task, or no such spec at all, leaves
-// dispatch unrestricted.
+// carries parentheses, as in Agent(Explore, worker): only the named types
+// may then be dispatched, so an empty list, Agent(), allows none. A bare
+// Agent or Task, or no such spec at all, leaves dispatch unrestricted.
 func claudeAgentDispatchAllowlist(frontmatter []byte) (allowed map[string]bool, restricted bool) {
 	var fm piAgentFrontmatter
 	if yaml.Unmarshal(frontmatter, &fm) != nil {
@@ -377,15 +386,16 @@ func claudeAgentDispatchAllowlist(frontmatter []byte) (allowed map[string]bool, 
 	allowed = map[string]bool{}
 	for _, spec := range specs {
 		spec = strings.TrimSpace(spec)
-		name, args := spec, ""
+		name, args, parens := spec, "", false
 		if i := strings.IndexByte(spec, '('); i >= 0 && strings.HasSuffix(spec, ")") {
 			name = strings.TrimSpace(spec[:i])
 			args = spec[i+1 : len(spec)-1]
+			parens = true
 		}
 		if name != piAgentToolName && name != piAgentToolAlias {
 			continue
 		}
-		if strings.TrimSpace(args) == "" {
+		if !parens {
 			return nil, false
 		}
 		restricted = true

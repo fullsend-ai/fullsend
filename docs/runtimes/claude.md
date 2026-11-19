@@ -76,7 +76,13 @@ one entry that is not `~`, the runner resolves skill personas itself ([ADR 0104]
   orchestrator to dispatch by `subagent_type` and omit `model`. Claude Code's `Agent` tool still
   lets a `model` argument override the persona's model.
 - `subagents.default` covers only personas that name no model. Children that name no persona
-  (`Explore`, `general-purpose`) keep Claude Code's own model resolution.
+  (`Explore`, `general-purpose`) keep Claude Code's own model resolution. When no persona is
+  registered for `default` to apply to (as on an agent such as `retro`), Bootstrap fails rather
+  than accept a setting that would do nothing.
+- An agent whose `tools:` leave out `Agent` and `Task` dispatches no sub-agents, so its whole
+  `subagents` block is ignored with a warning, as on pi: its keys and models are not validated.
+  `Agent()` or `Task()` with an empty list allows no sub-agent type, so no persona is registered
+  for it.
 
 Without the block, nothing changes: no persona files, no runtime note.
 

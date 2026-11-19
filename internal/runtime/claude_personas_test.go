@@ -215,11 +215,54 @@ func TestClaudePersonas_RestrictedAgentSpecLimitsPersonas(t *testing.T) {
 	assert.Len(t, files, 2)
 }
 
-func TestClaudePersonas_NoPersonasDiscovered(t *testing.T) {
-	files, data, err := claudePersonas(claudePersonaInput(t.TempDir(), map[string]*string{"default": strp("haiku")}), []byte(claudeTestAgent), false)
-	require.NoError(t, err)
-	assert.Empty(t, files)
-	assert.Equal(t, claudeTestAgent, string(data), "no persona, no note")
+func TestClaudePersonas_DefaultWithNoPersonaFails(t *testing.T) {
+	// subagents.default reaches only registered personas, so with none it
+	// would be accepted and do nothing; Bootstrap says so instead.
+	_, _, err := claudePersonas(claudePersonaInput(t.TempDir(), map[string]*string{"default": strp("haiku")}), []byte(claudeTestAgent), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subagents.default")
+	assert.Contains(t, err.Error(), "no persona was registered")
+}
+
+func TestClaudePersonas_NonDelegatingAgentIgnoresWholeBlock(t *testing.T) {
+	// An agent whose tools: leave out Agent dispatches nothing, so its
+	// subagents block is ignored as a whole, as on pi: an unknown persona
+	// key, an unavailable model and an inapplicable default are not errors.
+	agent := "---\nname: review\ntools: Read, Grep\n---\nbody\n"
+	for name, cfg := range map[string]map[string]*string{
+		"unknown persona": {"nosuch": strp("haiku")},
+		"unlisted model":  {"correctness": strp("gpt-9")},
+		"default only":    {"default": strp("haiku")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files, data, err := claudePersonas(claudePersonaInput(claudePersonaSkill(t), cfg), []byte(agent), false)
+			require.NoError(t, err)
+			assert.Empty(t, files)
+			assert.Equal(t, agent, string(data))
+		})
+	}
+}
+
+func TestClaudePersonas_EmptyAgentSpecRestrictsToNothing(t *testing.T) {
+	skill := claudePersonaSkill(t)
+	for _, tools := range []string{"Agent()", "Task( )"} {
+		agent := "---\nname: review\ntools: " + tools + ", Read\n---\nbody\n"
+
+		// Every persona is left out, and one the config names is fatal.
+		_, _, err := claudePersonas(claudePersonaInput(skill, map[string]*string{"correctness": strp("haiku")}), []byte(agent), false)
+		require.Error(t, err, tools)
+		assert.Contains(t, err.Error(), "restrict Agent(...)", tools)
+
+		// Nothing names a persona: none is registered, rather than all.
+		allowed, restricted := claudeAgentDispatchAllowlist([]byte("tools: " + tools + ", Read\n"))
+		assert.True(t, restricted, tools)
+		assert.Empty(t, allowed, tools)
+	}
+
+	// A bare Agent alongside the empty spec still leaves dispatch open.
+	allowed, restricted := claudeAgentDispatchAllowlist([]byte("tools: Agent(), Agent, Read\n"))
+	assert.False(t, restricted)
+	assert.Nil(t, allowed)
 }
 
 func TestClaudePersonas_ToolsNeverWiderThanTheAgent(t *testing.T) {
