@@ -1303,7 +1303,12 @@ Whenever install leaves the trigger account ready, including after GitLab
 refuses the Poller protected-ref grant, it also rechecks the dispatch
 activation gate (`CheckGitLabTriggerDispatchGate`) and reports either
 `GitLab trigger dispatch activation deferred`, followed by one line per
-unmet prerequisite, or `GitLab trigger dispatch prerequisites verified`. The recheck lists every
+unmet prerequisite, or `GitLab trigger dispatch prerequisites verified`.
+When the trigger account defers instead, the gate is not reached, but install
+still warns, one line per finding, about every committed CI job or include that
+a trigger, agent child (`source=pipeline`) or scheduled (`source=schedule`)
+pipeline would run besides fullsend's own: the managed polling schedules run on
+the protected default branch whichever route dispatches. The recheck lists every
 unmet prerequisite: managed scheduled polling no longer uses
 pipeline variables (the canonical schedule specs and every live managed
 schedule; a failed schedule read defers), the live
