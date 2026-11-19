@@ -27,7 +27,17 @@ type Input struct {
 	PRUpdatedAt     string
 	PRAuthorLogin   string
 	LabelActorLogin string
-	DryRun          bool
+	// EventLabel is github.event.label.name on labeled events. A labeled
+	// event authorizes only when this equals OkToTestLabel; otherwise
+	// reason is other_label (when set) or unauthorized (when missing).
+	EventLabel string
+	// EventName is github.event_name. issue_comment selects /ok-to-test mode.
+	EventName string
+	// CommentID is github.event.comment.id in issue_comment mode.
+	CommentID int
+	// CommenterLogin is github.event.comment.user.login in issue_comment mode.
+	CommenterLogin string
+	DryRun         bool
 }
 
 // Result is the authorization outcome written to GITHUB_OUTPUT by the gate.
@@ -35,12 +45,21 @@ type Result struct {
 	Authorized   bool
 	Reason       string
 	LabelRemoved bool
+	HeadSHA      string
 	APIError     bool
 	Err          error
 }
 
 // Check decides whether a pull request may run credentialed e2e tests in CI.
 func Check(ctx context.Context, gh GitHubGate, in Input) Result {
+	mode, err := resolveEventMode(in)
+	if err != nil {
+		return errorResult(err)
+	}
+	if mode == "issue_comment" {
+		return checkIssueComment(ctx, gh, in)
+	}
+
 	res := Result{Reason: "unauthorized"}
 
 	owner, repo := in.Owner, in.Repo
@@ -111,6 +130,14 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 			}
 			res.LabelRemoved = removed
 			res.Reason = "stale_ok_to_test"
+		}
+		return res
+	}
+
+	eventLabel := strings.TrimSpace(in.EventLabel)
+	if eventLabel != OkToTestLabel {
+		if eventLabel != "" {
+			res.Reason = "other_label"
 		}
 		return res
 	}
@@ -187,6 +214,11 @@ func latestOkToTestLabelTime(events []forge.IssueLabelEvent) string {
 	return max
 }
 
+// latestOkToTestLabeler returns the actor who most recently applied
+// ok-to-test. Distinct actors that share the latest timestamp, or any
+// latest-timestamp event with an empty actor, are ambiguous and return
+// "". That is stricter than the bash script's jq max_by, which picks
+// one event on ties; Go keeps the label instead of removing it.
 func latestOkToTestLabeler(events []forge.IssueLabelEvent) string {
 	maxTime := latestOkToTestLabelTime(events)
 	if maxTime == "" {
