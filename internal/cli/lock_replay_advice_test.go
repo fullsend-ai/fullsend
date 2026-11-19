@@ -45,6 +45,12 @@ func TestResolveFromLock_CacheMissAdviceNamesHarness(t *testing.T) {
 	assert.Contains(t, err.Error(), "fullsend lock code --update")
 	assert.Contains(t, err.Error(), "--fullsend-dir")
 	assert.NotContains(t, err.Error(), "'fullsend lock'")
+	// The advice names --update only as the re-pin path: an online run
+	// re-fetches the pinned content itself (it falls back to normal
+	// resolution), so the message must not promise a re-fetch.
+	assert.Contains(t, err.Error(), "rerun without --offline to fetch the pinned content (run falls back to normal resolution), or run")
+	assert.Contains(t, err.Error(), "to re-pin to its source")
+	assert.NotContains(t, err.Error(), "to re-fetch")
 }
 
 // TestResolveFromLock_AdviceArmsNameHarness pins the remaining advice arms
@@ -79,9 +85,10 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 	}
 
 	cases := []struct {
-		name    string
-		wantErr string
-		build   func(t *testing.T, root string) (*lock.HarnessLock, *harness.Harness)
+		name     string
+		wantErr  string
+		wantAlso []string
+		build    func(t *testing.T, root string) (*lock.HarnessLock, *harness.Harness)
 	}{
 		{
 			name:    "allowlist rejection advises the named command",
@@ -102,6 +109,13 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 		{
 			name:    "directory cache-miss advises the named command",
 			wantErr: "not in cache",
+			// The directory arm of the cache-miss advice carries the same
+			// re-pin wording as the file arm: --update is named only as the
+			// way to re-pin to the source, never as a re-fetch.
+			wantAlso: []string{
+				"rerun without --offline to fetch the pinned content (run falls back to normal resolution), or run",
+				"to re-pin to its source",
+			},
 			build: func(t *testing.T, root string) (*lock.HarnessLock, *harness.Harness) {
 				t.Helper()
 				lockFile := &lock.HarnessLock{
@@ -132,6 +146,10 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 			assert.Contains(t, err.Error(), "fullsend lock code --update")
 			assert.Contains(t, err.Error(), "--fullsend-dir")
+			for _, want := range tc.wantAlso {
+				assert.Contains(t, err.Error(), want)
+			}
+			assert.NotContains(t, err.Error(), "to re-fetch")
 		})
 	}
 }
@@ -183,4 +201,6 @@ func TestRunAgent_LockReplayCacheMissAdviceNamesHarness(t *testing.T) {
 	assert.Contains(t, out.String(), "not in cache")
 	assert.Contains(t, out.String(), "fullsend lock code --update")
 	assert.Contains(t, out.String(), "--fullsend-dir")
+	assert.Contains(t, out.String(), "to re-pin to its source")
+	assert.NotContains(t, out.String(), "to re-fetch")
 }
