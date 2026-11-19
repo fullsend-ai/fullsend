@@ -156,8 +156,10 @@ OPENSHELL_CONFIG="${HOME}/.config/openshell"
 OPENSHELL_MOUNT=()
 if [ -d "${OPENSHELL_CONFIG}" ]; then
   OPENSHELL_STAGING="${STATE_DIR}/openshell-${JOB_ID}"
-  rm -rf "${OPENSHELL_STAGING}"
-  cp -a "${OPENSHELL_CONFIG}" "${OPENSHELL_STAGING}"
+  stage_openshell_config "${OPENSHELL_CONFIG}" "${OPENSHELL_STAGING}" || {
+    echo "ERROR: could not stage ${OPENSHELL_CONFIG} for the job container (openshell-gateway.service: $(openshell_gateway_state))" >&2
+    exit 1
+  }
   OPENSHELL_MOUNT=(-v "${OPENSHELL_STAGING}:/root/.config/openshell:ro,z")
 fi
 
