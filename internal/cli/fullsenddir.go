@@ -177,9 +177,13 @@ func unpinnedDepsWarning(agentName string, unpinned []string, fullsendDir, harne
 // would read such a name as a flag, so the guard is the only rendering
 // that succeeds as written. update adds --update, which re-resolves from
 // the source instead of the URL index's cached copies — right for the
-// pin-mismatch, offline-miss, replay and unpinned-dependency advice,
-// where taking upstream content is the point, and wrong for a stale
-// entry, where a plain lock already re-composes from the index.
+// pin-mismatch, offline-miss and unpinned-dependency advice, where taking
+// upstream content is the point, and wrong for a stale entry, where a
+// plain lock already re-composes from the index. The replay cache-miss
+// advice names the --update command only as the re-pin path: --update
+// takes whatever the source now serves without checking the pinned
+// sha256, and an online run re-fetches the pinned content itself (it
+// falls back to normal resolution).
 func lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform string, update bool) string {
 	dir, forge := fullsendDirArg(fullsendDir), lockForgeArg(harnessPath, forgePlatform)
 	if strings.HasPrefix(agentName, "-") {

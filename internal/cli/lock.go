@@ -1093,7 +1093,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, lockUpdat
 				return resolve.ResolveResult{}, fmt.Errorf("dir cache integrity check failed for %s: %w", lockDep.Field, err)
 			}
 			if treePath == "" {
-				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run %s to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256, lockUpdateCommand)
+				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — rerun without --offline to fetch the pinned content (run falls back to normal resolution), or run %s to re-pin to its source", lockDep.Field, lockDep.URL, lockDep.SHA256, lockUpdateCommand)
 			}
 			localPath = treePath
 			if isScriptLockField(lockDep.Field) {
@@ -1124,7 +1124,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, lockUpdat
 				return resolve.ResolveResult{}, fmt.Errorf("cache integrity check failed for %s: %w", lockDep.Field, err)
 			}
 			if content == nil {
-				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run %s to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256, lockUpdateCommand)
+				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — rerun without --offline to fetch the pinned content (run falls back to normal resolution), or run %s to re-pin to its source", lockDep.Field, lockDep.URL, lockDep.SHA256, lockUpdateCommand)
 			}
 			cachedContent = content
 			cachePath, err := fetch.CachePath(workspaceRoot, lockDep.SHA256)
