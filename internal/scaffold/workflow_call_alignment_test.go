@@ -71,6 +71,18 @@ func TestStartupFailureReportingGuards(t *testing.T) {
 		"matrix.event_payload is already a structured object")
 	assert.Contains(t, dispatchText, "source-system: ${{ matrix.event_payload._normalized_event.source.system || 'github' }}")
 	assert.Contains(t, dispatchText, "status-comment-id: ${{ matrix.event_payload.comment.id }}")
+	harnessDispatchStart := strings.Index(dispatchText, "\n  harness-dispatch:\n")
+	harnessRunStart := strings.Index(dispatchText, "\n  harness-run:\n")
+	require.NotEqual(t, -1, harnessDispatchStart, "harness-dispatch job must be present")
+	require.NotEqual(t, -1, harnessRunStart, "harness-run job must be present")
+	harnessDispatchText := dispatchText[harnessDispatchStart:harnessRunStart]
+	harnessCheckoutSection := extractStepSection(t, harnessDispatchText, "Checkout caller repository")
+	assert.Contains(t, harnessCheckoutSection,
+		".defaults/.github/scripts/report-agent-startup-failure.sh",
+		"harness-dispatch sparse checkout must include the vendored reporter")
+	assert.Contains(t, harnessCheckoutSection,
+		".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh",
+		"harness-dispatch sparse checkout must include the .fullsend vendored reporter")
 	harnessFailureSection := extractStepSection(t, dispatchText, "Report harness dispatch failure")
 	assert.Contains(t, harnessFailureSection, `FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"`)
 	assert.Contains(t, harnessFailureSection, `FULLSEND_FAILURE_STABLE_MARKER="true"`)

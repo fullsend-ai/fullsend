@@ -2592,7 +2592,9 @@ jobs:
             /OWNERS_ALIASES
             .defaults/action.yml
             .defaults/.github/actions/install-fullsend-cli/
+            .defaults/.github/scripts/report-agent-startup-failure.sh
             .fullsend/.defaults/action.yml
+            .fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh
           sparse-checkout-cone-mode: false
 
       - name: Detect registered harness triggers
