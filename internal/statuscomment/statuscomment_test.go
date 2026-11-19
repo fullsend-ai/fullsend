@@ -819,6 +819,9 @@ func TestReconcileOrphaned_OnFailure_SynthesizesWhenSkippedEvenIfJobSucceeded(t 
 	// or its own skip-reason comment post failed — ReconcileOrphaned can't
 	// tell those apart, so it shouldn't assert a specific cause. See the
 	// review discussion on PR #5736.
+	// This synthesis behavior also means disabled-agent runs (which emit
+	// skipped=true without ever starting a notifier) must bypass
+	// reconcile-status in action.yml to avoid posting a spurious comment.
 	assert.Contains(t, comments[0].Body, "⏭️ Skipped (no completion comment)")
 	assert.NotContains(t, comments[0].Body, "comment failed to post")
 	assert.NotContains(t, comments[0].Body, "❌ Terminated")

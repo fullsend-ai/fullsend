@@ -1779,6 +1779,7 @@ func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
 			"HARNESS_ROLE=",
 			"SUPPLIED_ROLE=",
 			"WAS_SKIPPED=false",
+			"WAS_DISABLED=false",
 			"PR_HEAD_SHA_INPUT="+prHeadInput,
 			"FULLSEND_DIR="+dir,
 			"FULLSEND_JIRA_TOKEN=",

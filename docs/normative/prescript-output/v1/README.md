@@ -123,6 +123,7 @@ comment.
 |-----|----------|---------|
 | `skipped` | no | `true` or `false`. Any other value — including an empty one — is an error. |
 | `reason` | no | Short human-readable explanation, shown in the run log and in the status comment. |
+| `disabled` | no | `true` or `false`. CLI-emitted only; pre-scripts must not emit this key. Indicates the agent was explicitly disabled in configuration. |
 
 Reserved keys are **lowercase**. A key differing only in case (`SKIPPED=true`)
 is a hard error rather than an unrelated output — see [Error semantics](#error-semantics).
@@ -176,6 +177,7 @@ These are **hard errors** — the run fails rather than proceeding:
 | A value containing a control character | A bare `\r` is a line terminator to the GitHub Actions runner, so such a value could smuggle extra output entries — including overriding `skipped`. |
 | `skipped` set to anything but `true`/`false` | Same silent-proceed risk. |
 | `skipped` present but empty (`skipped=`) | `skipped=${SKIP}` with `SKIP` unset is a plausible script bug, and an intended skip must not degrade into a duplicate run. An *absent* `skipped` key means proceed; a present-but-empty one does not. |
+| A pre-script emits the reserved `disabled` key | `disabled` is reserved for CLI use — it marks an agent disabled in config. A pre-script emitting it (any case variant) would forge that signal, so the run fails rather than proceeding. |
 | The output file missing after the script ran | `fullsend run` created it beforehand, so its absence means the script removed it. |
 | File larger than 1 MiB | Bounded read. |
 
@@ -188,13 +190,16 @@ When running under GitHub Actions (`GITHUB_ACTIONS=true` **and** `GITHUB_OUTPUT`
 set), `fullsend run` appends the outputs to `$GITHUB_OUTPUT` on every path it
 reaches the skip decision on — skip, proceed, and harnesses that define no
 `pre_script` at all — with `skipped` normalized to `true`/`false`. The composite
-action re-exports them as the `skipped` and `skip-reason` action outputs.
+action re-exports them as the `skipped`, `disabled`, and `skip-reason` action outputs.
+For agents explicitly disabled in configuration (`enabled: false`), `fullsend run`
+relays `skipped=true` alongside `disabled=true` and the skip reason; see
+[`docs/cli/run.md`](../../../cli/run.md#early-termination-and-skips) for CLI skip semantics.
 
 A consumer can therefore distinguish three states:
 
 | `steps.<id>.outputs.skipped` | Meaning |
 |------------------------------|---------|
-| `true` | The pre-script requested a skip. |
+| `true` | The run was skipped: either the pre-script requested a skip, or the agent is disabled in config (also relayed with `disabled=true`; see the skip reason). |
 | `false` | The skip decision was made and was "proceed" — either the pre-script declined to skip, or the harness has no `pre_script`. |
 | *(empty)* | The CLI predates this protocol, **or** the run failed before reaching the skip decision. |
 
@@ -254,3 +259,10 @@ previously-hard failure into a skip — existing scripts that never exit
 Adding a reserved key is non-breaking for the CLI but fails open on older CLIs,
 which ignore it. Direct a script that depends on a newly added key at a CLI
 version that understands it.
+
+### Migration note: the `disabled` key
+
+The `disabled` key was reserved after v1 shipped. A pre-script that already
+emitted `disabled=...` as an ordinary output now fails the run with a hard
+error instead of relaying the value. If you have such a script, rename the
+key before upgrading. Scripts that never emit `disabled` are unaffected.

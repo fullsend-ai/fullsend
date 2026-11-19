@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"errors"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -120,4 +121,20 @@ func TestThenTriageAgentDidNotRun(t *testing.T) {
 	require.NoError(t, run(errors.New(`artifact "fullsend-triage" not found on workflow run 7`)))
 	require.ErrorContains(t, run(nil), "the agent ran")
 	require.ErrorContains(t, run(errors.New("HTTP 502")), "checking triage run 7 artifacts")
+}
+
+func TestWorkflowLogsContainStepMatchesEscapedQuotes(t *testing.T) {
+	t.Parallel()
+
+	// The exact step text from e2e/behaviour/features/triage/triage.feature.
+	// Gherkin does not unescape quotes, so the captured group keeps the
+	// backslashes and the handler must decode them.
+	const stepText = `the triage workflow logs contain "Run skipped: agent \"triage\" is disabled in config"`
+	re := regexp.MustCompile(`^the triage workflow logs contain "((?:[^"\\]|\\.)*)"$`)
+	m := re.FindStringSubmatch(stepText)
+	require.NotNil(t, m, "step text must match the registered expression")
+	assert.Equal(t, `Run skipped: agent "triage" is disabled in config`, unescapeStepString(m[1]))
+
+	assert.Equal(t, `plain`, unescapeStepString(`plain`))
+	assert.Equal(t, `a\b`, unescapeStepString(`a\\b`))
 }

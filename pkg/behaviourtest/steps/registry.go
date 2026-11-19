@@ -20,6 +20,7 @@ func Register(sc *godog.ScenarioContext) {
 	registerJiraTransportSteps(sc)
 	registerBranchSteps(sc)
 	registerReactionSteps(sc)
+	registerStatusCommentSteps(sc)
 	registerActorSteps(sc)
 	registerBotActorSteps(sc)
 	registerForgeStateSteps(sc)

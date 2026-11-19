@@ -1545,7 +1545,7 @@ func TestResolveAgentSource_DisabledAgentBlocksFallback(t *testing.T) {
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "triage", nil, cfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "explicitly disabled")
+	assert.Contains(t, err.Error(), "is disabled in config")
 }
 
 func TestResolveAgentSource_DisabledFirstPartyAgentBlocksFallback(t *testing.T) {
@@ -1568,7 +1568,7 @@ func TestResolveAgentSource_DisabledFirstPartyAgentBlocksFallback(t *testing.T) 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "retro", fakeClient, cfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "explicitly disabled")
+	assert.Contains(t, err.Error(), "is disabled in config")
 }
 
 func TestResolveAgentSource_SuppressionOnlyEntryBlocksFallback(t *testing.T) {
@@ -1590,7 +1590,7 @@ func TestResolveAgentSource_SuppressionOnlyEntryBlocksFallback(t *testing.T) {
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "retro", nil, cfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "explicitly disabled")
+	assert.Contains(t, err.Error(), "is disabled in config")
 }
 
 func TestResolveAgentSource_EnabledAgentStillResolves(t *testing.T) {
