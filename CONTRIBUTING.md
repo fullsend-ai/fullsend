@@ -43,12 +43,17 @@ contribution.
 - On macOS or a Linux distribution other than Ubuntu, `make ci-local` runs the
   same checks in a container that matches the CI runner, so local results
   predict CI (see [`hack/ci-local`](hack/ci-local/README.md)).
+- Every PR must carry a `release-note` block in its body — the PR template
+  provides one with a `NONE` default. CI rejects a PR whose block is missing
+  or empty. See [COMMITS.md](COMMITS.md#release-notes) for how to write it.
 - **If your PR introduces a breaking change**, the PR title and every breaking
   commit's subject must carry the `!` suffix (e.g., `feat(harness)!: require
-  role field`). GoReleaser builds release notes from commit subjects, not the
-  PR title — a missing `!` on a breaking commit means users get no warning
-  before upgrading. See [COMMITS.md](COMMITS.md#breaking-changes) for how to
-  identify breaking changes and what to include in the commit body.
+  role field`), and the PR's `release-note` block must start with
+  `action required`. The block is what users see in the release notes — CI
+  rejects a `NONE` block on a PR that carries the `!` marker, so a breaking
+  change cannot ship without a warning. See
+  [COMMITS.md](COMMITS.md#breaking-changes) for how to identify breaking
+  changes and what to include in the commit body.
 - Wrap prose in Markdown files at about 80 columns, so diffs show only the
   lines you changed. Tables, code blocks, headings, and long URLs are
   exceptions. See
