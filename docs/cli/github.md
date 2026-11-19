@@ -30,7 +30,24 @@ fullsend github setup <owner/repo> \
 
 The values passed to `--inference-gateway-*` and `--openai-*` come from the gateway operator and the OpenAI organization admin; see [Using an inference gateway](../guides/user/inference-gateway.md) and [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
 
-**Re-running per-repo setup** (for example after a fullsend upgrade) refreshes the managed
+**Re-running per-repo setup** with no flags is the supported way to upgrade a single repository
+that is not declared in a [`fullsend repos`](repos.md) manifest. `fullsend repos install` needs a
+manifest. Upgrade the CLI, then run:
+
+```bash
+fullsend self-update        # or download the release
+fullsend github setup "$OWNER/$REPO"
+```
+
+The re-run opens one setup PR that moves the shim trigger from `pull_request_target` to
+`pull_request` and updates the workflow pin to the CLI's release. It also rewrites the repository
+variables and secrets from `.fullsend/config.yaml`. A custom `FULLSEND_APP_SET` repository variable
+stays as it is. Re-pass `--vendor` or `--fullsend-ref` if the install used them: a re-run without
+`--vendor` removes the vendored assets. A value set only as a repository variable, such as
+`FULLSEND_MINT_URL` or `FULLSEND_GCP_REGION`, and not in `config.yaml` goes back to the
+`config.yaml` value or the default. Put it in `config.yaml`, or pass its flag.
+
+A re-run refreshes the managed
 workflow files but never rewrites an existing `.fullsend/config.yaml` on its own: `agents:` entries and
 their per-agent settings, allowlists and hand-written comments stay as they are, the runtime prompt is skipped,
 and the setup PR reports the runtime the file already selects. Passing a flag that targets a

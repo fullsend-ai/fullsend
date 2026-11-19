@@ -116,13 +116,42 @@ To upgrade the fullsend CLI, download the latest release from
 [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases), or run
 [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
 
-After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo:
+To upgrade a single repository set up with `fullsend github setup`, upgrade
+the CLI and re-run `github setup` with no flags. This bare re-run is the
+supported single-repo upgrade:
 
 ```bash
-fullsend github setup "$OWNER/$REPO" \
-  --inference-project "<GCP_PROJECT>" \
-  --inference-wif-provider "<WIF_PROVIDER>"
+fullsend self-update        # or download the release
+fullsend github setup "$OWNER/$REPO"
 ```
+
+The re-run opens one setup PR. That PR moves the shim trigger from
+`pull_request_target` to `pull_request` and updates the workflow pin to the
+CLI's release. The re-run also rewrites the repository variables and secrets
+from `.fullsend/config.yaml`. When the file sets no `inference.project` or
+`inference.wif_provider`, the existing GCP secret stays as it is.
+
+The re-run keeps your configuration. It does not rewrite
+`.fullsend/config.yaml`, and a custom `FULLSEND_APP_SET` repository variable
+stays as it is.
+
+Add flags only in these cases:
+
+- **The install used `--vendor` or `--fullsend-ref`.** Pass the same flag
+  again. A re-run without `--vendor` removes the vendored assets.
+- **A value is set only as a repository variable.** A value such as
+  `FULLSEND_MINT_URL` or `FULLSEND_GCP_REGION` that is set as a repository
+  variable but not in `config.yaml` goes back to the `config.yaml` value or
+  the default. Put the value in `config.yaml`, or pass its flag
+  (`--mint-url`, `--inference-region`).
+- **You want to change a configuration key.** Passing a config flag, such as
+  `--runtime` or `--inference-project`, changes that key in `config.yaml`.
+  Setup then re-serializes the file, so its comments are lost. See
+  [Re-running per-repo setup](../../cli/github.md#github-setup).
+
+`fullsend repos install` needs a manifest. A repository set up with
+`github setup` and not declared in a manifest upgrades with the bare re-run
+above.
 
 For manifest-managed installations (including GitLab repos), use `repos install` to converge all repos (including workflow ref upgrades):
 
