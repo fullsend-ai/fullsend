@@ -3579,6 +3579,14 @@ func convergeContentDriftFiles(ctx context.Context,
 		}
 	}
 
+	// An explicit pin renders the target ref's templates only when they
+	// were fetched (or the install is vendored). Without a resolver the
+	// fetch never ran and the embedded templates are used, as after a
+	// failed fetch.
+	if manifestRef != "" && !installCfg.VendorBinary && installCfg.PrebuiltScaffoldFiles == nil {
+		targetTemplates = false
+	}
+
 	expectedFiles, buildErr := BuildScaffoldFiles(installCfg)
 	if buildErr != nil {
 		actions = append(actions, ComponentAction{
@@ -3631,13 +3639,9 @@ func convergeContentDriftFiles(ctx context.Context,
 		}
 	}
 
-	if cfg.DryRun && len(actions) > 0 {
-		progress(repoFullName, "dry-run",
-			fmt.Sprintf("Would repair %d files with content drift", len(actions)))
-	} else if len(repairFiles) > 0 {
-		progress(repoFullName, "repair",
-			fmt.Sprintf("Repairing %d files with content drift", len(repairFiles)))
-	}
+	// The caller reports the repair count after it filters the repairs
+	// (collectConvergeScaffoldFiles), so the count matches what is
+	// committed or previewed.
 
 	// Orphan file detection: check for managed scaffold files that
 	// exist on the forge but are no longer produced by the current
@@ -3873,6 +3877,17 @@ func supersedePinOnlyRefFiles(files, driftFiles []forge.TreeFile, pinOnly map[st
 	return files
 }
 
+// countUpdates counts the update actions in actions.
+func countUpdates(actions []ComponentAction) int {
+	n := 0
+	for _, a := range actions {
+		if a.Action == "update" {
+			n++
+		}
+	}
+	return n
+}
+
 // withoutRefPathRepairs drops the content-drift repairs, and their update
 // actions, for the paths skip selects.
 func withoutRefPathRepairs(files []forge.TreeFile, actions []ComponentAction, skip func(string) bool) ([]forge.TreeFile, []ComponentAction) {
@@ -4016,19 +4031,29 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 	if !targetTemplates && resolved.Forge != ForgeGitLab && slices.ContainsFunc(refActions, func(a ComponentAction) bool {
 		return a.Component == "ref" && a.Action == "upgrade"
 	}) {
-		// A live run drops only the repairs that would replace a queued
-		// pin-only file. A shim that withoutLegacyOpenAIConsumer left out
-		// of the queue still needs its drift repair. The dry run queues no
-		// ref files, so it drops the repairs for every ref-upgrade path.
-		skip := func(p string) bool { return pinOnlyPaths[p] }
-		if cfg.DryRun {
-			skip = func(p string) bool {
-				return slices.Contains(resolved.ForgeConfig.WorkflowPaths, p) || slices.Contains(scaffold.PerRepoThinCallerPaths(), p)
-			}
+		// Both runs drop the repairs for every ref-upgrade path: the shim
+		// at either workflow extension (the template always renders
+		// fullsend.yaml, even for an installed fullsend.yml) and the thin
+		// callers. A legacy shim that withoutLegacyOpenAIConsumer took out
+		// of the queue also waits for a run whose fetch succeeds, rather
+		// than taking another release's template now. Using one rule in
+		// both runs keeps the dry run and the live run in step.
+		skip := func(p string) bool {
+			return slices.Contains(resolved.ForgeConfig.WorkflowPaths, p) || slices.Contains(scaffold.PerRepoThinCallerPaths(), p)
 		}
+		before := len(contentDriftActions)
 		contentDriftFiles, contentDriftActions = withoutRefPathRepairs(contentDriftFiles, contentDriftActions, skip)
-		progress(resolved.Owner+"/"+resolved.Repo, "content-drift",
-			"template fetch at the target ref failed: delivering the pin upgrade only; run install again to deliver template changes")
+		if len(contentDriftActions) < before {
+			progress(resolved.Owner+"/"+resolved.Repo, "content-drift",
+				"template fetch at the target ref failed: delivering the pin upgrade only; run install again to deliver template changes")
+		}
+	}
+	if n := countUpdates(contentDriftActions); n > 0 {
+		if cfg.DryRun {
+			progress(resolved.Owner+"/"+resolved.Repo, "dry-run", fmt.Sprintf("Would repair %d files with content drift", n))
+		} else {
+			progress(resolved.Owner+"/"+resolved.Repo, "repair", fmt.Sprintf("Repairing %d files with content drift", n))
+		}
 	}
 	actions = append(actions, contentDriftActions...)
 
