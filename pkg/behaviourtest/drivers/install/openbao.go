@@ -75,6 +75,13 @@ const (
 // getenvFunc is os.Getenv, replaceable in tests.
 var getenvFunc = os.Getenv
 
+// lookPathFunc is exec.LookPath and newOpenBaoFunc is newOpenBao,
+// replaceable in tests.
+var (
+	lookPathFunc   = exec.LookPath
+	newOpenBaoFunc = newOpenBao
+)
+
 // openBaoRunnerPolicy is the least-privilege ACL policy the JWT role
 // attaches: read on the scenario secret prefix and nothing else.
 const openBaoRunnerPolicy = `path "` + openBaoKVMount + `/data/` + openBaoSecretPrefix + `/*" {
@@ -178,19 +185,34 @@ var _ VaultServer = (*openBao)(nil)
 // and a non-empty skip reason when they are disabled or a prerequisite
 // is missing (outside GitHub Actions, or without podman), so local runs
 // can skip them. Unlike the trace collector, a start failure is
-// returned: the feature's scenarios cannot run without the server.
+// returned: the feature's scenarios cannot run without the server. When
+// the failed start's own cleanup also failed, the partially started
+// server is returned with the error, so the caller can retry Stop at
+// feature or job cleanup; otherwise the server is nil.
 func StartVaultServer(logf func(string, ...any)) (server VaultServer, skip string, err error) {
-	enabled, skip, err := openBaoEnabled(getenvFunc, exec.LookPath)
+	enabled, skip, err := openBaoEnabled(getenvFunc, lookPathFunc)
 	if err != nil || !enabled {
 		return nil, skip, err
 	}
-	b := newOpenBao(logf)
+	b := newOpenBaoFunc(logf)
 	ctx, cancel := context.WithTimeout(context.Background(), openBaoStartTimeout)
 	defer cancel()
 	if err := b.Start(ctx); err != nil {
-		return nil, "", fmt.Errorf("starting OpenBao: %w", err)
+		err = fmt.Errorf("starting OpenBao: %w", err)
+		if b.cleanupPending() {
+			return b, "", err
+		}
+		return nil, "", err
 	}
 	return b, "", nil
+}
+
+// cleanupPending reports whether Stop still has containers to remove,
+// as after a failed start whose cleanup also failed.
+func (b *openBao) cleanupPending() bool {
+	b.stopMu.Lock()
+	defer b.stopMu.Unlock()
+	return !b.stopped && (b.containerUp || b.tunnelUp)
 }
 
 // Address is the HTTPS tunnel URL the tested workflows reach the server

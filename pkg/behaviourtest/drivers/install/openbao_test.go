@@ -83,6 +83,55 @@ func TestStartVaultServer_SkipsWhenDisabled(t *testing.T) {
 	assert.Nil(t, server)
 }
 
+func TestStartVaultServer_FailedStartKeepsHandleWhenCleanupFails(t *testing.T) {
+	prevEnv, prevLook, prevNew := getenvFunc, lookPathFunc, newOpenBaoFunc
+	t.Cleanup(func() { getenvFunc, lookPathFunc, newOpenBaoFunc = prevEnv, prevLook, prevNew })
+	getenvFunc = func(k string) string {
+		if k == "GITHUB_ACTIONS" {
+			return "true"
+		}
+		return ""
+	}
+	lookPathFunc = func(string) (string, error) { return "/usr/bin/podman", nil }
+
+	setup := func(t *testing.T, failOn string) (*fakePodman, *openBao) {
+		f := newFakeBao(t)
+		f.failPath = "/v1/auth/jwt/config"
+		p := &fakePodman{}
+		b, _ := newTestOpenBao(t, f, p)
+		newOpenBaoFunc = func(func(string, ...any)) *openBao {
+			b.run = func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+				if failOn != "" && strings.Contains(strings.Join(args, " "), failOn) {
+					failOn = ""
+					return []byte("storage busy"), errors.New("exit status 1")
+				}
+				return p.run(ctx, env, name, args...)
+			}
+			return b
+		}
+		return p, b
+	}
+
+	t.Run("cleanup fails", func(t *testing.T) {
+		p, b := setup(t, "rm -f bt-openbao-")
+		server, _, err := StartVaultServer(t.Logf)
+		require.ErrorContains(t, err, "configuring JWT auth")
+		require.NotNil(t, server, "the handle is kept so a later Stop can retry")
+		assert.True(t, b.containerUp)
+
+		require.NoError(t, server.Stop(context.Background()))
+		assert.False(t, b.containerUp)
+		cmds := p.joined()
+		assert.Equal(t, "podman rm -f "+b.containerName, cmds[len(cmds)-1])
+	})
+	t.Run("cleanup succeeds", func(t *testing.T) {
+		_, _ = setup(t, "")
+		server, _, err := StartVaultServer(t.Logf)
+		require.ErrorContains(t, err, "configuring JWT auth")
+		assert.Nil(t, server)
+	})
+}
+
 func TestNewOpenBao_Defaults(t *testing.T) {
 	b := newOpenBao(t.Logf)
 	assert.NotNil(t, b.run)

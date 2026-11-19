@@ -1019,7 +1019,10 @@ only the read policy. `PutSecret` writes a synthetic scenario secret under
 `secret/data/fullsend-bt/` and returns the KV v2 read path for a
 `vault_secrets` entry. `Stop` stops the tunnel, then the server, and removes
 both containers, which discards the root token and every secret. If removing
-a container fails, the next `Stop` call retries it.
+a container fails, the next `Stop` call retries it. If a failed startup cannot
+remove its own containers, `StartVaultServer` returns the partially started
+server together with the error, so the caller can still retry `Stop` at feature
+or job cleanup.
 
 `BEHAVIOUR_OPENBAO` controls the server. When unset, Vault scenarios run only
 in GitHub Actions with Podman available, because the tested workflows need a
