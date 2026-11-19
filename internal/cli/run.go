@@ -1972,6 +1972,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// post-script defer must only run when validation has passed — running it
 	// on unvalidated output would violate ADR 0022's zero-trust model.
 	var validationPassed bool
+	var inlineValidationPassed bool
 
 	defer func() {
 		exitCode := telemetryExitCode(lastExitCode, runErr)
@@ -3093,6 +3094,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if valErr == nil {
 			printer.StepDone(fmt.Sprintf("Validation passed: %s (%.1fs)", strings.TrimSpace(redactFeedback(string(valOut), h.RunnerEnv)), time.Since(valStart).Seconds()))
 			validationPassed = true
+			inlineValidationPassed = true
 			validatedIterNum = iteration
 			break
 		}
@@ -3198,6 +3200,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		repoExtractedOK,
 		h.ValidationLoop != nil,
 		validationPassed,
+		inlineValidationPassed,
 		lastIterTimedOut,
 		transcriptErrorOverride,
 		lastExitCode,
@@ -3249,7 +3252,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.Blank()
 
-	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, lastExitCode, agentExitReason, runCount, lastIterElapsed, timeout)
+	if termErr := runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, lastExitCode, agentExitReason, runCount, lastIterElapsed, timeout); termErr != nil {
+		return termErr
+	}
+	return syncResult.err
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
@@ -4006,6 +4012,17 @@ func (e *agentFailedError) Error() string {
 	return fmt.Sprintf("agent failed with exit code %d", e.exitCode)
 }
 
+// targetRepoSyncError ends an otherwise eligible run whose target repository
+// synchronization failed or was blocked. The post-script gate still allows
+// post_script to run while runAgent returns this non-nil error.
+type targetRepoSyncError struct {
+	message string
+}
+
+func (e *targetRepoSyncError) Error() string {
+	return e.message
+}
+
 // postScriptDecision says whether the post-script runs, with the warning to
 // print. agentExitCode is set when it runs after a failed agent.
 type postScriptDecision struct {
@@ -4034,6 +4051,13 @@ func postScriptGate(h *harness.Harness, validationPassed, transcriptErrorOverrid
 			message:       fmt.Sprintf("Agent failed with exit code %d but left %s: running the post-script; the run still fails", agentErr.exitCode, filepath.Base(resultFile)),
 			agentExitCode: agentErr.exitCode,
 		}
+	}
+	var syncErr *targetRepoSyncError
+	if errors.As(runErr, &syncErr) {
+		if transcriptErrorOverride {
+			return postScriptDecision{message: "Skipping post-script: agent reported error via transcript"}
+		}
+		return postScriptDecision{run: true}
 	}
 	if runErr != nil {
 		return postScriptDecision{message: "Skipping post-script: agent run failed"}
@@ -6314,12 +6338,17 @@ func (c *syncChanges) summary() string {
 	return fmt.Sprintf("%d added, %d modified, %d deleted", len(c.Added), len(c.Modified), len(c.Deleted))
 }
 
+func (c *syncChanges) hasChanges() bool {
+	return c != nil && (len(c.Added) > 0 || len(c.Modified) > 0 || len(c.Deleted) > 0)
+}
+
 // targetRepoSyncResult captures the outcome of step 9g synchronization for Results
-// display and download-directory retention.
+// display, download-directory retention, and terminal error propagation.
 type targetRepoSyncResult struct {
 	status              string
 	changesPath         string
 	preserveDownloadDir bool
+	err                 error
 }
 
 type contextFindingKey struct {
@@ -6399,14 +6428,14 @@ var syncTargetRepoDirFn = syncTargetRepoDirWithReport
 // have passed (if configured), and neither timeouts, transcript errors, nor
 // non-zero exit codes must have occurred.
 func shouldSyncTargetRepo(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool, exitCode int) bool {
-	ok, _ := syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr, exitCode, "", 0, 0)
+	ok, _ := syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, validationPassed, timedOut, transcriptErr, exitCode, "", 0, 0)
 	return ok
 }
 
 // syncTargetRepoSkipReason evaluates whether target repo sync should proceed,
 // aligning its terminal outcome check with runTerminalError and returning a
 // human-readable skip reason when synchronization is bypassed.
-func syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool, exitCode int, exitReason string, validatedIter, runCount int) (bool, string) {
+func syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, inlineValidationPassed, timedOut, transcriptErr bool, exitCode int, exitReason string, validatedIter, runCount int) (bool, string) {
 	if !syncEnabled {
 		return false, ""
 	}
@@ -6419,6 +6448,9 @@ func syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, v
 				return false, "timed out"
 			}
 			return false, "validation did not pass"
+		}
+		if !inlineValidationPassed {
+			return false, "validation passed only in post-loop sweep without TARGET_REPO_DIR"
 		}
 		if validatedIter > 0 && validatedIter != runCount {
 			return false, fmt.Sprintf("validated iteration %d is not the last downloaded iteration %d", validatedIter, runCount)
@@ -6438,11 +6470,11 @@ func syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, v
 }
 
 // runTargetRepoSync executes step 9g synchronization when requested and gated
-// OK, returning the status, synced-files manifest path, and whether the download
-// directory should be retained. Sync errors emit a warning instead of returning
-// an error so the post-script gate is unaffected.
+// OK, returning the status, synced-files manifest path, download-directory
+// retention flag, and any *targetRepoSyncError for runAgent to surface after
+// post_script runs.
 func runTargetRepoSync(
-	syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool,
+	syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, inlineValidationPassed, timedOut, transcriptErr bool,
 	exitCode int, exitReason string, validatedIter, runCount int,
 	downloadDir, targetDir, outputBase, runDir string,
 	runnerInjectedExcludes []string, preRunManifest map[string]string,
@@ -6453,7 +6485,7 @@ func runTargetRepoSync(
 	if !syncEnabled {
 		return targetRepoSyncResult{}
 	}
-	shouldSync, skipReason := syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr, exitCode, exitReason, validatedIter, runCount)
+	shouldSync, skipReason := syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, inlineValidationPassed, timedOut, transcriptErr, exitCode, exitReason, validatedIter, runCount)
 	if !shouldSync {
 		printer.StepWarn("Skipping target repository synchronization: " + skipReason)
 		return targetRepoSyncResult{status: fmt.Sprintf("skipped (%s)", skipReason)}
@@ -6461,7 +6493,11 @@ func runTargetRepoSync(
 	if preRunManifest == nil {
 		const reason = "pre-run manifest snapshot unavailable"
 		printer.StepWarn("Skipping target repository synchronization: " + reason)
-		return targetRepoSyncResult{status: fmt.Sprintf("skipped (%s)", reason)}
+		return targetRepoSyncResult{
+			status:              fmt.Sprintf("skipped (%s)", reason),
+			preserveDownloadDir: repoExtractedOK,
+			err:                 &targetRepoSyncError{message: "target repository synchronization skipped: " + reason},
+		}
 	}
 
 	syncExcludes := []string{".git"}
@@ -6482,6 +6518,7 @@ func runTargetRepoSync(
 				return targetRepoSyncResult{
 					status:              "blocked (critical injection findings in downloaded context files)",
 					preserveDownloadDir: repoExtractedOK,
+					err:                 &targetRepoSyncError{message: fmt.Sprintf("target repository synchronization blocked: %d new critical injection finding(s) in downloaded context files", critCount)},
 				}
 			}
 			printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new critical finding(s) in downloaded context files (fail_mode: open); inspect before building or running tools", critCount))
@@ -6495,10 +6532,22 @@ func runTargetRepoSync(
 	changes, err := syncFn(downloadDir, targetDir, syncExcludes, preRunManifest, printer)
 	if err != nil {
 		printer.StepWarn("Target repository synchronization failed: " + err.Error())
-		return targetRepoSyncResult{
+		res := targetRepoSyncResult{
 			status:              fmt.Sprintf("failed (%v)", err),
 			preserveDownloadDir: repoExtractedOK,
+			err:                 &targetRepoSyncError{message: fmt.Sprintf("target repository synchronization failed: %v", err)},
 		}
+		if runDir != "" && changes.hasChanges() {
+			manifestPath := filepath.Join(runDir, "synced-files.txt")
+			singleLineErr := strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(err.Error())
+			header := fmt.Sprintf("# sync aborted: %s; partial changes below\n", singleLineErr)
+			if writeErr := os.WriteFile(manifestPath, []byte(header+changes.formatManifest()), 0o644); writeErr != nil {
+				printer.StepWarn("Could not write partial synced files manifest: " + writeErr.Error())
+			} else {
+				res.changesPath = fmt.Sprintf("%s (%s; partial — sync aborted)", manifestPath, changes.summary())
+			}
+		}
+		return res
 	}
 	printer.StepDone(fmt.Sprintf("Target repository synchronized to %s (%s, %.1fs)", targetDir, changes.summary(), time.Since(syncStart).Seconds()))
 
@@ -6567,7 +6616,8 @@ func recordTargetRepoManifest(repoDir string, excludes ...string) (map[string]st
 			}
 			return digestErr
 		}
-		if d.Type()&os.ModeSymlink != 0 && strings.HasPrefix(digest, "symlink:") && wouldSanitizeStripSymlink(path, absRepoResolved) {
+		if d.Type()&os.ModeSymlink != 0 && strings.HasPrefix(digest, "symlink:") &&
+			(wouldSanitizeStripSymlink(path, absRepoResolved) || symlinkResolvesIntoExcludedPath(path, absRepoResolved, excludes)) {
 			digest = "symlink-stripped:" + strings.TrimPrefix(digest, "symlink:")
 		}
 		manifest[rel] = digest
@@ -6725,6 +6775,36 @@ func wouldSanitizeStripSymlink(linkPath, absRootResolved string) bool {
 		return true
 	}
 	return !strings.HasPrefix(resolved+string(filepath.Separator), absRootResolved+string(filepath.Separator))
+}
+
+// symlinkResolvesIntoExcludedPath reports whether a relative symlink inside
+// absRootResolved resolves to a path matched by excludes (such as an excluded
+// output directory omitted from sandbox upload, which causes the link to dangle
+// in the sandbox and be stripped by sandbox.sanitizeDownload).
+func symlinkResolvesIntoExcludedPath(linkPath, absRootResolved string, excludes []string) bool {
+	if len(excludes) == 0 {
+		return false
+	}
+	target, readErr := os.Readlink(linkPath)
+	if readErr != nil || filepath.IsAbs(target) {
+		return false
+	}
+	rawPath := filepath.Dir(linkPath) + string(filepath.Separator) + target
+	resolved, evalErr := filepath.EvalSymlinks(rawPath)
+	if evalErr != nil {
+		return false
+	}
+	relTarget, relErr := filepath.Rel(absRootResolved, resolved)
+	if relErr != nil || relTarget == "." || relTarget == ".." || strings.HasPrefix(relTarget, ".."+string(filepath.Separator)) {
+		return false
+	}
+	for _, ex := range excludes {
+		eq, sub := hasPathPrefixFold(relTarget, ex)
+		if eq || sub {
+			return true
+		}
+	}
+	return false
 }
 
 func hasMultipleLinks(fi os.FileInfo) bool {
@@ -6911,7 +6991,7 @@ func syncTargetRepoDirWithPrinter(srcDir, dstDir string, excludes []string, preR
 func syncTargetRepoDirWithReport(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) (*syncChanges, error) {
 	changes := &syncChanges{}
 	if err := syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, printer, nil, changes); err != nil {
-		return nil, err
+		return changes, err
 	}
 	return changes, nil
 }
@@ -7010,6 +7090,18 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 	// 0. Read-only pre-flight conflict check: verify every sandbox change against
 	// host state before mutating absDst so true conflicts leave the host untouched.
 	// Also caches source file digests for Phase 1 so regular files are hashed once.
+	preflightSrcEntries := make(map[string]bool)
+	var preflightSrcLower map[string]bool
+	if dstCaseInsensitive {
+		preflightSrcLower = make(map[string]bool)
+	}
+	preflightCaseRenamed := make(map[string]bool)
+	recordPreflightSrc := func(rel string) {
+		preflightSrcEntries[rel] = true
+		if preflightSrcLower != nil {
+			preflightSrcLower[strings.ToLower(rel)] = true
+		}
+	}
 	err = filepath.WalkDir(absSrc, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -7046,6 +7138,10 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			if wouldSanitizeStripSymlink(path, absSrcResolved) {
 				return nil
 			}
+			recordPreflightSrc(rel)
+			if baseCaseChanged {
+				preflightCaseRenamed[manifestKey] = true
+			}
 			if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
 				return err
 			}
@@ -7073,6 +7169,10 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 		}
 
 		if d.IsDir() {
+			recordPreflightSrc(rel)
+			if baseCaseChanged {
+				preflightCaseRenamed[manifestKey] = true
+			}
 			if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
 				return err
 			}
@@ -7107,6 +7207,7 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 		}
 
 		if !d.Type().IsRegular() {
+			recordPreflightSrc(rel)
 			return nil
 		}
 		info, err := d.Info()
@@ -7114,7 +7215,12 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			return err
 		}
 		if !info.Mode().IsRegular() {
+			recordPreflightSrc(rel)
 			return nil
+		}
+		recordPreflightSrc(rel)
+		if baseCaseChanged {
+			preflightCaseRenamed[manifestKey] = true
 		}
 
 		if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
@@ -7181,6 +7287,83 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 	})
 	if err != nil {
 		return fmt.Errorf("copying files to target repository: %w", err)
+	}
+
+	// 0b. Read-only pre-flight prune conflict check: verify every sandbox-deleted
+	// host entry against preRunManifest before mutating absDst so deletion-side
+	// concurrent host edits or unreadable host files abort cleanly without partial writes.
+	if preRunManifest != nil {
+		err = filepath.WalkDir(absDst, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				if os.IsNotExist(walkErr) {
+					return nil
+				}
+				return walkErr
+			}
+			rel, err := filepath.Rel(absDst, path)
+			if err != nil {
+				return err
+			}
+			if rel == "." {
+				return nil
+			}
+			if isExcludedPath(rel, allExcludes) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			inSrc := preflightSrcEntries[rel] || (preflightSrcLower != nil && preflightSrcLower[strings.ToLower(rel)])
+			if inSrc {
+				return nil
+			}
+			if isAncestorOfExcludedPath(rel, allExcludes) {
+				return nil
+			}
+			manifestKey, recorded, ok := lookupPruneManifestEntry(rel, dstCaseInsensitive, preRunManifest, preRunLowerMap)
+			if !ok {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if preflightCaseRenamed[manifestKey] {
+				return nil
+			}
+			if d.Type()&os.ModeSymlink != 0 && strings.HasPrefix(recorded, "symlink-stripped:") {
+				return nil
+			}
+			if err := checkPathNotUnderResolvedGit(absDstResolved, path, rel); err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if recorded != "dir" {
+					return fmt.Errorf("refusing to delete concurrently modified host entry %q", manifestKey)
+				}
+				return nil
+			}
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				if os.IsNotExist(infoErr) {
+					return nil
+				}
+				return fmt.Errorf("checking host entry %q before prune: %w", rel, infoErr)
+			}
+			changed, chkErr := hasConcurrentHostEdit(path, manifestKey, info, preRunManifest)
+			if chkErr != nil {
+				if os.IsNotExist(chkErr) {
+					return nil
+				}
+				return fmt.Errorf("checking host entry %q before prune: %w", rel, chkErr)
+			}
+			if changed {
+				return fmt.Errorf("refusing to delete concurrently modified host entry %q", manifestKey)
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("pruning deleted files from target repository: %w", err)
+		}
 	}
 
 	// Track directory permissions separately so pre-existing read-only host directories
@@ -7563,6 +7746,9 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 					return err
 				}
 				if d.IsDir() {
+					if recorded != "dir" {
+						return fmt.Errorf("refusing to delete concurrently modified host entry %q", manifestKey)
+					}
 					entry := pruneDirEntry{path: path}
 					if info, infoErr := d.Info(); infoErr == nil && info.Mode().Perm()&0o200 == 0 {
 						entry.origPerm = info.Mode().Perm()
@@ -7573,10 +7759,22 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 					dirsToPrune = append(dirsToPrune, entry)
 					return nil
 				}
-				if info, infoErr := d.Info(); infoErr == nil {
-					if changed, chkErr := hasConcurrentHostEdit(path, manifestKey, info, preRunManifest); chkErr == nil && changed {
+				info, infoErr := d.Info()
+				if infoErr != nil {
+					if os.IsNotExist(infoErr) {
 						return nil
 					}
+					return fmt.Errorf("checking host entry %q before prune: %w", rel, infoErr)
+				}
+				changed, chkErr := hasConcurrentHostEdit(path, manifestKey, info, preRunManifest)
+				if chkErr != nil {
+					if os.IsNotExist(chkErr) {
+						return nil
+					}
+					return fmt.Errorf("checking host entry %q before prune: %w", rel, chkErr)
+				}
+				if changed {
+					return fmt.Errorf("refusing to delete concurrently modified host entry %q", manifestKey)
 				}
 				if err := os.Remove(path); err != nil {
 					return err
