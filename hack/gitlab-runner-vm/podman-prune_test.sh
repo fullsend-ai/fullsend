@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # podman-prune_test.sh — Tests for podman-prune.sh (in-flight skip, keep-list,
-# dangling vs tagged removal) and for setup.sh installing the timer.
+# dangling vs tagged vs digest-only removal) and for setup.sh installing the
+# timer.
 #
 # Run from the repo root:
 #   bash hack/gitlab-runner-vm/podman-prune_test.sh
@@ -28,8 +29,12 @@ export PATH="${SHIM_DIR}:${PATH}"
 PODMAN_LOG="${SHIM_DIR}/podman.log"
 PS_A_FILE="${SHIM_DIR}/ps-a.txt"
 IMAGES_FILE="${SHIM_DIR}/images.txt"
+# `podman images` output for the digest-only pass ('{{.Tag}}|<RepoDigests>,').
+DIGEST_IMAGES_FILE="${SHIM_DIR}/images-digests.txt"
+# Refs the stub's `podman rmi` refuses (image in use by a container).
+IN_USE_FILE="${SHIM_DIR}/in-use.txt"
 KEEP_FILE="${FAKE_HOME}/.config/fullsend-gitlab-runner/keep-images"
-export PODMAN_LOG PS_A_FILE IMAGES_FILE
+export PODMAN_LOG PS_A_FILE IMAGES_FILE DIGEST_IMAGES_FILE IN_USE_FILE
 
 mkdir -p "${FAKE_HOME}/.config/fullsend-gitlab-runner"
 
@@ -53,10 +58,22 @@ case "$cmd" in
     exit 0
     ;;
   images)
-    cat "${IMAGES_FILE}"
+    case "$*" in
+      *RepoDigests*) cat "${DIGEST_IMAGES_FILE}" ;;
+      *) cat "${IMAGES_FILE}" ;;
+    esac
     exit 0
     ;;
-  container|image|rmi)
+  rmi)
+    # Without -f, podman refuses to remove an image a container uses.
+    for a in "$@"; do last="$a"; done
+    if grep -Fxq -- "$last" "${IN_USE_FILE}"; then
+      echo "Error: image used by container" >&2
+      exit 2
+    fi
+    exit 0
+    ;;
+  container|image)
     exit 0
     ;;
   *)
@@ -71,6 +88,8 @@ reset_prune_fixtures() {
   : > "${PODMAN_LOG}"
   : > "${PS_A_FILE}"
   : > "${IMAGES_FILE}"
+  : > "${DIGEST_IMAGES_FILE}"
+  : > "${IN_USE_FILE}"
   cat > "${KEEP_FILE}" <<'KEEP'
 # warm cache
 ghcr.io/fullsend-ai/fullsend-runner:v1
@@ -228,12 +247,96 @@ else
   fail "idle prune output mismatch: ${RUN_PRUNE_OUT}"
 fi
 
+echo "== digest-only images =="
+# Pulled by digest: no tag, a RepoDigests entry, not dangling (issue #9681).
+reset_prune_fixtures
+: > "${PS_A_FILE}"
+printf 'registry.example.com/pinned@sha256:2222\n' >> "${KEEP_FILE}"
+cat > "${IMAGES_FILE}" <<'IMAGES'
+ghcr.io/fullsend-ai/fullsend-runner:v1
+ghcr.io/fullsend-ai/fullsend-runner:old
+registry.example.com/inuse:<none>
+registry.example.com/unused:<none>
+registry.example.com/pinned:<none>
+<none>:<none>
+IMAGES
+cat > "${DIGEST_IMAGES_FILE}" <<'IMAGES'
+v1|ghcr.io/fullsend-ai/fullsend-runner@sha256:aaaa,
+old|ghcr.io/fullsend-ai/fullsend-runner@sha256:bbbb,
+<none>|registry.example.com/inuse@sha256:3333,
+<none>|registry.example.com/unused@sha256:1111,mirror.example.com/unused@sha256:1111,
+<none>|registry.example.com/pinned@sha256:2222,
+<none>|
+IMAGES
+printf 'registry.example.com/inuse@sha256:3333\n' > "${IN_USE_FILE}"
+run_prune
+if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
+  fail "digest-only prune should succeed (rc=${RUN_PRUNE_RC}): ${RUN_PRUNE_OUT}"
+elif ! logged 'rmi -- registry.example.com/unused@sha256:1111' \
+  || ! logged 'rmi -- mirror.example.com/unused@sha256:1111'; then
+  fail "unused digest-only image not removed by each digest ref: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'removing unused digest-only image registry.example.com/unused@sha256:1111'; then
+  pass "unused digest-only image (no tag, RepoDigests, not dangling) is removed"
+else
+  fail "digest-only prune output mismatch: ${RUN_PRUNE_OUT}"
+fi
+
+if logged 'rmi -- registry.example.com/pinned@sha256:2222'; then
+  fail "digest-only image pinned in the keep-file was removed: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'keeping registry.example.com/pinned@sha256:2222'; then
+  pass "keep-file entry pinned by digest protects a digest-only image"
+else
+  fail "digest-pinned keep entry output mismatch: ${RUN_PRUNE_OUT}"
+fi
+
+if logged 'rmi -f' || logged 'rmi --force'; then
+  fail "digest-only prune force-removed an image: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif logged 'rmi -- registry.example.com/inuse@sha256:3333' \
+  && logged 'rmi -- registry.example.com/unused@sha256:1111'; then
+  pass "in-use digest-only image is left to rmi without -f and the run continues"
+else
+  fail "in-use digest-only image path mismatch: $(tr '\n' '|' < "${PODMAN_LOG}")"
+fi
+
+if ! logged 'rmi -- ghcr.io/fullsend-ai/fullsend-runner:old'; then
+  fail "tagged unused image no longer removed: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif logged 'rmi -- ghcr.io/fullsend-ai/fullsend-runner@sha256' \
+  || logged 'rmi -- <none>' || logged 'rmi -- ,' || grep -Eq '^rmi --$' "${PODMAN_LOG}"; then
+  fail "digest-only pass touched a tagged or dangling image: $(tr '\n' '|' < "${PODMAN_LOG}")"
+else
+  pass "digest-only pass leaves tagged and dangling images to their own passes"
+fi
+
+reset_prune_fixtures
+: > "${PS_A_FILE}"
+cat > "${DIGEST_IMAGES_FILE}" <<'IMAGES'
+<none>|mirror.example.com/job@sha256:4444,
+IMAGES
+RUN_PRUNE_RC=0
+RUN_PRUNE_OUT=$(
+  FULLSEND_PODMAN_KEEP_IMAGES="${KEEP_FILE}" \
+  FULLSEND_PODMAN_PRUNE_EXTRA_KEEP="registry.example.com/job:1.0@sha256:4444" \
+  bash "${PRUNE}"
+) && RUN_PRUNE_RC=0 || RUN_PRUNE_RC=$?
+if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
+  fail "digest extra keep-ref run should succeed (rc=${RUN_PRUNE_RC}): ${RUN_PRUNE_OUT}"
+elif logged 'rmi'; then
+  fail "digest-pinned extra keep-ref did not protect the image: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'keeping mirror.example.com/job@sha256:4444'; then
+  pass "FULLSEND_PODMAN_PRUNE_EXTRA_KEEP pinned by digest protects a digest-only image"
+else
+  fail "digest extra keep-ref output mismatch: ${RUN_PRUNE_OUT}"
+fi
+
 echo "== missing keep-file =="
 reset_prune_fixtures
 rm -f "${KEEP_FILE}"
 : > "${PS_A_FILE}"
 cat > "${IMAGES_FILE}" <<'IMAGES'
 ghcr.io/fullsend-ai/fullsend-runner:v1
+IMAGES
+cat > "${DIGEST_IMAGES_FILE}" <<'IMAGES'
+<none>|registry.example.com/unused@sha256:1111,
 IMAGES
 run_prune
 if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
