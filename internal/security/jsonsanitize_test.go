@@ -624,6 +624,51 @@ func TestSanitizeJSONLines_SensitiveBeginRecordFailsClosed(t *testing.T) {
 	}
 }
 
+// TestSanitizeJSONDocument_EscapedLeafBlockDoesNotExemptSplitBlock pins that an
+// escaped-marker leaf block cannot stand in for a separate block that spans
+// members: the escaped block is visible only after JSON decoding, so raw-byte
+// and decoded finding counts are not comparable.
+func TestSanitizeJSONDocument_EscapedLeafBlockDoesNotExemptSplitBlock(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	escapedBegin := `\u002d` + "----BEGIN RSA" + " PRIVATE KEY-----"
+	doc := []byte(`{"note":"` + escapedBegin + `\nMIIEleafkeymaterial\n` + end + `",` +
+		`"key_start":"` + begin + `","payload":"MIIEspanningkeymaterial","tail":"` + end + `"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial", "the spanning block must not survive")
+	assert.NotContains(t, string(out), "MIIEleafkeymaterial", "the escaped leaf block must be redacted")
+	assert.Contains(t, string(out), "output removed")
+}
+
+// TestSanitizeJSONLines_EscapedBeginRecordFailsClosed pins that a cross-record
+// block is recognized even when its BEGIN marker is written with \u escapes in
+// the original record bytes.
+func TestSanitizeJSONLines_EscapedBeginRecordFailsClosed(t *testing.T) {
+	p := OutputPipeline()
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	content := []byte(`{"key_start":"\u002d` + "----BEGIN RSA" + " PRIVATE KEY-----" + `"}` + "\n" +
+		`{"payload":"MIIEspanningkeymaterial"}` + "\n" +
+		`{"tail":"` + end + `"}` + "\n")
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+	assert.NotContains(t, string(out), "END RSA")
+
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	require.Len(t, lines, 3, "record count must not change")
+	for _, line := range lines {
+		assert.True(t, json.Valid([]byte(line)), "each record must stay valid JSON: %s", line)
+		assert.Contains(t, line, "output removed")
+	}
+}
+
 // TestSanitizeJSONDocument_LeavesUnsupportedInputAlone pins the fallback
 // contract for documents the structural path cannot handle.
 func TestSanitizeJSONDocument_LeavesUnsupportedInputAlone(t *testing.T) {

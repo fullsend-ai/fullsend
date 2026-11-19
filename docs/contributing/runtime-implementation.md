@@ -624,13 +624,14 @@ scanned, and a secret spanning JSON framing stays visible in the rewritten
 bytes. A sanitized key that would collide with a different member is
 disambiguated (`<key>_<N>`). The bytes actually written are scanned as well, so
 a secret that only exists in the serialized form is still caught, and a
-private-key block spanning members is detected in the original framing before
-masking a member value can hide its BEGIN marker.
+private-key block spanning members is detected in a decoded view of the document
+before masking a member value can hide its BEGIN marker.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
 rewriting that framing, so only the records it covers are replaced. A
-private-key block spanning records is detected on the original stream, before
-per-record masking can remove its BEGIN marker. When the covered records
+private-key block spanning records is detected in a decoded view of the stream,
+before per-record masking can remove its BEGIN marker, so a marker written with
+\u escapes is still recognized. When the covered records
 cannot be identified unambiguously — their contents also appear elsewhere in
 the stream — every record fails closed.
 
