@@ -15,15 +15,6 @@ import (
 // queries read.
 const maxCommentActorResponseBytes = 1 << 20
 
-// CommentActor is a comment's current-revision actor and the issue or pull
-// request it is on, as GitHub GraphQL reports them (#9602). ActorType is
-// the actor's GraphQL type (Bot, User, …) and ActorLogin its login as
-// GraphQL spells it (a Bot without the REST "[bot]" suffix); both are empty
-// for a deleted account. The shape is forge.CommentActor: the lookup is
-// declared on forge.GitHubExtensions, so its result type lives in the forge
-// package and this alias keeps the GitHub spelling.
-type CommentActor = forge.CommentActor
-
 // IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
 // "PullRequest") and node ID of issue or pull request number in owner/repo.
 // The node ID is in GitHub's new global-ID format (nextGlobalIDHeader), so
@@ -76,7 +67,7 @@ const nextGlobalIDHeader = "X-Github-Next-Global-ID"
 // conversation comments (IssueComment) and pull-request review-thread
 // comments (PullRequestReviewComment). Any other node, and an edited
 // comment whose current revision cannot be attributed, is an error.
-func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (CommentActor, error) {
+func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (forge.CommentActor, error) {
 	var data struct {
 		Node *struct {
 			Typename         string        `json:"__typename"`
@@ -100,23 +91,23 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (Commen
 		`... on IssueComment{author{__typename login} lastEditedAt userContentEdits(first:1){nodes{editor{__typename login} editedAt}} issue{id} pullRequest{id}} ` +
 		`... on PullRequestReviewComment{author{__typename login} lastEditedAt userContentEdits(first:1){nodes{editor{__typename login} editedAt}} pullRequest{id}}}}`
 	if err := c.graphqlQuery(ctx, q, map[string]any{"id": commentID}, &data, withHeader(nextGlobalIDHeader, "1")); err != nil {
-		return CommentActor{}, err
+		return forge.CommentActor{}, err
 	}
 	n := data.Node
 	if n == nil {
-		return CommentActor{}, fmt.Errorf("%w: comment %s", forge.ErrNotFound, commentID)
+		return forge.CommentActor{}, fmt.Errorf("%w: comment %q", forge.ErrNotFound, commentID)
 	}
 	if n.Typename != "IssueComment" && n.Typename != "PullRequestReviewComment" {
-		return CommentActor{}, fmt.Errorf("node %q is a %s, not an issue, pull-request or review-thread comment", commentID, n.Typename)
+		return forge.CommentActor{}, fmt.Errorf("node %q is a %s, not an issue, pull-request or review-thread comment", commentID, n.Typename)
 	}
-	var out CommentActor
+	var out forge.CommentActor
 	switch {
 	case n.PullRequest != nil && n.PullRequest.ID != "":
 		out.OnPullRequest, out.EntityNodeID = true, n.PullRequest.ID
 	case n.Issue != nil && n.Issue.ID != "":
 		out.EntityNodeID = n.Issue.ID
 	default:
-		return CommentActor{}, fmt.Errorf("comment %q has no issue or pull request", commentID)
+		return forge.CommentActor{}, fmt.Errorf("comment %q has no issue or pull request", commentID)
 	}
 	actor := n.Author
 	if n.LastEditedAt != nil {
@@ -126,10 +117,10 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (Commen
 		// meaning, so a mismatch or a missing editor fails closed.
 		edits := n.UserContentEdits
 		if edits == nil || len(edits.Nodes) == 0 || edits.Nodes[0].Editor == nil {
-			return CommentActor{}, fmt.Errorf("comment %q was edited by an unknown actor", commentID)
+			return forge.CommentActor{}, fmt.Errorf("comment %q was edited by an unknown actor", commentID)
 		}
 		if edits.Nodes[0].EditedAt != *n.LastEditedAt {
-			return CommentActor{}, fmt.Errorf("comment %q's newest edit does not match lastEditedAt", commentID)
+			return forge.CommentActor{}, fmt.Errorf("comment %q's newest edit does not match lastEditedAt", commentID)
 		}
 		actor = edits.Nodes[0].Editor
 	}

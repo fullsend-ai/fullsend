@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -115,9 +116,14 @@ func runBotRole(ctx context.Context, entity, comment string, stdout io.Writer) e
 		return fmt.Errorf("failed to read response (HTTP %d): %w", resp.StatusCode, err)
 	}
 
-	// The helper answers in the mint's bot-role response shape, so the same
-	// parser decides: only a 200 with a well-formed outcome is an answer,
-	// everything else is a lookup failure distinct from a no-match.
+	// The helper answers in the mint's bot-role response shape, but its
+	// refusals are its own: a non-200 answer (no trusted lookup, a refused
+	// comment) happens before any mint call, so the wording must name the
+	// helper, never the mint, or a script author debugs the wrong
+	// component. Only a 200 keeps the shared parser, for the outcome shape.
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%w: bot-role helper refused (HTTP %d): %s", botidentity.ErrLookup, resp.StatusCode, botRoleHelperMessage(respBody))
+	}
 	res, err := botidentity.ParseMintBotRoleResponse(resp.StatusCode, respBody)
 	if err != nil {
 		return err
@@ -133,4 +139,18 @@ func runBotRole(ctx context.Context, entity, comment string, stdout io.Writer) e
 		return fmt.Errorf("failed to print the bot-role outcome: %w", err)
 	}
 	return nil
+}
+
+// botRoleHelperMessage reads a helper refusal's error message, falling back
+// to the raw body when it is not the JSON error shape.
+func botRoleHelperMessage(body []byte) string {
+	var resp botidentity.MintBotRoleResponse
+	if err := json.Unmarshal(body, &resp); err == nil && strings.TrimSpace(resp.Error) != "" {
+		return strings.TrimSpace(resp.Error)
+	}
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		return "no error message"
+	}
+	return msg
 }
