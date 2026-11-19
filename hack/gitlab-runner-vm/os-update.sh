@@ -18,8 +18,9 @@
 #      update is deferred to the next scheduled run. The runner keeps taking
 #      jobs while deferring; nothing is drained.
 #   3. Drain: create the hold file (gitlab-runner.service has a drop-in with
-#      ConditionPathExists=!<hold file>, so Restart=always cannot bring it
-#      back), raise shutdown_timeout, then SIGQUIT gitlab-runner — the same
+#      ConditionPathExists=!<hold file> and ExecCondition=test ! -e <hold
+#      file>, so Restart=always cannot bring it back), raise shutdown_timeout,
+#      then SIGQUIT gitlab-runner — the same
 #      graceful stop as lib.sh's drain_runner_vm, never `systemctl stop`
 #      (which trips the unit's stop timeout and kills the job). A job that
 #      raced the idle check finishes; if the drain outlasts
@@ -27,7 +28,9 @@
 #      left alone, and the update is deferred. shutdown_timeout is raised to
 #      DRAIN_TIMEOUT_SEC + FULLSEND_OS_UPDATE_JOB_MAX_SEC (default 24h) so the
 #      graceful shutdown already under way does not kill that job before it
-#      ends; set JOB_MAX_SEC to at least the longest job timeout.
+#      ends; set JOB_MAX_SEC to at least the longest job timeout. If the
+#      runner comes back with a new main process anyway, it gets SIGQUIT too
+#      so the drain can still finish (issue #9690).
 #   4. `dnf upgrade` within the installed release. This never passes
 #      --releasever or runs system-upgrade: a Fedora major-version upgrade is
 #      a separate lifecycle change (recreate the VM).
@@ -50,7 +53,8 @@ RUNNER_USER="${FULLSEND_RUNNER_USER:-}"
 RUNNER_SERVICE="gitlab-runner.service"
 CONFIG_TOML="${FULLSEND_GITLAB_RUNNER_CONFIG:-/etc/gitlab-runner/config.toml}"
 STATE_DIR="${FULLSEND_OS_UPDATE_STATE_DIR:-/var/lib/fullsend-gitlab-runner}"
-# Must match the ConditionPathExists= drop-in setup.sh writes for gitlab-runner.
+# Must match the ConditionPathExists=/ExecCondition= drop-in setup.sh writes
+# for gitlab-runner.
 HOLD_FILE="${FULLSEND_OS_UPDATE_HOLD_FILE:-${STATE_DIR}/os-update.hold}"
 SHUTDOWN_TIMEOUT_ORIG_FILE="${STATE_DIR}/os-update.shutdown-timeout.orig"
 LOCK_FILE="${FULLSEND_OS_UPDATE_LOCK_FILE:-/run/fullsend-os-update.lock}"
@@ -103,6 +107,12 @@ runner_state() {
   systemctl is-active "${RUNNER_SERVICE}" 2>/dev/null || true
 }
 
+# Prints gitlab-runner's main PID: 0 when no main process runs (for example
+# while systemd waits to restart it), empty when the query fails.
+runner_main_pid() {
+  systemctl show -p MainPID --value "${RUNNER_SERVICE}" 2>/dev/null || true
+}
+
 # Prints running runner-* job containers. Fails when podman cannot be queried.
 running_job_containers() {
   local names
@@ -116,7 +126,7 @@ running_job_containers() {
 # counts as busy: an update must never start on a guess.
 runner_busy() {
   local main_pid containers
-  main_pid=$(systemctl show -p MainPID --value "${RUNNER_SERVICE}" 2>/dev/null || true)
+  main_pid=$(runner_main_pid)
   if [ -n "${main_pid}" ] && [ "${main_pid}" != "0" ] && pgrep -P "${main_pid}" >/dev/null 2>&1; then
     log "runner busy: executor stage running under gitlab-runner (pid ${main_pid})"
     return 0
@@ -198,7 +208,7 @@ restore_shutdown_timeout() {
 # 2 when a preparation step failed (SIGQUIT was never sent). The caller runs
 # this under `if`/`||`, where errexit is off, so every step is checked here.
 drain_runner() {
-  local start now state containers
+  local start now state main_pid quit_pid containers status last_status=""
   log "draining gitlab-runner (cap ${DRAIN_TIMEOUT_SEC}s)"
   if ! mkdir -p "$(dirname "${HOLD_FILE}")" || ! : > "${HOLD_FILE}"; then
     err "could not create the hold file ${HOLD_FILE} — not draining"
@@ -216,6 +226,7 @@ drain_runner() {
     return 2
   fi
   sleep "${RELOAD_SETTLE_SEC}"
+  quit_pid=$(runner_main_pid)
   if ! systemctl kill --kill-whom=main -s QUIT "${RUNNER_SERVICE}" >/dev/null 2>&1; then
     warn "could not signal ${RUNNER_SERVICE} — waiting for it to stop anyway"
   fi
@@ -223,16 +234,47 @@ drain_runner() {
   start=$(date +%s)
   while true; do
     state=$(runner_state)
+    main_pid=$(runner_main_pid)
+    status="state ${state:-unknown}, MainPID ${main_pid:-unknown}"
     # Only an observed inactive/failed counts as stopped; an empty or
     # unrecognised state (a failed query) is unknown, so keep waiting.
+    # "activating" with MainPID 0 is systemd waiting to restart the runner;
+    # the hold drop-in's ExecCondition= then skips the start, leaving it
+    # inactive.
     case "${state}" in
       inactive|failed)
-        if containers=$(running_job_containers) && [ -z "${containers}" ]; then
+        if ! containers=$(running_job_containers); then
+          status="${status}, cannot list job containers with podman"
+        elif [ -n "${containers}" ]; then
+          status="${status}, job container(s) running: $(printf '%s' "${containers}" | tr '\n' ' ')"
+        else
           log "runner drained"
           return 0
         fi
         ;;
+      active)
+        # A main process other than the one that got SIGQUIT means systemd
+        # restarted the runner despite the hold (issue #9690). That process
+        # is not shutting down, so it would keep taking jobs and the drain
+        # would never end. Send it the same graceful SIGQUIT: a job it
+        # picked up still finishes, under the raised shutdown_timeout it
+        # read from config.toml at start.
+        if [ -n "${quit_pid}" ] && [ "${quit_pid}" != "0" ] \
+          && [ -n "${main_pid}" ] && [ "${main_pid}" != "0" ] \
+          && [ "${main_pid}" != "${quit_pid}" ]; then
+          warn "${RUNNER_SERVICE} restarted during the drain (pid ${quit_pid} -> ${main_pid}) — sending SIGQUIT again"
+          if systemctl kill --kill-whom=main -s QUIT "${RUNNER_SERVICE}" >/dev/null 2>&1; then
+            quit_pid="${main_pid}"
+          else
+            warn "could not signal ${RUNNER_SERVICE} — retrying on the next poll"
+          fi
+        fi
+        ;;
     esac
+    if [ "${status}" != "${last_status}" ]; then
+      log "waiting for gitlab-runner to drain (${status})"
+      last_status="${status}"
+    fi
     now=$(date +%s)
     if [ $((now - start)) -ge "${DRAIN_TIMEOUT_SEC}" ]; then
       return 1
