@@ -30,21 +30,34 @@ fullsend github setup <owner/repo> \
 
 The values passed to `--inference-gateway-*` and `--openai-*` come from the gateway operator and the OpenAI organization admin; see [Using an inference gateway](../guides/user/inference-gateway.md) and [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
 
-**Re-running per-repo setup** (for example after a fullsend upgrade) refreshes the managed
-workflow files but never rewrites an existing `.fullsend/config.yaml` on its own: `agents:` entries and
-their per-agent settings, allowlists and hand-written comments stay as they are, the runtime prompt is skipped,
-and the setup PR reports the runtime the file already selects. Passing a flag that targets a
-config key — `--runtime`, `--agents`, `--mint-url`, `--inference-*` — changes that key on the
-existing file and keeps the rest (the file is re-serialized, so comments are not preserved in
-that case). `--config` rewrites `config.base.yaml` from the preset (byte-for-byte) and keeps
-the existing overlay unless a persistent setup flag is also passed, in which case that flag is
-written into the overlay. Persistent setup flags may be combined with `--config`; they override
-the corresponding preset values. When an explicitly passed persistent flag equals the value the
-overlay would otherwise inherit from `config.base.yaml` or a compiled default, setup still writes
-it and warns that the key is now pinned locally and will not receive later changes from that
-layer. Remove the key from `.fullsend/config.yaml` to inherit again. Omitted flags and per-run
-flags (`--dry-run`, `--direct`, `--vendor`, …) do not pin or warn. A `config.yaml` that no longer
-parses fails the re-run rather than being regenerated.
+### Re-running per-repo setup
+
+A re-run with no flags is the supported way to upgrade a single repository that is not declared in a [`fullsend repos`](repos.md) manifest, because `fullsend repos install` needs one. The steps are in [Upgrading a single repository](../guides/getting-started/operations.md#upgrading-a-single-repository).
+
+**What the re-run changes:**
+
+| Change | When it takes effect |
+|---|---|
+| Managed workflow files, including the shim trigger (`pull_request_target` → `pull_request`) and the workflow pins (moved to the CLI's release, or to `--fullsend-ref`) | In one setup PR, when you merge it |
+| Repository variables and secrets, resolved from the repository's configuration (`.fullsend/config.yaml` over `config.base.yaml` over compiled defaults) | When the command runs, before the PR is merged |
+| Vendored assets, when the re-run has no `--vendor` | Deleted by a separate commit on the default branch when the command runs |
+
+Run with `--dry-run` first: it lists the files it would commit, the variable values it would set and the vendored assets it would remove.
+
+**What the re-run keeps:**
+- An existing `.fullsend/config.yaml`: `agents:` entries and their settings, allowlists and hand-written comments stay as they are. The runtime prompt is skipped, and the setup PR reports the runtime the file selects. A `config.yaml` that no longer parses fails the re-run rather than being regenerated.
+- `config.base.yaml`, unchanged. Only `--config` refreshes it.
+- A custom `FULLSEND_APP_SET` repository variable.
+- Existing GCP secrets for `inference.project` and `inference.wif_provider` when the configuration does not set them. When the configuration sets one of the two but not the other, the re-run reuses the other's existing secret and fails with `--inference-wif-provider is required for per-repo setup (no existing secret found)` (or the `--inference-project` equivalent) when that secret is missing.
+
+**When to add flags:**
+- **`--vendor`:** pass it again if the install is vendored, or the re-run deletes the vendored assets.
+- **`--config` (and `--config-hash`):** pass them again to refresh `config.base.yaml` from the preset.
+- **`--fullsend-ref`:** pass it only with a ref at or after the release that installs the `pull_request` shim. An older ref pins the new shim to a reusable workflow that predates it. Without the flag the pins move to the CLI's release.
+- **A value set only as a repository variable,** such as `FULLSEND_MINT_URL` or `FULLSEND_GCP_REGION`, goes back to the configuration value or the default. Put it in `config.yaml`, or pass its flag (`--mint-url`, `--inference-region`).
+- **A config flag** (`--runtime`, `--agents`, `--mint-url`, `--inference-*`) changes that key on the existing `config.yaml` and keeps the rest. The file is re-serialized, so its comments are lost.
+
+**How `--config` and config flags combine:** `--config` rewrites `config.base.yaml` from the preset (byte-for-byte) and keeps the existing overlay unless a persistent setup flag is also passed, in which case that flag is written into the overlay. Persistent setup flags may be combined with `--config`; they override the corresponding preset values. When an explicitly passed persistent flag equals the value the overlay would otherwise inherit from `config.base.yaml` or a compiled default, setup still writes it and warns that the key is now pinned locally and will not receive later changes from that layer. Remove the key from `.fullsend/config.yaml` to inherit again. Omitted flags and per-run flags (`--dry-run`, `--direct`, `--vendor`, ...) do not pin or warn.
 
 ### Flags
 
