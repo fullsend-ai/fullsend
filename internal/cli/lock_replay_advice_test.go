@@ -21,7 +21,11 @@ import (
 // passes — runAgent builds it with the shared lockUpdateHint, so the advice
 // names the harness and succeeds as written. The bare `fullsend lock` the
 // message used to print fails without an agent name and, with the name added,
-// still re-locks nothing while the entry is current.
+// still re-locks nothing while the entry is current. The cache-miss clause is
+// worded for the run's mode (the offline parameter runAgent fills from the
+// fetch policy): only an offline run is told to rerun without --offline, and
+// an online run — whose fallback is already running — is told what that
+// fallback does with the pinned content instead.
 func TestResolveFromLock_CacheMissAdviceNamesHarness(t *testing.T) {
 	entry := &lock.HarnessLock{
 		Dependencies: []lock.DependencyEntry{
@@ -38,19 +42,31 @@ func TestResolveFromLock_CacheMissAdviceNamesHarness(t *testing.T) {
 		AllowedRemoteResources: []string{"https://example.com/"},
 	}
 
-	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, lockUpdateHint("code", "/custom/dir", "", "", true), t.TempDir(), nil, printer)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not in cache")
-	assert.Contains(t, err.Error(), "fullsend lock code --update")
-	assert.Contains(t, err.Error(), "--fullsend-dir")
-	assert.NotContains(t, err.Error(), "'fullsend lock'")
-	// The advice names --update only as the re-pin path: an online run
-	// re-fetches the pinned content itself (it falls back to normal
-	// resolution), so the message must not promise a re-fetch.
-	assert.Contains(t, err.Error(), "rerun without --offline to fetch the pinned content (run falls back to normal resolution), or run")
-	assert.Contains(t, err.Error(), "to re-pin to its source")
-	assert.NotContains(t, err.Error(), "to re-fetch")
+	for _, offline := range []bool{true, false} {
+		printer := ui.New(os.Stdout)
+		_, err := resolveFromLock(h, entry, lockUpdateHint("code", "/custom/dir", "", "", true), t.TempDir(), nil, offline, printer)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not in cache")
+		assert.Contains(t, err.Error(), "fullsend lock code --update")
+		assert.Contains(t, err.Error(), "--fullsend-dir")
+		assert.NotContains(t, err.Error(), "'fullsend lock'")
+		assert.Contains(t, err.Error(), "to re-pin to its source")
+		// The advice names --update only as the re-pin path, so the message
+		// must not promise a re-fetch in either mode.
+		assert.NotContains(t, err.Error(), "to re-fetch")
+		if offline {
+			// An offline run is the one that can be told to rerun without
+			// --offline: its fallback cannot fetch the pinned content.
+			assert.Contains(t, err.Error(), "rerun without --offline to fetch the pinned content (run falls back to normal resolution), or run")
+			assert.NotContains(t, err.Error(), "an online run re-fetches")
+		} else {
+			// An online run is already falling back to normal resolution,
+			// which re-fetches the pinned content and verifies it, so the
+			// message must not tell it to rerun without --offline.
+			assert.Contains(t, err.Error(), "an online run re-fetches and verifies it (run falls back to normal resolution), or run")
+			assert.NotContains(t, err.Error(), "rerun without --offline")
+		}
+	}
 }
 
 // TestResolveFromLock_AdviceArmsNameHarness pins the remaining advice arms
@@ -84,8 +100,22 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 		return entry, h
 	}
 
+	directoryCase := func(t *testing.T, root string) (*lock.HarnessLock, *harness.Harness) {
+		t.Helper()
+		lockFile := &lock.HarnessLock{
+			Dependencies: []lock.DependencyEntry{
+				{Field: "agent", URL: agentURL, SHA256: missing, Type: "directory"},
+			},
+		}
+		return lockFile, &harness.Harness{
+			Agent:                  agentURL + "#sha256=" + missing,
+			AllowedRemoteResources: []string{"https://example.com/"},
+		}
+	}
+
 	cases := []struct {
 		name     string
+		offline  bool
 		wantErr  string
 		wantAlso []string
 		build    func(t *testing.T, root string) (*lock.HarnessLock, *harness.Harness)
@@ -107,27 +137,30 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 			},
 		},
 		{
-			name:    "directory cache-miss advises the named command",
+			name:    "directory cache-miss advises the named command on an offline run",
+			offline: true,
 			wantErr: "not in cache",
 			// The directory arm of the cache-miss advice carries the same
-			// re-pin wording as the file arm: --update is named only as the
+			// mode-dependent wording as the file arm: an offline run is told
+			// to rerun without --offline, and --update is named only as the
 			// way to re-pin to the source, never as a re-fetch.
 			wantAlso: []string{
 				"rerun without --offline to fetch the pinned content (run falls back to normal resolution), or run",
 				"to re-pin to its source",
 			},
-			build: func(t *testing.T, root string) (*lock.HarnessLock, *harness.Harness) {
-				t.Helper()
-				lockFile := &lock.HarnessLock{
-					Dependencies: []lock.DependencyEntry{
-						{Field: "agent", URL: agentURL, SHA256: missing, Type: "directory"},
-					},
-				}
-				return lockFile, &harness.Harness{
-					Agent:                  agentURL + "#sha256=" + missing,
-					AllowedRemoteResources: []string{"https://example.com/"},
-				}
+			build: directoryCase,
+		},
+		{
+			name:    "directory cache-miss advises the named command on an online run",
+			offline: false,
+			wantErr: "not in cache",
+			// Online, the same arm never mentions --offline: the fallback is
+			// already running and re-fetches the pinned content itself.
+			wantAlso: []string{
+				"an online run re-fetches and verifies it (run falls back to normal resolution), or run",
+				"to re-pin to its source",
 			},
+			build: directoryCase,
 		},
 		{
 			name:    "plugins missing lock entry advises the named command",
@@ -141,13 +174,18 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 			root := t.TempDir()
 			entry, h := tc.build(t, root)
 			printer := ui.New(os.Stdout)
-			_, err := resolveFromLock(h, entry, lockUpdateHint("code", "/custom/dir", "", "", true), root, nil, printer)
+			_, err := resolveFromLock(h, entry, lockUpdateHint("code", "/custom/dir", "", "", true), root, nil, tc.offline, printer)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
 			assert.Contains(t, err.Error(), "fullsend lock code --update")
 			assert.Contains(t, err.Error(), "--fullsend-dir")
 			for _, want := range tc.wantAlso {
 				assert.Contains(t, err.Error(), want)
+			}
+			if tc.offline {
+				assert.NotContains(t, err.Error(), "an online run re-fetches")
+			} else {
+				assert.NotContains(t, err.Error(), "rerun without --offline")
 			}
 			assert.NotContains(t, err.Error(), "to re-fetch")
 		})
@@ -156,15 +194,17 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 
 // TestRunAgent_LockReplayCacheMissAdviceNamesHarness pins the production
 // wiring: runAgent passes composeOpts.LockUpdateCommand (the shared
-// lockUpdateHint) to resolveFromLock, so a lock-replay cache-miss during a
-// run advises a command that names the harness. The child declares its own
-// URL policy — composition localizes only the base's relative files, so the
-// child's URL survives to the resolve step, where a current lock entry is
-// replayed. The policy's pinned content leaves the cache (a pruned cache or
-// a fresh machine), the replay reports the miss with the named advice and
-// the run falls back to normal resolution. A regression of the run.go
-// argument to a bare literal (or an empty string) fails here while every
-// other test passes.
+// lockUpdateHint) and the fetch policy's offline flag to resolveFromLock, so
+// a lock-replay cache-miss during a run advises a command that names the
+// harness, worded for the run's mode. The child declares its own URL policy —
+// composition localizes only the base's relative files, so the child's URL
+// survives to the resolve step, where a current lock entry is replayed. The
+// policy's pinned content leaves the cache (a pruned cache or a fresh
+// machine), the replay reports the miss with the named advice and the run
+// falls back to normal resolution. A regression of the run.go arguments to a
+// bare literal (or an empty string) fails here while every other test
+// passes. This run is online, so its advice must not tell the user to rerun
+// without --offline.
 func TestRunAgent_LockReplayCacheMissAdviceNamesHarness(t *testing.T) {
 	usePreScriptStub(t)
 	skip := []byte("#!/bin/bash\necho \"skipped=true\" >> \"${FULLSEND_PRESCRIPT_OUTPUT}\"\n")
@@ -202,5 +242,10 @@ func TestRunAgent_LockReplayCacheMissAdviceNamesHarness(t *testing.T) {
 	assert.Contains(t, out.String(), "fullsend lock code --update")
 	assert.Contains(t, out.String(), "--fullsend-dir")
 	assert.Contains(t, out.String(), "to re-pin to its source")
+	// This run is online (no --offline flag), so the advice says what the
+	// already-running fallback does with the pinned content instead of
+	// telling the user to rerun without --offline.
+	assert.Contains(t, out.String(), "an online run re-fetches and verifies it")
+	assert.NotContains(t, out.String(), "rerun without --offline")
 	assert.NotContains(t, out.String(), "to re-fetch")
 }
