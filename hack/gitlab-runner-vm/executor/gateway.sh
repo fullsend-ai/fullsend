@@ -486,30 +486,46 @@ openshell_gateway_state() {
 # journal is not usable anyway. Any other entry that vanishes between
 # listing and copying is skipped too. Every other failure returns non-zero.
 stage_openshell_config() {
-  local src="$1" dest="$2" rel path err
+  local src="$1" dest="$2" rel path err list rc=0
   rm -rf -- "${dest}"
   mkdir -p -- "${dest}" || return 1
   chmod --reference="${src}" -- "${dest}" || return 1
+  # List into a file rather than a process substitution so a failed
+  # traversal (unreadable subdirectory, I/O error) is not mistaken for the
+  # end of the tree and cannot yield a silently incomplete staging dir.
+  list=$(mktemp) || return 1
+  if ! find "${src}" -ignore_readdir_race -mindepth 1 \
+    \( -name '*.db' -o -name '*.db-journal' -o -name '*.db-wal' -o -name '*.db-shm' \) \
+    -prune -o -printf '%P\0' > "${list}"; then
+    echo "ERROR: could not list ${src}" >&2
+    rm -f -- "${list}"
+    return 1
+  fi
   while IFS= read -r -d '' rel; do
     path="${src}/${rel}"
     if [ -d "${path}" ] && [ ! -L "${path}" ]; then
-      mkdir -p -- "${dest}/${rel}" || return 1
+      if ! mkdir -p -- "${dest}/${rel}"; then
+        rc=1
+        break
+      fi
       if ! chmod --reference="${path}" -- "${dest}/${rel}" 2>/dev/null \
         && [ -e "${path}" ]; then
         echo "ERROR: could not copy permissions of ${path}" >&2
-        return 1
+        rc=1
+        break
       fi
       continue
     fi
     if ! err=$(cp -a -- "${path}" "${dest}/${rel}" 2>&1); then
       if [ -e "${path}" ] || [ -L "${path}" ]; then
         echo "ERROR: could not copy ${path}: ${err}" >&2
-        return 1
+        rc=1
+        break
       fi
     fi
-  done < <(find "${src}" -ignore_readdir_race -mindepth 1 \
-    \( -name '*.db' -o -name '*.db-journal' -o -name '*.db-wal' -o -name '*.db-shm' \) \
-    -prune -o -printf '%P\0')
+  done < "${list}"
+  rm -f -- "${list}"
+  return "${rc}"
 }
 
 # Sandboxes are Podman containers labeled openshell.managed=true (OpenShell

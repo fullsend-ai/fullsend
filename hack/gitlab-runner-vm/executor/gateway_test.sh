@@ -1202,6 +1202,23 @@ fi
 rm -f "${SHIM_DIR}/cp"
 hash -r
 
+# A traversal failure (find prints entries, then exits non-zero as for an
+# unreadable subdirectory) must not pass as a complete staging tree.
+REAL_FIND="$(command -v find)"
+printf '#!/bin/sh\n"%s" "$@"\necho "find: cannot read directory: Permission denied" >&2\nexit 1\n' \
+  "${REAL_FIND}" > "${SHIM_DIR}/find"
+chmod +x "${SHIM_DIR}/find"
+hash -r
+if stage_err=$(stage_openshell_config "${STAGE_SRC}" "${STAGE_DEST}" 2>&1); then
+  fail "stage_openshell_config must fail when listing the config tree fails"
+elif printf '%s' "${stage_err}" | grep -Fq "could not list ${STAGE_SRC}"; then
+  pass "stage_openshell_config fails when listing the config tree fails"
+else
+  fail "stage_openshell_config listing failure did not name the tree: ${stage_err}"
+fi
+rm -f "${SHIM_DIR}/find"
+hash -r
+
 echo "== openshell_gateway_state =="
 printf '#!/bin/sh\necho "$@" >> "%s"\ncase "$*" in *is-active*) echo activating; exit 3;; esac\nexit 0\n' \
   "${SYSTEMCTL_LOG}" > "${SHIM_DIR}/systemctl"
