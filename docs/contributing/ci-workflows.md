@@ -202,13 +202,21 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`). The same-repository author/label policy and the `/ok-to-test` comment mode both live in Go (`internal/e2eauth`, exposed as [`fullsend ci check-e2e-authorization`](../cli/ci.md)).
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) requires
+authorization before the `behaviour`, `playback`, and `forgejo-behaviour` jobs
+check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use
+`pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)).
+Same-repository PRs run on `pull_request`. Fork PRs run only after a
+`/ok-to-test <sha>` comment (`issue_comment`). The Go package `internal/e2eauth`
+implements both the same-repository author/label policy and the `/ok-to-test`
+comment mode. The CLI exposes both through
+[`fullsend ci check-e2e-authorization`](../cli/ci.md).
 
 > **Planned:** Point [`.github/actions/check-e2e-authorization`](../../.github/actions/check-e2e-authorization/action.yml) at that CLI instead of `scripts/check-e2e-authorization.sh` ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371) part 3).
 
 - **Same-repository PRs** — the gate authorizes authors with write access (collaborator permission API) and trusted bots. Fork `pull_request` runs get no secrets, so the suites skip them.
 - **Fork PRs** — require a user with write access (Write role or above) to review the PR diff and comment `/ok-to-test <sha>`, naming the reviewed commit, including when the fork author has write access. The gate reads the comment from the API, checks the commenter's permission, and authorizes the PR head only when it is the named sha. Another head is refused (`stale_ok_to_test`), and a comment with no sha is refused (`missing_sha`). The gate uses no timing. The `ok-to-test` label no longer starts e2e.
-- **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports the `behaviour` and `playback` check runs on the authorized sha. The behaviour/playback jobs run on the PR-head checkout with `contents: read` and `id-token: write` only.
+- **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports the `behaviour`, `playback`, and `forgejo-behaviour` check runs on the authorized sha. The behaviour/playback jobs run on the PR-head checkout with `contents: read` and `id-token: write` only. The `forgejo-behaviour` job runs on the PR-head checkout with `contents: read` only.
 
 **Limitations of the gate:**
 
@@ -290,8 +298,10 @@ updates keep the Semgrep version and `uv.lock` together; weekly lock
 maintenance refreshes transitive dependencies, and Semgrep updates stay out of
 automerge.
 
-The pre-commit hook scans changed files of all types, except paths matched by
-its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's full-directory
+The pre-commit hook scans only changed Go files (`types: [go]`), except paths
+matched by its `exclude:` expression in `.pre-commit-config.yaml`. When a commit
+contains no Go files, pre-commit skips the hook without preparing the ruleset or
+Semgrep environment. Semgrep's full-directory
 scan in CI honors `.semgrepignore`, which excludes Go, Python, JavaScript, and
 TypeScript test and spec files plus synthetic fixtures. Explicit file arguments
 bypass it, so keep the hook expression aligned with that file. CI scans in a

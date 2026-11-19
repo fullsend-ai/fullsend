@@ -214,8 +214,15 @@ if your scripts used them.
 (`vertex-wif` or `openai-api-key`; `openai-wif` is GitHub only and is
 rejected for GitLab projects). It can be set under `defaults`, in the
 `gitlab` section, or on the project's entry. There is no default: when the
-manifest does not provide a selection, `repos install` fails before
-changing the project. See
+manifest does not provide a selection and no complete `inference.gateway`
+block applies, `repos install` fails before changing the project. A
+project that routes inference through a complete `inference.gateway` block
+needs no `inference.auth`. On GitLab the gateway route must use
+`auth: api-key`, because the `oidc` mode is GitHub only and is rejected for a
+gateway-only project. Set `FULLSEND_INFERENCE_GATEWAY_API_KEY` as a masked,
+protected CI/CD variable available to all environments (not a file-type
+variable) before `repos install`; install does not write it. See
+[Inference gateway route](../../cli/repos.md#inference-gateway-route) and
 [Repository management § Inference authentication](repo-management.md#inference-authentication).
 
 For an installation without Vertex credentials, run
@@ -2110,12 +2117,15 @@ Confirm:
   starting an agent pipeline. An edited comment on an issue or merge
   request is ignored the same way: the job logs
   `webhook: ignoring note edit on ...` and succeeds without dispatching.
-  A failed dispatcher job means the payload
-  was rejected, not ignored. Typical causes are a label change the API
-  re-fetch contradicts or cannot tie to the acting user, a stale or
-  replayed event, or an unsupported action such as a merge request edit
-  or an issue reopen. Nothing is dispatched for a rejected payload, and
-  the job log names the check that failed.
+  A merge request update is ignored too. An edit or push logs
+  `ignoring merge request !N update without changes.labels`, and a label
+  change logs `ignoring merge request !N label change`, because merge
+  request labels do not dispatch agents. A failed dispatcher job means the
+  payload was rejected, not ignored. Typical causes are a label change the
+  API re-fetch contradicts or cannot tie to the acting user, a malformed
+  label change, a stale or replayed event, or an unsupported action such
+  as an issue or merge request reopen. Nothing is dispatched for a
+  rejected payload, and the job log names the check that failed.
 * **Role identities** — On instances with project service accounts, a fresh
   install shows `fullsend-poller`, `fullsend-analyst`, and `fullsend-coder`
   (plus any `fullsend-role-*` accounts) under Project information → Members

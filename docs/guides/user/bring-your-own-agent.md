@@ -60,6 +60,11 @@ Next:
    ```
 
    This runs the real sandbox and prints the comment instead of posting it.
+   The generated post-script also treats `FULLSEND_DRY_RUN=1` as a dry run
+   when `POST_LINT_DOCS_DRY_RUN` is unset or empty. `fullsend run` sets
+   `FULLSEND_DRY_RUN=1` when the input source is `external`, from `input_source: external` in the
+   harness or `FULLSEND_INPUT_SOURCE=external` in the environment (see
+   [Harness Field Reference § `input_source`](../../reference/harness-reference.md#field-details)).
    A run that finds nothing to report ends like this:
 
    ```text
@@ -233,6 +238,7 @@ you would add or change it by hand.
 | `config.yaml` `agents:` entry | `name:`, `source:` | always, unless `--no-register` | `<name>` / `harness/<name>.yaml` | — |
 | `config.yaml` `agents:` entry | `runtime:` | only when a runtime is given | `--runtime` / spec `runtime` | — |
 | `config.yaml` `agents:` entry | `model:`, `effort:`, `subagents:` | never — `agent set` writes these, not `agent new` | `fullsend agent set` | per-agent tuning after generation |
+| `config.yaml` `agents:` entry | `harness:` | never | edit `config.yaml` | changes harness fields without a `base:` harness ([ADR 0162](../../ADRs/0162-agent-entries-may-carry-harness-overrides.md)) |
 
 ## Troubleshooting
 

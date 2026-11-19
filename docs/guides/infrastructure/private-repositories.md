@@ -24,13 +24,14 @@ The [Jira integration](../user/jira-integration.md) runs agents in the
 repository where fullsend is installed. A run that starts from a Jira issue
 reads that issue's title, description, comments, and other fields, including
 custom fields. By default (`artifacts` level `all`), the run artifact holds
-the run's `output/` directory. These JSONL files in the artifact record what
-the agent read:
+the run's `output/` directory. These files in the artifact record what the
+agent read:
 
 | File | Contents |
 |------|----------|
 | `output.jsonl` | The raw conversation stream for each iteration, including tool results such as Jira API responses |
 | `transcripts/*.jsonl` | The agent session transcripts for each iteration |
+| `agent-stderr.log` | The agent CLI's stderr for each iteration, as plain text, written only at progress level `quiet` |
 | `run-telemetry.jsonl` | Run spans, which carry conversation content when content capture is on |
 
 On a public GitHub repository, any signed-in GitHub user can download this
@@ -45,8 +46,12 @@ for the levels and how to check the result. The setting is defined by
 [ADR 0161](../../ADRs/0161-repo-config-limits-run-artifact-content.md).
 
 That setting does not cover everything. Agents can also quote Jira text in
-pull requests, commits, and workflow logs on the code host. If that text must
-stay confidential, use a private repository. The broader risk of private
+job logs, pull requests, and commits on the code host. To keep Jira text out
+of the live job log, set `progress.by_source.jira: quiet` in
+`.fullsend/config.yaml` (see
+[Keep Jira text out of the job log](../user/run-artifacts-and-private-data.md#keep-jira-text-out-of-the-job-log)).
+Pull requests and commits are not covered, so if that text must stay
+confidential, use a private repository. The broader risk of private
 content crossing into public places is tracked in
 [#1189](https://github.com/fullsend-ai/fullsend/issues/1189).
 

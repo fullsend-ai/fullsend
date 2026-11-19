@@ -6,7 +6,10 @@ import "io"
 // surfaces errors in operator-facing logs (e.g. GitHub Actions annotations).
 // Implementations are runtime-specific (Claude stream-json today).
 type TranscriptHandler interface {
-	ExtractTranscripts(sandboxName, agentLabel, outputDir string) error
+	// ExtractTranscripts copies the transcripts into outputDir. At the
+	// quiet progress level (ADR 0163) it prints counts only, never a file
+	// name or copy error.
+	ExtractTranscripts(sandboxName, agentLabel, outputDir, progressVerbosity string) error
 	ExtractDebugLog(sandboxName, localPath, debug string) error
 	ParseTranscriptErrors(transcriptDir string) []TranscriptError
 	// ParseTranscriptFile parses a single JSONL transcript or output file

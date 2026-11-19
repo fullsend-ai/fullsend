@@ -43,8 +43,9 @@ The CI job reports failures independently. A failing check blocks merges only
 when the branch ruleset requires it; the main ruleset will require Semgrep after
 this workflow merges.
 
-The pre-commit hook scans changed files of all types, except paths matched by
-its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's directory
+The pre-commit hook scans only changed Go files (`types: [go]`), except paths
+matched by its `exclude:` expression in `.pre-commit-config.yaml`. Commits with
+no Go files skip the hook. Semgrep's directory
 scan in CI honors `.semgrepignore`; explicit paths passed to Semgrep bypass
 that file, so keep the pre-commit expression aligned with `.semgrepignore`.
 Both exclude `*_test.*` and `test_*.py` files, `test/` and `tests/` directories,

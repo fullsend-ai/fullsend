@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v2/index.schema.json",
+  "title": "EntityContextSnapshotIndex",
+  "type": "object",
+  "required": ["schema_version", "filter_version", "collection_profile", "filter", "entity", "scopes", "files", "records", "gaps"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "filter_version": { "type": "string", "minLength": 1 },
+    "collection_profile": { "$ref": "common.schema.json#/$defs/record_key" },
+    "filter": {
+      "allOf": [
+        { "$ref": "#/$defs/filter" },
+        { "properties": { "status": { "enum": ["unchanged", "modified", "truncated"] } } }
+      ]
+    },
+    "entity": {
+      "type": "object",
+      "required": ["kind", "id", "source_id", "source"],
+      "properties": {
+        "kind": { "$ref": "common.schema.json#/$defs/entity_kind" },
+        "id": {
+          "$ref": "common.schema.json#/$defs/canonical_entity_id",
+          "description": "Canonical fullsend entity ID; same value as Normalized entity v1 entity.id and an input to every record key."
+        },
+        "source_id": {
+          "$ref": "common.schema.json#/$defs/structural_id",
+          "description": "Immutable provider entity ID; same value as Normalized entity v1 entity.source_id."
+        },
+        "source": { "$ref": "common.schema.json#/$defs/source" },
+        "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      },
+      "allOf": [{ "$ref": "common.schema.json#/$defs/entity_identity_rules" }],
+      "additionalProperties": false
+    },
+    "scopes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/scope_status" },
+      "allOf": [
+        { "contains": { "properties": { "scope": { "const": "entity" } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "scope": { "const": "labels" } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "scope": { "const": "comments" } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "scope": { "const": "agent_runs" } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "scope": { "const": "actors" } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "scope": { "const": "threads" } } }, "minContains": 0, "maxContains": 1 },
+        { "contains": { "properties": { "scope": { "const": "reviews" } } }, "minContains": 0, "maxContains": 1 },
+        { "contains": { "properties": { "scope": { "const": "checks" } } }, "minContains": 0, "maxContains": 1 },
+        { "contains": { "properties": { "scope": { "const": "check_logs" } } }, "minContains": 0, "maxContains": 1 }
+      ],
+      "description": "Exactly one row for each scope applicable to the entity kind, sorted by scope. Distinguishes a complete empty scope from one that was not loaded, is unsupported, is partial, or failed."
+    },
+    "files": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/file" }
+    },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/record" }
+    },
+    "gaps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/gap" },
+      "description": "At most one row per (scope, code) pair; producers aggregate counts before canonical serialization and sort by scope then code."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "entity": { "properties": { "kind": { "const": "work_item" } }, "required": ["kind"] } },
+        "required": ["entity"]
+      },
+      "then": {
+        "properties": {
+          "scopes": { "items": { "properties": { "scope": { "enum": ["entity", "labels", "comments", "agent_runs", "actors"] } } } },
+          "records": { "items": { "properties": { "kind": { "enum": ["entity", "comment"] } } } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "entity": { "properties": { "kind": { "const": "conversation" } }, "required": ["kind"] } },
+        "required": ["entity"]
+      },
+      "then": {
+        "properties": {
+          "scopes": {
+            "items": { "properties": { "scope": { "enum": ["entity", "labels", "comments", "threads", "agent_runs", "actors"] } } },
+            "contains": { "properties": { "scope": { "const": "threads" } } }
+          },
+          "records": { "items": { "properties": { "kind": { "enum": ["entity", "comment"] } } } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "entity": { "properties": { "kind": { "const": "change_proposal" } }, "required": ["kind"] } },
+        "required": ["entity"]
+      },
+      "then": {
+        "properties": {
+          "scopes": {
+            "allOf": [
+              { "contains": { "properties": { "scope": { "const": "threads" } } } },
+              { "contains": { "properties": { "scope": { "const": "reviews" } } } },
+              { "contains": { "properties": { "scope": { "const": "checks" } } } },
+              { "contains": { "properties": { "scope": { "const": "check_logs" } } } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": { "source": { "properties": { "system": { "const": "github" } }, "required": ["system"] } },
+            "required": ["source"]
+          }
+        },
+        "required": ["entity"]
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "properties": {
+                "id": { "$ref": "common.schema.json#/$defs/github_node_id" },
+                "actor": {
+                  "properties": {
+                    "id": {
+                      "oneOf": [
+                        { "$ref": "common.schema.json#/$defs/github_node_id" },
+                        { "type": "null" }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "filter": {
+      "type": "object",
+      "required": ["status", "findings"],
+      "properties": {
+        "status": { "enum": ["unchanged", "modified", "truncated", "rejected"] },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code", "count"],
+            "properties": {
+              "code": { "$ref": "common.schema.json#/$defs/finding_code" },
+              "count": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "scope_status": {
+      "type": "object",
+      "required": ["scope", "status"],
+      "properties": {
+        "scope": { "$ref": "common.schema.json#/$defs/scope" },
+        "status": {
+          "enum": ["complete", "partial", "not_loaded", "unsupported", "failed"],
+          "description": "Same vocabulary as Normalized entity v1 coverage status, without unknown."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "scope": { "const": "entity" } }, "required": ["scope"] },
+          "then": { "properties": { "status": { "const": "complete" } } }
+        },
+        {
+          "if": { "properties": { "scope": { "const": "labels" } }, "required": ["scope"] },
+          "then": { "properties": { "status": { "enum": ["complete", "partial", "failed"] } } }
+        },
+        {
+          "if": { "properties": { "scope": { "const": "actors" } }, "required": ["scope"] },
+          "then": { "properties": { "status": { "enum": ["complete", "failed"] } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "file": {
+      "type": "object",
+      "required": ["path", "role", "media_type", "bytes", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(collection[.]json|entity/metadata[.]json|records/([0-9]{8}T[0-9]{15}Z)-[0-9a-f]{64}[.]md|threads/[0-9a-f]{64}[.]order|views/(timeline|unresolved-review)[.]order|views/reviews/[0-9a-f]{64}[.]order|relations/(reviews|threads)[.]json|history/agent-runs[.]json|checks/[0-9a-f]{64}/(metadata[.]json|log[.]txt)|state/(actors|threads)[.]json)$"
+        },
+        "role": {
+          "enum": ["collection", "entity_metadata", "entity_record", "comment_record", "review_record", "thread_order", "timeline_view", "unresolved_review_view", "review_view", "reviews", "threads", "agent_runs", "check_metadata", "check_log", "actor_state", "thread_state"]
+        },
+        "media_type": {
+          "enum": ["application/json", "text/markdown", "text/plain"]
+        },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "common.schema.json#/$defs/record_key" },
+        "filter": {
+          "allOf": [
+            { "$ref": "#/$defs/filter" },
+            { "properties": { "status": { "enum": ["unchanged", "modified", "truncated"] } } }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "role": { "enum": ["collection", "entity_metadata", "reviews", "threads", "agent_runs", "check_metadata", "actor_state", "thread_state"] } }, "required": ["role"] },
+          "then": { "properties": { "media_type": { "const": "application/json" } } }
+        },
+        {
+          "if": { "properties": { "role": { "enum": ["entity_record", "comment_record", "review_record"] } }, "required": ["role"] },
+          "then": { "properties": { "media_type": { "const": "text/markdown" } } }
+        },
+        {
+          "if": { "properties": { "role": { "enum": ["thread_order", "timeline_view", "unresolved_review_view", "review_view", "check_log"] } }, "required": ["role"] },
+          "then": { "properties": { "media_type": { "const": "text/plain" } } }
+        },
+        {
+          "if": { "properties": { "role": { "enum": ["entity_metadata", "reviews", "threads", "agent_runs", "check_metadata", "check_log", "actor_state"] } }, "required": ["role"] },
+          "then": { "required": ["filter"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "gap": {
+      "type": "object",
+      "required": ["scope", "code", "usability", "count"],
+      "properties": {
+        "scope": { "$ref": "common.schema.json#/$defs/scope" },
+        "code": { "enum": ["profile_bound", "history_unavailable", "authorization_failed", "fetch_failed", "source_too_large", "invalid_metadata", "unsafe_content"] },
+        "usability": { "enum": ["partial", "unusable"] },
+        "count": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "code": { "enum": ["profile_bound", "history_unavailable"] } }, "required": ["code"] },
+          "then": { "properties": { "usability": { "const": "partial" } } },
+          "else": { "properties": { "usability": { "const": "unusable" } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "required": ["kind", "id", "record_key", "created_at", "filter"],
+      "properties": {
+        "kind": { "enum": ["entity", "comment", "review", "check"] },
+        "id": {
+          "$ref": "common.schema.json#/$defs/structural_id",
+          "description": "Immutable source record ID; equals entity.source_id for the entity record, as for the Normalized entity v1 body action."
+        },
+        "record_key": { "$ref": "common.schema.json#/$defs/record_key" },
+        "content_path": { "type": "string", "pattern": "^records/[0-9]{8}T[0-9]{15}Z-[0-9a-f]{64}[.]md$" },
+        "metadata_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/metadata[.]json$" },
+        "log_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/log[.]txt$" },
+        "actor": {
+          "$ref": "common.schema.json#/$defs/actor_ref",
+          "description": "Source-authenticated current-revision actor, as the Normalized entity v1 action actor."
+        },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "revised_at": {
+          "$ref": "common.schema.json#/$defs/timestamp",
+          "description": "Current revision time, as the Normalized entity v1 action revised_at."
+        },
+        "filter": { "$ref": "#/$defs/filter" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "check" } }, "required": ["kind"] },
+          "then": { "not": { "required": ["actor"] } },
+          "else": { "required": ["actor"] }
+        },
+        {
+          "if": { "properties": { "filter": { "properties": { "status": { "const": "rejected" } } } } },
+          "then": { "not": { "anyOf": [{ "required": ["content_path"] }, { "required": ["metadata_path"] }, { "required": ["log_path"] }] } },
+          "else": {
+            "if": { "properties": { "kind": { "const": "check" } } },
+            "then": {
+              "required": ["metadata_path"],
+              "not": { "required": ["content_path"] }
+            },
+            "else": {
+              "required": ["content_path"],
+              "not": { "anyOf": [{ "required": ["metadata_path"] }, { "required": ["log_path"] }] }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

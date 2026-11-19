@@ -56,6 +56,10 @@ var validConfigAgentName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // tombstones an inherited entry (per-key layered merge, like
 // ConfigModelAliases). Values are ValidModelRef through the repo alias
 // table. Keys must match ValidSubagentKey.
+//
+// Harness is a partial harness composed on the agent's harness as a child
+// layer (ADR 0162); see AgentHarness. The keyed merge keeps a parent
+// layer's block as a layer of its own beneath the overlay's.
 type AgentEntry struct {
 	Name      string             `yaml:"name,omitempty"`
 	Source    string             `yaml:"source,omitempty"`
@@ -66,12 +70,47 @@ type AgentEntry struct {
 	Effort    string             `yaml:"effort,omitempty"`
 	Subagents map[string]*string `yaml:"subagents,omitempty"`
 	Trigger   string             `yaml:"trigger,omitempty"`
+	Harness   *AgentHarness      `yaml:"harness,omitempty"`
+
+	// inheritedHarness holds the harness: blocks of parent config layers,
+	// outermost first, below Harness. Set only by the keyed merge.
+	inheritedHarness []*AgentHarness `yaml:"-"`
 }
 
 // HasSettings reports whether the entry tunes runtime, model, effort,
-// subagents or trigger.
+// subagents, trigger or harness fields.
 func (a AgentEntry) HasSettings() bool {
-	return a.Runtime != "" || a.Model != "" || a.Effort != "" || len(a.Subagents) > 0 || strings.TrimSpace(a.Trigger) != ""
+	return a.Runtime != "" || a.Model != "" || a.Effort != "" || len(a.Subagents) > 0 || strings.TrimSpace(a.Trigger) != "" || len(a.HarnessBlocks()) > 0
+}
+
+// HarnessBlocks returns the entry's non-empty harness: blocks in
+// composition order: the blocks of parent config layers (config.base.yaml
+// first), then the entry's own.
+func (a AgentEntry) HarnessBlocks() []*AgentHarness {
+	var blocks []*AgentHarness
+	for _, h := range append(slices.Clone(a.inheritedHarness), a.Harness) {
+		if !h.IsEmpty() {
+			blocks = append(blocks, h)
+		}
+	}
+	return blocks
+}
+
+// HarnessBlocksFor returns the harness: blocks of name's entry in an
+// effective (merged) agent list, the entry AgentSettingsFor reads: nil
+// when there is none or it is disabled, since a disabled agent does not
+// run (ADR 0162).
+func HarnessBlocksFor(agents []AgentEntry, name string) []*AgentHarness {
+	entry, ok := AgentSettingsFor(agents, name)
+	if !ok || !entry.IsEnabled() {
+		return nil
+	}
+	return entry.HarnessBlocks()
+}
+
+// harnessSets reports whether any of the entry's harness: blocks sets key.
+func (a AgentEntry) harnessSets(key string) bool {
+	return slices.ContainsFunc(a.HarnessBlocks(), func(h *AgentHarness) bool { return h.Sets(key) })
 }
 
 // IsOverrideOnly reports whether the entry only tunes an agent defined
@@ -730,8 +769,8 @@ func EnsureDefaultAllowedRemoteResources(existing []string) []string {
 	return result
 }
 
-// validateAgentSettings checks an entry's runtime, model, effort and
-// subagents values.
+// validateAgentSettings checks an entry's runtime, model, effort,
+// subagents and trigger values and its harness: blocks.
 func validateAgentSettings(i int, entry AgentEntry) error {
 	label := entry.Name
 	if label == "" {
@@ -748,6 +787,21 @@ func validateAgentSettings(i int, entry AgentEntry) error {
 	}
 	if err := celtrigger.Validate(entry.Trigger); err != nil {
 		return fmt.Errorf("agents[%d] (%s): invalid trigger: %w", i, label, err)
+	}
+	for _, h := range entry.HarnessBlocks() {
+		if err := h.Validate(); err != nil {
+			return fmt.Errorf("agents[%d] (%s): %w", i, label, err)
+		}
+	}
+	// One setting, one control (ADR 0162 Decision 6): setting model, effort
+	// or trigger both on the entry and in a harness: block fails rather
+	// than letting one silently win.
+	for _, field := range []struct{ key, value string }{
+		{"model", entry.Model}, {"effort", entry.Effort}, {"trigger", strings.TrimSpace(entry.Trigger)},
+	} {
+		if field.value != "" && entry.harnessSets(field.key) {
+			return fmt.Errorf("agents[%d] (%s): %s is set both on the entry and in its harness: block; set it in one place", i, label, field.key)
+		}
 	}
 	for key, val := range entry.Subagents {
 		if !ValidSubagentKey(key) {
@@ -769,6 +823,18 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 	return validateAgentEntries(agents, allowlist, true, true)
 }
 
+// ValidateAgentEntriesAt is ValidateAgentEntries for a subset of a
+// config's agents list: positions[i] is agents[i]'s index in the full
+// list, and errors report it as agents[N] so they point at the entry in
+// config.yaml rather than its index within the subset. positions must
+// have one element per entry.
+func ValidateAgentEntriesAt(agents []AgentEntry, positions []int, allowlist []string) error {
+	if len(positions) != len(agents) {
+		return fmt.Errorf("internal error: %d agent positions for %d agent entries", len(positions), len(agents))
+	}
+	return validateAgentEntriesAt(agents, positions, allowlist, true, true)
+}
+
 // validateAgentEntries is ValidateAgentEntries with two checks made
 // conditional for repos.yaml config overlay validation (ADR 0122), where
 // the resolved allowlist or the parent's registered agents may not be
@@ -787,6 +853,13 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 // self-contained agent list (a per-repo config with its full parent
 // chain resolved).
 func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowlist, requireBuiltinName bool) error {
+	return validateAgentEntriesAt(agents, nil, allowlist, enforceAllowlist, requireBuiltinName)
+}
+
+// validateAgentEntriesAt is validateAgentEntries reporting agents[k] as
+// agents[positions[k]] when positions is non-nil (see
+// ValidateAgentEntriesAt).
+func validateAgentEntriesAt(agents []AgentEntry, positions []int, allowlist []string, enforceAllowlist, requireBuiltinName bool) error {
 	// seen tracks agent names for duplicate detection. Each state
 	// (enabled/disabled) is tracked independently so that exactly one
 	// disable-then-enable or enable-then-disable pair is accepted while
@@ -796,7 +869,12 @@ func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowl
 		seenDisabled bool
 	}
 	seen := make(map[string]seenState, len(agents))
-	for i, entry := range agents {
+	for k, entry := range agents {
+		// i is the index errors report for the entry.
+		i := k
+		if positions != nil {
+			i = positions[k]
+		}
 		// A suppression-only entry (enabled: false, no source) is valid —
 		// it exists solely to disable a scaffold default by name.
 		if entry.Source == "" && !entry.IsEnabled() {
@@ -831,7 +909,7 @@ func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowl
 			// merge (the merged entry carries the parent's source), so by the
 			// time an entry reaches validation without one it must be built in.
 			if !entry.HasSettings() {
-				return fmt.Errorf("agents[%d]: enabled agent entry must have a source (or, to tune a built-in agent, a name plus runtime, model, effort, subagents or trigger)", i)
+				return fmt.Errorf("agents[%d]: enabled agent entry must have a source (or, to tune a built-in agent, a name plus runtime, model, effort, subagents, trigger or harness)", i)
 			}
 			if entry.Name == "" {
 				return fmt.Errorf("agents[%d]: agent entry without a source must name the agent it tunes", i)
@@ -1004,6 +1082,10 @@ type perRepoConfig struct {
 	// content overrides the parent layer; by_source merges per key.
 	Artifacts *ArtifactsConfig `yaml:"artifacts,omitempty"`
 
+	// Progress limits what the live progress log shows (ADR 0163).
+	// verbosity overrides the parent layer; by_source merges per key.
+	Progress *ProgressConfig `yaml:"progress,omitempty"`
+
 	// TraceContextBlock is the trace_context block (ADR 0154). It backs
 	// the TraceContext() accessor and is named distinctly from it because
 	// Go forbids a field and method sharing a name on the same type.
@@ -1143,6 +1225,7 @@ type perRepoConfigMarshal struct {
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 	Models                 *ModelsConfig             `yaml:"models,omitempty"`
 	Artifacts              *ArtifactsConfig          `yaml:"artifacts,omitempty"`
+	Progress               *ProgressConfig           `yaml:"progress,omitempty"`
 	TraceContext           *TraceContextConfig       `yaml:"trace_context,omitempty"`
 }
 
@@ -1174,6 +1257,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	}
 	if !c.Artifacts.IsZero() {
 		h.Artifacts = c.Artifacts
+	}
+	if !c.Progress.IsZero() {
+		h.Progress = c.Progress
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -1314,6 +1400,9 @@ func (c *perRepoConfig) validateLocalFields() error {
 	if err := validateArtifacts(c.Artifacts); err != nil {
 		return err
 	}
+	if err := validateProgress(c.Progress); err != nil {
+		return err
+	}
 	if err := ValidateTraceContext(c.TraceContextBlock); err != nil {
 		return err
 	}
@@ -1379,6 +1468,16 @@ func ValidateMergedManaged(w PerRepoConfigWriter) error {
 	}
 	if err := c.validateLocalFields(); err != nil {
 		return err
+	}
+	// The merged layers are written as one config.yaml, which holds one
+	// harness: block per entry. Two blocks cannot be folded into one
+	// without changing how they compose (a parent block's overlays would
+	// apply above the child's top-level values), so only one managed layer
+	// may set an agent's block.
+	for _, a := range c.Agents {
+		if len(a.inheritedHarness) > 0 {
+			return fmt.Errorf("agents entry %q: harness: is set in more than one repos.yaml config layer (defaults, forge section, repository); set it in one of them", a.DerivedName())
+		}
 	}
 	return validateAgentEntries(c.AgentEntries(), EffectiveAllowedResources(c), true, false)
 }

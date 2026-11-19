@@ -594,7 +594,8 @@ The e2e tests mint short-lived GitHub App installation tokens via the central to
 **Do not** increase e2e or behaviour **suite** timeouts without **explicit human
 authorization** in the current session (or an issue/PR comment that clearly
 authorizes that bump). Suite ceilings are job `timeout-minutes` in
-`.github/workflows/e2e.yml` for the `behaviour` / `playback` jobs (90 minutes,
+`.github/workflows/e2e.yml` for the `behaviour` / `playback` /
+`forgejo-behaviour` jobs (90 minutes,
 sized so one infrastructure-classified retry of a 45-minute attempt fits; the
 same applies to the `timeout-minutes` of any job that runs `playback-test`), the
 per-attempt `go test -timeout` values in the `behaviour-test` / `playback-test`
@@ -696,7 +697,12 @@ entry, and the symptom only appears on user repositories after
   `FULLSEND_DISPATCH_SECRET` through `seedGitLabPollState`, not through
   `managedVarsForForge`. Anything added by a similar out-of-band path
   needs a cleanup entry too, and needs naming in the parity test, which
-  cannot discover it.
+  cannot discover it. On GitHub, `convergeTraceSigningKey` writes
+  `FULLSEND_TRACE_SIGNING_KEY` and `FULLSEND_TRACE_SIGNING_KEY_ID`
+  ([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md))
+  outside both builders; `uninstallSecrets` and `uninstallVariables` delete
+  them, and the parity tests name them in `installSideSecretExtras` and
+  `installSideExtras`.
 
 ### The invariant is one-way
 
@@ -704,10 +710,10 @@ Everything install writes must be deleted on uninstall. The reverse is
 false by design: the uninstall lists deliberately retain names install no
 longer writes, so repositories installed by earlier versions are still
 cleaned up — `gitlabRetiredLegacyVars` and the `forge.VarLegacy*` names.
-The uninstall lists also carry the trace signing key,
+The GitLab uninstall list also carries the trace signing key,
 `FULLSEND_TRACE_SIGNING_KEY`
 ([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)),
-which install does not write.
+which install does not write on GitLab.
 Two omissions are also deliberate and documented where they are defined:
 `gitlabUninstallVars` excludes the legacy shared forge token, and
 `gitlabUninstallSecrets` excludes the unprefixed `OPENAI_API_KEY`, which

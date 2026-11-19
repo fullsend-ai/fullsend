@@ -22,6 +22,9 @@ func NewRepoPoolExternalMint(pool PoolConfig) (Driver, error) {
 	if err := pool.validate(); err != nil {
 		return nil, fmt.Errorf("external mint factory: %w", err)
 	}
+	if err := requireGitHubAccess(); err != nil {
+		return nil, fmt.Errorf("external mint factory: %w", err)
+	}
 	mintURL := os.Getenv("FULLSEND_MINT_URL")
 	if mintURL == "" {
 		return nil, fmt.Errorf("external mint: FULLSEND_MINT_URL is required")

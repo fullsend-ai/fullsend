@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -262,7 +263,7 @@ func fakeOpenshellClaude(t *testing.T, logPath string, streams map[string]string
 		if strings.Contains(stream, `"is_error":true`) {
 			code = "1"
 		}
-		fmt.Fprintf(&cases, "  *\"--model '%s'\"*) cat '%s'; exit %s ;;\n", model, f, code)
+		fmt.Fprintf(&cases, "  *\"--model '%s'\"*) %scat '%s'; exit %s ;;\n", model, fakeAgentStderrArm, f, code)
 	}
 	script := "#!/bin/sh\necho \"$*\" >> '" + logPath + "'\ncase \"$*\" in\n" + cases.String() + "esac\nexit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
@@ -511,14 +512,20 @@ func TestClaudeRemoveTranscript(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	var out strings.Builder
-	ClaudeRuntime{}.claudeRemoveTranscript("fs-rm", "0b7b6c8a-930e-4750-89b9-3129edaa5ccf", time.Second, ui.New(&out))
+	ClaudeRuntime{}.claudeRemoveTranscript("fs-rm", "0b7b6c8a-930e-4750-89b9-3129edaa5ccf", time.Second, "", ui.New(&out))
 	assert.Contains(t, out.String(), "Could not remove the abandoned attempt's transcript")
 	assert.Contains(t, out.String(), "permission denied")
 
+	// At quiet the sandbox's stderr stays out of the job log.
+	out.Reset()
+	ClaudeRuntime{}.claudeRemoveTranscript("fs-rm", "0b7b6c8a-930e-4750-89b9-3129edaa5ccf", time.Second, config.ProgressVerbosityQuiet, ui.New(&out))
+	assert.Contains(t, out.String(), "Could not remove the abandoned attempt's transcript")
+	assert.NotContains(t, out.String(), "permission denied")
+
 	require.NoError(t, os.Remove(logPath))
 	out.Reset()
-	ClaudeRuntime{}.claudeRemoveTranscript("fs-rm", "x; rm -rf /", time.Second, ui.New(&out))
-	ClaudeRuntime{}.claudeRemoveTranscript("fs-rm", "", time.Second, ui.New(&out))
+	ClaudeRuntime{}.claudeRemoveTranscript("fs-rm", "x; rm -rf /", time.Second, "", ui.New(&out))
+	ClaudeRuntime{}.claudeRemoveTranscript("fs-rm", "", time.Second, "", ui.New(&out))
 	assert.NoFileExists(t, logPath, "an invalid session id runs nothing")
 	assert.Empty(t, out.String())
 }
