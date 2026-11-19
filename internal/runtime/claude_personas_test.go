@@ -182,6 +182,39 @@ func TestClaudePersonas_AgentWithoutAgentToolDispatchesNothing(t *testing.T) {
 	assert.Equal(t, agent, string(data))
 }
 
+func TestClaudePersonas_RestrictedAgentSpecLimitsPersonas(t *testing.T) {
+	skill := claudePersonaSkill(t)
+	cfg := map[string]*string{"correctness": strp("haiku")}
+
+	// Agent(Explore) leaves out both personas: Claude Code would refuse to
+	// dispatch them. correctness is named by the config, so that is fatal.
+	restricted := "---\nname: review\ntools: Agent(Explore), Read\n---\nbody\n"
+	_, _, err := claudePersonas(claudePersonaInput(skill, cfg), []byte(restricted), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `persona "correctness"`)
+	assert.Contains(t, err.Error(), "restrict Agent(...)")
+
+	// Unreferenced personas outside the list are left out with a warning;
+	// the ones the list names are registered and advertised.
+	partial := "---\nname: review\ntools: Agent(Explore, correctness), Read\n---\nbody\n"
+	files, data, err := claudePersonas(claudePersonaInput(skill, cfg), []byte(partial), false)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, "correctness", files[0].Name)
+	assert.Contains(t, string(data), "Registered sub-agent personas: correctness.")
+
+	// The legacy Task name is restricted the same way.
+	legacy := "---\nname: review\ntools: Task(style), Read\n---\nbody\n"
+	_, _, err = claudePersonas(claudePersonaInput(skill, cfg), []byte(legacy), false)
+	require.Error(t, err)
+
+	// A bare Agent or Task alongside a restricted spec leaves dispatch open.
+	open := "---\nname: review\ntools: Agent(Explore), Task, Read\n---\nbody\n"
+	files, _, err = claudePersonas(claudePersonaInput(skill, cfg), []byte(open), false)
+	require.NoError(t, err)
+	assert.Len(t, files, 2)
+}
+
 func TestClaudePersonas_NoPersonasDiscovered(t *testing.T) {
 	files, data, err := claudePersonas(claudePersonaInput(t.TempDir(), map[string]*string{"default": strp("haiku")}), []byte(claudeTestAgent), false)
 	require.NoError(t, err)

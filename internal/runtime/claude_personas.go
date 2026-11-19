@@ -224,6 +224,8 @@ func resolveClaudePersonas(
 		fmt.Fprintf(os.Stderr, "Warning: persona %s skipped: %s\n", sk.Path, sk.Reason)
 	}
 
+	agentAllowed, agentRestricted := claudeAgentDispatchAllowlist(parent.Frontmatter)
+
 	var out []claudePersonaFile
 	for _, p := range personas {
 		referenced := subagentsCfg[p.Name] != nil || (defaultModel != "" && p.Model == "")
@@ -233,6 +235,13 @@ func resolveClaudePersonas(
 			}
 			fmt.Fprintf(os.Stderr, "Warning: persona %q skipped: %s\n", p.Name, reason)
 			return nil
+		}
+
+		if agentRestricted && !agentAllowed[p.Name] {
+			if err := skip("the agent's tools: restrict Agent(...) to other sub-agent types, so Claude Code would refuse to dispatch it; add it to the agent's Agent(...) list"); err != nil {
+				return nil, err
+			}
+			continue
 		}
 
 		if len(p.BashAllowlist) > 0 {
@@ -349,6 +358,44 @@ func claudeToolSpecsByName(frontmatter []byte) map[string]string {
 		}
 	}
 	return out
+}
+
+// claudeAgentDispatchAllowlist reports which sub-agent types the agent's
+// tools: let it dispatch. restricted is true when every Agent/Task spec
+// carries arguments, as in Agent(Explore, worker): only the named types may
+// then be dispatched. A bare Agent or Task, or no such spec at all, leaves
+// dispatch unrestricted.
+func claudeAgentDispatchAllowlist(frontmatter []byte) (allowed map[string]bool, restricted bool) {
+	var fm piAgentFrontmatter
+	if yaml.Unmarshal(frontmatter, &fm) != nil {
+		return nil, false
+	}
+	specs, err := piToolSpecs(fm.Tools)
+	if err != nil {
+		return nil, false
+	}
+	allowed = map[string]bool{}
+	for _, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		name, args := spec, ""
+		if i := strings.IndexByte(spec, '('); i >= 0 && strings.HasSuffix(spec, ")") {
+			name = strings.TrimSpace(spec[:i])
+			args = spec[i+1 : len(spec)-1]
+		}
+		if name != piAgentToolName && name != piAgentToolAlias {
+			continue
+		}
+		if strings.TrimSpace(args) == "" {
+			return nil, false
+		}
+		restricted = true
+		for _, a := range strings.Split(args, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				allowed[a] = true
+			}
+		}
+	}
+	return allowed, restricted
 }
 
 // claudePersonaAgentFile renders persona p as a Claude Code agent file: its
