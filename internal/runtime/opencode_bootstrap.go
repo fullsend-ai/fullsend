@@ -85,6 +85,9 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 		if !openCodeBashProgram.MatchString(program) {
 			return fmt.Errorf("unsupported OpenCode Bash allowlist entry %q: use bare program names containing only letters, digits, '.', '_' or '-', for example Bash(gh,jq); command arguments, paths and Claude-style patterns are not supported", program)
 		}
+		if slices.Contains(openCodeBashBuiltins, program) && !slices.Contains(openCodeBashSafeBuiltins, program) {
+			return fmt.Errorf("unsupported OpenCode Bash allowlist entry %q: Bash builtins and reserved words are restricted to %s; use an external program instead", program, strings.Join(openCodeBashSafeBuiltins, ", "))
+		}
 	}
 	agentName := input.AgentName()
 	if agentName == "" {

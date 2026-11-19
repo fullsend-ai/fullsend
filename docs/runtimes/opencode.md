@@ -129,9 +129,12 @@ example above.
   the plugin independently enforces the allowlist and rejects ambiguous shell syntax, environment
   assignments, command substitutions, shell wrappers and control flow, `&&`
   chains, redirections, and backgrounding.
-  The restricted grammar also rejects the variable-setting builtins `read`,
-  `getopts`, `mapfile`, and `readarray`, and the shell-state builtins `shopt`
-  and `ulimit`. `printf -v` and variable-writing `%n` conversions are rejected,
+  Bash builtins and reserved words are rejected at bootstrap and in the
+  restricted grammar, except for the vetted builtins `cd`, `echo`, `false`,
+  `printf`, `pwd`, and `true`. This includes variable-setting and shell-state
+  builtins and completion callbacks: `compgen -C` executes its quoted command,
+  while `complete -C` registers a command for later completion.
+  `printf -v` and variable-writing `%n` conversions are rejected,
   including attached, quoted, and length-modified forms. Give `printf` a literal
   format, including after `--`, before expanded data arguments so an expansion
   cannot become a variable-assignment option or conversion.

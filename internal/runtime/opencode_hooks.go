@@ -26,17 +26,19 @@ const openCodeSDKDir = "/usr/local/share/opencode-sdk"
 // to the plugin through a reasserted environment variable, never a sandbox file.
 // The plugin snapshots it once; nested Task sessions use the same policy.
 type openCodeHookConfig struct {
-	Dir           string                  `json:"dir"`
-	Workspace     string                  `json:"workspace"`
-	Python        string                  `json:"python"`
-	Env           map[string]string       `json:"env"`
-	Groups        []security.HookGroup    `json:"groups"`
-	Digests       map[string]string       `json:"digests"`
-	ShellHome     string                  `json:"shellHome"`
-	Tools         []string                `json:"tools"`
-	BashAllowlist []string                `json:"bashAllowlist"`
-	Permission    map[string]any          `json:"permission"`
-	Activation    *openCodeHookActivation `json:"activation,omitempty"`
+	Dir              string                  `json:"dir"`
+	Workspace        string                  `json:"workspace"`
+	Python           string                  `json:"python"`
+	Env              map[string]string       `json:"env"`
+	Groups           []security.HookGroup    `json:"groups"`
+	Digests          map[string]string       `json:"digests"`
+	ShellHome        string                  `json:"shellHome"`
+	Tools            []string                `json:"tools"`
+	BashAllowlist    []string                `json:"bashAllowlist"`
+	BashBuiltins     []string                `json:"bashBuiltins"`
+	BashSafeBuiltins []string                `json:"bashSafeBuiltins"`
+	Permission       map[string]any          `json:"permission"`
+	Activation       *openCodeHookActivation `json:"activation,omitempty"`
 }
 
 // openCodeHookActivation is a runner-held, per-iteration challenge. The
@@ -62,6 +64,7 @@ func openCodeHookPolicy(dir, workspace string, def *piAgentDef, rules []openCode
 		Dir: dir, Workspace: workspace, Env: map[string]string{},
 		Groups: []security.HookGroup{}, Digests: map[string]string{},
 		Tools: def.Tools, BashAllowlist: def.BashAllowlist,
+		BashBuiltins: openCodeBashBuiltins, BashSafeBuiltins: openCodeBashSafeBuiltins,
 		Permission: intersectPermissionRecord(record, rules),
 	}
 }
