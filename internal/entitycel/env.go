@@ -213,14 +213,19 @@ func Validate(expr string) error {
 // It returns True or False only when the known data settles the predicate,
 // and Unknown when the result depends on unresolved fields or on members a
 // partial collection may hold. Evaluation is bounded by an internal wall-clock
-// timeout and stops when ctx is cancelled, returning an error in either case;
-// both are checked while comprehensions iterate, so a predicate with no
-// comprehension is not interrupted mid-run. Callers must check ctx themselves
-// after Evaluate returns. An error — a predicate that does not compile,
+// timeout and stops when ctx is cancelled, returning an error in either case.
+// A context that is already done on entry returns its error before any
+// binding or compilation work; after that, both are checked only while
+// comprehensions iterate, so a predicate with no comprehension is not
+// interrupted mid-run. Callers must check ctx themselves after Evaluate
+// returns. An error — a predicate that does not compile,
 // a malformed entity (wrapping [ErrMalformedEntity]), or an evaluation error
 // such as reading a field of a null event — is returned with Unknown and must
 // never be read as false.
 func Evaluate(ctx context.Context, expr string, entity *normentity.Entity, event map[string]any) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Unknown, err
+	}
 	bound, err := Bind(entity)
 	if err != nil {
 		return Unknown, fmt.Errorf("%w: %w", ErrMalformedEntity, err)

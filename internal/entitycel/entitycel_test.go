@@ -395,6 +395,18 @@ func TestEvaluateStopsOnCancelledContext(t *testing.T) {
 	assert.Equal(t, Unknown, got)
 }
 
+func TestEvaluateCancelledContextSkipsSetup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// A simple predicate has no comprehension to interrupt, and a malformed
+	// entity would otherwise surface ErrMalformedEntity from binding: the
+	// context error proves nothing past the entry check ran.
+	got, err := Evaluate(ctx, `true`, nil, nil)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, ErrMalformedEntity)
+	assert.Equal(t, Unknown, got)
+}
+
 func TestPartialListValue(t *testing.T) {
 	p := newPartialList([]any{"a"}, unknownAt([]any{"labels"}))
 	assert.Equal(t, types.ListType, p.Type())
