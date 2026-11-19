@@ -2167,8 +2167,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
 	hostRepositoryDownloadDir := filepath.Join(os.TempDir(), sandboxName)
+	preserveDownloadDir := false
 	defer func() {
-		if keepSandbox {
+		if keepSandbox || preserveDownloadDir {
 			return
 		}
 		if err := forceRemoveAll(hostRepositoryDownloadDir); err != nil {
@@ -2583,17 +2584,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 8d. Host-side scan (Path A): scan the target repo's context files
 	// (CLAUDE.md, AGENTS.md, SKILL.md, etc.) before the agent processes them.
 	// The target branch may contain attacker-controlled files from a PR.
+	var preRunContextFindings []security.Finding
 	if h.SecurityEnabled() {
 		printer.StepStart("Scanning target repo context files")
-		findings := scanRepoContextFiles(hostRepositoryDir)
-		if security.HasCriticalFindings(findings) {
+		preRunContextFindings = scanRepoContextFiles(hostRepositoryDir)
+		if security.HasCriticalFindings(preRunContextFindings) {
 			if h.FailModeClosed() {
 				printer.StepFail("BLOCKED: critical injection findings in target repo context files")
 				return fmt.Errorf("target repo context scan blocked: critical injection findings")
 			}
 			printer.StepWarn("Target repo has critical injection findings (fail_mode: open)")
-		} else if len(findings) > 0 {
-			printer.StepWarn(fmt.Sprintf("Target repo context scan: %d finding(s)", len(findings)))
+		} else if len(preRunContextFindings) > 0 {
+			printer.StepWarn(fmt.Sprintf("Target repo context scan: %d finding(s)", len(preRunContextFindings)))
 		} else {
 			printer.StepDone("Target repo context files clean")
 		}
@@ -3191,7 +3193,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 9g. Synchronize sandbox changes to target repository if requested.
-	syncStatus := runTargetRepoSync(
+	syncResult := runTargetRepoSync(
 		overrides.syncTargetRepo,
 		repoExtractedOK,
 		h.ValidationLoop != nil,
@@ -3205,18 +3207,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		hostRepositoryDownloadDir,
 		hostRepositoryDir,
 		outputBase,
+		runDir,
 		runnerInjectedSyncExcludes,
 		preRunSyncManifest,
+		h.SecurityEnabled(),
+		h.FailModeClosed(),
+		preRunContextFindings,
 		printer,
 		syncTargetRepoDirFn,
 	)
-	if strings.HasPrefix(syncStatus, "synchronized") && h.SecurityEnabled() {
-		postSyncFindings := scanRepoContextFiles(hostRepositoryDir)
-		if security.HasCriticalFindings(postSyncFindings) {
-			printer.StepWarn(fmt.Sprintf("Post-sync security scan: %d critical finding(s) in synced context files; inspect before building or running tools", len(postSyncFindings)))
-		} else if len(postSyncFindings) > 0 {
-			printer.StepWarn(fmt.Sprintf("Post-sync security scan: %d finding(s) in synced context files", len(postSyncFindings)))
-		}
+	if syncResult.preserveDownloadDir {
+		preserveDownloadDir = true
 	}
 
 	// 10. Print results.
@@ -3225,6 +3226,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.KeyValue("Run directory", runDir)
 	if keepSandbox {
 		printer.KeyValue("Download directory", hostRepositoryDownloadDir)
+	} else if preserveDownloadDir {
+		printer.KeyValue("Download directory", hostRepositoryDownloadDir+" (retained because target repo sync did not complete)")
 	} else {
 		printer.KeyValue("Download directory", hostRepositoryDownloadDir+" (removed after run; use --keep-sandbox to retain)")
 	}
@@ -3238,8 +3241,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.KeyValue("Validation", "failed")
 		}
 	}
-	if syncStatus != "" {
-		printer.KeyValue("Target repo sync", syncStatus)
+	if syncResult.status != "" {
+		printer.KeyValue("Target repo sync", syncResult.status)
+	}
+	if syncResult.changesPath != "" {
+		printer.KeyValue("Synced files", syncResult.changesPath)
 	}
 	printer.Blank()
 
@@ -6271,9 +6277,121 @@ func syncOutputExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
 	return filepath.Clean(rel), true
 }
 
+// syncChanges tracks relative paths added, modified, or deleted during target
+// repository synchronization so callers can audit every write (including
+// gitignored paths that do not appear in plain `git status` / `git diff`).
+type syncChanges struct {
+	Added    []string
+	Modified []string
+	Deleted  []string
+}
+
+func (c *syncChanges) formatManifest() string {
+	if c == nil || (len(c.Added) == 0 && len(c.Modified) == 0 && len(c.Deleted) == 0) {
+		return "# no changes\n"
+	}
+	var b strings.Builder
+	writeGroup := func(prefix string, paths []string) {
+		sorted := append([]string(nil), paths...)
+		sort.Strings(sorted)
+		for _, p := range sorted {
+			b.WriteString(prefix)
+			b.WriteByte(' ')
+			b.WriteString(p)
+			b.WriteByte('\n')
+		}
+	}
+	writeGroup("A", c.Added)
+	writeGroup("M", c.Modified)
+	writeGroup("D", c.Deleted)
+	return b.String()
+}
+
+func (c *syncChanges) summary() string {
+	if c == nil {
+		return "0 added, 0 modified, 0 deleted"
+	}
+	return fmt.Sprintf("%d added, %d modified, %d deleted", len(c.Added), len(c.Modified), len(c.Deleted))
+}
+
+// targetRepoSyncResult captures the outcome of step 9g synchronization for Results
+// display and download-directory retention.
+type targetRepoSyncResult struct {
+	status              string
+	changesPath         string
+	preserveDownloadDir bool
+}
+
+type contextFindingKey struct {
+	Scanner  string
+	Name     string
+	Severity string
+	Detail   string
+	Position int
+}
+
+// diffNewContextFindings returns findings present in current that were not
+// already present in baseline (matched as a multiset by finding fields).
+func diffNewContextFindings(current, baseline []security.Finding) []security.Finding {
+	if len(current) == 0 {
+		return nil
+	}
+	baseCounts := make(map[contextFindingKey]int, len(baseline))
+	for _, f := range baseline {
+		k := contextFindingKey{
+			Scanner:  f.Scanner,
+			Name:     f.Name,
+			Severity: f.Severity,
+			Detail:   f.Detail,
+			Position: f.Position,
+		}
+		baseCounts[k]++
+	}
+	var added []security.Finding
+	for _, f := range current {
+		k := contextFindingKey{
+			Scanner:  f.Scanner,
+			Name:     f.Name,
+			Severity: f.Severity,
+			Detail:   f.Detail,
+			Position: f.Position,
+		}
+		if baseCounts[k] > 0 {
+			baseCounts[k]--
+			continue
+		}
+		added = append(added, f)
+	}
+	return added
+}
+
+// filterExcludedContextFindings drops findings for relative paths excluded from
+// synchronization (for example, runner-injected bridge files or the output dir).
+func filterExcludedContextFindings(findings []security.Finding, excludes []string) []security.Finding {
+	if len(findings) == 0 || len(excludes) == 0 {
+		return findings
+	}
+	filtered := make([]security.Finding, 0, len(findings))
+	for _, f := range findings {
+		if relPath, _, ok := strings.Cut(f.Detail, ": "); ok && isExcludedPath(relPath, excludes) {
+			continue
+		}
+		filtered = append(filtered, f)
+	}
+	return filtered
+}
+
+func isSandboxEntryUnchanged(preRunManifest map[string]string, manifestKey, srcDigest string) bool {
+	if preRunManifest == nil {
+		return false
+	}
+	recorded, ok := preRunManifest[manifestKey]
+	return ok && normalizeManifestDigest(recorded) == srcDigest
+}
+
 // syncTargetRepoDirFn is a package seam so tests can inject sync failures
 // without modifying the host filesystem permissions or failing upstream steps.
-var syncTargetRepoDirFn = syncTargetRepoDirWithPrinter
+var syncTargetRepoDirFn = syncTargetRepoDirWithReport
 
 // shouldSyncTargetRepo returns whether sandbox changes should be synchronized
 // back to the host repository. Synchronization is strictly gated: the user must
@@ -6320,43 +6438,82 @@ func syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, v
 }
 
 // runTargetRepoSync executes step 9g synchronization when requested and gated
-// OK, returning the status string for the Results summary. Sync errors emit a
-// warning instead of returning an error so the post-script gate is unaffected.
+// OK, returning the status, synced-files manifest path, and whether the download
+// directory should be retained. Sync errors emit a warning instead of returning
+// an error so the post-script gate is unaffected.
 func runTargetRepoSync(
 	syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool,
 	exitCode int, exitReason string, validatedIter, runCount int,
-	downloadDir, targetDir, outputBase string,
+	downloadDir, targetDir, outputBase, runDir string,
 	runnerInjectedExcludes []string, preRunManifest map[string]string,
+	securityEnabled, failModeClosed bool, preRunContextFindings []security.Finding,
 	printer *ui.Printer,
-	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) error,
-) string {
+	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) (*syncChanges, error),
+) targetRepoSyncResult {
 	if !syncEnabled {
-		return ""
+		return targetRepoSyncResult{}
 	}
 	shouldSync, skipReason := syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr, exitCode, exitReason, validatedIter, runCount)
 	if !shouldSync {
 		printer.StepWarn("Skipping target repository synchronization: " + skipReason)
-		return fmt.Sprintf("skipped (%s)", skipReason)
+		return targetRepoSyncResult{status: fmt.Sprintf("skipped (%s)", skipReason)}
 	}
 	if preRunManifest == nil {
 		const reason = "pre-run manifest snapshot unavailable"
 		printer.StepWarn("Skipping target repository synchronization: " + reason)
-		return fmt.Sprintf("skipped (%s)", reason)
+		return targetRepoSyncResult{status: fmt.Sprintf("skipped (%s)", reason)}
 	}
 
-	syncStart := time.Now()
-	printer.StepStart("Synchronizing sandbox changes to target repository")
 	syncExcludes := []string{".git"}
 	if rel, ok := syncOutputExcludeRel(targetDir, outputBase); ok {
 		syncExcludes = append(syncExcludes, rel)
 	}
 	syncExcludes = append(syncExcludes, runnerInjectedExcludes...)
-	if err := syncFn(downloadDir, targetDir, syncExcludes, preRunManifest, printer); err != nil {
-		printer.StepWarn("Target repository synchronization failed: " + err.Error())
-		return fmt.Sprintf("failed (%v)", err)
+
+	// Scan downloaded context files BEFORE writing anything into targetDir so
+	// fail_mode: closed blocks sync before untrusted context files hit disk.
+	if securityEnabled {
+		downloadFindings := filterExcludedContextFindings(scanRepoContextFiles(downloadDir), syncExcludes)
+		newFindings := diffNewContextFindings(downloadFindings, preRunContextFindings)
+		if security.HasCriticalFindings(newFindings) {
+			critCount := countCritical(newFindings)
+			if failModeClosed {
+				printer.StepFail(fmt.Sprintf("BLOCKED: %d new critical injection finding(s) in downloaded context files; skipping target repository sync", critCount))
+				return targetRepoSyncResult{
+					status:              "blocked (critical injection findings in downloaded context files)",
+					preserveDownloadDir: repoExtractedOK,
+				}
+			}
+			printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new critical finding(s) in downloaded context files (fail_mode: open); inspect before building or running tools", critCount))
+		} else if len(newFindings) > 0 {
+			printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new finding(s) in downloaded context files", len(newFindings)))
+		}
 	}
-	printer.StepDone(fmt.Sprintf("Target repository synchronized to %s (%.1fs)", targetDir, time.Since(syncStart).Seconds()))
-	return fmt.Sprintf("synchronized to %s", targetDir)
+
+	syncStart := time.Now()
+	printer.StepStart("Synchronizing sandbox changes to target repository")
+	changes, err := syncFn(downloadDir, targetDir, syncExcludes, preRunManifest, printer)
+	if err != nil {
+		printer.StepWarn("Target repository synchronization failed: " + err.Error())
+		return targetRepoSyncResult{
+			status:              fmt.Sprintf("failed (%v)", err),
+			preserveDownloadDir: repoExtractedOK,
+		}
+	}
+	printer.StepDone(fmt.Sprintf("Target repository synchronized to %s (%s, %.1fs)", targetDir, changes.summary(), time.Since(syncStart).Seconds()))
+
+	res := targetRepoSyncResult{
+		status: fmt.Sprintf("synchronized to %s", targetDir),
+	}
+	if runDir != "" {
+		manifestPath := filepath.Join(runDir, "synced-files.txt")
+		if writeErr := os.WriteFile(manifestPath, []byte(changes.formatManifest()), 0o644); writeErr != nil {
+			printer.StepWarn("Could not write synced files manifest: " + writeErr.Error())
+		} else {
+			res.changesPath = fmt.Sprintf("%s (%s)", manifestPath, changes.summary())
+		}
+	}
+	return res
 }
 
 // recordTargetRepoManifest snapshots all relative paths inside repoDir (excluding
@@ -6740,20 +6897,33 @@ func renameCaseOnlyPath(oldPath, newPath string) error {
 // syncTargetRepoDirWithManifest mirrors additions, modifications, and deletions from
 // srcDir into dstDir without a UI printer.
 func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, preRunManifest map[string]string) error {
-	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, nil, nil)
+	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, nil, nil, nil)
 }
 
 // syncTargetRepoDirWithPrinter mirrors additions, modifications, and deletions from
 // srcDir into dstDir, warning through printer when skipping non-regular entries.
 func syncTargetRepoDirWithPrinter(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) error {
-	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, printer, nil)
+	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, printer, nil, nil)
+}
+
+// syncTargetRepoDirWithReport mirrors additions, modifications, and deletions from
+// srcDir into dstDir and returns the list of added, modified, and deleted paths.
+func syncTargetRepoDirWithReport(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) (*syncChanges, error) {
+	changes := &syncChanges{}
+	if err := syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, printer, nil, changes); err != nil {
+		return nil, err
+	}
+	return changes, nil
 }
 
 // syncTargetRepoDirInternal implements target repository sync. When preRunManifest is
-// non-nil, entries absent from both srcDir and preRunManifest (such as host-only files
-// created during an agent run) and symlinks recorded as "symlink-stripped:" at pre-run
-// are preserved. When preRunManifest is nil, pruning is disabled (fail-closed).
-func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer, forceDstCaseInsensitive *bool) error {
+// non-nil, entries unchanged in the sandbox preserve any concurrent host edits or
+// deletions (host edit wins), entries absent from both srcDir and preRunManifest
+// (host-only files created during an agent run) and symlinks recorded as
+// "symlink-stripped:" at pre-run are preserved, and a read-only pre-flight conflict
+// check runs before any host mutation so true conflicts leave dstDir untouched.
+// When preRunManifest is nil, pruning is disabled (fail-closed).
+func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer, forceDstCaseInsensitive *bool, changes *syncChanges) error {
 	absSrc, err := filepath.Abs(srcDir)
 	if err != nil {
 		return fmt.Errorf("resolving source directory: %w", err)
@@ -6794,6 +6964,7 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 	preRunLowerMap := buildLowerManifestMap(preRunManifest)
 	caseRenamedPreRun := make(map[string]bool)
 	srcEntries := make(map[string]bool)
+	srcDigests := make(map[string]string)
 
 	absDstResolved := absDst
 	if resolved, evalErr := filepath.EvalSymlinks(absDst); evalErr == nil {
@@ -6819,6 +6990,198 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 		}
 		return nil
 	})
+
+	recordAdded := func(p string) {
+		if changes != nil {
+			changes.Added = append(changes.Added, p)
+		}
+	}
+	recordModified := func(p string) {
+		if changes != nil {
+			changes.Modified = append(changes.Modified, p)
+		}
+	}
+	recordDeleted := func(p string) {
+		if changes != nil {
+			changes.Deleted = append(changes.Deleted, p)
+		}
+	}
+
+	// 0. Read-only pre-flight conflict check: verify every sandbox change against
+	// host state before mutating absDst so true conflicts leave the host untouched.
+	// Also caches source file digests for Phase 1 so regular files are hashed once.
+	err = filepath.WalkDir(absSrc, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(absSrc, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if isExcludedPath(rel, allExcludes) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		targetPath := filepath.Join(absDst, rel)
+		manifestKey, hasCaseRename := resolveManifestKeyAndCaseRename(absSrc, rel, dstCaseInsensitive, preRunManifest, preRunLowerMap)
+		baseCaseChanged := hasCaseRename && filepath.Base(manifestKey) != filepath.Base(rel)
+		preflightHostPath := targetPath
+		if hasCaseRename {
+			preflightHostPath = filepath.Join(absDst, manifestKey)
+		}
+
+		if d.Type()&os.ModeSymlink != 0 {
+			if isAncestorOfExcludedPath(rel, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", rel)
+			}
+			if hasCaseRename && isAncestorOfExcludedPath(manifestKey, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", manifestKey)
+			}
+			if wouldSanitizeStripSymlink(path, absSrcResolved) {
+				return nil
+			}
+			if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
+				return err
+			}
+			if hasCaseRename {
+				if err := checkPathNotUnderResolvedGit(absDstResolved, preflightHostPath, manifestKey); err != nil {
+					return err
+				}
+			}
+			target, readErr := os.Readlink(path)
+			if readErr != nil {
+				return readErr
+			}
+			srcDigest := "symlink:" + target
+			if !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, srcDigest) {
+				return nil
+			}
+			if !baseCaseChanged {
+				if fi, statErr := os.Lstat(preflightHostPath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
+					if curTarget, curErr := os.Readlink(preflightHostPath); curErr == nil && curTarget == target {
+						return nil
+					}
+				}
+			}
+			return checkCanReplaceHostTarget(preflightHostPath, manifestKey, preRunManifest)
+		}
+
+		if d.IsDir() {
+			if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
+				return err
+			}
+			if hasCaseRename {
+				if err := checkPathNotUnderResolvedGit(absDstResolved, preflightHostPath, manifestKey); err != nil {
+					return err
+				}
+			}
+			fi, statErr := os.Lstat(preflightHostPath)
+			if statErr == nil {
+				if fi.IsDir() {
+					return nil
+				}
+				if !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, "dir") {
+					return nil
+				}
+				if isAncestorOfExcludedPath(rel, allExcludes) {
+					return fmt.Errorf("cannot replace ancestor of excluded path %q with directory", rel)
+				}
+				if hasCaseRename && isAncestorOfExcludedPath(manifestKey, allExcludes) {
+					return fmt.Errorf("cannot replace ancestor of excluded path %q with directory", manifestKey)
+				}
+				return checkCanReplaceHostTarget(preflightHostPath, manifestKey, preRunManifest)
+			}
+			if !os.IsNotExist(statErr) {
+				if !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, "dir") {
+					return nil
+				}
+				return statErr
+			}
+			return nil
+		}
+
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
+			return err
+		}
+		if hasCaseRename {
+			if err := checkPathNotUnderResolvedGit(absDstResolved, preflightHostPath, manifestKey); err != nil {
+				return err
+			}
+		}
+
+		srcDigest, err := computeHostEntryDigest(path, info)
+		if err != nil {
+			return err
+		}
+		srcDigests[rel] = srcDigest
+		sandboxUnchanged := !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, srcDigest)
+
+		dstInfo, dstStatErr := os.Lstat(preflightHostPath)
+		if os.IsNotExist(dstStatErr) {
+			return nil
+		}
+		if dstStatErr != nil {
+			if sandboxUnchanged {
+				return nil
+			}
+			return dstStatErr
+		}
+		if !dstInfo.Mode().IsRegular() {
+			if sandboxUnchanged {
+				return nil
+			}
+			if isAncestorOfExcludedPath(rel, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with file", rel)
+			}
+			if hasCaseRename && isAncestorOfExcludedPath(manifestKey, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with file", manifestKey)
+			}
+			return checkCanReplaceHostTarget(preflightHostPath, manifestKey, preRunManifest)
+		}
+
+		wantPerm := (dstInfo.Mode().Perm() &^ 0o111) | (info.Mode().Perm() & 0o111)
+		dstDigest, dstDigestErr := computeHostEntryDigest(preflightHostPath, dstInfo)
+		checkConcurrent := func() error {
+			if preRunManifest == nil {
+				return nil
+			}
+			recorded, ok := preRunManifest[manifestKey]
+			if !ok || dstDigestErr != nil || dstDigest != normalizeManifestDigest(recorded) {
+				return fmt.Errorf("refusing to overwrite concurrently modified host file %q", manifestKey)
+			}
+			return nil
+		}
+		if dstDigestErr == nil && dstDigest == srcDigest && !baseCaseChanged {
+			if dstInfo.Mode().Perm() == wantPerm {
+				return nil
+			}
+			return checkConcurrent()
+		}
+		if sandboxUnchanged {
+			return nil
+		}
+		return checkConcurrent()
+	})
+	if err != nil {
+		return fmt.Errorf("copying files to target repository: %w", err)
+	}
 
 	// Track directory permissions separately so pre-existing read-only host directories
 	// (or new directories in a read-only host root) and chmodded prune dirs are restored
@@ -6900,6 +7263,10 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			if readErr != nil {
 				return readErr
 			}
+			srcDigest := "symlink:" + target
+			if !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, srcDigest) {
+				return nil
+			}
 			if !baseCaseChanged {
 				if fi, statErr := os.Lstat(targetPath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
 					if curTarget, curErr := os.Readlink(targetPath); curErr == nil && curTarget == target {
@@ -6907,6 +7274,8 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 					}
 				}
 			}
+			_, hostExistedErr := os.Lstat(hostCheckPath)
+			hostExisted := hostExistedErr == nil
 			if err := checkCanReplaceHostTarget(hostCheckPath, manifestKey, preRunManifest); err != nil {
 				return err
 			}
@@ -6916,8 +7285,16 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			if err := os.RemoveAll(hostCheckPath); err != nil && !os.IsNotExist(err) {
 				return err
 			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				return err
+			}
 			if err := os.Symlink(target, targetPath); err != nil {
 				return err
+			}
+			if hostExisted {
+				recordModified(rel)
+			} else {
+				recordAdded(rel)
 			}
 			return nil
 		}
@@ -6932,7 +7309,8 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 					return err
 				}
 			}
-			if fi, statErr := os.Lstat(hostCheckPath); statErr == nil {
+			fi, statErr := os.Lstat(hostCheckPath)
+			if statErr == nil {
 				if fi.IsDir() {
 					if baseCaseChanged {
 						if err := renameCaseOnlyPath(hostCheckPath, targetPath); err != nil {
@@ -6947,6 +7325,9 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 						}
 						dirPerms = append(dirPerms, dirPermEntry{path: targetPath, perm: origPerm})
 					}
+					return nil
+				}
+				if !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, "dir") {
 					return nil
 				}
 				if isAncestorOfExcludedPath(rel, allExcludes) {
@@ -6964,6 +7345,15 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 				if err := os.Remove(hostCheckPath); err != nil {
 					return err
 				}
+			} else if !os.IsNotExist(statErr) {
+				if !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, "dir") {
+					return nil
+				}
+				return statErr
+			} else if !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, "dir") {
+				// Host deleted a pre-existing directory while sandbox kept it; skip recreating
+				// it unless the agent writes a new or modified file underneath.
+				return nil
 			}
 			info, err := d.Info()
 			if err != nil {
@@ -7016,8 +7406,21 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			}
 		}
 
+		srcDigest, ok := srcDigests[rel]
+		if !ok {
+			srcDigest, err = computeHostEntryDigest(path, info)
+			if err != nil {
+				return err
+			}
+		}
+		sandboxUnchanged := !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, srcDigest)
+
 		dstInfo, dstStatErr := os.Lstat(hostCheckPath)
+		hostExisted := dstStatErr == nil
 		if dstStatErr == nil && !dstInfo.Mode().IsRegular() {
+			if sandboxUnchanged {
+				return nil
+			}
 			if isAncestorOfExcludedPath(rel, allExcludes) {
 				return fmt.Errorf("cannot replace ancestor of excluded path %q with file", rel)
 			}
@@ -7036,11 +7439,6 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			dstStatErr = os.ErrNotExist
 		}
 
-		srcDigest, err := computeHostEntryDigest(path, info)
-		if err != nil {
-			return err
-		}
-
 		wantPerm := info.Mode().Perm()
 		if dstStatErr == nil && dstInfo.Mode().IsRegular() {
 			// Git only tracks the executable bit; always keep the existing host file's
@@ -7054,13 +7452,14 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 		}
 
 		if os.IsNotExist(dstStatErr) {
-			if preRunManifest != nil {
-				if recorded, ok := preRunManifest[manifestKey]; ok && normalizeManifestDigest(recorded) == srcDigest {
-					// Sandbox copy is unchanged since upload while the user deleted the host file; preserve the host deletion.
-					return nil
-				}
+			if !hostExisted && isSandboxEntryUnchanged(preRunManifest, manifestKey, srcDigest) {
+				// Sandbox copy is unchanged since upload while the user deleted the host file; preserve the host deletion.
+				return nil
 			}
 		} else if dstStatErr != nil {
+			if sandboxUnchanged {
+				return nil
+			}
 			return dstStatErr
 		}
 
@@ -7088,9 +7487,14 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 					if err := os.Chmod(hostCheckPath, wantPerm); err != nil {
 						return err
 					}
+					recordModified(rel)
 					return nil
 				}
 			} else {
+				if sandboxUnchanged {
+					// Sandbox copy is unchanged since pre-run while the user edited the host file; host edit wins.
+					return nil
+				}
 				if err := checkConcurrent(); err != nil {
 					return err
 				}
@@ -7105,6 +7509,11 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			return err
 		}
 		_ = os.Chtimes(targetPath, time.Now(), info.ModTime())
+		if hostExisted {
+			recordModified(rel)
+		} else {
+			recordAdded(rel)
+		}
 		return nil
 	})
 	if err != nil {
@@ -7172,6 +7581,7 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 				if err := os.Remove(path); err != nil {
 					return err
 				}
+				recordDeleted(rel)
 			}
 			return nil
 		})
