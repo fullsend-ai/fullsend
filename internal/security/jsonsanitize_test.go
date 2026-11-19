@@ -687,6 +687,41 @@ func TestSanitizeJSONDocument_CRLFNoStrayCarriageReturn(t *testing.T) {
 	}
 }
 
+// TestSanitizeJSONDocument_EscapedMarkersAcrossMembersFailsClosed pins that a
+// block spanning members is detected even when no leaf produces a finding and
+// the markers are \u-escaped in the raw bytes.
+func TestSanitizeJSONDocument_EscapedMarkersAcrossMembersFailsClosed(t *testing.T) {
+	p := OutputPipeline()
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := []byte(`["\u002d` + "----BEGIN RSA" + " PRIVATE KEY-----" +
+		`","MIIEspanningkeymaterial","` + end + `"]`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+	assert.Contains(t, string(out), "output removed")
+}
+
+// TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersFailsClosed pins that
+// the decoded view applies the same Unicode normalization as the leaf scan, so
+// a marker obfuscated with a zero-width character cannot hide a spanning block.
+func TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersFailsClosed(t *testing.T) {
+	p := OutputPipeline()
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	// U+200B inside the BEGIN marker: not a PEM block in any single form.
+	doc := []byte(`{"begin":"-----\u200bBEGIN RSA` + " PRIVATE KEY-----\"" +
+		`,"payload":"MIIEspanningkeymaterial","end":"` + end + `"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+	assert.Contains(t, string(out), "output removed")
+}
+
 // TestSanitizeJSONDocument_LeavesUnsupportedInputAlone pins the fallback
 // contract for documents the structural path cannot handle.
 func TestSanitizeJSONDocument_LeavesUnsupportedInputAlone(t *testing.T) {

@@ -52,20 +52,19 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	out := doc
 	if len(findings) > 0 {
 		out = rebuilt
-		// Masking a member value can hide a private-key block that spans
-		// members: a sensitive member name masks the BEGIN marker, leaving the
-		// key body and END marker behind in a form the rewritten scan can no
-		// longer recognize. The decoded view knows whether every block was
-		// contained in one key or leaf.
-		if prov.spanningBlocks() > 0 {
-			return preserveTrailingNewline([]byte(failClosedInvalidJSON), doc),
-				append(findings, Finding{
-					Scanner:  "secret_redactor",
-					Name:     "private_key",
-					Severity: "critical",
-					Detail:   "Private key block spans JSON framing and cannot be localized; output removed",
-				}), nil
-		}
+	}
+	// A block that spans members is invisible to both the leaf scan and the
+	// written-bytes scan once a member is masked, and its markers may be
+	// \u-escaped in the raw bytes. The decoded view is the only place it is
+	// visible, so it is consulted whether or not a leaf produced a finding.
+	if prov.spanningBlocks() > 0 {
+		return preserveTrailingNewline([]byte(failClosedInvalidJSON), doc),
+			append(findings, Finding{
+				Scanner:  "secret_redactor",
+				Name:     "private_key",
+				Severity: "critical",
+				Detail:   "Private key block spans JSON framing and cannot be localized; output removed",
+			}), nil
 	}
 	// Scan the bytes that will actually be written. The walk above already
 	// scanned every decoded key and leaf, so a match here spans JSON framing
@@ -97,9 +96,15 @@ type jsonProvenance struct {
 	leafCount int
 }
 
+// decodedViewNormalizer normalizes decoded JSON text before it is matched for
+// framing-spanning secrets, so a marker obfuscated with zero-width or bidi
+// characters is normalized exactly as the per-leaf scan normalizes it.
+var decodedViewNormalizer = NewUnicodeNormalizer()
+
 // addString appends one decoded key or string leaf to the view and counts the
 // private-key blocks it fully contains.
 func (v *jsonProvenance) addString(s string) {
+	s = decodedViewNormalizer.Scan(s).Sanitized
 	v.leafCount += len(privateKeyRe.FindAllIndex([]byte(s), -1))
 	v.decoded.WriteString(s)
 	v.decoded.WriteByte('\n')
@@ -322,7 +327,7 @@ func writeDecodedJSONView(buf *bytes.Buffer, doc []byte) {
 				_, _ = dec.Token() // consume the closing delimiter
 			}
 		case string:
-			buf.WriteString(t)
+			buf.WriteString(decodedViewNormalizer.Scan(t).Sanitized)
 			buf.WriteByte('\n')
 		}
 	}
