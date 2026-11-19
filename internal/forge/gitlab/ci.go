@@ -737,6 +737,7 @@ func pipelineToWorkflowRun(p glPipeline) forge.WorkflowRun {
 		ID:         int(p.ID),
 		Name:       p.Ref,
 		Event:      p.Source,
+		HeadBranch: p.Ref,
 		Status:     status,
 		Conclusion: conclusion,
 		HTMLURL:    p.WebURL,
@@ -837,6 +838,12 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 		runs[i] = pipelineToWorkflowRun(p)
 	}
 	return runs, nil
+}
+
+// ListWorkflowRunsByStatus is not supported on GitLab: the fork PR review
+// poll that uses it is GitHub only (ADR 0171).
+func (c *LiveClient) ListWorkflowRunsByStatus(context.Context, string, string, string, string, time.Time) ([]forge.WorkflowRun, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // ListWorkflowRunsSince lists pipelines for workflowFile (treated as the ref

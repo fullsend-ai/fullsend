@@ -448,6 +448,7 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	out.Artifacts = cloneArtifacts(src.Artifacts)
 	out.Progress = cloneProgress(src.Progress)
 	out.TraceContextBlock = cloneTraceContext(src.TraceContextBlock)
+	out.ForkPRReviewPollBlock = cloneForkPRReviewPoll(src.ForkPRReviewPollBlock)
 	return out
 }
 
@@ -565,6 +566,9 @@ func applyManagedLayer(out, child *perRepoConfig) {
 	// installation ID belong together.
 	if child.TraceContextBlock != nil {
 		out.TraceContextBlock = cloneTraceContext(child.TraceContextBlock)
+	}
+	if child.ForkPRReviewPollBlock != nil {
+		out.ForkPRReviewPollBlock = mergeForkPRReviewPoll(out.ForkPRReviewPollBlock, child.ForkPRReviewPollBlock)
 	}
 }
 

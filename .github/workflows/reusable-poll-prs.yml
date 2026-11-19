@@ -1,0 +1,172 @@
+# Reusable fork PR review poll workflow for per-repo installations (ADR 0171).
+# Called by the managed .github/workflows/fullsend-poll-prs.yml caller that
+# `fullsend repos install` writes while fork_pr_review_poll.enabled is true.
+#
+# workflow_call contract:
+# - Required input: since, the RFC 3339 time the poll was enabled. Pull
+#   request activity from before it starts no review (no backlog on enable).
+# - Optional inputs: runner_image (runner for the poll job) and
+#   timeout_minutes (job timeout; defaults to 15 minutes).
+# - Output: matrix is the JSON include matrix for reusable-dispatch.yml; an
+#   empty include array means there is no review to start.
+# Runs `fullsend poll --input-driver github-pr-poll` once against the
+# caller's .fullsend/config.yaml and returns the dispatch matrix. The caller
+# passes it to reusable-dispatch.yml at the same ref (ADR 62), which routes
+# the review entries to the built-in review job.
+#
+# State: the poll keeps per-head dispatch counts and finished heads in a JSON
+# file carried between cycles in the Actions cache (newest
+# fullsend-poll-prs-state-* entry). It bounds every re-dispatch of a head and
+# lets finished heads cost no API calls. Runs on a fork pull request cannot
+# save into the default branch's cache scope, but any job that runs on the
+# default branch can, so the state is trusted only to stop or bound reviews:
+# it can never start one. A missing or evicted entry only costs fresh API
+# checks; a failed save loses that cycle's counts, so a head can get more
+# starts than max_attempts_per_head. An exhausted head that stays unchanged
+# for 14 days is pruned and gets new attempts.
+#
+# Security: the poll job takes no secrets. It reads pull requests, reviews,
+# comments and the poll workflow's own runs with a read-only GITHUB_TOKEN,
+# and never checks out or runs code from a pull request. The checkout is the
+# caller's default branch: .fullsend/ plus OWNERS files for authorization.
+name: Fork PR review poll
+
+on:
+  workflow_call:
+    inputs:
+      since:
+        description: RFC 3339 time the poll was enabled.
+        type: string
+        required: true
+      runner_image:
+        description: GitHub Actions runner image for the poll job.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
+      timeout_minutes:
+        description: Maximum runtime in minutes for the poll job.
+        type: number
+        required: false
+        default: 15
+    outputs:
+      matrix:
+        description: Dispatch matrix accepted by reusable-dispatch.yml.
+        value: ${{ jobs.poll.outputs.matrix }}
+
+jobs:
+  poll:
+    name: Poll fork PRs
+    runs-on: ${{ inputs.runner_image }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .fullsend/
+            .defaults/action.yml
+            .fullsend/.defaults/action.yml
+            OWNERS
+            OWNERS_ALIASES
+          sparse-checkout-cone-mode: false
+
+      - name: Detect CLI install mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .defaults/action.yml || -f .fullsend/.defaults/action.yml ]]; then
+            echo "mode=vendored" >> "${GITHUB_OUTPUT}"
+          else
+            echo "mode=upstream" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout upstream install action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-actions
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/install-fullsend-cli/
+          sparse-checkout-cone-mode: false
+
+      - name: Install fullsend CLI
+        uses: ./.workflow-actions/.github/actions/install-fullsend-cli
+        with:
+          mode: ${{ steps.mode.outputs.mode }}
+          vendored_path: .fullsend/bin/fullsend
+          workflow_repository: ${{ job.workflow_repository }}
+          workflow_sha: ${{ job.workflow_sha }}
+          github_token: ${{ github.token }}
+
+      - name: Restore poll state
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fullsend-poll-state/state.json
+          key: fullsend-poll-prs-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fullsend-poll-prs-state-
+
+      - name: Poll fork PRs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ github.repository }}
+          SINCE: ${{ inputs.since }}
+          # A schedule event payload may have no repository object; scheduled runs
+          # always run on the default branch, so ref_name is it then.
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          FULLSEND_REVIEW_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p .fullsend-poll-state
+          fullsend poll \
+            --input-driver github-pr-poll \
+            --target-repo "${TARGET_REPO}" \
+            --since "${SINCE}" \
+            --default-branch "${DEFAULT_BRANCH}" \
+            --state-file .fullsend-poll-state/state.json \
+            --output dispatches.json \
+            --fullsend-dir .fullsend
+
+      # Saved before the matrix is handed on, so the next cycle sees this
+      # cycle's dispatches even while the reviews it starts are still running.
+      # The poll writes state.json.changed only when the cycle changed the
+      # state. Only scheduled and manual runs on the default branch save.
+      - name: Save poll state
+        if: >-
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+          && github.ref_name == (github.event.repository.default_branch || github.ref_name)
+          && hashFiles('.fullsend-poll-state/state.json.changed') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fullsend-poll-state/state.json
+          key: fullsend-poll-prs-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Build dispatch matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array"' dispatches.json > /dev/null
+          if jq -e 'length == 0' dispatches.json > /dev/null; then
+            echo "No dispatches."
+            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          MATRIX=$(jq -c '{include: .}' dispatches.json)
+          DELIM="MATRIX_$(openssl rand -hex 8)"
+          {
+            echo "matrix<<${DELIM}"
+            printf '%s\n' "${MATRIX}"
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"

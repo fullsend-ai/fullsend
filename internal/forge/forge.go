@@ -595,6 +595,22 @@ type ChangeProposal struct {
 	HeadRepo string
 	Base     string
 	Author   string // login of the user who opened the PR/MR
+
+	// The fields below are populated by GitHub's ListRepoPullRequests
+	// only (ADR 0171 fork PR review poll); other adapters leave them empty.
+
+	// HeadSHA is the head commit SHA.
+	HeadSHA string
+	// HeadOwner is the login of the head repository's owner.
+	HeadOwner string
+	// BaseRepo is the base repository as "owner/repo".
+	BaseRepo string
+	// BaseSHA is the base commit SHA.
+	BaseSHA string
+	// AuthorType is the author's account type, e.g. "User" or "Bot".
+	AuthorType string
+	// UpdatedAt is the RFC 3339 time the PR was last updated.
+	UpdatedAt string
 }
 
 // PullRequestInfo carries branch/repo context for dispatch enrichment.
@@ -616,6 +632,10 @@ type WorkflowRun struct {
 	RunAttempt int // Attempt number for a rerunnable execution; zero when unavailable.
 	Name       string
 	Event      string // GitHub trigger event, e.g. "issues", "issue_comment"
+	// HeadBranch is the branch the run's workflow file was read from: on
+	// GitHub the run's head_branch (for a fork pull_request run, the fork's
+	// branch), on GitLab the pipeline ref. Empty when unavailable.
+	HeadBranch string
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
@@ -726,6 +746,10 @@ type IssueComment struct {
 	Body      string
 	Author    string
 	CreatedAt string
+	// AppClientID is the client ID of the GitHub App the comment was
+	// created through (performed_via_github_app.client_id), or empty when
+	// it was not created by an App. GitHub only.
+	AppClientID string
 }
 
 // Reaction represents an emoji reaction on an issue, pull request,
@@ -744,6 +768,8 @@ type PullRequestReview struct {
 	State       string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
 	Body        string
 	SubmittedAt string
+	// CommitID is the head commit SHA the review was submitted against.
+	CommitID string
 }
 
 // ReviewComment represents an inline comment on a specific line of a
@@ -1486,6 +1512,12 @@ type Client interface {
 	// ones for other agents) could otherwise push off the first page (#7996
 	// review).
 	ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]WorkflowRun, error)
+	// ListWorkflowRunsByStatus returns the runs of workflowFile whose
+	// status or conclusion is status (for example "in_progress" or
+	// "failure"), created at or after createdSince when it is non-zero,
+	// paginating as needed. Forges without the filter return
+	// ErrNotSupported.
+	ListWorkflowRunsByStatus(ctx context.Context, owner, repo, workflowFile, status string, createdSince time.Time) ([]WorkflowRun, error)
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 

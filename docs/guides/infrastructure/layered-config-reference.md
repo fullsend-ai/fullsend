@@ -164,6 +164,9 @@ the overlay → base → code defaults chain.
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 | `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
 | `trace_context` | `*TraceContextConfig` | Overlay only (not layered) | `nil` |
+| `fork_pr_review_poll.enabled` | `*bool` (nested) | Scalar override | `false` (off) |
+| `fork_pr_review_poll.max_starts_per_cycle` | `*int` (nested) | Scalar override | `5` |
+| `fork_pr_review_poll.max_attempts_per_head` | `*int` (nested) | Scalar override | `2` |
 
 `authorization` is overlay-only: setting it in `config.base.yaml` has no
 effect, so each repo must opt in explicitly.
@@ -605,6 +608,7 @@ compiled-in defaults apply:
 | `status_notifications` | `nil` |
 | `authorization` | `nil` |
 | `trace_context` | `nil` (no trace-context keys) |
+| `fork_pr_review_poll` | `nil` (off; `max_starts_per_cycle` 5, `max_attempts_per_head` 2) |
 
 ## Related
 

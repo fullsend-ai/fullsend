@@ -75,6 +75,11 @@ on:
         required: false
         type: string
         default: ""
+      poll_review:
+        description: "One review dispatch from the fork PR review poll (ADR 0171) as a JSON object: an entry of fullsend poll --input-driver github-pr-poll output. Used with event_action poll-review on schedule or workflow_dispatch; route re-checks the pull request before review starts."
+        required: false
+        type: string
+        default: ""
       jira_base_url:
         description: "Jira instance base URL (e.g., https://mysite.atlassian.net) for Jira-based agents"
         required: false
@@ -203,6 +208,8 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
+          POLL_REVIEW: ${{ inputs.poll_review }}
+          GITHUB_REPOSITORY_NAME: ${{ github.repository }}
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           GH_TOKEN: ${{ github.token }}
@@ -335,6 +342,80 @@ jobs:
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
             COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
+          fi
+
+          # Fork PR review poll (ADR 0171). The scheduled poll caller passes one
+          # pull request it found eligible. Nothing in the entry is trusted:
+          # the pull request is read again here, and review starts only when
+          # it is still an open fork PR whose author owns the fork, its head is
+          # still the polled commit, and the author passes the same triage
+          # threshold as automatic review before ADR 0164. Every checkout
+          # stays on the default branch; no PR code runs.
+          if [[ -n "${POLL_REVIEW:-}" ]]; then
+            if [[ "${EVENT_NAME}" != "schedule" && "${EVENT_NAME}" != "workflow_dispatch" ]]; then
+              echo "::error::poll_review is accepted only on schedule or workflow_dispatch runs (got ${EVENT_NAME})"
+              exit 1
+            fi
+            # The $ anchors are jq regex syntax; the single quotes are intentional.
+            # shellcheck disable=SC2016
+            if ! poll_number=$(jq -er '.event_payload.pull_request.number | tostring | select(test("^[0-9]+$"))' <<<"${POLL_REVIEW}") \
+              || ! poll_sha=$(jq -er '.event_payload.pull_request.head.sha | select(test("^[0-9a-f]{40}$"))' <<<"${POLL_REVIEW}") \
+              || [[ "$(jq -r '.agent' <<<"${POLL_REVIEW}")" != "review" ]] \
+              || [[ "$(jq -r '.source_repo' <<<"${POLL_REVIEW}")" != "${GITHUB_REPOSITORY_NAME}" ]]; then
+              echo "::error::poll_review is not a review dispatch for this repository"
+              exit 1
+            fi
+            if ! poll_pr=$(gh api "repos/${GITHUB_REPOSITORY_NAME}/pulls/${poll_number}" \
+              --jq '{state, author: (.user.login // ""), head_sha: (.head.sha // ""),
+                     head_repo: (.head.repo.full_name // ""), head_owner: (.head.repo.owner.login // ""),
+                     base_repo: (.base.repo.full_name // "")}'); then
+              echo "::warning::Could not read PR #${poll_number}; not routed"
+              echo "stage=" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            poll_state=$(jq -r '.state' <<<"${poll_pr}")
+            poll_author=$(jq -r '.author' <<<"${poll_pr}")
+            poll_head_sha=$(jq -r '.head_sha' <<<"${poll_pr}")
+            poll_head_repo=$(jq -r '.head_repo' <<<"${poll_pr}")
+            poll_head_owner=$(jq -r '.head_owner' <<<"${poll_pr}")
+            poll_base_repo=$(jq -r '.base_repo' <<<"${poll_pr}")
+            if [[ "${poll_state}" != "open" ]]; then
+              echo "::notice::PR #${poll_number} is ${poll_state}; not routed"
+            elif [[ "${poll_head_sha}" != "${poll_sha}" ]]; then
+              echo "::notice::PR #${poll_number} head moved from ${poll_sha} to ${poll_head_sha}; the next poll cycle picks up the new head"
+            elif [[ -z "${poll_head_repo}" || -z "${poll_head_owner}" || -z "${poll_author}" ]]; then
+              # A deleted fork or account: a race with the poll, not a gate
+              # disagreement.
+              echo "::notice::PR #${poll_number} has no readable head repository or author; not routed"
+            elif [[ "${poll_head_repo}" == "${poll_base_repo}" ]]; then
+              # The poll only offers fork PRs. Disagreeing with it fails the
+              # run so the mismatch is visible and counts as an attempt.
+              echo "::error::PR #${poll_number} is not a fork PR, but the poll offered it; not routed"
+              exit 1
+            elif [[ "${poll_head_owner,,}" != "${poll_author,,}" ]]; then
+              echo "::error::PR #${poll_number} head repository is not owned by its author, but the poll offered it; not routed"
+              exit 1
+            elif is_event_actor_authorized "${poll_author}" triage; then
+              STAGE="review"
+              TRIGGER_SOURCE="fork-pr-poll"
+              {
+                echo "poll_pr_number=${poll_number}"
+                echo "poll_head_sha=${poll_sha}"
+              } >> "${GITHUB_OUTPUT}"
+            else
+              echo "::error::PR #${poll_number} author ${poll_author} is not authorized for automatic review, but the poll offered it; not routed"
+              exit 1
+            fi
+            if [[ -z "${STAGE}" ]]; then
+              echo "stage=" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            echo "Routed to stage: ${STAGE} (fork PR review poll, PR #${poll_number} at ${poll_sha})"
+            {
+              echo "stage=${STAGE}"
+              echo "trigger_source=${TRIGGER_SOURCE}"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
 
           case "${EVENT_NAME}" in
@@ -474,7 +555,7 @@ jobs:
       # still enforce the same policy for the final routed stage.
       - name: Check review deduplication guards
         id: review-dedup-guard
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '')
         shell: bash
         run: |
           set -euo pipefail
@@ -525,7 +606,7 @@ jobs:
       # runs. Vendored callers already provide it in the caller checkout;
       # fetch only this script for callers using upstream defaults.
       - name: Checkout review diff canonicalizer
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '') && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -544,11 +625,11 @@ jobs:
       # Missing or incomplete metadata deliberately fails open.
       - name: Check unchanged review diff
         id: review-diff
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '') && steps.review-dedup-guard.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || steps.bash-route.outputs.poll_pr_number }}
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
@@ -721,8 +802,11 @@ jobs:
               echo "::notice::PR base or head changed before skip; running review"
               exit 0
             fi
-            echo "prior_url=${prior_url}" >> "${GITHUB_OUTPUT}"
-            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            {
+              echo "prior_url=${prior_url}"
+              echo "head_sha=${current_head_sha}"
+              echo "skip=true"
+            } >> "${GITHUB_OUTPUT}"
           else
             echo "::notice::PR effective diff changed; running review"
           fi
@@ -1120,7 +1204,7 @@ jobs:
       # Only obtain a write-capable review token after final routing has
       # authorized the review stage. The diff check above remains read-only.
       - name: Checkout upstream defaults for review skip note
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '') && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1135,7 +1219,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Prepare workspace for review skip note
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '') && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
         id: review-token-workspace
         continue-on-error: true
         timeout-minutes: 2
@@ -1147,12 +1231,12 @@ jobs:
       # .defaults path internally. Provide that compatibility path while
       # the action's defaults_root input is adopted by existing callers.
       - name: Stage nested defaults compatibility path
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '') && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
         shell: bash
         run: ln -s .fullsend/.defaults .defaults
 
       - name: Prepare workspace for review skip note (nested vendor)
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '') && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
         id: review-token-workspace-nested
         continue-on-error: true
         timeout-minutes: 2
@@ -1162,7 +1246,7 @@ jobs:
           source_repo: ${{ github.repository }}
 
       - name: Mint review token for review skip note
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '') && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
         id: review-token
         continue-on-error: true
         timeout-minutes: 2
@@ -1174,7 +1258,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Mint review token for review skip note (nested vendor)
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '') && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
         id: review-token-nested
         continue-on-error: true
         timeout-minutes: 2
@@ -1187,17 +1271,18 @@ jobs:
 
       - name: Publish review skip note
         id: review-skip-publish
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
+        if: ((github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize') || steps.bash-route.outputs.poll_pr_number != '') && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
           REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
           SOURCE_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || steps.bash-route.outputs.poll_pr_number }}
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
           REVIEW_PRIOR_URL: ${{ steps.review-diff.outputs.prior_url }}
+          SKIP_HEAD_SHA: ${{ steps.review-diff.outputs.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1206,7 +1291,7 @@ jobs:
             echo "::notice::Review-App token was unavailable; running the full review"
             exit 0
           fi
-          skip_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review${REVIEW_PRIOR_URL:+ (${REVIEW_PRIOR_URL})}. No new review findings were generated."
+          skip_body="<!-- fullsend:review-skip -->"$'\n'"<!-- fullsend:review-skip-head:${SKIP_HEAD_SHA} -->"$'\n'"Fullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review${REVIEW_PRIOR_URL:+ (${REVIEW_PRIOR_URL})}. No new review findings were generated."
           REVIEW_BOT="${ORG_NAME}-review[bot]"
           SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
           CUSTOM_REVIEW_BOT=""
@@ -1407,11 +1492,11 @@ jobs:
 
       - name: Resolve PR head for issue_comment events
         id: pr-head
-        if: steps.route.outputs.stage != '' && steps.agent-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
+        if: steps.route.outputs.stage != '' && steps.agent-check.outputs.skipped != 'true' && ((github.event_name == 'issue_comment' && github.event.issue.pull_request) || steps.bash-route.outputs.poll_pr_number != '')
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.issue.number || steps.bash-route.outputs.poll_pr_number }}
           STAGE: ${{ steps.route.outputs.stage }}
         run: |
           set -euo pipefail
@@ -1732,7 +1817,7 @@ jobs:
     if: needs.route.outputs.stage == 'review'
     runs-on: ${{ inputs.runner_image }}
     concurrency:
-      group: fullsend-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: fullsend-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number || fromJSON(needs.route.outputs.event_payload || '{}').pull_request.number }}
       cancel-in-progress: true
     permissions:
       actions: write
@@ -1902,6 +1987,10 @@ jobs:
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+          # The fork PR review poll runs one review per pull request in the
+          # same workflow run, and artifact names are unique per run. Other
+          # events keep the default fullsend-review name.
+          artifact-name: ${{ needs.route.outputs.trigger_source == 'fork-pr-poll' && format('fullsend-review-pr-{0}', fromJSON(needs.route.outputs.event_payload).pull_request.number) || '' }}
 
   fix:
     name: Fix
@@ -2385,7 +2474,8 @@ jobs:
 
   harness-dispatch:
     name: Harness dispatch
-    if: ${{ inputs.matrix == '' }}
+    # A fork PR review poll run (poll_review) starts only the built-in review.
+    if: ${{ inputs.matrix == '' && inputs.poll_review == '' }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write

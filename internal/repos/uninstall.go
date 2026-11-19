@@ -359,6 +359,23 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		for _, a := range actions {
 			progress(fullName, "workflow", a.Detail)
 		}
+
+		// The managed fork PR review poll caller (ADR 0171) goes the same
+		// way; a user-owned workflow at its path is left alone.
+		actions, err = removePRPollCaller(ctx, prPollRequest{
+			Client:    client,
+			Owner:     owner,
+			Repo:      repo,
+			StageFile: func(f forge.TreeFile) { files = append(files, f) },
+		})
+		if err != nil {
+			result.Error = fmt.Errorf("checking managed fork PR review poll workflow before uninstall: %w", err)
+			progress(fullName, "workflow", fmt.Sprintf("Failed: %v", result.Error))
+			return result
+		}
+		for _, a := range actions {
+			progress(fullName, "workflow", a.Detail)
+		}
 	}
 
 	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml
