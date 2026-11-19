@@ -19,6 +19,12 @@ inputs:
   github_token:
     description: Token for cloning the workflow repository.
     default: ${{ github.token }}
+  install_dir:
+    description: Directory where the fullsend binary is installed.
+    default: ${{ runner.temp }}/fullsend
+  add_to_path:
+    description: Add the install directory to PATH for subsequent steps.
+    default: 'true'
 
 outputs:
   fullsend-path:
@@ -40,11 +46,13 @@ runs:
           echo "vendored binary not found" >&2
           exit 1
         fi
-        mkdir -p "${RUNNER_TEMP}/fullsend"
-        cp "${VENDORED}" "${RUNNER_TEMP}/fullsend/fullsend"
-        chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
-        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
-        echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
+        mkdir -p "${{ inputs.install_dir }}"
+        cp "${VENDORED}" "${{ inputs.install_dir }}/fullsend"
+        chmod +x "${{ inputs.install_dir }}/fullsend"
+        if [[ "${{ inputs.add_to_path }}" == "true" ]]; then
+          echo "${{ inputs.install_dir }}" >> "${GITHUB_PATH}"
+        fi
+        echo "fullsend-path=${{ inputs.install_dir }}/fullsend" >> "${GITHUB_OUTPUT}"
 
     - name: Resolve SHA to release tag
       id: resolve-tag
@@ -155,14 +163,16 @@ runs:
         esac
 
         ASSET="fullsend_${VERSION}_${os}_${arch}.tar.gz"
-        mkdir -p "${RUNNER_TEMP}/fullsend"
+        mkdir -p "${{ inputs.install_dir }}"
         echo "Downloading ${ASSET} from release ${TAG}"
-        retry gh release download "${TAG}" -R "${WORKFLOW_REPOSITORY}" -p "${ASSET}" -D "${RUNNER_TEMP}/fullsend" --clobber
-        tar -xzf "${RUNNER_TEMP}/fullsend/${ASSET}" -C "${RUNNER_TEMP}/fullsend"
-        rm -f "${RUNNER_TEMP}/fullsend/${ASSET}"
-        chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
-        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
-        echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
+        retry gh release download "${TAG}" -R "${WORKFLOW_REPOSITORY}" -p "${ASSET}" -D "${{ inputs.install_dir }}" --clobber
+        tar -xzf "${{ inputs.install_dir }}/${ASSET}" -C "${{ inputs.install_dir }}"
+        rm -f "${{ inputs.install_dir }}/${ASSET}"
+        chmod +x "${{ inputs.install_dir }}/fullsend"
+        if [[ "${{ inputs.add_to_path }}" == "true" ]]; then
+          echo "${{ inputs.install_dir }}" >> "${GITHUB_PATH}"
+        fi
+        echo "fullsend-path=${{ inputs.install_dir }}/fullsend" >> "${GITHUB_OUTPUT}"
 
     - name: Clone fullsend at workflow SHA for source build
       if: inputs.mode == 'upstream' && (steps.resolve-tag.outputs.tag == '' || steps.install-release.outcome == 'failure')
@@ -205,13 +215,17 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        mkdir -p "${RUNNER_TEMP}/fullsend"
+        mkdir -p "${{ inputs.install_dir }}"
         cd "${RUNNER_TEMP}/fullsend-src"
         make go-build
-        cp bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
-        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
-        echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
+        cp bin/fullsend "${{ inputs.install_dir }}/fullsend"
+        chmod +x "${{ inputs.install_dir }}/fullsend"
+        if [[ "${{ inputs.add_to_path }}" == "true" ]]; then
+          echo "${{ inputs.install_dir }}" >> "${GITHUB_PATH}"
+        fi
+        echo "fullsend-path=${{ inputs.install_dir }}/fullsend" >> "${GITHUB_OUTPUT}"
 
     - name: Print fullsend version
       shell: bash
-      run: fullsend --version
+      run: |
+        "${{ inputs.install_dir }}/fullsend" --version

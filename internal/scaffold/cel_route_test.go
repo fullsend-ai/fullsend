@@ -651,7 +651,8 @@ func TestEvaluateCELRouteStep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			bin := filepath.Join(dir, "bin")
+			runnerTemp := filepath.Join(dir, "runner-temp")
+			bin := filepath.Join(runnerTemp, "fullsend")
 			require.NoError(t, os.MkdirAll(bin, 0o755))
 			stub := "#!/bin/sh\nprintf '%s\\n' '" + tc.cliOutput + "'\nexit " + map[bool]string{true: "1", false: "0"}[tc.cliExit != 0] + "\n"
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(stub), 0o755))
@@ -661,7 +662,8 @@ func TestEvaluateCELRouteStep(t *testing.T) {
 			cmd := exec.Command("bash", "-c", script)
 			cmd.Dir = dir
 			cmd.Env = []string{
-				"PATH=" + bin + ":" + os.Getenv("PATH"),
+				"PATH=" + os.Getenv("PATH"),
+				"RUNNER_TEMP=" + runnerTemp,
 				"GITHUB_OUTPUT=" + outPath,
 				"EVENT_ACTION=opened",
 				"ROUTE_AGENT=review",
