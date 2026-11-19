@@ -212,8 +212,11 @@ func Validate(expr string) error {
 //
 // It returns True or False only when the known data settles the predicate,
 // and Unknown when the result depends on unresolved fields or on members a
-// partial collection may hold. Evaluation is bounded by a cost limit and
-// stops when ctx is cancelled, returning an error in either case. An error — a predicate that does not compile,
+// partial collection may hold. Evaluation is bounded by an internal wall-clock
+// timeout and stops when ctx is cancelled, returning an error in either case;
+// both are checked while comprehensions iterate, so a predicate with no
+// comprehension is not interrupted mid-run. Callers must check ctx themselves
+// after Evaluate returns. An error — a predicate that does not compile,
 // a malformed entity (wrapping [ErrMalformedEntity]), or an evaluation error
 // such as reading a field of a null event — is returned with Unknown and must
 // never be read as false.

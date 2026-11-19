@@ -169,6 +169,27 @@ func TestDecideEntityEligibility_CancelDuringEvaluationDefers(t *testing.T) {
 	assert.False(t, got.Outcome.MayStartSandbox())
 }
 
+func TestDecideEntityEligibility_CancelDuringResolutionDefersSimplePredicate(t *testing.T) {
+	for _, trigger := range []string{"true", "false"} {
+		t.Run(trigger, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			got := DecideEntityEligibility(ctx, EntityEvaluation{
+				Harness:       "h",
+				Trigger:       trigger,
+				EntitySources: true,
+				Authorize:     allow,
+				ResolveEntity: func(context.Context) (*ne.Entity, error) {
+					cancel()
+					return eligibilityEntity(t, ne.CoverageComplete), nil
+				},
+			})
+			assert.Equal(t, EntityDeferred, got.Outcome)
+			assert.False(t, got.Outcome.MayStartSandbox())
+		})
+	}
+}
+
 func TestEntityOutcome(t *testing.T) {
 	assert.Equal(t, EntityDenied, EntityOutcome(0), "the zero outcome fails closed")
 	for o, want := range map[EntityOutcome]string{

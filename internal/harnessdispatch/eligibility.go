@@ -125,6 +125,11 @@ func DecideEntityEligibility(ctx context.Context, ev EntityEvaluation) EntityDec
 	if entity == nil {
 		return deferred(ev, "resolving entity: no entity")
 	}
+	// CEL interrupts fire only while comprehensions iterate, so a context
+	// cancelled during resolution must be caught here, not left to Evaluate.
+	if err := ctx.Err(); err != nil {
+		return deferred(ev, "interrupted after resolving entity: %v", err)
+	}
 	res, err := entitycel.Evaluate(ctx, ev.Trigger, entity, eventMap)
 	if err != nil {
 		if errors.Is(err, entitycel.ErrMalformedEntity) {
@@ -134,6 +139,11 @@ func DecideEntityEligibility(ctx context.Context, ev EntityEvaluation) EntityDec
 			return deferred(ev, "evaluation interrupted: %v", err)
 		}
 		return denied(ev, "evaluating predicate: %v", err)
+	}
+	// A predicate without comprehensions completes even if ctx was cancelled
+	// mid-evaluation; never report a definite outcome for a cancelled run.
+	if err := ctx.Err(); err != nil {
+		return deferred(ev, "interrupted after evaluation: %v", err)
 	}
 	switch res {
 	case entitycel.True:
