@@ -120,6 +120,13 @@ and compatibility details belong in the
 > The job identity pin admitted those legitimate jobs, but its override cases
 > have not been tested. See
 > [ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status).
+>
+> **Update (#9597 / [ADR 0175](0175-allow-insecure-gitlab-pipeline-variable-restriction-opt-in.md)):**
+> `no_one_allowed` remains the default and the recommendation. Adopters who
+> cannot apply the setting may opt in explicitly
+> ([ADR 0175](0175-allow-insecure-gitlab-pipeline-variable-restriction-opt-in.md)).
+> With the opt-in, fullsend accepts a weaker setting and warns about the
+> credential exposure on every check.
 
 ## References
 
