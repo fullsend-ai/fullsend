@@ -628,6 +628,9 @@ sandbox environment, case-insensitively:
   `FULLSEND_WEBHOOK_SECRET`, the trace-context signing key
   `FULLSEND_TRACE_SIGNING_KEY`, `FULLSEND_INFERENCE_GATEWAY_API_KEY`,
   `FULLSEND_OPENAI_API_KEY`, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, the
+  bot-role helper's loopback address and bearer token
+  (`FULLSEND_BOT_ROLE_URL`, `FULLSEND_BOT_ROLE_TOKEN`, which go to host-side
+  scripts, never the sandbox), the
   runner-secret bundle and its staging path (`FULLSEND_GITHUB_RUNNER_SECRETS`,
   `FULLSEND_GITHUB_RUNNER_SECRETS_FILE`), the GitLab CI ID token a Vault
   connection authenticates with (`FULLSEND_VAULT_ID_TOKEN`), and the GitHub Actions OpenID Connect
