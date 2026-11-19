@@ -68,7 +68,9 @@ one entry that is not `~`, the runner resolves skill personas itself ([ADR 0104]
   Bootstrap. A persona the config does not name is warned about and left out instead.
 - When the agent declares `tools:`, a persona's tools are limited to the agent's: a persona that
   declares none gets the agent's tools without `Agent`, and tools the agent does not have are
-  dropped. Tools are matched by exact name. When the agent restricts `Agent(...)` (or `Task(...)`)
+  dropped. Tools are matched by exact name. The agent's `disallowedTools:` carry over to every
+  persona, whether or not the agent declares `tools:`, and are combined with the persona's own.
+  When the agent restricts `Agent(...)` (or `Task(...)`)
   to named sub-agent types, a persona outside that list is not registered, since Claude Code would
   refuse to dispatch it: Bootstrap fails if the config names it, and warns and leaves it out
   otherwise.

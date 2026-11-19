@@ -289,6 +289,58 @@ func TestClaudePersonas_ToolsNeverWiderThanTheAgent(t *testing.T) {
 	assert.Contains(t, err.Error(), "no tool the agent also has")
 }
 
+// The agent's disallowedTools: reach every persona, whether the agent
+// declares tools: or not, and merge with the persona's own denials.
+func TestClaudePersonas_AgentDenialsCarryOver(t *testing.T) {
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "plain", "---\nname: plain\ndescription: x\ntools: Read, Bash\n---\nbody\n")
+	writePersonaFile(t, skill, "own", "---\nname: own\ndescription: x\ndisallowedTools: WebFetch, Bash(git push *)\n---\nbody\n")
+	cfg := map[string]*string{"plain": strp("haiku"), "own": strp("haiku")}
+
+	denied := func(t *testing.T, files []claudePersonaFile, name string) []string {
+		t.Helper()
+		_, def := claudePersonaByName(t, files, name)
+		got, err := claudeDisallowedToolSpecs(def.Frontmatter)
+		require.NoError(t, err)
+		return got
+	}
+
+	for name, agent := range map[string]string{
+		"explicit tools": "---\nname: review\ntools: Agent, Read, Bash\ndisallowedTools: >-\n  Bash(git push *), Bash(rm *)\n---\nbody\n",
+		"omitted tools":  "---\nname: review\ndisallowedTools:\n  - Bash(git push *)\n  - Bash(rm *)\n---\nbody\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			files, _, err := claudePersonas(claudePersonaInput(skill, cfg), []byte(agent), false)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"Bash(git push *)", "Bash(rm *)"}, denied(t, files, "plain"))
+			assert.Equal(t, []string{"Bash(git push *)", "Bash(rm *)", "WebFetch"}, denied(t, files, "own"),
+				"the agent's denials come first; the persona's own are kept, without duplicates")
+		})
+	}
+
+	// No agent denials: a persona's own disallowedTools stays as written.
+	files, _, err := claudePersonas(claudePersonaInput(skill, cfg), []byte(claudeTestAgent), false)
+	require.NoError(t, err)
+	assert.Empty(t, denied(t, files, "plain"))
+	assert.Equal(t, []string{"WebFetch", "Bash(git push *)"}, denied(t, files, "own"))
+}
+
+func TestClaudePersonas_MalformedAgentDenialsFail(t *testing.T) {
+	agent := "---\nname: review\ndisallowedTools: 3\n---\nbody\n"
+	_, _, err := claudePersonas(claudePersonaInput(claudePersonaSkill(t), map[string]*string{"style": strp("haiku")}), []byte(agent), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disallowedTools")
+
+	// A persona whose own disallowedTools is malformed is left out, or
+	// fails when the config names it.
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "bad", "---\nname: bad\ndescription: x\ndisallowedTools: 3\n---\nbody\n")
+	agent = "---\nname: review\ndisallowedTools: Bash(rm *)\n---\nbody\n"
+	_, _, err = claudePersonas(claudePersonaInput(skill, map[string]*string{"bad": strp("haiku")}), []byte(agent), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disallowedTools")
+}
+
 func TestClaudePersonas_UnrestrictedAgentKeepsPersonaTools(t *testing.T) {
 	skill := t.TempDir()
 	writePersonaFile(t, skill, "reader", "---\nname: reader\ndescription: x\ntools:\n  - Read\n  - Grep\n---\nbody\n")
@@ -334,9 +386,9 @@ func TestClaudePersonas_MalformedAgentDefinition(t *testing.T) {
 }
 
 func TestClaudePersonaAgentFile_RejectsNonMapping(t *testing.T) {
-	_, err := claudePersonaAgentFile(piPersona{Name: "x", Frontmatter: []byte("- a\n")}, "", nil)
+	_, err := claudePersonaAgentFile(piPersona{Name: "x", Frontmatter: []byte("- a\n")}, "", nil, nil)
 	require.Error(t, err)
-	_, err = claudePersonaAgentFile(piPersona{Name: "x", Frontmatter: []byte("a: [\n")}, "", nil)
+	_, err = claudePersonaAgentFile(piPersona{Name: "x", Frontmatter: []byte("a: [\n")}, "", nil, nil)
 	require.Error(t, err)
 }
 

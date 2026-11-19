@@ -234,6 +234,10 @@ func resolveClaudePersonas(
 	}
 
 	agentAllowed, agentRestricted := claudeAgentDispatchAllowlist(parent.Frontmatter)
+	parentDenied, err := claudeDisallowedToolSpecs(parent.Frontmatter)
+	if err != nil {
+		return nil, fmt.Errorf("subagents: reading the agent definition: %w", err)
+	}
 
 	var out []claudePersonaFile
 	for _, p := range personas {
@@ -277,7 +281,15 @@ func resolveClaudePersonas(
 			continue
 		}
 
-		data, err := claudePersonaAgentFile(p, id, tools)
+		denied, err := claudePersonaDisallowedTools(p, parentDenied)
+		if err != nil {
+			if err := skip(err.Error()); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		data, err := claudePersonaAgentFile(p, id, tools, denied)
 		if err != nil {
 			if err := skip(err.Error()); err != nil {
 				return nil, err
@@ -301,6 +313,8 @@ func resolveClaudePersonas(
 // Task) when it declares none, and otherwise those of its own tools the
 // agent also has — the persona's spec where the agent's names the tool
 // without arguments, else the agent's. Matching is by exact tool name.
+// The agent's disallowedTools: are handled apart, by
+// claudePersonaDisallowedTools.
 func claudePersonaTools(p piPersona, parent *piAgentDef) ([]string, string) {
 	if p.Tools != nil && len(p.Tools) == 0 {
 		return nil, "declares an empty tool set; give it the tools it needs, or omit tools: to inherit the agent's"
@@ -341,6 +355,52 @@ func claudePersonaTools(p piPersona, parent *piAgentDef) ([]string, string) {
 		return nil, "has no tool the agent also has; a persona's tools are limited to the agent's"
 	}
 	return out, ""
+}
+
+// claudeDisallowedToolSpecs returns the specs in a frontmatter's
+// disallowedTools:, a comma-separated string or a YAML list as for tools:.
+func claudeDisallowedToolSpecs(frontmatter []byte) ([]string, error) {
+	var fm struct {
+		DisallowedTools any `yaml:"disallowedTools"`
+	}
+	if err := yaml.Unmarshal(frontmatter, &fm); err != nil {
+		return nil, fmt.Errorf("frontmatter does not parse: %w", err)
+	}
+	specs, err := piToolSpecs(fm.DisallowedTools)
+	if err != nil {
+		return nil, fmt.Errorf("disallowedTools: %w", err)
+	}
+	var out []string
+	for _, spec := range specs {
+		if spec = strings.TrimSpace(spec); spec != "" {
+			out = append(out, spec)
+		}
+	}
+	return out, nil
+}
+
+// claudePersonaDisallowedTools returns the disallowedTools: specs to write
+// for persona p, nil to keep its frontmatter as it is. The agent's denials
+// carry over to every persona, ahead of the persona's own, so a persona
+// never has a tool the agent is denied, whether or not the agent declares
+// tools:.
+func claudePersonaDisallowedTools(p piPersona, parentDenied []string) ([]string, error) {
+	if len(parentDenied) == 0 {
+		return nil, nil
+	}
+	own, err := claudeDisallowedToolSpecs(p.Frontmatter)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, spec := range slices.Concat(parentDenied, own) {
+		if !seen[spec] {
+			seen[spec] = true
+			out = append(out, spec)
+		}
+	}
+	return out, nil
 }
 
 // claudeToolSpecsByName maps each tool name in a frontmatter's tools: to
@@ -410,9 +470,10 @@ func claudeAgentDispatchAllowlist(frontmatter []byte) (allowed map[string]bool, 
 
 // claudePersonaAgentFile renders persona p as a Claude Code agent file: its
 // frontmatter with model: set to model (inherit when ""), tools: set to
-// tools when non-nil, and a description: when it has none (Claude Code
-// does not load an agent without one), then its body.
-func claudePersonaAgentFile(p piPersona, model string, tools []string) ([]byte, error) {
+// tools when non-nil, disallowedTools: set to disallowed when non-nil, and
+// a description: when it has none (Claude Code does not load an agent
+// without one), then its body.
+func claudePersonaAgentFile(p piPersona, model string, tools, disallowed []string) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(p.Frontmatter, &doc); err != nil {
 		return nil, fmt.Errorf("frontmatter does not parse: %w", err)
@@ -441,6 +502,9 @@ func claudePersonaAgentFile(p piPersona, model string, tools []string) ([]byte, 
 	set("model", model)
 	if tools != nil {
 		set("tools", strings.Join(tools, ", "))
+	}
+	if disallowed != nil {
+		set("disallowedTools", strings.Join(disallowed, ", "))
 	}
 	if p.Description == "" {
 		set("description", "Sub-agent persona "+p.Name)
