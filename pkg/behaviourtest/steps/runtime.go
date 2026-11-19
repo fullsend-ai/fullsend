@@ -48,6 +48,9 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the repository agents are configured with:$`, func(ctx context.Context, doc string) (context.Context, error) {
 		return ctx, givenRepositoryAgentSettings(world.FromContext(ctx), doc)
 	})
+	sc.Step(`^the repository imports config from "([^"]+)"$`, func(ctx context.Context, rawURL string) (context.Context, error) {
+		return ctx, givenRepositoryConfigImport(world.FromContext(ctx), rawURL)
+	})
 	sc.Step(`^the run selected the "([^"]+)" runtime$`, func(ctx context.Context, name string) (context.Context, error) {
 		return ctx, assertRunSelectedRuntime(world.FromContext(ctx), name)
 	})
@@ -192,6 +195,62 @@ func readPerRepoConfig(w *world.World, cfgPath string) (config.PerRepoConfigWrit
 		return nil, fmt.Errorf("config at %s is not a per-repo config (%T)", cfgPath, parsed)
 	}
 	return cfg, nil
+}
+
+// givenRepositoryConfigImport appends a pinned URL to config.yaml's imports
+// list and saves the original file for scenario cleanup. It edits the raw YAML
+// so the import is not fetched by the step itself; fullsend resolves it during
+// the behavior run, exercising the user-facing path.
+func givenRepositoryConfigImport(w *world.World, rawURL string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before config operations")
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return fmt.Errorf("config import URL is required")
+	}
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	original, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(original, &doc); err != nil {
+		return fmt.Errorf("parsing config YAML: %w", err)
+	}
+	if doc == nil {
+		doc = make(map[string]any)
+	}
+	var imports []any
+	if existing, ok := doc["imports"]; ok {
+		sequence, ok := existing.([]any)
+		if !ok {
+			return fmt.Errorf("config imports must be a YAML sequence")
+		}
+		imports = sequence
+	}
+	for _, item := range imports {
+		value, ok := item.(string)
+		if !ok {
+			return fmt.Errorf("config imports must contain only strings")
+		}
+		if value == rawURL {
+			return fmt.Errorf("config import URL is already present")
+		}
+	}
+	doc["imports"] = append(imports, rawURL)
+	updated, err := yaml.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("marshaling config YAML: %w", err)
+	}
+	if err := commitVerified(w, cfgPath, "behaviour: add pinned config import", updated); err != nil {
+		return fmt.Errorf("updating config: %w", err)
+	}
+	if !w.ConfigImportsOverridden {
+		w.ConfigImportsOriginal = append([]byte(nil), original...)
+		w.ConfigImportsOverridden = true
+	}
+	return nil
 }
 
 // givenRepositoryAgentSettings commits per-agent runtime/model/effort (a

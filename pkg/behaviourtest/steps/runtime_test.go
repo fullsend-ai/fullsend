@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -100,6 +101,53 @@ func TestGivenRepositoryRuntime_RejectsUnknownAndMissingRepo(t *testing.T) {
 	assert.False(t, w.RuntimeOverridden)
 
 	require.ErrorContains(t, givenRepositoryRuntime(&world.World{SCM: scmDriver}, "pi"), "no repo configured")
+}
+
+func TestGivenRepositoryConfigImport_AppendsPinnedURLAndSnapshotsOriginal(t *testing.T) {
+	t.Parallel()
+	original := []byte(perRepoDummyConfig)
+	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: original}}
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
+	const importURL = "https://raw.githubusercontent.com/fullsend-ai/fullsend/0123456789abcdef0123456789abcdef01234567/config.yaml#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	require.NoError(t, givenRepositoryConfigImport(w, importURL))
+	assert.True(t, w.ConfigImportsOverridden)
+	assert.Equal(t, original, w.ConfigImportsOriginal)
+	assert.Equal(t, filepath.Join(".fullsend", "config.yaml"), scmDriver.lastPath)
+	var written map[string]any
+	require.NoError(t, yaml.Unmarshal(scmDriver.lastContent, &written))
+	assert.Equal(t, []any{importURL}, written["imports"])
+}
+
+func TestGivenRepositoryConfigImportRejectsMalformedImportsAndMissingRepo(t *testing.T) {
+	t.Parallel()
+	const importURL = "https://raw.githubusercontent.com/fullsend-ai/fullsend/0123456789abcdef0123456789abcdef01234567/config.yaml#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	badConfig := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte("imports: nope\n")}}
+	err := givenRepositoryConfigImport(&world.World{Org: "org", RepoName: "repo", SCM: badConfig}, importURL)
+	require.ErrorContains(t, err, "imports must be a YAML sequence")
+	assert.False(t, badConfig.commitFileCalled)
+
+	require.ErrorContains(t, givenRepositoryConfigImport(&world.World{SCM: badConfig}, importURL), "no repo configured")
+}
+
+func TestRestoreConfigImportsRestoresOriginalAndClearsSnapshot(t *testing.T) {
+	t.Parallel()
+	original := []byte(perRepoDummyConfig)
+	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte("imports: [https://example.invalid/pinned]\n")}}
+	w := &world.World{
+		Org:                     "org",
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		SCM:                     scmDriver,
+		ConfigImportsOverridden: true,
+		ConfigImportsOriginal:   original,
+	}
+
+	require.NoError(t, RestoreConfigImports(w))
+	assert.Equal(t, original, scmDriver.lastContent)
+	assert.False(t, w.ConfigImportsOverridden)
+	assert.Nil(t, w.ConfigImportsOriginal)
 }
 
 func TestRestoreRuntime_PutsOriginalBack(t *testing.T) {
