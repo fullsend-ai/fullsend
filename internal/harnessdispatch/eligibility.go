@@ -125,10 +125,13 @@ func DecideEntityEligibility(ctx context.Context, ev EntityEvaluation) EntityDec
 	if entity == nil {
 		return deferred(ev, "resolving entity: no entity")
 	}
-	res, err := entitycel.Evaluate(ev.Trigger, entity, eventMap)
+	res, err := entitycel.Evaluate(ctx, ev.Trigger, entity, eventMap)
 	if err != nil {
 		if errors.Is(err, entitycel.ErrMalformedEntity) {
 			return deferred(ev, "%v", err)
+		}
+		if ctx.Err() != nil {
+			return deferred(ev, "evaluation interrupted: %v", err)
 		}
 		return denied(ev, "evaluating predicate: %v", err)
 	}

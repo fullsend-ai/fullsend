@@ -1,9 +1,11 @@
 package entitycel
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common"
@@ -14,6 +16,20 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/normentity"
 )
+
+// evalTimeout bounds the wall-clock time of one predicate evaluation, so a
+// deeply nested comprehension over large collections cannot spin. It is far
+// above any realistic entity-source predicate. A variable so tests can shrink
+// it.
+//
+// A cel.CostLimit is not used: cel-go's runtime cost tracker assumes every
+// Sizer reports a concrete integer size, which a partial list (whose size is
+// unknown) deliberately does not.
+var evalTimeout = 5 * time.Second
+
+// interruptCheckFrequency is how many comprehension iterations run between
+// checks of the evaluation context for cancellation.
+const interruptCheckFrequency = 100
 
 // Result is the three-valued result of an entity-source predicate. The zero
 // value is Unknown so an unset result never reads as a definite answer.
@@ -196,11 +212,12 @@ func Validate(expr string) error {
 //
 // It returns True or False only when the known data settles the predicate,
 // and Unknown when the result depends on unresolved fields or on members a
-// partial collection may hold. An error — a predicate that does not compile,
+// partial collection may hold. Evaluation is bounded by a cost limit and
+// stops when ctx is cancelled, returning an error in either case. An error — a predicate that does not compile,
 // a malformed entity (wrapping [ErrMalformedEntity]), or an evaluation error
 // such as reading a field of a null event — is returned with Unknown and must
 // never be read as false.
-func Evaluate(expr string, entity *normentity.Entity, event map[string]any) (Result, error) {
+func Evaluate(ctx context.Context, expr string, entity *normentity.Entity, event map[string]any) (Result, error) {
 	bound, err := Bind(entity)
 	if err != nil {
 		return Unknown, fmt.Errorf("%w: %w", ErrMalformedEntity, err)
@@ -213,7 +230,9 @@ func Evaluate(expr string, entity *normentity.Entity, event map[string]any) (Res
 	if err != nil {
 		return Unknown, err
 	}
-	prg, err := env.Program(checked, cel.CustomDecoratorV2(decorate))
+	prg, err := env.Program(checked,
+		cel.CustomDecoratorV2(decorate),
+		cel.InterruptCheckFrequency(interruptCheckFrequency))
 	if err != nil {
 		return Unknown, err
 	}
@@ -221,7 +240,9 @@ func Evaluate(expr string, entity *normentity.Entity, event map[string]any) (Res
 	if event != nil {
 		ev = event
 	}
-	out, _, err := prg.Eval(map[string]any{RootEntity: bound, RootEvent: ev})
+	ctx, cancel := context.WithTimeout(ctx, evalTimeout)
+	defer cancel()
+	out, _, err := prg.ContextEval(ctx, map[string]any{RootEntity: bound, RootEvent: ev})
 	if err != nil {
 		return Unknown, err
 	}

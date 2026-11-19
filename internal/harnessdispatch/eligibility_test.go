@@ -151,6 +151,24 @@ func TestDecideEntityEligibility_CancelDuringAuthorizeDefers(t *testing.T) {
 	assert.False(t, got.Outcome.MayStartSandbox())
 }
 
+func TestDecideEntityEligibility_CancelDuringEvaluationDefers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	list := "[0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9]"
+	got := DecideEntityEligibility(ctx, EntityEvaluation{
+		Harness:       "h",
+		Trigger:       list + ".all(a, " + list + ".all(b, a + b >= 0))",
+		EntitySources: true,
+		Authorize:     func(context.Context) error { return nil },
+		ResolveEntity: func(context.Context) (*ne.Entity, error) {
+			cancel()
+			return eligibilityEntity(t, ne.CoverageComplete), nil
+		},
+	})
+	assert.Equal(t, EntityDeferred, got.Outcome)
+	assert.False(t, got.Outcome.MayStartSandbox())
+}
+
 func TestEntityOutcome(t *testing.T) {
 	assert.Equal(t, EntityDenied, EntityOutcome(0), "the zero outcome fails closed")
 	for o, want := range map[EntityOutcome]string{

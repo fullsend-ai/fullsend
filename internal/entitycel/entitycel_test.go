@@ -1,6 +1,8 @@
 package entitycel
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -190,7 +192,7 @@ func TestEvaluate(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(e)
 			}
-			got, err := Evaluate(tt.expr, e, tt.event)
+			got, err := Evaluate(context.Background(), tt.expr, e, tt.event)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Equal(t, Unknown, got, "an error must never read as a definite result")
@@ -216,7 +218,7 @@ func TestEvaluateNonCompleteCoverageStaysUnknown(t *testing.T) {
 				`entity.labels == []`,
 				`"bug" in entity.labels`,
 			} {
-				got, err := Evaluate(expr, e, nil)
+				got, err := Evaluate(context.Background(), expr, e, nil)
 				require.NoError(t, err, expr)
 				assert.Equal(t, Unknown, got, expr)
 			}
@@ -232,7 +234,7 @@ func TestEvaluateUnknownReasonsStayUnknown(t *testing.T) {
 			e := workItem(t)
 			e.State = ne.Unknown[ne.State](reason)
 			for _, expr := range []string{`entity.state == "open"`, `entity.state != "open"`} {
-				got, err := Evaluate(expr, e, nil)
+				got, err := Evaluate(context.Background(), expr, e, nil)
 				require.NoError(t, err, expr)
 				assert.Equal(t, Unknown, got, expr)
 			}
@@ -259,17 +261,17 @@ func TestEvaluateExtensions(t *testing.T) {
 		`size(entity.extensions.properties) == 0`:                            True,
 	}
 	for expr, want := range tests {
-		got, err := Evaluate(expr, e, nil)
+		got, err := Evaluate(context.Background(), expr, e, nil)
 		require.NoError(t, err, expr)
 		assert.Equal(t, want, got, expr)
 	}
 
 	e.Extensions.CustomFields["bad"] = ne.ExtensionEntry{SourceKey: "x", Value: ne.Known(ne.ExtensionValue{})}
-	_, err := Evaluate(`true`, e, nil)
+	_, err := Evaluate(context.Background(), `true`, e, nil)
 	require.ErrorIs(t, err, ErrMalformedEntity)
 
 	e.Extensions.CustomFields["bad"] = ne.ExtensionEntry{SourceKey: "x", Value: ne.Known(ne.ExtensionValue{Atom: &ne.ExtensionAtom{}})}
-	_, err = Evaluate(`true`, e, nil)
+	_, err = Evaluate(context.Background(), `true`, e, nil)
 	require.Error(t, err)
 }
 
@@ -307,7 +309,7 @@ func TestBind(t *testing.T) {
 
 	_, err = Bind(nil)
 	require.Error(t, err)
-	_, err = Evaluate(`true`, nil, nil)
+	_, err = Evaluate(context.Background(), `true`, nil, nil)
 	require.ErrorIs(t, err, ErrMalformedEntity)
 }
 
@@ -353,6 +355,44 @@ func TestValidateBoundsMacroExpansion(t *testing.T) {
 			}
 		})
 	}
+}
+
+// intList returns a CEL list literal of n integers.
+func intList(n int) string {
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = fmt.Sprint(i)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
+func TestEvaluateBoundsTime(t *testing.T) {
+	l := intList(100)
+	expr := fmt.Sprintf(`%[1]s.all(a, %[1]s.all(b, %[1]s.all(c, a + b + c >= 0)))`, l)
+	require.NoError(t, Validate(expr), "the predicate itself is well formed")
+
+	old := evalTimeout
+	evalTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { evalTimeout = old })
+
+	got, err := Evaluate(context.Background(), expr, workItem(t), nil)
+	require.Error(t, err, "cubic work exceeds the evaluation budget")
+	assert.Equal(t, Unknown, got, "a timeout error is never a definite answer")
+}
+
+func TestEvaluateStopsOnCancelledContext(t *testing.T) {
+	l := intList(50)
+	expr := fmt.Sprintf(`%[1]s.all(a, %[1]s.all(b, a + b >= 0))`, l)
+
+	got, err := Evaluate(context.Background(), expr, workItem(t), nil)
+	require.NoError(t, err, "within the budget it completes")
+	assert.Equal(t, True, got)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got, err = Evaluate(ctx, expr, workItem(t), nil)
+	require.Error(t, err, "a cancelled context interrupts evaluation")
+	assert.Equal(t, Unknown, got)
 }
 
 func TestPartialListValue(t *testing.T) {
