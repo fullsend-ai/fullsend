@@ -584,6 +584,16 @@ The run stops before setup when:
 
 For the exact errors and fixes, see [Self-Hosted GitLab Instances](../guides/getting-started/configuring-gitlab.md#self-hosted-gitlab-instances). For the credential contract, see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
 
+## GitHub servers other than github.com
+
+When `GITHUB_SERVER_URL` names a GitHub server other than github.com, such as GitHub Enterprise Server or a GitHub-compatible API, `fullsend run` points the sandbox's GitHub access at that server. The Actions runner sets `GITHUB_SERVER_URL` for every job, so no configuration is required. On github.com or when the variable is unset, nothing changes.
+
+- **Provider profiles.** Every imported provider profile that issues `GH_TOKEN` also gets an endpoint for the server's host and port. Each one is cloned from one of the profile's `api.github.com` or `github.com` endpoints, keeping its protocol, access and enforcement. GraphQL moves to `/api/graphql`, where GitHub Enterprise Server serves it. The clones leave out the github.com endpoint's `ports` and `allowed_ips`. If `api.github.com` and `github.com` specify different access for the same protocol and path, the clone takes the read-only one. Endpoints the profile already names for the server are not added again, and source files are never modified. As with GitLab, the run stops if an imported provider profile uses YAML merge keys, alias keys, duplicate keys or more than one document.
+- **Sandbox `.env`.** The runner writes `GH_HOST` (the server's host, plus `:port` when it is not 443) and `GH_ENTERPRISE_TOKEN="${GH_TOKEN}"`. On such a host, `gh` reads its token from `GH_ENTERPRISE_TOKEN`, not `GH_TOKEN`. `GH_ENTERPRISE_TOKEN` holds the same OpenShell placeholder as `GH_TOKEN`, so the real token still never enters the sandbox. Both are runner-owned, so `env.sandbox` cannot override them.
+- **OIDC.** The gateway and OpenAI WIF routes also accept the server's own host and port as the Actions token service (`ACTIONS_ID_TOKEN_REQUEST_URL`). An inference gateway reached this way must trust that server's OIDC issuer.
+
+The server URL follows the rule the GitHub API client uses: `https`, no userinfo, path, query or fragment. A URL that breaks this rule leaves the run on github.com. GHE.com (`*.ghe.com`) is not bound: `gh` calls `api.<host>` there and reads `GH_TOKEN`.
+
 ## GitHub Packages credentials
 
 On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's workflow token) to
