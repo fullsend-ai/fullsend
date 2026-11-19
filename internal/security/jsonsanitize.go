@@ -379,12 +379,16 @@ func jsonLineSpans(content []byte) []recordSpan {
 // the clean records between them.
 //
 // The per-record pass has already handled every match a single record could
-// account for, so a remaining match spans a record boundary. Locating the
-// records it covers means finding each record's bytes again in the redacted
-// stream, which is only trustworthy when every record is distinct: with a
-// repeated record, a later untouched copy can stand in for the copy a match
-// covered, and the original bytes — carrying part of the secret — would be
-// written back. When that happens the whole stream fails closed.
+// account for, so a remaining match spans a record boundary. Localization is
+// conservative but per record, not all-or-nothing: inside the changed region a
+// record is kept only when its bytes are unique in the stream and reappear as a
+// whole newline-delimited record in the redacted stream. Locating a covered
+// record means finding its bytes again in the redacted stream, which is only
+// trustworthy when the record is distinct: with a repeated record, a later
+// untouched copy can stand in for the copy a match covered, and the original
+// bytes — carrying part of the secret — would be written back. Such a record is
+// replaced. Records outside the changed region are copied through, duplicates
+// included.
 func failClosedRecordSpans(stream []byte, spans []recordSpan, scan ScanResult) []byte {
 	sanitized := []byte(scan.Sanitized)
 
@@ -441,20 +445,6 @@ func changedRegion(a, b []byte) (int, int) {
 		end++
 	}
 	return start, len(a) - end
-}
-
-// replaceRecordSpans replaces every record with a valid marker when the
-// records a match covers cannot be identified unambiguously.
-func replaceRecordSpans(stream []byte, spans []recordSpan) []byte {
-	var out bytes.Buffer
-	cursor := 0
-	for _, span := range spans {
-		out.Write(stream[cursor:span.start])
-		out.WriteString(failClosedCrossRecordJSON)
-		cursor = span.end
-	}
-	out.Write(stream[cursor:])
-	return out.Bytes()
 }
 
 // lineBounded reports whether data[start:end] is a whole newline-delimited

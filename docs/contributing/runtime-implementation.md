@@ -632,9 +632,12 @@ record framing; a secret that spans records cannot be redacted without
 rewriting that framing, so only the records it covers are replaced. A
 private-key block spanning records is detected in a decoded view of the stream,
 before per-record masking can remove its BEGIN marker, so a marker written with
-\u escapes is still recognized. When the covered records
-cannot be identified unambiguously — their contents also appear elsewhere in
-the stream — every record fails closed.
+\u escapes is still recognized. Localization inside the changed region is
+conservative but per record: a record is kept only when its bytes are unique in
+the stream and reappear as a whole line in the redacted stream, because a
+repeated record could otherwise let an untouched copy stand in for the covered
+one. Records outside the changed region, duplicates included, are copied through
+unchanged.
 
 Some content cannot be redacted in place. A JSON document or JSONL record is
 replaced with a valid fail-closed marker instead — never with corrupted
