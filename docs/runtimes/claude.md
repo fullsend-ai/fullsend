@@ -42,7 +42,8 @@ call. The one other supported route is the
 to `--model` and `--fallback-model`, and the alias has no built-in fallback chain. A repo that
 pinned the 5.5 ids here before they became the default can drop the pin to get the fallback. Syntax, rules
 and what the plan block shows are on the [pi page](pi.md#per-repo-alias-overrides) — it is the
-same block. It covers the run's own model only.
+same block. It covers the run's own model, and persona models when an `agents[].subagents` block
+is set (see [Per-persona models](#per-persona-models)).
 
 **Sub-agents.** Without an `agents[].subagents` block, sub-agent `model:` frontmatter is resolved
 by Claude Code itself, with its own alias table for the pinned version. fullsend's defaults and
@@ -50,7 +51,9 @@ fallback chain do not apply there, and fullsend does not set
 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`: a pinned 5.5 id there would fail every sub-agent on
 a project that does not serve it. A sub-agent that needs a specific generation names the id.
 
-**Per-persona models.** When the agent's `agents:` entry sets a `subagents:` block with at least
+### Per-persona models
+
+When the agent's `agents:` entry sets a `subagents:` block with at least
 one entry that is not `~`, the runner resolves skill personas itself ([ADR 0104](../ADRs/0104-per-persona-model-resolution.md)):
 
 - Each `sub-agents/*.md` persona in the agent's skills is registered as a Claude Code agent,
