@@ -244,6 +244,13 @@ func (b *builder) thread(t *normentity.Thread, comments map[string]Outcome) {
 		t.Resolved = normentity.Unknown[bool](normentity.ReasonFailed)
 		b.value("threads.resolved_by", Unresolved)
 	}
+	// A thread with no resolver keeps resolved=false as known: the
+	// normalized-entity contract makes resolved_by null for every unresolved
+	// thread, so an open thread is unattributed raw source state that cannot
+	// be told apart from one reopened by a below-minimum actor. Threads are
+	// kept regardless of who opened them, so this adds no capability beyond
+	// what raw thread existence already gives. Only resolutions (true) are
+	// attributed above.
 	b.extensions(t.Extensions)
 }
 
