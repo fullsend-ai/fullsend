@@ -98,16 +98,23 @@ func TestHarnessDispatchAssertions_RequestCounts(t *testing.T) {
 func TestHarnessDispatchAssertions_SkippedRunNeedsNoJobs(t *testing.T) {
 	t.Parallel()
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	fake := forge.NewFakeClient()
-	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
-		{ID: 1, Status: "completed", Conclusion: "skipped", CreatedAt: after.Format(time.RFC3339)},
-	}}
-	fake.Errors["ListWorkflowRunJobs"] = errors.New("jobs must not be requested for a skipped workflow")
-	d := &Driver{Client: fake}
-	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
-	require.NoError(t, err)
-	assert.Zero(t, count)
-	require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
+	// action_required: a first-time contributor's fork pull request run held
+	// for approval; it ran no job and its listing can 404 (#9221).
+	for _, conclusion := range []string{"skipped", "action_required"} {
+		t.Run(conclusion, func(t *testing.T) {
+			t.Parallel()
+			fake := forge.NewFakeClient()
+			fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
+				{ID: 1, Status: "completed", Conclusion: conclusion, CreatedAt: after.Format(time.RFC3339)},
+			}}
+			fake.Errors["ListWorkflowRunJobs"] = errors.New("jobs must not be requested for a run that ran no job")
+			d := &Driver{Client: fake}
+			count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+			require.NoError(t, err)
+			assert.Zero(t, count)
+			require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
+		})
+	}
 }
 
 func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {

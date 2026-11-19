@@ -299,8 +299,8 @@ agent, see
 ### Choosing when review runs
 
 By default, the dispatch workflow decides when the review agent runs: when a
-pull request is opened, pushed to or marked ready, when the
-`ready-for-review` label is added, and on a `/fs-review` comment. To decide it
+same-repository pull request is opened, pushed to, marked ready or labeled
+`ready-for-review`, and on a `/fs-review` comment. To decide it
 yourself, give the `review` entry in `.fullsend/config.yaml` a `trigger`: a
 [CEL expression](#writing-cel-triggers) over the event. The review still
 runs in the same `Review` job; the trigger only decides whether that job
@@ -350,6 +350,10 @@ to CEL:
 | `trigger` on the `review` entry | The trigger |
 | A `review` entry with `source:` whose harness sets or inherits `trigger:` | The dispatch workflow, as before |
 
+Neither path routes fork or Dependabot pull request events on `pull_request`;
+review on those pull requests starts from a `/fs-review` comment (see
+[Required upgrade](../getting-started/repo-management.md#required-upgrade-shim-moves-from-pull_request_target-to-pull_request)).
+
 A harness `trigger:` field never changes when a built-in agent runs, whether
 your own harness writes it, inherits it through `base:`, or the entry's
 `harness:` block sets it. To route review by
@@ -372,7 +376,7 @@ the dispatch workflow's built-in rules:
 | Pull request opened or pushed by a bot without a registered fullsend role | Reviewed | Not reviewed |
 | Pull request pushed by the fix agent | Reviewed | Not reviewed until [#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, so the review → fix → re-review loop stops |
 | Who is checked when a pull request is opened, pushed to or marked ready | The pull request author | The user who sent the event |
-| A maintainer's push to an outside contributor's fork pull request | Not reviewed | Reviewed |
+| A push by a user with triage access or higher to an outside contributor's fork pull request | Not reviewed (the pull request author is checked; with the `pull_request` shim, fork PR events are not routed at all) | Not reviewed with the `pull_request` shim (fork PR events are not routed). Reviewed only by a shim still on `pull_request_target` |
 
 > [!WARNING]
 > Opt in only after
@@ -413,9 +417,9 @@ the review entry is disabled.
 
 ### Choosing when retro runs
 
-By default, the dispatch workflow starts the retro agent when a pull request
-is closed, merged or not, and on a `/fs-retro` comment on an issue or a pull
-request. To decide it yourself, give the `retro` entry in
+By default, the dispatch workflow starts the retro agent when a
+same-repository pull request is closed, merged or not, and on a `/fs-retro`
+comment on an issue or a pull request (a fork pull request needs the comment). To decide it yourself, give the `retro` entry in
 `.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
 job; the trigger only decides whether that job starts. What opts a repository
 in, and how to check the decision, work as for review: see
@@ -451,13 +455,15 @@ and a bot's `/fs-retro` comment never starts a retro.
 
 A trigger decides which events start a retro, not who may start one:
 
-- **Closing a pull request:** the closing actor needs write access. If the
+- **Closing a pull request:** applies to same-repository pull requests (fork
+  pull requests get no automatic retro on close; comment `/fs-retro`). The
+  closing actor needs write access. If the
   permission lookup or CEL routing fails, the close event does not start retro.
   A custom retro harness role cannot lower this write requirement.
   Merge-queue events follow the same rule: the event sender needs write access.
   Other automated senders without write access are denied; a write user can
   run `/fs-retro` afterward. See the
-  [authorization contract](../../normative/authorization/v1/README.md#closed-pull-request-retro-pull_request_targetclosed).
+  [authorization contract](../../normative/authorization/v1/README.md#closed-pull-request-retro-pull_request-and-pull_request_target-closed).
 - **`/fs-retro`:** users with write access or above. A custom retro harness
   role cannot lower this fixed floor, and CEL cannot start retro when the Bash
   route denied the actor.

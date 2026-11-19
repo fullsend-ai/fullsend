@@ -1003,6 +1003,48 @@ to commit SHAs and uses git ancestry checking via the forge API to
 detect downgrades. If the ancestry check fails (e.g., API error), the
 upgrade proceeds rather than blocking — graceful degradation.
 
+### Required upgrade: shim moves from `pull_request_target` to `pull_request`
+
+GitHub blocks `pull_request_target` by default in public repositories from
+December 2, 2026. Repositories whose `.github/workflows/fullsend.yaml` still
+triggers on it lose automatic review and retro from that date. Triage,
+`/fs-*` commands (including `/fs-review`) and the fix loop keep working.
+
+Upgrade every public repository before that date, using the steps in
+[Rolling out a new fullsend version](#rolling-out-a-new-fullsend-version).
+Private and internal repositories are not blocked, and a shim that is not
+upgraded keeps working there (the warning appears only in public
+repositories). Any upgrade to a fullsend version with the new shim installs
+the same `pull_request` shim, with the effects below.
+`fullsend repos install` rewrites the trigger and the workflow pin in one
+commit. After the upgrade:
+
+- **Same-repo PRs** are reviewed automatically, as before, except while the
+  PR has a merge conflict: GitHub does not run `pull_request` workflows until
+  the conflict is resolved. Comment `/fs-review` or `/fs-retro` meanwhile.
+- **Fork PRs** are not reviewed or retro'd automatically, whoever the author
+  is: an org member or maintainer working from a fork loses the automatic
+  review they got before. Someone with triage or higher access (or an OWNERS
+  approver or reviewer, when the `owners_file` provider is on) comments
+  `/fs-review` on the PR to start a review. Contributors who want automatic
+  review push their branch to the repository instead of a fork.
+- **Dependabot PRs**: events Dependabot itself triggers (opening the PR,
+  its own pushes and closes) are not routed, because GitHub gives those
+  `pull_request` runs only Dependabot secrets. A maintainer's push, merge or
+  close is routed as usual. Someone with triage access or higher comments
+  `/fs-review` on the PR to review it.
+- **Private repositories:** before upgrading, check **Settings → Actions →
+  General → Fork pull request workflows** and keep "Send write tokens to
+  workflows from pull requests" and "Send secrets to workflows from pull
+  requests" turned off; `fullsend repos install` does not check them yet
+  ([#9630](https://github.com/fullsend-ai/fullsend/issues/9630)). For vendored
+  installs (`vendor: true`) it is the only control, because a fork PR runs
+  its own copy of the vendored workflows.
+
+Until a repository upgrades, the dispatch still accepts `pull_request_target`
+and logs a warning on each such run (see
+[Troubleshooting](#shim-still-triggers-on-pull_request_target)).
+
 ## Troubleshooting
 
 ### Errors that say "server error text withheld"
@@ -1020,6 +1062,17 @@ server message, and a stderr log line for each GitLab API request
 and token-shaped values are redacted; see
 [Verbose output](../../cli/repos.md#verbose-output) for what is shown and
 what is redacted.
+
+### Shim still triggers on pull_request_target
+
+The dispatch run shows:
+
+```
+This repository's fullsend shim still triggers on pull_request_target, which GitHub blocks by default in public repositories from its announced enforcement date. Re-run 'fullsend repos install' to move the shim to pull_request.
+```
+
+The repository runs an old shim. Upgrade it as described in
+[Required upgrade: shim moves from `pull_request_target` to `pull_request`](#required-upgrade-shim-moves-from-pull_request_target-to-pull_request).
 
 ### Unknown field errors in repos.yaml
 

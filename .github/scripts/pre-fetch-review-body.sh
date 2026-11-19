@@ -14,7 +14,8 @@
 #
 # Writes the body of the latest CHANGES_REQUESTED review submitted by a
 # recognized review bot to ${GITHUB_WORKSPACE}/review-body.txt and emits
-# review_file=<path> to GITHUB_OUTPUT.
+# review_file=<path> to GITHUB_OUTPUT. Emits policy_skip=true only when a
+# bot-triggered run has no review body to act on.
 #
 # Reviews are fetched across every API page. The reviews endpoint returns
 # 30 reviews per page by default (100 at most), so on a PR with many
@@ -24,6 +25,10 @@
 # finds no review body to act on.
 
 set -euo pipefail
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "policy_skip=false" >> "${GITHUB_OUTPUT}"
+fi
 
 REVIEW_FILE="${GITHUB_WORKSPACE:-.}/review-body.txt"
 REVIEW_BOT="${ORG_NAME}-review[bot]"
@@ -35,6 +40,7 @@ fi
 
 ERR_FILE="$(mktemp)"
 trap 'rm -f "${ERR_FILE}"' EXIT
+REVIEW_FETCH_FAILED=false
 
 # Collect every page before selecting: `last` must run over the combined
 # review list, not per page (see docs/contributing/shell-scripting.md).
@@ -52,6 +58,7 @@ if ! gh api --paginate "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews?per_page=10
   ERR_MSG="$(head -c 500 "${ERR_FILE}" | tr '\r\n' '  ')"
   echo "::warning::Failed to fetch reviews for PR #${PR_NUM}: ${ERR_MSG//::/__}"
   echo "" > "${REVIEW_FILE}"
+  REVIEW_FETCH_FAILED=true
 fi
 
 # BSD wc (macOS) pads the count with leading spaces; strip them (#9298).
@@ -64,6 +71,9 @@ if [[ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]]; then
 fi
 if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ && "${BYTE_COUNT}" -le 1 ]]; then
   echo "::error::Bot-triggered run but review body is empty — nothing to fix"
+  if [[ "${REVIEW_FETCH_FAILED}" != "true" && -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "policy_skip=true" >> "${GITHUB_OUTPUT}"
+  fi
   exit 1
 fi
 echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT:-/dev/null}"

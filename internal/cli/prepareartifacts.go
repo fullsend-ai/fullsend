@@ -229,9 +229,10 @@ func artifactRunSource(absFullsendDir, eventFile string) (source, how string, er
 
 // nativeGitHubEvents are the GitHub Actions event names that only GitHub
 // itself starts: the triggers of the shipped fullsend shim (issues,
-// issue_comment, pull_request_target, pull_request_review) plus the
-// pull_request and pull_request_review_comment events a custom caller may
-// use. None of them can carry a run started from a tracker.
+// issue_comment, pull_request, pull_request_review), pull_request_target
+// from shims that have not been upgraded (#9221), and the
+// pull_request_review_comment event a custom caller may use. None of them
+// can carry a run started from a tracker.
 //
 // In a reusable workflow GITHUB_EVENT_NAME is the caller's event. The Jira
 // poller's caller runs on schedule or workflow_dispatch, so the stage jobs
