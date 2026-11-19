@@ -142,9 +142,12 @@ JOB_RESPONSE_OVERRIDE="" \
 echo "== podman secret store =="
 # An unreadable secret store makes OpenShell sandbox creation fail (#9675).
 # prepare.sh must fail as a runner system failure before pulling the image or
-# starting a gateway. Emptying secrets/secrets.json breaks every `podman
-# secret` command; emptying secrets/filedriver/secretsdata.json breaks only
-# `secret create`, while `secret ls` still exits 0. The probe must catch both.
+# starting a gateway. The probe runs inside the prune-lock section, after the
+# prune and before the pull (prune -> probe -> pull), so a failed probe must
+# also release the lock via the EXIT trap. Emptying secrets/secrets.json
+# breaks every `podman secret` command; emptying
+# secrets/filedriver/secretsdata.json breaks only `secret create`, while
+# `secret ls` still exits 0. The probe must catch both.
 # The broken shims log every call and delegate everything else to the shims
 # above; SECRET_FAULT selects which secret commands fail:
 #   index  - ls and create fail (secrets.json emptied)
@@ -156,7 +159,20 @@ echo "== podman secret store =="
 PROBE_STATE="${FAKE_HOME}/probe-secret-exists"
 BROKEN_DIR="${FAKE_HOME}/broken-shims"
 CALL_LOG="${FAKE_HOME}/calls.log"
+LOCK_LOG="${FAKE_HOME}/lock.log"
+REAL_FLOCK=$(command -v flock)
 mkdir -p "${BROKEN_DIR}"
+# prune_unused_podman_storage only runs an executable podman-prune.sh; install
+# a stub that records its call so the prune -> probe -> pull order is visible.
+mkdir -p "${FAKE_HOME}/.local/lib/fullsend"
+printf '#!/bin/sh\necho "prune" >> "%s"\nexit 0\n' "${CALL_LOG}" \
+  > "${FAKE_HOME}/.local/lib/fullsend/podman-prune.sh"
+chmod +x "${FAKE_HOME}/.local/lib/fullsend/podman-prune.sh"
+# Record flock calls (acquire -x, release -u) in a separate log so the
+# last-call check on CALL_LOG is unaffected, then run the real flock on the
+# inherited lock fd.
+printf '#!/bin/sh\necho "flock $*" >> "%s"\nexec "%s" "$@"\n' \
+  "${LOCK_LOG}" "${REAL_FLOCK}" > "${BROKEN_DIR}/flock"
 cat > "${BROKEN_DIR}/podman" <<PODMAN
 #!/bin/sh
 echo "podman \$*" >> "${CALL_LOG}"
@@ -189,7 +205,13 @@ cat > "${BROKEN_DIR}/openshell" <<OPENSHELL
 echo "openshell \$*" >> "${CALL_LOG}"
 exec "${SHIM_DIR}/openshell" "\$@"
 OPENSHELL
-chmod +x "${BROKEN_DIR}/podman" "${BROKEN_DIR}/openshell"
+chmod +x "${BROKEN_DIR}/podman" "${BROKEN_DIR}/openshell" "${BROKEN_DIR}/flock"
+
+# first_call_line <extended regex>: line number of the first matching call in
+# CALL_LOG, or empty.
+first_call_line() {
+  grep -nE "$1" "${CALL_LOG}" | head -n 1 | cut -d: -f1
+}
 
 # run_secret_case <label> <fault> <expected rc> <expected message>
 #   <last call prefix> [SYSTEM_FAILURE_EXIT_CODE value]
@@ -199,6 +221,7 @@ run_secret_case() {
   local sys_env=(-u SYSTEM_FAILURE_EXIT_CODE)
   [ "$#" -ge 6 ] && sys_env=("SYSTEM_FAILURE_EXIT_CODE=$6")
   : > "${CALL_LOG}"
+  : > "${LOCK_LOG}"
   output=$(
     cd "${FAKE_HOME}" && \
     PATH="${BROKEN_DIR}:${SHIM_DIR}:${PATH}" \
@@ -216,6 +239,16 @@ run_secret_case() {
     problem="missing secret store error: $(printf '%s' "${output}" | tail -1)"
   elif grep -q '^podman pull' "${CALL_LOG}"; then
     problem="image was pulled"
+  elif [ -z "$(first_call_line '^prune$')" ] ||
+    [ "$(first_call_line '^prune$')" -ge "$(first_call_line '^podman secret create')" ]; then
+    problem="probe did not run after the prune"
+  elif tail -n +"$(first_call_line '^podman secret create')" "${CALL_LOG}" | grep -q '^openshell'; then
+    # Leftover-gateway teardown runs before the lock; a gateway start would
+    # come after the probe.
+    problem="gateway was started after the failed probe"
+  elif ! grep -q '^flock -x' "${LOCK_LOG}" ||
+    [ "$(grep -c '^flock -u' "${LOCK_LOG}")" -lt 1 ]; then
+    problem="prune lock was not acquired and released after the failed probe"
   elif [ "${last#"${want_last}"}" = "${last}" ]; then
     # Leftover reaping may run first; nothing (gateway start included)
     # may follow the failed probe call.
@@ -269,6 +302,19 @@ elif [ -e "${PROBE_STATE}" ]; then
   failures=$((failures + 1))
 else
   printf 'ok       leftover probe secret, healthy store -> prepare passes\n'
+fi
+
+# On a healthy store the probe sits between the prune and the pull.
+prune_line=$(first_call_line '^prune$')
+probe_line=$(first_call_line '^podman secret create')
+pull_line=$(first_call_line '^podman pull')
+if [ -n "${prune_line}" ] && [ -n "${probe_line}" ] && [ -n "${pull_line}" ] &&
+  [ "${prune_line}" -lt "${probe_line}" ] && [ "${probe_line}" -lt "${pull_line}" ]; then
+  printf 'ok       call order is prune -> secret probe -> pull\n'
+else
+  printf 'FAIL     call order: prune=%s probe=%s pull=%s, want prune < probe < pull\n' \
+    "${prune_line:-none}" "${probe_line:-none}" "${pull_line:-none}"
+  failures=$((failures + 1))
 fi
 
 if [ "${failures}" -ne 0 ]; then
