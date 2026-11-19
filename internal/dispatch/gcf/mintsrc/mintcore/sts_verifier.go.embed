@@ -171,12 +171,17 @@ func (v *STSVerifier) exchangeSTS(ctx context.Context, oidcToken, providerName s
 
 	resp, err := mintHTTP(req)
 	if err != nil {
-		return fmt.Errorf("STS request failed: %w", err)
+		return fmt.Errorf("%w: STS request failed: %w", errOIDCKeysUnavailable, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		if transientUpstreamStatus(resp.StatusCode) {
+			// STS checks the token against the issuer's keys; a 5xx or
+			// 429 means it did not, not that the token is invalid.
+			return fmt.Errorf("%w: STS returned status %d", errOIDCKeysUnavailable, resp.StatusCode)
+		}
 		return fmt.Errorf("STS returned status %d", resp.StatusCode)
 	}
 

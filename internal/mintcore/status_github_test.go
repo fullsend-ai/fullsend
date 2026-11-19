@@ -4,6 +4,7 @@ package mintcore
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -280,5 +281,58 @@ func TestStatusGitHub_PendingMembership_Returns401(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for pending membership, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// When OIDC could not obtain the signing keys, the GitHub validator still
+// runs: it alone can authenticate the request, and its rejection of the
+// OIDC token (which is not a GitHub user token) yields 503, not 401.
+func TestStatusGitHub_OIDCKeysUnavailable(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-user-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/user":
+			json.NewEncoder(w).Encode(map[string]string{"login": "testuser"})
+		case "/orgs/acme/teams/admins/memberships/testuser":
+			json.NewEncoder(w).Encode(map[string]string{"state": "active"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+
+	SetMintHTTPForTest(t, func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Host, "api.github.com") {
+			req.URL.Scheme = "http"
+			req.URL.Host = strings.TrimPrefix(github.URL, "http://")
+		}
+		return http.DefaultClient.Do(req)
+	})
+
+	StatusGitHubGroup = "acme/admins"
+	t.Cleanup(func() {
+		StatusGitHubGroup = ""
+	})
+
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{
+		err: fmt.Errorf("%w: fetching JWKS: context deadline exceeded", errOIDCKeysUnavailable),
+	})
+	for token, want := range map[string]int{
+		"test-user-token":         http.StatusOK,
+		"header.claims.signature": http.StatusServiceUnavailable,
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != want {
+			t.Fatalf("token %q: expected %d, got %d: %s", token, want, rec.Code, rec.Body.String())
+		}
 	}
 }

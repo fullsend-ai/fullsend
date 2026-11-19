@@ -135,6 +135,31 @@ func TestSTSVerifier_STSFailure(t *testing.T) {
 	token := makeUnsignedJWT(t, validClaims())
 	_, err := v.Verify(t.Context(), token)
 	assert.ErrorContains(t, err, "STS returned status 403")
+	// STS answered: the token was checked and rejected.
+	assert.NotErrorIs(t, err, errOIDCKeysUnavailable)
+}
+
+func TestSTSVerifier_STSUnavailableIsKeysUnavailable(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable, http.StatusTooManyRequests} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			failSTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer failSTS.Close()
+
+			v := newTestSTSVerifier(t, failSTS.URL)
+			_, err := v.Verify(t.Context(), makeUnsignedJWT(t, validClaims()))
+			assert.ErrorIs(t, err, errOIDCKeysUnavailable)
+		})
+	}
+	t.Run("unreachable", func(t *testing.T) {
+		failSTS := httptest.NewServer(http.NotFoundHandler())
+		failSTS.Close()
+
+		v := newTestSTSVerifier(t, failSTS.URL)
+		_, err := v.Verify(t.Context(), makeUnsignedJWT(t, validClaims()))
+		assert.ErrorIs(t, err, errOIDCKeysUnavailable)
+	})
 }
 
 func TestSTSVerifier_STSEmptyToken(t *testing.T) {
