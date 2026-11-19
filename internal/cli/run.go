@@ -3484,34 +3484,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 9f. Post-agent output scan — redact secrets from extracted output.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
-		if err := scanOutputFiles(runDir, securityTraceID, progressVerbosity, printer); err != nil {
-			printer.StepFail(failureLine("Output scan failed", err, progressVerbosity))
-			return fmt.Errorf("post-agent output scan failed: %w", err)
+		scanErr := scanOutputFiles(runDir, securityTraceID, progressVerbosity, printer)
+		if scanErr != nil {
+			printer.StepFail(failureLine("Output scan failed", scanErr, progressVerbosity))
 		}
-
-		// Extract sandbox-side security findings for audit trail.
-		findingsDir := filepath.Join(runDir, "security")
-		if err := os.MkdirAll(findingsDir, 0o755); err == nil {
-			remoteFindingsDir := sandbox.SandboxWorkspace + "/.security/"
-			if dlErr := sandbox.Download(sandboxName, remoteFindingsDir, findingsDir); dlErr != nil {
-				printer.StepInfo("No sandbox security findings to extract")
-			} else {
-				printer.StepDone("Security findings extracted")
-			}
-		}
-
-		findingsJSONL := filepath.Join(runDir, "security", "findings.jsonl")
-		if _, statErr := os.Stat(findingsJSONL); statErr == nil {
-			cv, verifyErr := security.VerifyChain(findingsJSONL)
-			if verifyErr != nil {
-				printer.StepWarn(failureLine("Audit log verification error", verifyErr, progressVerbosity))
-			} else if !cv.Valid {
-				line, chainErr := auditChainFailure(cv.BrokenMsg, progressVerbosity)
-				printer.StepFail(line)
-				return chainErr
-			} else if cv.Entries > 0 {
-				printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
-			}
+		// Collect the sandbox audit trail even when the scan failed: those runs
+		// are the ones where it matters most.
+		if err := collectPostScanSecurityArtifacts(runDir, sandboxName, printer, progressVerbosity, scanErr); err != nil {
+			return err
 		}
 	}
 
@@ -7248,7 +7228,46 @@ func writeFailure(quiet bool, relPath string, writeErr error, unwritable *int) e
 	return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 }
 
-// injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.
+// downloadSandboxFindings extracts the sandbox-side findings directory. It is a
+// variable so tests can observe the ordering contract of
+// collectPostScanSecurityArtifacts without a sandbox.
+var downloadSandboxFindings = sandbox.Download
+
+// collectPostScanSecurityArtifacts extracts the sandbox-side security findings
+// and verifies the audit hash chain. scanErr is the outcome of the host output
+// scan; it is returned after the audit trail has been collected, so a failed
+// scan never skips the artifacts that explain the failure.
+func collectPostScanSecurityArtifacts(runDir, sandboxName string, printer *ui.Printer, progressVerbosity string, scanErr error) error {
+	findingsDir := filepath.Join(runDir, "security")
+	if err := os.MkdirAll(findingsDir, 0o755); err == nil {
+		remoteFindingsDir := sandbox.SandboxWorkspace + "/.security/"
+		if dlErr := downloadSandboxFindings(sandboxName, remoteFindingsDir, findingsDir); dlErr != nil {
+			printer.StepInfo("No sandbox security findings to extract")
+		} else {
+			printer.StepDone("Security findings extracted")
+		}
+	}
+	var chainErr error
+	findingsJSONL := filepath.Join(runDir, "security", "findings.jsonl")
+	if _, statErr := os.Stat(findingsJSONL); statErr == nil {
+		cv, verifyErr := security.VerifyChain(findingsJSONL)
+		switch {
+		case verifyErr != nil:
+			printer.StepWarn(failureLine("Audit log verification error", verifyErr, progressVerbosity))
+		case !cv.Valid:
+			line, err := auditChainFailure(cv.BrokenMsg, progressVerbosity)
+			printer.StepFail(line)
+			chainErr = err
+		case cv.Entries > 0:
+			printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
+		}
+	}
+	if scanErr != nil {
+		scanErr = fmt.Errorf("post-agent output scan failed: %w", scanErr)
+	}
+	return errors.Join(scanErr, chainErr)
+}
+
 func injectTraceID(sandboxName, traceID string) error {
 	if !security.IsShellSafeTraceID(traceID) {
 		return fmt.Errorf("invalid trace ID format: %q", traceID)

@@ -115,7 +115,7 @@ func (v *jsonProvenance) spanningBlocks() int {
 // restores the document's own trailing newline, so a rewrite never changes the
 // file's line framing.
 func preserveTrailingNewline(encoded, doc []byte) []byte {
-	encoded = bytes.TrimRight(encoded, "\n")
+	encoded = bytes.TrimRight(encoded, "\r\n")
 	switch {
 	case bytes.HasSuffix(doc, []byte("\r\n")):
 		return append(encoded, '\r', '\n')

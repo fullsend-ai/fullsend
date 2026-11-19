@@ -669,6 +669,24 @@ func TestSanitizeJSONLines_EscapedBeginRecordFailsClosed(t *testing.T) {
 	}
 }
 
+// TestSanitizeJSONDocument_CRLFNoStrayCarriageReturn pins that trailing CRLF
+// framing is reproduced exactly, without a duplicated carriage return, on the
+// unchanged and rewritten paths.
+func TestSanitizeJSONDocument_CRLFNoStrayCarriageReturn(t *testing.T) {
+	p := OutputPipeline()
+	for name, doc := range map[string]string{
+		"clean":  "{\"a\":\"x\"}\r\n",
+		"secret": "{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\"}\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, _, err := SanitizeJSONDocument([]byte(doc), p)
+			require.NoError(t, err)
+			assert.NotContains(t, string(out), "\r\r", "no stray carriage return")
+			assert.True(t, strings.HasSuffix(string(out), "}\r\n"), "CRLF framing must be preserved: %q", out)
+		})
+	}
+}
+
 // TestSanitizeJSONDocument_LeavesUnsupportedInputAlone pins the fallback
 // contract for documents the structural path cannot handle.
 func TestSanitizeJSONDocument_LeavesUnsupportedInputAlone(t *testing.T) {
