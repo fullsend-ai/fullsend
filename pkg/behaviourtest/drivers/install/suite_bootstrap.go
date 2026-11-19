@@ -87,7 +87,7 @@ func (d *composedDriver) DefaultOrg(ctx context.Context) (OrgAccess, error) {
 		cred, err := d.creds.get(ctx, org)
 		if err != nil {
 			// creds.get names the org in its error.
-			d.logf("%v (trying the next org)", err)
+			d.logf("[driver] %v (trying the next org)", err)
 			mintErrs = append(mintErrs, err)
 			continue
 		}
