@@ -690,3 +690,212 @@ secrets:
 		})
 	}
 }
+
+// vaultRunAgentRepoPath is the KV prefix the runAgent-level Vault tests
+// read for the github.com/acme/repo project.
+const vaultRunAgentRepoPath = "kv/data/fullsend/repos/github.com/acme/repo/"
+
+// startGitHubVaultRun points the Vault resolver at a fake Vault serving
+// secrets, authenticated by a stub GitHub Actions OIDC endpoint, and returns
+// the Vault address for the config's connection.
+func startGitHubVaultRun(t *testing.T, secrets map[string]map[string]any) string {
+	t.Helper()
+	f := &cliFakeVault{secrets: secrets}
+	addr := f.start(t)
+	oidcJWT := testJWT(t, map[string]any{"aud": "https://vault.example.com/fullsend", "iat": 1700000000, "exp": 1700000600})
+	oidc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"value": oidcJWT})
+	}))
+	t.Cleanup(oidc.Close)
+	withVaultEnv(t, map[string]string{
+		"GITHUB_ACTIONS":                 "true",
+		"GITHUB_REPOSITORY":              "acme/repo",
+		"ACTIONS_ID_TOKEN_REQUEST_URL":   oidc.URL + "/token?api-version=2.0",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-token",
+	})
+	return addr
+}
+
+// appendVaultSelections appends a Vault connection and the given secrets
+// block entries to the fullsend dir's config.yaml, so runAgent loads and
+// resolves them as in a real run.
+func appendVaultSelections(t *testing.T, dir, addr, secretsYAML string) {
+	t.Helper()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	base, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vaultYAML := `connections:
+  corp:
+    kind: vault
+    vault_address: ` + addr + `
+    vault_audience: https://vault.example.com/fullsend
+secrets:
+` + secretsYAML
+	if err := os.WriteFile(cfgPath, append(base, []byte(vaultYAML)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runVaultGitHubAgent(t *testing.T, dir string, out *bytes.Buffer) error {
+	t.Helper()
+	return runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "github", "",
+		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(out), false, runOverrideFlags{})
+}
+
+// Vault-resolved OTLP headers replace the native value and reach the OTLP
+// trace exporter, while host-side scripts that do not declare them in
+// env.runner never see them.
+func TestRunAgent_VaultOTLPHeadersReachTraceExporter(t *testing.T) {
+	const (
+		nativeCred = "native-collector-credential-0001"
+		vaultCred  = "vault-collector-credential-7c2e"
+	)
+	for _, name := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"} {
+		t.Run(name, func(t *testing.T) {
+			usePreScriptStub(t)
+			var mu sync.Mutex
+			var got []string
+			sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/traces" {
+					mu.Lock()
+					got = append(got, r.Header.Get("x-collector-key"))
+					mu.Unlock()
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer sink.Close()
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.URL)
+			t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-collector-key="+nativeCred)
+			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
+			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+			t.Setenv("OTEL_SDK_DISABLED", "")
+			t.Setenv("TRACEPARENT", "")
+			t.Setenv("TRACESTATE", "")
+			t.Setenv(runnerSecretsEnv, "")
+			t.Setenv(runnerSecretsFileEnv, "")
+
+			addr := startGitHubVaultRun(t, map[string]map[string]any{
+				vaultRunAgentRepoPath + "otel": {name: "x-collector-key=" + vaultCred},
+			})
+			marker := filepath.Join(t.TempDir(), "ran")
+			dir := newRunnerSecretHarnessDir(t, "",
+				`[ -z "${OTEL_EXPORTER_OTLP_HEADERS+set}" ] || exit 21`+"\n"+
+					`[ -z "${OTEL_EXPORTER_OTLP_TRACES_HEADERS+set}" ] || exit 22`+"\n"+
+					"touch "+marker+"\n")
+			appendVaultSelections(t, dir, addr, "  "+name+`:
+    connection: corp
+    vault_secrets: [`+vaultRunAgentRepoPath+`otel]
+`)
+
+			var out bytes.Buffer
+			if err := runVaultGitHubAgent(t, dir, &out); err != nil {
+				t.Fatalf("runAgent: %v\n%s", err, out.String())
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("pre-script did not run to completion: %v", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(got) == 0 {
+				t.Fatal("the OTLP exporter sent no trace request")
+			}
+			for _, v := range got {
+				if v != vaultCred {
+					t.Fatalf("exporter sent x-collector-key %q, want the Vault-resolved value", v)
+				}
+			}
+			for _, secret := range []string{vaultCred, nativeCred} {
+				if strings.Contains(out.String(), secret) {
+					t.Fatalf("run output leaks a header credential:\n%s", out.String())
+				}
+			}
+		})
+	}
+}
+
+// A Vault-resolved runner secrets bundle replaces the native bundle and
+// reaches only the host-side scripts that declare a key in env.runner: other
+// bundle keys, the native bundle and the bundle variables stay unset, and a
+// harness that routes a Vault-bundle key into the sandbox is refused.
+func TestRunAgent_VaultBundleReachesDeclaredScriptsOnly(t *testing.T) {
+	const (
+		deployKey   = "vault-bundle-deploy-key-5b1d"
+		otherKey    = "vault-bundle-undeclared-key-9e44"
+		nativeKey   = "native-bundle-deploy-key-0002"
+		bundleField = "FULLSEND_GITHUB_RUNNER_SECRETS"
+	)
+	bundle := `{"DEPLOY_KEY":"` + deployKey + `","UNDECLARED_KEY":"` + otherKey + `"}`
+	selection := "  " + bundleField + `:
+    connection: corp
+    vault_secrets: [` + vaultRunAgentRepoPath + `bundle]
+`
+	setup := func(t *testing.T) string {
+		usePreScriptStub(t)
+		t.Setenv(runnerSecretsEnv, `{"DEPLOY_KEY":"`+nativeKey+`","NATIVE_ONLY":"native-only-bundle-value"}`)
+		t.Setenv(runnerSecretsFileEnv, "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		return startGitHubVaultRun(t, map[string]map[string]any{
+			vaultRunAgentRepoPath + "bundle": {bundleField: bundle},
+		})
+	}
+
+	t.Run("declared key reaches the script and nothing else does", func(t *testing.T) {
+		addr := setup(t)
+		marker := filepath.Join(t.TempDir(), "ran")
+		dir := newRunnerSecretHarnessDir(t,
+			"env:\n  runner:\n    DEPLOY_KEY: \"${DEPLOY_KEY}\"\n",
+			`[ "${DEPLOY_KEY:-}" = "`+deployKey+`" ] || exit 31`+"\n"+
+				`[ -z "${UNDECLARED_KEY+set}" ] || exit 32`+"\n"+
+				`[ -z "${NATIVE_ONLY+set}" ] || exit 33`+"\n"+
+				`[ -z "${`+bundleField+`+set}" ] || exit 34`+"\n"+
+				`[ -z "${`+runnerSecretsFileEnv+`+set}" ] || exit 35`+"\n"+
+				`[ -z "${`+vaultIDTokenEnv+`+set}" ] || exit 36`+"\n"+
+				"touch "+marker+"\n")
+		appendVaultSelections(t, dir, addr, selection)
+
+		var out bytes.Buffer
+		if err := runVaultGitHubAgent(t, dir, &out); err != nil {
+			t.Fatalf("runAgent: %v\n%s", err, out.String())
+		}
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatalf("pre-script did not run to completion: %v", err)
+		}
+		if !strings.Contains(out.String(), "Runner secrets") || !strings.Contains(out.String(), "DEPLOY_KEY") {
+			t.Fatalf("run log does not name the declared runner secret:\n%s", out.String())
+		}
+		for _, leaked := range []string{"UNDECLARED_KEY", deployKey, otherKey, nativeKey} {
+			if strings.Contains(out.String(), leaked) {
+				t.Fatalf("run output mentions %q:\n%s", leaked, out.String())
+			}
+		}
+		if _, ok := os.LookupEnv(runnerSecretsEnv); ok {
+			t.Fatal("the native bundle variable is still set in the runner environment")
+		}
+	})
+
+	t.Run("sandbox reference is refused", func(t *testing.T) {
+		addr := setup(t)
+		marker := filepath.Join(t.TempDir(), "ran")
+		dir := newRunnerSecretHarnessDir(t,
+			"env:\n  runner:\n    DEPLOY_KEY: \"${DEPLOY_KEY}\"\n  sandbox:\n    DEPLOY_KEY: \"${DEPLOY_KEY}\"\n",
+			"touch "+marker+"\n")
+		appendVaultSelections(t, dir, addr, selection)
+
+		var out bytes.Buffer
+		err := runVaultGitHubAgent(t, dir, &out)
+		if err == nil || !strings.Contains(err.Error(), "env.sandbox[DEPLOY_KEY] references runner secret DEPLOY_KEY") {
+			t.Fatalf("error = %v, want the sandbox reference refused", err)
+		}
+		if _, statErr := os.Stat(marker); statErr == nil {
+			t.Fatal("the pre-script ran after the sandbox reference was refused")
+		}
+		for _, leaked := range []string{deployKey, otherKey} {
+			if strings.Contains(out.String()+err.Error(), leaked) {
+				t.Fatalf("output leaks a bundle value:\n%s", out.String())
+			}
+		}
+	})
+}
