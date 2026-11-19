@@ -240,7 +240,7 @@ The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands
 
 | Category | Files |
 |----------|-------|
-| CLI reference | `docs/cli/ci.md` |
+| CLI reference | None (hidden workflow helper) |
 | Guides | `docs/guides/dev/cli-internals.md`, `docs/guides/dev/e2e-testing.md` |
 | Contributing | `docs/contributing/ci-workflows.md` |
 | Go source | `internal/cli/ci.go`, `internal/cli/ci_check_e2e_authorization.go`, `internal/e2eauth/check.go` |

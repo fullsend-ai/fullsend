@@ -6,8 +6,9 @@ import (
 
 func newCICmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "ci",
-		Short: "CI helper commands",
+		Use:    "ci",
+		Hidden: true,
+		Short:  "CI helper commands",
 		Long: `Commands used by the fullsend-ai project in our internal GitHub
 Actions workflows. These are not for end-users.
 

@@ -230,7 +230,7 @@ fullsend
 │   ├── --mr-iid <int>                       #   Merge request IID (required)
 │   ├── --gitlab-url <url>                   #   GitLab instance URL (default: https://gitlab.com)
 │   └── --token <string>                     #   GitLab token (default: $GITLAB_TOKEN)
-├── ci                                       # CI helper commands
+├── ci                                       # Hidden workflow helpers
 │   └── check-e2e-authorization [PR] [OWNER/REPO]
 │       ├── --pr <int>                       #   Pull request number (default: positional or PR_NUMBER)
 │       ├── --repo <owner/repo>              #   Repository (default: positional or GITHUB_REPOSITORY)

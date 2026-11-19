@@ -916,10 +916,9 @@ the "How to check" links in [LADDER.md](../../../LADDER.md).
    `pull-requests: write`; it creates the `behaviour` and `playback` check runs
    on the head sha and completes them from the suite results, so they match
    the required checks on `main`.
-3. **Gate** — base checkout only; never checks out PR head. Policy is
-   implemented in [`internal/e2eauth`](../../../internal/e2eauth/check.go) and
-   exposed as [`fullsend ci check-e2e-authorization`](../../cli/ci.md); CI
-   still invokes
+3. **Gate** — base checkout only; never checks out PR head. The hidden command
+   `fullsend ci check-e2e-authorization` runs the policy in
+   [`internal/e2eauth`](../../../internal/e2eauth/check.go). Fullsend CI still invokes
    [`scripts/check-e2e-authorization.sh`](../../../scripts/check-e2e-authorization.sh)
    until the gate action switches to the CLI
    ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371) part 3). See

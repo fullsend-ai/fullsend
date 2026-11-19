@@ -209,10 +209,15 @@ check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use
 Same-repository PRs run on `pull_request`. Fork PRs run only after a
 `/ok-to-test <sha>` comment (`issue_comment`). The Go package `internal/e2eauth`
 implements both the same-repository author/label policy and the `/ok-to-test`
-comment mode. The CLI exposes both through
-[`fullsend ci check-e2e-authorization`](../cli/ci.md).
+comment mode. Workflows can call the hidden command
+`fullsend ci check-e2e-authorization [PR_NUMBER] [OWNER/REPO]` and read
+`authorized` from the step outputs. Exit status 0 alone does not grant
+authorization.
 
-> **Planned:** Point [`.github/actions/check-e2e-authorization`](../../.github/actions/check-e2e-authorization/action.yml) at that CLI instead of `scripts/check-e2e-authorization.sh` ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371) part 3).
+> **Planned:** Switch [the fullsend gate action](../../.github/actions/check-e2e-authorization/action.yml)
+> from `scripts/check-e2e-authorization.sh` to this command. The agents
+> repository pins a fullsend release to call the same check instead of keeping
+> its own bash copy ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371)).
 
 - **Same-repository PRs** — the gate authorizes authors with write access (collaborator permission API) and trusted bots. Fork `pull_request` runs get no secrets, so the suites skip them.
 - **Fork PRs** — require a user with write access (Write role or above) to review the PR diff and comment `/ok-to-test <sha>`, naming the reviewed commit, including when the fork author has write access. The gate reads the comment from the API, checks the commenter's permission, and authorizes the PR head only when it is the named sha. Another head is refused (`stale_ok_to_test`), and a comment with no sha is refused (`missing_sha`). The gate uses no timing. The `ok-to-test` label no longer starts e2e.
