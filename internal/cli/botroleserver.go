@@ -111,7 +111,12 @@ func (h *botRoleHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "entity is not the one this run handles"})
 		return
 	}
-	actor, err := h.comments.CommentActor(r.Context(), req.Comment)
+	// One GitHub comment lookup runs under githubGraphQLTimeout, like the
+	// run-start entity call, so a slow lookup cannot outlive the bounds
+	// the WriteTimeout and botRoleCmdTimeout comments count.
+	ctx, cancel := context.WithTimeout(r.Context(), githubGraphQLTimeout)
+	defer cancel()
+	actor, err := h.comments.CommentActor(ctx, req.Comment)
 	if err != nil {
 		h.logf("comment lookup failed: %v", err)
 		writeBotRoleJSON(w, http.StatusBadGateway, botidentity.MintBotRoleResponse{Error: "bot-role lookup failed"})
@@ -196,7 +201,7 @@ func startBotRoleHelperService(resolver botidentity.BotRoleResolver, target, ent
 	server := &http.Server{
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second, // beyond the helper's whole lookup (OIDC fetch included), which internal/botidentity bounds to 30s
+		WriteTimeout: 120 * time.Second, // beyond the helper's whole lookup: the GitHub comment lookup (githubGraphQLTimeout) and the OIDC fetch (internal/botidentity bounds to 30s)
 		IdleTimeout:  60 * time.Second,
 		ErrorLog:     errLog,
 	}

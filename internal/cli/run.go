@@ -3814,12 +3814,16 @@ var providerOnlyKeys = map[string]bool{
 
 // inheritedScriptDenyKeys are named workflow secrets that host-side scripts
 // (pre/post, preflight, validation) must not inherit from the `fullsend run`
-// process environment (#8154). Unlike oidcDenyKeys they stay expandable at
-// harness ${VAR} sites, so a harness that declares one in env.runner (e.g.
-// `JIRA_TOKEN: "${JIRA_TOKEN}"`) still passes it to its scripts; one that
-// does not declare it no longer receives it. The parent process keeps them
-// for its own Jira client and trace exporter. The OTLP *_HEADERS variants
-// are matched by isInheritedScriptDenyKey.
+// process environment (#8154). Unlike oidcDenyKeys the Jira and OTLP names
+// stay expandable at harness ${VAR} sites, so a harness that declares one in
+// env.runner (e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"`) still passes it to its
+// scripts; one that does not declare it no longer receives it. The parent
+// process keeps them for its own Jira client and trace exporter. The OTLP
+// *_HEADERS variants are matched by isInheritedScriptDenyKey. The bot-role
+// helper names below are the exception: a runnerEnv entry for one of them is
+// dropped in childScriptEnv (isBotRoleHelperEnvKey), pinned like the GitLab
+// role-routing keys, so env.runner cannot supply them; the run's own export,
+// appended after childScriptEnv, is the only source (#9602).
 //
 // FULLSEND_JIRA_TOKEN, FULLSEND_JIRA_EMAIL, FULLSEND_JIRA_CLIENT_ID and
 // FULLSEND_JIRA_CLIENT_SECRET are the Jira repository secrets the composite
@@ -6412,6 +6416,9 @@ func stripControlChars(s string) string {
 // OTEL_EXPORTER_OTLP_*HEADERS) are dropped from the
 // inherited process environment only; a runnerEnv entry for one of them is
 // kept, so a harness that declares it in env.runner still gets it (#8154).
+// The bot-role helper names (isBotRoleHelperEnvKey) are dropped from
+// runnerEnv too, like the GitLab role-routing keys below: env.runner cannot
+// supply them, and the run's own export is appended after this (#9602).
 //
 // GitLab role-routing vars (isPinnedGitLabRoleRoutingKey) are pinned to the
 // process environment: a runnerEnv entry for one of those keys is dropped

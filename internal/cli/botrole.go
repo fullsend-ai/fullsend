@@ -16,8 +16,9 @@ import (
 )
 
 // botRoleCmdTimeout bounds one `fullsend bot-role` request to the runner-side
-// helper service. The helper's own mint lookup is bounded by its 30s request
-// timeout (internal/botidentity), so this only stops a hung helper from
+// helper service. The helper bounds each of its lookups: the GitHub comment
+// lookup to githubGraphQLTimeout and the mint lookup to its 30s request
+// timeout (internal/botidentity). This stops a hung helper beyond both from
 // blocking a script forever.
 const botRoleCmdTimeout = 60 * time.Second
 
