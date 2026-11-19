@@ -237,7 +237,7 @@ func TestStatusGitHub_ValidateStatusGitHub_DirectCall(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 
-	err := validateStatusGitHub(req.Context(), req)
+	err := validateStatusGitHub(req.Context(), req, "https://api.github.com")
 	if err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
@@ -280,5 +280,56 @@ func TestStatusGitHub_PendingMembership_Returns401(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for pending membership, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStatusGitHub_ConfiguredGitHubBaseURL(t *testing.T) {
+	// A handler pointed at another GitHub server must send the user and
+	// team lookups there, never to api.github.com.
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	var paths []string
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.Header.Get("Authorization") != "Bearer ghes-user-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v3/user":
+			json.NewEncoder(w).Encode(map[string]string{"login": "carol"})
+		case "/api/v3/orgs/acme/teams/admins/memberships/carol":
+			json.NewEncoder(w).Encode(map[string]string{"state": "active"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+
+	SetMintHTTPForTest(t, func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Host, "api.github.com") {
+			t.Errorf("request sent to public GitHub API: %s", req.URL)
+		}
+		return http.DefaultClient.Do(req)
+	})
+
+	StatusGitHubGroup = "acme/admins"
+	t.Cleanup(func() {
+		StatusGitHubGroup = ""
+	})
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{})
+	env.handler.SetGitHubBaseURL(github.URL + "/api/v3/")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer ghes-user-token")
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	want := []string{"/api/v3/user", "/api/v3/orgs/acme/teams/admins/memberships/carol"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Fatalf("configured server saw paths %v, want %v", paths, want)
 	}
 }

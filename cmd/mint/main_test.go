@@ -2,15 +2,21 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -574,4 +580,215 @@ func TestStandaloneWiring(t *testing.T) {
 			t.Fatalf("expected 404, got %d", rec.Code)
 		}
 	})
+}
+
+func TestIsSecureOrLoopbackURL(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want bool
+	}{
+		{"https://mint.example.com", true},
+		{"HTTPS://mint.example.com/path", true},
+		{"http://localhost:8080", true},
+		{"http://127.0.0.1:9000/mint", true},
+		{"http://mint.example.com", false},
+		{"http://localhost.example.com", false},
+		{"http://127.0.0.2", false},
+		{"ftp://localhost", false},
+		{"https://", false},
+		{"https://:443", false},
+		{"localhost:8080", false},
+		{"://bad", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isSecureOrLoopbackURL(tt.raw); got != tt.want {
+			t.Errorf("isSecureOrLoopbackURL(%q) = %v, want %v", tt.raw, got, tt.want)
+		}
+	}
+}
+
+func TestGitHubAPIBaseURL(t *testing.T) {
+	tests := []struct {
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{raw: "", want: ""},
+		{raw: "   ", want: ""},
+		{raw: "https://api.github.com", want: "https://api.github.com"},
+		{raw: "https://ghes.example.com/api/v3/", want: "https://ghes.example.com/api/v3"},
+		{raw: "http://127.0.0.1:4010", want: "http://127.0.0.1:4010"},
+		{raw: "http://ghes.example.com/api/v3", wantErr: true},
+		{raw: "not a url", wantErr: true},
+	}
+	for _, tt := range tests {
+		got, err := githubAPIBaseURL(tt.raw)
+		if tt.wantErr {
+			if err == nil || !strings.Contains(err.Error(), "GITHUB_API_URL") {
+				t.Errorf("githubAPIBaseURL(%q): expected GITHUB_API_URL error, got %q, %v", tt.raw, got, err)
+			}
+			continue
+		}
+		if err != nil || got != tt.want {
+			t.Errorf("githubAPIBaseURL(%q) = %q, %v; want %q", tt.raw, got, err, tt.want)
+		}
+	}
+}
+
+func TestOIDCIssuerForAPI(t *testing.T) {
+	tests := []struct {
+		apiURL string
+		want   string
+	}{
+		{"", defaultOIDCIssuer},
+		{"https://api.github.com", defaultOIDCIssuer},
+		{"https://API.GitHub.com", defaultOIDCIssuer},
+		{"https://api.octocorp.ghe.com", "https://token.actions.octocorp.ghe.com"},
+		{"https://ghes.example.com/api/v3", "https://ghes.example.com/_services/token"},
+		{"https://ghes.example.com:8443/api/v3", "https://ghes.example.com:8443/_services/token"},
+		{"http://127.0.0.1:4010/api/v3", "http://127.0.0.1:4010/_services/token"},
+		{"http://127.0.0.1:4010", "http://127.0.0.1:4010"},
+		{"https://github.example.com/custom", "https://github.example.com/custom"},
+	}
+	for _, tt := range tests {
+		got, err := oidcIssuerForAPI(tt.apiURL)
+		if err != nil || got != tt.want {
+			t.Errorf("oidcIssuerForAPI(%q) = %q, %v; want %q", tt.apiURL, got, err, tt.want)
+		}
+	}
+
+	if _, err := oidcIssuerForAPI("://bad"); err == nil {
+		t.Error("expected error for unparsable API URL")
+	}
+}
+
+func TestBuildHandler_LoopbackHTTPFallbackAccepted(t *testing.T) {
+	pemDir := setupTestPEMDir(t)
+	for _, fallback := range []string{"http://localhost:8081", "http://127.0.0.1:8081/mint"} {
+		t.Run(fallback, func(t *testing.T) {
+			t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
+			t.Setenv("PEM_DIR", pemDir)
+			t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+			t.Setenv("FALLBACK_MINT_URL", fallback)
+
+			if _, err := buildHandler(); err != nil {
+				t.Fatalf("loopback http fallback should be accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildHandler_InvalidGitHubAPIURL(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
+	t.Setenv("PEM_DIR", setupTestPEMDir(t))
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("FALLBACK_MINT_URL", "")
+	t.Setenv("GITHUB_API_URL", "http://ghes.example.com/api/v3")
+
+	_, err := buildHandler()
+	if err == nil || !strings.Contains(err.Error(), "GITHUB_API_URL") {
+		t.Fatalf("expected GITHUB_API_URL error, got %v", err)
+	}
+}
+
+// TestBuildHandler_ConfiguredGitHubAPI runs a token request against a
+// fake GitHub Enterprise Server: the OIDC token must verify against the
+// issuer derived from GITHUB_API_URL, and the installation lookup and
+// token creation must reach that server's API.
+func TestBuildHandler_ConfiguredGitHubAPI(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+	const kid = "ghes-key"
+
+	var mu sync.Mutex
+	var apiPaths []string
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		issuer := srv.URL + "/_services/token"
+		switch {
+		case r.URL.Path == "/_services/token/.well-known/openid-configuration":
+			json.NewEncoder(w).Encode(map[string]string{
+				"issuer":   issuer,
+				"jwks_uri": issuer + "/.well-known/jwks",
+			})
+		case r.URL.Path == "/_services/token/.well-known/jwks":
+			json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{
+				"kty": "RSA", "alg": "RS256", "use": "sig", "kid": kid,
+				"n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+				"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+			}}})
+		case strings.HasPrefix(r.URL.Path, "/api/v3/"):
+			mu.Lock()
+			apiPaths = append(apiPaths, r.Method+" "+r.URL.Path)
+			mu.Unlock()
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/test-org/test-repo/installation":
+				json.NewEncoder(w).Encode(map[string]any{"id": 7, "account": map[string]string{"login": "test-org"}})
+			case r.Method == http.MethodPost && r.URL.Path == "/api/v3/app/installations/7/access_tokens":
+				w.WriteHeader(http.StatusCreated)
+				json.NewEncoder(w).Encode(map[string]string{"token": "ghs_from_ghes", "expires_at": "2099-01-01T00:00:00Z"})
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
+	t.Setenv("PEM_DIR", setupTestPEMDir(t))
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/test-repo")
+	t.Setenv("FALLBACK_MINT_URL", "")
+	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3/")
+
+	h, err := buildHandler()
+	if err != nil {
+		t.Fatalf("buildHandler: %v", err)
+	}
+
+	header, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": kid})
+	now := time.Now()
+	claims, _ := json.Marshal(map[string]any{
+		"iss":              srv.URL + "/_services/token",
+		"aud":              "fullsend-mint",
+		"iat":              now.Unix(),
+		"exp":              now.Add(10 * time.Minute).Unix(),
+		"repository":       "test-org/test-repo",
+		"repository_owner": "test-org",
+		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/triage.yml@refs/heads/main",
+	})
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	digest := sha256.Sum256([]byte(input))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+	jwt := input + "." + base64.RawURLEncoding.EncodeToString(sig)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token",
+		strings.NewReader(`{"role":"triage","level":"read","repos":["test-repo"]}`))
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "ghs_from_ghes") {
+		t.Fatalf("expected token from configured server, got %s", rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"GET /api/v3/repos/test-org/test-repo/installation",
+		"POST /api/v3/app/installations/7/access_tokens",
+	}
+	if strings.Join(apiPaths, ",") != strings.Join(want, ",") {
+		t.Fatalf("configured API saw %v, want %v", apiPaths, want)
+	}
 }

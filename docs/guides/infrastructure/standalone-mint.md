@@ -113,7 +113,8 @@ The standalone mint is configured entirely through environment variables:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `ALLOWED_WORKFLOW_FILES` | Comma-separated workflow file allowlist; `*` for all | `*` |
-| `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs | `https://mint.fullsend.sh` |
+| `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs. Must use `https://`; `http://` is accepted only for `localhost` and `127.0.0.1`, as `mintclient` accepts for mint URLs. | `https://mint.fullsend.sh` |
+| `GITHUB_API_URL` | REST API base URL of the GitHub server the mint works with. Unset means github.com. See [GitHub servers other than github.com](#github-servers-other-than-githubcom). | `https://ghes.example.com/api/v3` |
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
 | `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint. Applies to every admitted caller; the upstream `fullsend-ai/fullsend` is always accepted. Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
 | `PORT` | HTTP listen port | `8080` (default) |
@@ -121,6 +122,26 @@ The standalone mint is configured entirely through environment variables:
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP/HTTP URL; `/v1/traces` is appended | `https://collector.example` |
 | `MINT_OTLP_HEADERS_FILE` | Path to a file of collector authentication headers. Must be mode `0600` or stricter. | `/etc/fullsend-mint/otlp-headers` |
 | `MINT_DEPLOYMENT_NAME` | Deployment identity recorded on spans. Defaults to the host name. | `mint-prod-eu` |
+
+### GitHub servers other than github.com
+
+By default the standalone mint works with github.com: it accepts OIDC tokens
+from `https://token.actions.githubusercontent.com` and calls
+`https://api.github.com`. Set `GITHUB_API_URL` to use another GitHub server.
+The mint then sends every GitHub API call to that URL, including the user
+and team check on `/v1/status` (when built with `-tags github`), and accepts
+OIDC tokens from the issuer that belongs to that server:
+
+| `GITHUB_API_URL` | OIDC issuer |
+|------------------|-------------|
+| unset or `https://api.github.com` | `https://token.actions.githubusercontent.com` |
+| `https://api.SUBDOMAIN.ghe.com` (GHE.com) | `https://token.actions.SUBDOMAIN.ghe.com` |
+| `https://HOST/api/v3` (GitHub Enterprise Server) | `https://HOST/_services/token` |
+| any other URL | the `GITHUB_API_URL` value itself |
+
+`GITHUB_API_URL` must use `https://`. `http://` is accepted only for
+`localhost` and `127.0.0.1`, for local test servers. The mint logs the
+configured API and issuer at startup.
 
 ### Public mint mode
 
