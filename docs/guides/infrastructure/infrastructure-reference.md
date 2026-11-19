@@ -385,7 +385,7 @@ Repos whose `inference.auth` is `openai-wif` need no fullsend-managed inference 
 
 #### GitLab
 
-Agent jobs that resolve Vault secrets must declare a job-level `FULLSEND_VAULT_ID_TOKEN` whose `aud` is the connection's `vault_audience`; see the [`connections` forge support note](../../reference/config-reference.md#connections).
+Agent jobs that resolve Vault secrets must declare a job-level `FULLSEND_VAULT_ID_TOKEN` whose `aud` is the connection's `vault_audience`. The scaffolded agent job (`.gitlab/ci/fullsend-agent.yml`) declares it with the default audience `https://fullsend.sh/vault`, so GitLab connections must keep the default `vault_audience`. See the [`connections` forge support note](../../reference/config-reference.md#connections).
 
 **Target repo CI/CD variables (protected):**
 - `FULLSEND_FORGE_TOKEN` — Project access token for bot identity at Developer (30) access (stored as protected CI/CD variable). Reduced from Maintainer (40) once poller state moved onto unprotected poll-state branches (#7381).

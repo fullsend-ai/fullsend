@@ -1156,9 +1156,14 @@ the CLI before adding them. Configs that use neither key are unaffected.
 **Forge support.** On GitHub Actions, Fullsend requests the job's OIDC token
 for `vault_audience`, so the job needs `id-token: write`. On GitLab CI, the
 agent job must declare an ID token named `FULLSEND_VAULT_ID_TOKEN` whose `aud`
-is the connection's `vault_audience`. Fullsend cannot change the audience of a
-token GitLab has already issued. Forgejo and local runs have no supported job
-OIDC integration, so an explicit Vault selection fails there. Secrets that omit
+is the connection's `vault_audience`. The scaffolded agent job
+(`.gitlab/ci/fullsend-agent.yml`) declares it with the default audience
+`https://fullsend.sh/vault`, so GitLab connections must keep the default
+`vault_audience`. A hand-edited `aud` differs from the shipped job, so
+`repos status` reports it as drift and `repos install` restores the default.
+Fullsend cannot change the audience of a token GitLab has already issued.
+Forgejo and local runs have no supported job OIDC integration, so an explicit
+Vault selection fails there. Secrets that omit
 `connection` or select `native` keep working on every forge.
 
 **Consumers.** Resolved OTLP header values are handed to the same consumer as
