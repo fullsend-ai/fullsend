@@ -15,6 +15,8 @@ topics:
 
 Date: 2026-11-17
 
+Amends: [ADR 0131](0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md)
+
 ## Status
 
 Accepted
