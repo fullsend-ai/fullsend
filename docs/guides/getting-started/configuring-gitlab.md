@@ -2117,12 +2117,15 @@ Confirm:
   starting an agent pipeline. An edited comment on an issue or merge
   request is ignored the same way: the job logs
   `webhook: ignoring note edit on ...` and succeeds without dispatching.
-  A failed dispatcher job means the payload
-  was rejected, not ignored. Typical causes are a label change the API
-  re-fetch contradicts or cannot tie to the acting user, a stale or
-  replayed event, or an unsupported action such as a merge request edit
-  or an issue reopen. Nothing is dispatched for a rejected payload, and
-  the job log names the check that failed.
+  A merge request update is ignored too. An edit or push logs
+  `ignoring merge request !N update without changes.labels`, and a label
+  change logs `ignoring merge request !N label change`, because merge
+  request labels do not dispatch agents. A failed dispatcher job means the
+  payload was rejected, not ignored. Typical causes are a label change the
+  API re-fetch contradicts or cannot tie to the acting user, a malformed
+  label change, a stale or replayed event, or an unsupported action such
+  as an issue or merge request reopen. Nothing is dispatched for a
+  rejected payload, and the job log names the check that failed.
 * **Role identities** — On instances with project service accounts, a fresh
   install shows `fullsend-poller`, `fullsend-analyst`, and `fullsend-coder`
   (plus any `fullsend-role-*` accounts) under Project information → Members

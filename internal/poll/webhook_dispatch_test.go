@@ -697,6 +697,44 @@ func TestRunWebhook_BareIssueUpdateIsNoOp(t *testing.T) {
 	}
 }
 
+// TestRunWebhook_MergeRequestUpdateIsNoOp: a merge request update, bare or
+// with a well-formed changes.labels diff, is ignored as non-routable. The
+// dispatcher job succeeds with an explicit no-op message, launches no
+// pipeline, and neither reads nor writes poll state.
+func TestRunWebhook_MergeRequestUpdateIsNoOp(t *testing.T) {
+	tests := []struct {
+		name    string
+		changes map[string]any
+		wantLog string
+	}{
+		{"bare update", nil, "ignoring merge request !3 update without changes.labels"},
+		{"label change", map[string]any{"labels": labelChange(nil, []string{"ready-for-review"})}, "ignoring merge request !3 label change"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mc := newMockClient()
+			mc.mr[3] = sameProjectMR(3, "opened")
+
+			var logs bytes.Buffer
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+			if err := newWebhookPoller(mc).RunWebhook(context.Background(), mrPayload(t, "update", alice.ID, 3, tt.changes)); err != nil {
+				t.Fatalf("RunWebhook: %v, want a successful no-op", err)
+			}
+			if len(mc.pipelineCalls) != 0 {
+				t.Errorf("pipeline calls = %+v, want none", mc.pipelineCalls)
+			}
+			if mc.forceCommits != 0 || len(mc.fileContentRefs) != 0 {
+				t.Errorf("commits = %d, state reads = %v, want no state access", mc.forceCommits, mc.fileContentRefs)
+			}
+			if !strings.Contains(logs.String(), tt.wantLog) {
+				t.Errorf("log = %q, want containing %q", logs.String(), tt.wantLog)
+			}
+		})
+	}
+}
+
 // TestRunWebhook_MalformedIssueLabelUpdateFailsClosed: an update that
 // claims label changes still fails the job when the claim cannot be
 // validated, and dispatches nothing.
