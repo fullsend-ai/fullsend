@@ -1719,7 +1719,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Install fullsend CLI for event payload (vendored)
         if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'vendored'
@@ -1740,7 +1740,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .workflow-actions
           fetch-depth: 1
           sparse-checkout: |
@@ -1753,7 +1753,7 @@ jobs:
         with:
           mode: upstream
           workflow_repository: ${{ job.workflow_repository }}
-          workflow_sha: ${{ job.workflow_sha }}
+          workflow_sha: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for event payload
@@ -1780,7 +1780,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Build event payload
         id: payload
