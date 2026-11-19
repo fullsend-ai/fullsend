@@ -67,8 +67,11 @@ BODY_FILE="${RUNNER_TEMP:-/tmp}/fullsend-agent-startup-failure.md"
 } > "${BODY_FILE}"
 
 BOT_LOGIN="$(gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login' 2>/dev/null || true)"
-COMMENTS_JSON="$(gh api --paginate --slurp \
-  "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/${FULLSEND_FAILURE_NUMBER}/comments")"
+if ! COMMENTS_JSON="$(gh api --paginate --slurp \
+  "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/${FULLSEND_FAILURE_NUMBER}/comments")"; then
+  echo "::warning::Could not read existing startup failure comments; posting a new comment" >&2
+  COMMENTS_JSON='[[]]'
+fi
 TRUSTED_BOT_LOGINS="github-actions,fullsend-ai-${FULLSEND_FAILURE_ROLE}"
 # FULLSEND_FAILURE_TRUSTED_BOTS contains app-set prefixes (for example,
 # "fullsend-ai" or "acme"), not arbitrary login prefixes. Expand each set to
@@ -97,11 +100,14 @@ COMMENT_ID="$(printf '%s' "${COMMENTS_JSON}" | jq -r \
       and ($stable == "true" or contains($run_link))))) | last | .id // empty')"
 
 if [[ -n "${COMMENT_ID}" ]]; then
-  gh api --method PATCH "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/comments/${COMMENT_ID}" \
-    -f body="$(<"${BODY_FILE}")" >/dev/null
-  echo "Updated startup failure comment ${COMMENT_ID}"
-else
-  gh api --method POST "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/${FULLSEND_FAILURE_NUMBER}/comments" \
-    -f body="$(<"${BODY_FILE}")" >/dev/null
-  echo "Posted startup failure comment"
+  if gh api --method PATCH "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/comments/${COMMENT_ID}" \
+    -f body="$(<"${BODY_FILE}")" >/dev/null; then
+    echo "Updated startup failure comment ${COMMENT_ID}"
+    exit 0
+  fi
+  echo "::warning::Could not update existing startup failure comment ${COMMENT_ID}; posting a new comment" >&2
 fi
+
+gh api --method POST "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/${FULLSEND_FAILURE_NUMBER}/comments" \
+  -f body="$(<"${BODY_FILE}")" >/dev/null
+echo "Posted startup failure comment"

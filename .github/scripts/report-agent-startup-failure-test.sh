@@ -30,17 +30,23 @@ if [[ "$*" == *"graphql"* ]]; then
   fi
   printf '%s\n' "${MOCK_VIEWER_LOGIN}"
 elif [[ "$*" == *"--method PATCH"* ]]; then
+  if [[ "${MOCK_PATCH_FAIL:-}" == "true" ]]; then
+    exit 1
+  fi
   printf 'patch\n' >> "${MOCK_DIR}/calls"
 elif [[ "$*" == *"--method POST"* ]]; then
   printf 'post\n' >> "${MOCK_DIR}/calls"
 else
+  if [[ "${MOCK_COMMENTS_FAIL:-}" == "true" ]]; then
+    exit 1
+  fi
   printf '%s\n' "${MOCK_COMMENTS_JSON}"
 fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
 run_case() {
-  local name="$1" viewer="$2" comment_login="$3" trusted_bots="${4:-}" role="${5:-review}" body_prefix="${6:-marker}" expected="${7:-patch}" graphql_fail="${8:-false}" stable_marker="${9:-false}" agent="${10:-review}"
+  local name="$1" viewer="$2" comment_login="$3" trusted_bots="${4:-}" role="${5:-review}" body_prefix="${6:-marker}" expected="${7:-patch}" graphql_fail="${8:-false}" stable_marker="${9:-false}" agent="${10:-review}" patch_fail="${11:-false}" comments_fail="${12:-false}"
   local marker="<!-- fullsend:agent-startup-failure:${agent}:123"
   if [[ "${stable_marker}" == "true" ]]; then
     marker+=":stable"
@@ -56,6 +62,8 @@ run_case() {
   fi
   export MOCK_VIEWER_LOGIN="${viewer}"
   export MOCK_GRAPHQL_FAIL="${graphql_fail}"
+  export MOCK_PATCH_FAIL="${patch_fail}"
+  export MOCK_COMMENTS_FAIL="${comments_fail}"
   export MOCK_COMMENTS_JSON="[[{\"id\":42,\"user\":{\"type\":\"Bot\",\"login\":\"${comment_login}\"},\"body\":\"${body}\"}]]"
   : > "${TMPDIR}/calls"
 
@@ -94,6 +102,8 @@ run_case "different run posts a new historical comment" "github-actions" "fullse
 run_case "prefix-matching run posts a new historical comment" "github-actions" "fullsend-ai-review[bot]" "" "review" "prefix-run" "post"
 run_case "GraphQL viewer failure does not prevent reporting" "github-actions" "fullsend-ai-review[bot]" "" "review" "marker" "patch" "true"
 run_case "stable harness marker updates a prior run" "github-actions" "fullsend-ai-harness[bot]" "" "harness" "old-run" "patch" "false" "true" "harness"
+run_case "failed cross-identity patch falls back to post" "github-actions" "fullsend-ai-review[bot]" "" "review" "marker" "post" "false" "false" "review" "true"
+run_case "comments lookup failure falls back to post" "github-actions" "fullsend-ai-review[bot]" "" "review" "marker" "post" "false" "false" "review" "false" "true"
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   printf '%d test(s) FAILED\n' "${FAILURES}"

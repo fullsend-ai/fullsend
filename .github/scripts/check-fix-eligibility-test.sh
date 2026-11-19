@@ -90,6 +90,8 @@ run_test() {
   local mock_bin
   mock_bin=$(build_mock "${is_bot}" "${login}" "${labels}")
 
+  : > "${TMPDIR}/eligibility-output"
+
   local actual_exit=0 output
   output=$(PATH="${mock_bin}:${PATH}" \
     TRIGGER_SOURCE="${trigger}" \
@@ -112,8 +114,13 @@ run_test() {
     return
   fi
 
-  if [[ "${expected_exit}" -eq 1 ]] && ! grep -qx "policy_skip=true" "${TMPDIR}/eligibility-output"; then
-    echo "FAIL: ${name} — expected policy_skip=true output"
+  local expected_policy=false actual_policy
+  if [[ "${expected_exit}" -eq 1 ]]; then
+    expected_policy=true
+  fi
+  actual_policy="$(grep '^policy_skip=' "${TMPDIR}/eligibility-output" | tail -n 1 || true)"
+  if [[ "${actual_policy}" != "policy_skip=${expected_policy}" ]]; then
+    echo "FAIL: ${name} — expected final policy_skip=${expected_policy} output"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -209,8 +216,10 @@ MOCKEOF
     return
   fi
 
-  if ! grep -qx "policy_skip=false" "${TMPDIR}/eligibility-output"; then
-    echo "FAIL: gh pr view failure — expected policy_skip=false output"
+  local actual_policy
+  actual_policy="$(grep '^policy_skip=' "${TMPDIR}/eligibility-output" | tail -n 1 || true)"
+  if [[ "${actual_policy}" != "policy_skip=false" ]]; then
+    echo "FAIL: gh pr view failure — expected final policy_skip=false output"
     FAILURES=$((FAILURES + 1))
     return
   fi
