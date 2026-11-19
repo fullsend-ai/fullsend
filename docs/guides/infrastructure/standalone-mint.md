@@ -117,6 +117,10 @@ The standalone mint is configured entirely through environment variables:
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
 | `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint. Applies to every admitted caller; the upstream `fullsend-ai/fullsend` is always accepted. Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
 | `PORT` | HTTP listen port | `8080` (default) |
+| `FULLSEND_WEBHOOK_SECRET` | HMAC secret shared with the orchestrator (`fullsend`) App's webhook, and with no other hook. Turns on `POST /v1/webhooks/github`, which starts a repository's fork PR review poll when a fork PR is pushed. Needs a `fullsend` entry in `ROLE_APP_IDS` and `fullsend.pem` in `PEM_DIR`. Unset leaves the route off (`404`). Debounce and negative-cache state is kept in this process only. Also turn on the App's webhook by hand; see [Set up on a standalone mint](mint-administration.md#set-up-on-a-standalone-mint). | `$(cat webhook-secret)` |
+| `FULLSEND_MINT_TICK_INTERVAL` | How often the [mint timer](#mint-timer) ticks: a Go duration from `1m` to `5m`, in whole seconds. Anything else stops the mint at startup. | `5m` (default) |
+| `FULLSEND_POLL_SWEEP_PERIOD` | How often the mint timer's sweep starts each served repository's fork PR review poll. At least the tick interval. | `15m` (default) |
+| `FULLSEND_POLL_SWEEP` | `off` turns the sweep off. Unset or `on` leaves it on wherever the `fullsend` App is configured. | `off` |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Full OTLP/HTTP traces URL for mint spans. Takes precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`. Unset (with no base endpoint) disables tracing. See [Tracing](#tracing). | `https://collector.example/v1/traces` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP/HTTP URL; `/v1/traces` is appended | `https://collector.example` |
 | `MINT_OTLP_HEADERS_FILE` | Path to a file of collector authentication headers. Must be mode `0600` or stricter. | `/etc/fullsend-mint/otlp-headers` |
@@ -313,6 +317,7 @@ When `FALLBACK_MINT_URL` is set, the standalone mint acts as a transparent proxy
 | `GET /health` | Always handled locally |
 | `GET /v1/status` | Always handled locally |
 | `POST /v1/bot-role` | Always handled locally |
+| `POST /v1/webhooks/github` | Always handled locally |
 
 The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — the shared public GitHub Apps must be installed in your organization for proxied requests to succeed.
 
@@ -425,6 +430,45 @@ gh api -X POST /orgs/myorg/actions/variables \
   -f name=FULLSEND_MINT_URL \
   -f value="https://your-tunnel-url.trycloudflare.com" \
   -f visibility=all
+```
+
+## Mint timer
+
+The standalone mint runs the mint timer in-process. Each tick redelivers the
+orchestrator App's failed webhook deliveries (only with
+`FULLSEND_WEBHOOK_SECRET` set) and starts the fork PR review poll of the
+repositories due this tick (the sweep, on by default when `ROLE_APP_IDS` has
+a `fullsend` entry). What each job does, its limits and troubleshooting are
+in [Mint timer](mint-administration.md#mint-timer).
+
+**Check it at startup.** The mint logs one line about the timer. With the
+sweep off and no webhook secret (run locally with a throwaway PEM):
+
+```text
+2026/11/17 17:25:40 fullsend-mint starting on :18093 (standalone mode)
+2026/11/17 17:25:40 mint tick: disabled (redelivery needs FULLSEND_WEBHOOK_SECRET; sweep is off or the fullsend App is not configured)
+```
+
+With the timer on, the line reads `mint tick: every <interval>, first in
+<delay>`. (Not shown from a run: a local mint with the timer on would call
+GitHub on its first tick.) The first tick waits a random delay of up to a
+tenth of the interval, so replicas started together do not tick together. Several replicas each run
+their own timer. That is harmless: the poll's concurrency group coalesces
+their dispatches.
+
+**Each tick** logs one summary line. These lines come from the unit tests,
+which run ticks against a fake GitHub API (not a live run, so the duration
+is `0s`):
+
+```text
+mint tick: redelivery=on sweep=off deliveries=1 redelivered=1 repos=0 due=0 dispatched=0 not_dispatchable=0 not_installed=0 cached=0 deferred=0 errors=0 budget=2/900 budget_exhausted=false duration=0s
+mint tick: redelivery=off sweep=tight deliveries=0 redelivered=0 repos=121 due=121 dispatched=101 not_dispatchable=0 not_installed=0 cached=0 deferred=20 errors=0 budget=404/900 budget_exhausted=false duration=0s
+```
+
+A bad setting stops the mint at startup:
+
+```text
+2026/11/17 17:25:59 initializing handler: FULLSEND_MINT_TICK_INTERVAL is "30s": must be from 1m0s to 5m0s, in whole seconds
 ```
 
 ## Tracing

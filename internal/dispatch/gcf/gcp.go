@@ -97,6 +97,9 @@ type FunctionInfo struct {
 	URI     string
 	Region  string
 	EnvVars map[string]string
+	// TimeoutSeconds is the function's request timeout
+	// (serviceConfig.timeoutSeconds); 0 when the API omits it.
+	TimeoutSeconds int
 }
 
 // ServiceRevisionInfo holds Cloud Run service details including which
@@ -140,6 +143,25 @@ type FunctionConfig struct {
 	StorageSource  json.RawMessage // structured object from generateUploadUrl response
 	EntryPoint     string
 	Runtime        string
+	// TimeoutSeconds is the request timeout (serviceConfig.timeoutSeconds).
+	TimeoutSeconds int
+}
+
+// SchedulerJob is a Cloud Scheduler HTTP job that POSTs to URI with a
+// Google-signed OIDC ID token of ServiceAccountEmail for Audience, and is
+// never retried (retryConfig.retryCount = 0). The mint timer uses it.
+type SchedulerJob struct {
+	// ID is the job ID, the last segment of its resource name.
+	ID                  string
+	Description         string
+	Schedule            string // unix-cron, evaluated in TimeZone
+	TimeZone            string
+	URI                 string
+	Audience            string
+	ServiceAccountEmail string
+	// AttemptDeadline bounds one attempt (Cloud Scheduler allows 15s to
+	// 30m for HTTP targets).
+	AttemptDeadline time.Duration
 }
 
 // GCFClient abstracts GCP API operations needed by the provisioner.
@@ -182,6 +204,18 @@ type GCFClient interface {
 
 	// Cloud Run IAM (for function invoker policy)
 	SetCloudRunInvoker(ctx context.Context, projectID, region, serviceName string) error
+	// AddCloudRunInvoker adds member (for example
+	// "serviceAccount:<email>") to roles/run.invoker on the Cloud Run
+	// service only. Idempotent; other bindings are preserved.
+	AddCloudRunInvoker(ctx context.Context, projectID, region, serviceName, member string) error
+
+	// Cloud Scheduler
+	// UpsertSchedulerJob creates the job in projects/<projectID>/locations/<region>,
+	// or updates every field it sets when the job exists. It does not
+	// pause or resume the job.
+	UpsertSchedulerJob(ctx context.Context, projectID, region string, job SchedulerJob) error
+	// DeleteSchedulerJob deletes the job; a missing job is not an error.
+	DeleteSchedulerJob(ctx context.Context, projectID, region, jobID string) error
 
 	// Cloud Functions v2
 	DeleteFunction(ctx context.Context, projectID, region, functionName string) error
@@ -1079,6 +1113,14 @@ func (c *LiveGCFClient) trySetIAMBinding(ctx context.Context, getMethod, getBody
 // (etag conflict) to preserve existing bindings. The function's own OIDC
 // validation is the security boundary.
 func (c *LiveGCFClient) SetCloudRunInvoker(ctx context.Context, projectID, region, serviceName string) error {
+	return c.AddCloudRunInvoker(ctx, projectID, region, serviceName, "allUsers")
+}
+
+// AddCloudRunInvoker ensures member has roles/run.invoker on the Cloud Run
+// service, with the same read-modify-write and 409 retry as
+// SetCloudRunInvoker. The binding is on the service only, never the
+// project.
+func (c *LiveGCFClient) AddCloudRunInvoker(ctx context.Context, projectID, region, serviceName, member string) error {
 	baseURL := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/services/%s",
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
 
@@ -1093,7 +1135,7 @@ func (c *LiveGCFClient) SetCloudRunInvoker(ctx context.Context, projectID, regio
 			}
 		}
 
-		done, err := c.trySetCloudRunInvoker(ctx, baseURL)
+		done, err := c.trySetCloudRunInvoker(ctx, baseURL, member)
 		if done || err == nil {
 			return err
 		}
@@ -1102,7 +1144,7 @@ func (c *LiveGCFClient) SetCloudRunInvoker(ctx context.Context, projectID, regio
 	return lastErr
 }
 
-func (c *LiveGCFClient) trySetCloudRunInvoker(ctx context.Context, baseURL string) (done bool, _ error) {
+func (c *LiveGCFClient) trySetCloudRunInvoker(ctx context.Context, baseURL, member string) (done bool, _ error) {
 	getResp, err := c.Client.DoRequest(ctx, http.MethodGet, baseURL+":getIamPolicy", "")
 	if err != nil {
 		return true, fmt.Errorf("getting Cloud Run IAM policy: %w", err)
@@ -1120,7 +1162,6 @@ func (c *LiveGCFClient) trySetCloudRunInvoker(ctx context.Context, baseURL strin
 	}
 
 	const role = "roles/run.invoker"
-	const member = "allUsers"
 	bindings, _ := policy["bindings"].([]interface{})
 
 	found := false
@@ -1229,6 +1270,7 @@ func (c *LiveGCFClient) GetFunction(ctx context.Context, projectID, region, func
 		ServiceConfig struct {
 			URI                  string            `json:"uri"`
 			EnvironmentVariables map[string]string `json:"environmentVariables"`
+			TimeoutSeconds       int               `json:"timeoutSeconds"`
 		} `json:"serviceConfig"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -1241,6 +1283,8 @@ func (c *LiveGCFClient) GetFunction(ctx context.Context, projectID, region, func
 		URI:     result.ServiceConfig.URI,
 		Region:  region,
 		EnvVars: result.ServiceConfig.EnvironmentVariables,
+
+		TimeoutSeconds: result.ServiceConfig.TimeoutSeconds,
 	}, nil
 }
 
@@ -1350,14 +1394,7 @@ func (c *LiveGCFClient) CreateFunction(ctx context.Context, projectID, region, f
 				"storageSource": cfg.StorageSource,
 			},
 		},
-		"serviceConfig": map[string]interface{}{
-			"serviceAccountEmail":           cfg.ServiceAccount,
-			"environmentVariables":          cfg.EnvVars,
-			"availableMemory":               "256Mi",
-			"availableCpu":                  "1",
-			"maxInstanceCount":              10,
-			"maxInstanceRequestConcurrency": 80,
-		},
+		"serviceConfig": functionServiceConfig(cfg),
 	}
 
 	payloadBytes, err := json.Marshal(payloadObj)
@@ -1388,12 +1425,30 @@ func (c *LiveGCFClient) CreateFunction(ctx context.Context, projectID, region, f
 	return result.Name, nil
 }
 
+// functionServiceConfig is the serviceConfig of a create or update. A zero
+// TimeoutSeconds leaves the API default (60 s) on create; the update mask
+// always includes the field, so the provisioner always sets it.
+func functionServiceConfig(cfg FunctionConfig) map[string]interface{} {
+	sc := map[string]interface{}{
+		"serviceAccountEmail":           cfg.ServiceAccount,
+		"environmentVariables":          cfg.EnvVars,
+		"availableMemory":               "256Mi",
+		"availableCpu":                  "1",
+		"maxInstanceCount":              10,
+		"maxInstanceRequestConcurrency": 80,
+	}
+	if cfg.TimeoutSeconds > 0 {
+		sc["timeoutSeconds"] = cfg.TimeoutSeconds
+	}
+	return sc
+}
+
 // UpdateFunction updates an existing Cloud Function v2 using the PATCH API.
 // It returns a long-running operation name that can be polled with WaitForOperation.
 func (c *LiveGCFClient) UpdateFunction(ctx context.Context, projectID, region, functionName string, cfg FunctionConfig) (string, error) {
 	reqURL := fmt.Sprintf("https://cloudfunctions.googleapis.com/v2/projects/%s/locations/%s/functions/%s?updateMask=%s",
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(functionName),
-		url.QueryEscape("buildConfig.source,buildConfig.runtime,buildConfig.entryPoint,serviceConfig.environmentVariables,serviceConfig.serviceAccountEmail,serviceConfig.availableMemory,serviceConfig.availableCpu,serviceConfig.maxInstanceCount,serviceConfig.maxInstanceRequestConcurrency"))
+		url.QueryEscape("buildConfig.source,buildConfig.runtime,buildConfig.entryPoint,serviceConfig.environmentVariables,serviceConfig.serviceAccountEmail,serviceConfig.availableMemory,serviceConfig.availableCpu,serviceConfig.maxInstanceCount,serviceConfig.maxInstanceRequestConcurrency,serviceConfig.timeoutSeconds"))
 
 	resourceName := fmt.Sprintf("projects/%s/locations/%s/functions/%s",
 		projectID, region, functionName)
@@ -1407,14 +1462,7 @@ func (c *LiveGCFClient) UpdateFunction(ctx context.Context, projectID, region, f
 				"storageSource": cfg.StorageSource,
 			},
 		},
-		"serviceConfig": map[string]interface{}{
-			"serviceAccountEmail":           cfg.ServiceAccount,
-			"environmentVariables":          cfg.EnvVars,
-			"availableMemory":               "256Mi",
-			"availableCpu":                  "1",
-			"maxInstanceCount":              10,
-			"maxInstanceRequestConcurrency": 80,
-		},
+		"serviceConfig": functionServiceConfig(cfg),
 	}
 
 	payloadBytes, err := json.Marshal(payloadObj)
@@ -2196,4 +2244,104 @@ func iamAudience(projectNumber, poolID, providerID string) string {
 // encodeBase64 encodes data as standard base64.
 func encodeBase64(data []byte) string {
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+// schedulerJobsURL is the Cloud Scheduler v1 jobs collection of a location:
+// https://cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs
+func schedulerJobsURL(projectID, region string) string {
+	return fmt.Sprintf("https://cloudscheduler.googleapis.com/v1/projects/%s/locations/%s/jobs",
+		url.PathEscape(projectID), url.PathEscape(region))
+}
+
+// schedulerJobUpdateMask lists every field UpsertSchedulerJob sets, so an
+// update replaces exactly those and leaves the job's state alone.
+const schedulerJobUpdateMask = "description,schedule,timeZone,attemptDeadline,retryConfig,httpTarget"
+
+// UpsertSchedulerJob creates the job (projects.locations.jobs.create) and,
+// when it already exists (409), updates it (projects.locations.jobs.patch
+// with schedulerJobUpdateMask). The job sends an OIDC ID token
+// (httpTarget.oidcToken) and is never retried (retryConfig.retryCount 0).
+func (c *LiveGCFClient) UpsertSchedulerJob(ctx context.Context, projectID, region string, job SchedulerJob) error {
+	collection := schedulerJobsURL(projectID, region)
+	type oidcToken struct {
+		ServiceAccountEmail string `json:"serviceAccountEmail"`
+		Audience            string `json:"audience"`
+	}
+	type httpTarget struct {
+		URI        string    `json:"uri"`
+		HTTPMethod string    `json:"httpMethod"`
+		OIDCToken  oidcToken `json:"oidcToken"`
+	}
+	type retryConfig struct {
+		// No omitempty: zero is the setting, not an absent value.
+		RetryCount int `json:"retryCount"`
+	}
+	body := struct {
+		Name            string      `json:"name"`
+		Description     string      `json:"description"`
+		Schedule        string      `json:"schedule"`
+		TimeZone        string      `json:"timeZone"`
+		AttemptDeadline string      `json:"attemptDeadline"`
+		RetryConfig     retryConfig `json:"retryConfig"`
+		HTTPTarget      httpTarget  `json:"httpTarget"`
+	}{
+		Name:            fmt.Sprintf("projects/%s/locations/%s/jobs/%s", projectID, region, job.ID),
+		Description:     job.Description,
+		Schedule:        job.Schedule,
+		TimeZone:        job.TimeZone,
+		AttemptDeadline: fmt.Sprintf("%ds", int(job.AttemptDeadline/time.Second)),
+		RetryConfig:     retryConfig{RetryCount: 0},
+		HTTPTarget: httpTarget{
+			URI:        job.URI,
+			HTTPMethod: http.MethodPost,
+			OIDCToken:  oidcToken{ServiceAccountEmail: job.ServiceAccountEmail, Audience: job.Audience},
+		},
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshaling Cloud Scheduler job: %w", err)
+	}
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodPost, collection, string(payload))
+	if err != nil {
+		return fmt.Errorf("creating Cloud Scheduler job %s: %w", job.ID, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusConflict:
+		// Exists: update it below.
+	default:
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("unexpected status %d creating Cloud Scheduler job %s: %s", resp.StatusCode, job.ID, gcp.ExtractErrorMessage(msg))
+	}
+
+	patchURL := collection + "/" + url.PathEscape(job.ID) + "?updateMask=" + url.QueryEscape(schedulerJobUpdateMask)
+	patchResp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, string(payload))
+	if err != nil {
+		return fmt.Errorf("updating Cloud Scheduler job %s: %w", job.ID, err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(patchResp.Body, 1<<20))
+		return fmt.Errorf("unexpected status %d updating Cloud Scheduler job %s: %s", patchResp.StatusCode, job.ID, gcp.ExtractErrorMessage(msg))
+	}
+	return nil
+}
+
+// DeleteSchedulerJob deletes a Cloud Scheduler job
+// (projects.locations.jobs.delete). A missing job is not an error.
+func (c *LiveGCFClient) DeleteSchedulerJob(ctx context.Context, projectID, region, jobID string) error {
+	reqURL := schedulerJobsURL(projectID, region) + "/" + url.PathEscape(jobID)
+	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	if err != nil {
+		return fmt.Errorf("deleting Cloud Scheduler job %s: %w", jobID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return fmt.Errorf("unexpected status %d deleting Cloud Scheduler job %s: %s", resp.StatusCode, jobID, gcp.ExtractErrorMessage(msg))
 }

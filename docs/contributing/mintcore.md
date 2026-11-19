@@ -38,7 +38,9 @@ internal/dispatch/gcf/
 **internal/mintcore/** contains all token-minting logic: request
 parsing, OIDC verification, claims validation, authorization (org,
 workflow-ref, repos scope), GitHub App token creation, bot-role lookup
-(`POST /v1/bot-role`), and status endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
+(`POST /v1/bot-role`), the GitHub webhook route that starts the fork PR
+review poll (`POST /v1/webhooks/github`, `webhook.go`), the mint timer
+(`Handler.Tick`, `tick.go`, and its Cloud Function route `POST /v1/tick`, `tick_route.go`), and status endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
 It is a nested module with a local-only `replace`; packages reachable
 from `pkg/behaviourtest` must not import it (including `mintconsts`).
 See [Go Code](go-code.md).
@@ -50,7 +52,7 @@ No mint logic lives in entrypoints.
 
 **The CF Worker TypeScript adapter** (`workersrc/src/index.ts`) handles
 I/O only — Worker secrets, host fetch, Fetch Request/Response mapping.
-It calls `mintcoreInitMint` and `mintcoreHandleFetch` registered on
+It calls `mintcoreInitMint`, `mintcoreHandleFetch` and (from its `scheduled` handler) `mintcoreTick` registered on
 `globalThis` by the Go WASM bridge in `cmd/mint-wasm`.
 
 ## Platform accessors
@@ -69,8 +71,11 @@ Reads environment/configuration values.
 
 `NewHandler` reads all configuration variables (`ROLE_APP_IDS`,
 `ALLOWED_WORKFLOW_FILES`, `PER_REPO_WIF_REPOS`,
-`WORKFLOW_HOST_REPOS`, `CUSTOM_ROLE_PERMISSIONS`, `ALLOWED_ROLES`)
-via `mintEnv` at construction time.
+`WORKFLOW_HOST_REPOS`, `CUSTOM_ROLE_PERMISSIONS`, `ALLOWED_ROLES`,
+`FULLSEND_WEBHOOK_SECRET`, and the mint timer settings
+`FULLSEND_MINT_TICK_INTERVAL`, `FULLSEND_POLL_SWEEP_PERIOD`,
+`FULLSEND_POLL_SWEEP`, `FULLSEND_TICK_AUDIENCE` and
+`FULLSEND_TICK_SERVICE_ACCOUNT`) via `mintEnv` at construction time.
 
 ### `mintHTTP(req *http.Request) (*http.Response, error)`
 
@@ -228,6 +233,10 @@ call `mintHTTP` include:
 - `github.go` — GitHub App installation token creation
 - `bot_role.go` — GitHub App lookup and installation verification for
   `POST /v1/bot-role`
+- `webhook.go` — repository read and `workflow_dispatch` of the fork PR review poll for
+  `POST /v1/webhooks/github`
+- `tick.go` — webhook delivery listing and redelivery, installation and
+  repository listing, and the sweep's poll dispatches for `Handler.Tick`
 - `jwks_verifier.go` — JWKS key fetching
 - `sts_verifier.go` — GCP STS token exchange
 - `gcp_pem.go` — GCP Secret Manager access (`AccessGCPSecret` is the
@@ -285,6 +294,126 @@ type PEMAccessor interface {
     AccessPEM(ctx context.Context, role string) ([]byte, error)
 }
 ```
+
+## GitHub webhook route
+
+`POST /v1/webhooks/github` (`webhook.go`) is off, and answers `404` like an
+unknown path, until `FULLSEND_WEBHOOK_SECRET` is set and `checkAllowedRole`
+allows the `fullsend` role. `NewHandler` decides this once, after it has
+built `allowedRoles`, and logs when the secret is set but the role is not
+allowed. Its only authentication is the `X-Hub-Signature-256` HMAC of the
+raw body, checked with the standard library (`crypto/hmac`) because mintcore
+cannot import `internal/poll`. It acts only on deliveries for the `fullsend`
+App ID in `ROLE_APP_IDS`, and only on fork `pull_request` events of
+repositories that pass `IsPerRepoMode`. It then mints an installation token
+limited to that repository with `actions: write` and `metadata: read`, reads
+the current default branch with `GET /repos/{owner}/{repo}` (never the
+payload's `default_branch`, which a replayed delivery could hold stale), and
+sends one `workflow_dispatch` of `fullsend-poll-prs.yml` on it with no
+inputs. The token is created per request and never returned, logged or
+cached.
+
+`webhookLimiter` bounds the GitHub calls: after a dispatch it answers a
+repository's deliveries with `debounced` for 10 s, and it remembers
+`app_not_installed` and `workflow_not_dispatchable` for 5 minutes. A miss
+reserves the repository before the GitHub calls, so concurrent deliveries
+for it do not dispatch twice; a failure clears the reservation so a
+redelivery tries again. The map is guarded by a mutex and bounded to 10,000
+entries (expired entries are swept first, then the one expiring soonest is
+evicted). Its clock is the `now` field, which tests replace. The state is
+best-effort and in-process: per Cloud Run instance, Worker isolate or
+standalone process, not shared, and lost on restart (on the Worker, also on
+a WASM runtime re-init). The Cloudflare Worker adapter also rate-limits the
+path with `MINT_TOKEN_RATE_LIMITER`, like `/v1/token` and `/v1/bot-role`.
+Operator setup is in
+[Mint administration](../guides/infrastructure/mint-administration.md#github-webhook-for-fork-pr-reviews).
+
+## Mint timer
+
+`tick.go` is the reliable starter of the fork PR review poll (ADR 0171). A
+host calls `Handler.Tick(ctx) TickResult` every `Handler.TickInterval()`,
+and only when `Handler.TickEnabled()` is true. `Tick` takes no input, logs
+one summary line (plus at most 10 error lines), never logs a token, and
+never fails: errors are counted in `TickResult.Errors`. Each tick runs two
+jobs with one App JWT:
+
+- **Redelivery**, only while the webhook route is on (`webhookSecret` set,
+  so the `fullsend` role is allowed): `GET /app/hook/deliveries` with
+  `per_page=100`, following the `cursor` of the `Link` header's
+  `rel="next"` URL (only the cursor value is taken; the request URL is
+  built from `githubBaseURL`), until a delivery older than the sweep period
+  or 10 pages. Attempts are grouped by `guid`. A guid is redelivered
+  (`POST /app/hook/deliveries/{id}/attempts` with its newest attempt's id)
+  when no attempt got a 2xx, it has fewer than 3 attempts, and its original
+  attempt (`redelivery: false`) was listed. Requiring the original means
+  every attempt of the guid was seen, and a guid whose original aged out of
+  the window is never retried again. At most 50 redeliveries per tick.
+- **Sweep**, on unless `FULLSEND_POLL_SWEEP=off`, when the `fullsend` role
+  is allowed and has an App ID (the PEM is read at tick time). It does not
+  need the webhook secret. Tight mode serves `perRepoWIFRepos`; public mode
+  (`*`) lists `GET /app/installations` and, per installation, an
+  installation token with `metadata: read` only and
+  `GET /installation/repositories` (suspended installations and archived or
+  disabled repositories are skipped). Public mode visits installations from
+  an offset that moves every tick.
+- **Rotation** (`sweepDue`): `n = sweepPeriod / tickInterval` slots. A
+  repository is due when `fnv32a(lowercase full_name) % n` equals
+  `(unix seconds / tickInterval) % n`, so over any `n` consecutive ticks
+  each repository is due exactly once, with no stored state. The name, not
+  the installation, picks the slot, so one large installation is spread
+  over the period.
+- **Dispatch:** a due repository goes through `limitedPollDispatch`, the
+  same path as the webhook route: the shared `webhookLimiter` first (a
+  debounced or negatively cached repository is `Cached`, with no GitHub
+  call), then `dispatchPollWorkflow` (installation lookup, one-repository
+  `actions: write` + `metadata: read` token, live default-branch read,
+  `workflow_dispatch` with no inputs; `404`/`422` is not dispatchable), and
+  its outcome is recorded in the same limiter. The limiter exists when the
+  route or the sweep is on.
+- **Bounds:** at most 100 dispatches per installation (repository owner)
+  per tick, and a GitHub call budget of `tickMaxGitHubCalls` (900) per tick,
+  shared by both jobs, so a Cloudflare Worker invocation stays under about
+  1,000 subrequests. A dispatch reserves 4 calls up front. Due repositories
+  that do not fit are counted as `Deferred`; the rotation makes them due
+  again next period, not next tick.
+
+The settings are in one `const` block at the top of `tick.go`:
+
+| Setting | Default | Rule |
+|---------|---------|------|
+| `FULLSEND_MINT_TICK_INTERVAL` | `5m` | Go duration, `1m` to `5m`, whole seconds |
+| `FULLSEND_POLL_SWEEP_PERIOD` | `15m` | Go duration, at least the tick interval |
+| `FULLSEND_POLL_SWEEP` | on | `off` turns the sweep off; `on` or empty leaves it on |
+
+A value outside its rule makes `NewHandler` fail. Tests replace the clock
+(`Handler.tickNow`) and the budget (`Handler.tickMaxCalls`).
+
+Hosts: the standalone mint (`cmd/mint`) runs `runTicker` in a goroutine,
+with a random first delay of up to a tenth of the interval, a per-tick
+context that ends after one interval, and a stop on shutdown. Several
+replicas each tick; that is harmless, because the poll's concurrency group
+coalesces their dispatches.
+
+The Cloudflare Worker runs a tick from a Cron Trigger: `cmd/mint-wasm`
+registers `mintcoreTick()`, which runs `Tick` on a goroutine (as
+`mintcoreHandleFetch` does) with a context of one interval and resolves to
+the JSON `TickResult`. The adapter's `scheduled` handler calls it under
+`ctx.waitUntil`, never throws, and logs `mint tick finished: ...`. There is
+no HTTP route. `mint deploy` sets the cron (`SetWorkerSchedules` in
+`internal/dispatch/cf`) on durable deploys only.
+
+The Cloud Function runs a tick on `POST /v1/tick` (`tick_route.go`), called
+by Cloud Scheduler. The route answers `404` unless `FULLSEND_TICK_AUDIENCE`
+and `FULLSEND_TICK_SERVICE_ACCOUNT` are set and `TickEnabled()` is true. It
+checks the Google ID token in the handler. The JWT split and the RS256
+check (`splitRS256JWT`, `verifyRS256Signature`) are shared with
+`JWKSVerifier.Verify`, and the keys come from a
+`JWKSVerifier` whose `jwks_uri` is preset to Google's keys, so no discovery
+runs; then issuer, `exp`/`iat` with `maxClockSkew`, the pinned audience, and
+the pinned email with `email_verified`. The token is never logged and the
+body is never read. `ensureMintTimer` in `internal/dispatch/gcf` creates the
+service account, the invoker grant, the env vars and the job. The standalone
+mint and the Worker do not set the route's settings.
 
 ## Tracing
 

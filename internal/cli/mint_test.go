@@ -236,7 +236,7 @@ func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
 	require.NoError(t, err)
 	oldStdout := os.Stdout
 	os.Stdout = w
-	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false, gcf.StatusGitHubAuth{}, mintTracingConfig{})
+	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false, gcf.StatusGitHubAuth{}, mintTracingConfig{}, 0)
 	require.NoError(t, w.Close())
 	os.Stdout = oldStdout
 	require.NoError(t, deployErr)
@@ -642,6 +642,12 @@ func withMintCFWrangler(t *testing.T, runner cf.WranglerRunner) {
 	old := mintCFWranglerFactory
 	mintCFWranglerFactory = func(string) cf.WranglerRunner { return runner }
 	t.Cleanup(func() { mintCFWranglerFactory = old })
+	// No CLI test may reach the Cloudflare API: a deploy that uses this
+	// fake runner also gets a recording fake API client, unless the test
+	// installs its own with withMintCFAPI afterwards.
+	oldAPI := mintCFAPIFactory
+	mintCFAPIFactory = func() cf.CloudflareAPIClient { return &fakeCFAPIClient{} }
+	t.Cleanup(func() { mintCFAPIFactory = oldAPI })
 }
 
 // createMinimalWorkerSourceDir creates a temp directory with the minimal

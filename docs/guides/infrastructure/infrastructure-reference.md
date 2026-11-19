@@ -257,6 +257,95 @@ fullsend's own bots.
 - **Transient GitHub failures:** A transport error, 5xx or rate limit on the `/apps` or installation lookup is retried up to three attempts in all, honoring `Retry-After` (or `X-RateLimit-Reset` for an exhausted primary quota) and otherwise backing off from 500 ms. A wait over 5 seconds, or one the request deadline cannot cover, ends the retries with the failure. A rate-limit `403` is never treated as a rejected installation token: only a `401`, or a `403` that is not a rate limit, makes the `/apps` lookup fall back to an anonymous request.
 - **Response (200):** `{"outcome": "recognized", "role": "review"}` or `{"outcome": "no_match"}`. A failed GitHub lookup returns `502` with `{"error": "bot-role lookup failed"}`, which callers must not treat as a no-match. The endpoint returns role names only, never credentials.
 
+### GitHub Webhook Endpoint
+
+`POST /v1/webhooks/github` receives the orchestrator (`fullsend`) App's
+webhook and starts a repository's fork PR review poll
+(`.github/workflows/fullsend-poll-prs.yml`) without waiting for its `*/5`
+schedule. It only wakes the poll: it sends one `workflow_dispatch` with no
+inputs, and no webhook field reaches a job. Setup and troubleshooting:
+[Mint administration](mint-administration.md#github-webhook-for-fork-pr-reviews).
+
+- **Configuration:** on only when `FULLSEND_WEBHOOK_SECRET` is set and the
+  `fullsend` role is allowed (it has a `ROLE_APP_IDS` entry and, when
+  `ALLOWED_ROLES` is set, appears there). Otherwise the path answers `404`
+  like an unknown path, and with the secret set the mint logs at startup that
+  the route is off. Set the secret as an env var (standalone, GCF) or a
+  Worker secret (Cloudflare), and give the App's webhook the same secret. Use
+  the secret for that webhook only.
+- **Authentication:** the signature only. The body (at most 1 MiB, otherwise
+  `413`) must match `X-Hub-Signature-256`, which is `sha256=` followed by the
+  hex HMAC-SHA256 of the raw body keyed with the secret. The mint compares it
+  in constant time. A missing, wrong or non-`sha256` signature returns `401`,
+  and nothing else is read.
+- **Sender:** `X-GitHub-Hook-Installation-Target-Type` must be `integration`
+  and `X-GitHub-Hook-Installation-Target-ID` must equal the `fullsend` App ID
+  in `ROLE_APP_IDS`. Otherwise `202`, ignored. These headers are not signed,
+  which is why the secret must not be shared with another hook.
+- **Filter:** a `ping` returns `200`. A delivery is acted on only when
+  `X-GitHub-Event` is `pull_request`, `action` is `opened`, `synchronize`,
+  `reopened` or `ready_for_review`, `pull_request.head.repo` is present and
+  differs from `pull_request.base.repo` (a fork PR), and the base repository
+  is in `PER_REPO_WIF_REPOS` (every repository when it is `*`). Anything else
+  returns `202` with `{"dispatched": false, "reason": "..."}` and makes no
+  GitHub call. The payload's `default_branch` is not read.
+- **Limits:** per repository, a dispatch makes the mint answer further
+  deliveries `202` `{"dispatched": false, "reason": "debounced"}` for 10
+  seconds, and `app_not_installed` or `workflow_not_dispatchable` is
+  remembered and answered for 5 minutes, all without a GitHub call. The state
+  is best-effort and in-process: kept per mint instance (Cloud Run instance,
+  Worker isolate, standalone process), not shared across instances or
+  isolates, lost on restart, and bounded to 10,000 repositories per instance.
+  On Cloudflare the Worker also rate-limits the path to 60 requests per
+  minute per source IP (`429`).
+- **Dispatch:** the mint signs an App JWT for `fullsend`, finds the App's
+  installation on the base repository, and creates an installation token
+  with only `actions: write` and `metadata: read`, limited to that
+  repository. With it the mint reads the repository's current default branch
+  (`GET /repos/{owner}/{repo}`), so a replayed delivery cannot dispatch on a
+  former default branch, and sends `{"ref": "<default branch>"}` to
+  `POST /repos/{owner}/{repo}/actions/workflows/fullsend-poll-prs.yml/dispatches`.
+  The token is never returned, logged or cached, and `POST /v1/token` does
+  not serve this permission set.
+- **Response:** `202` `{"dispatched": true}` when GitHub accepts the
+  dispatch. `202` `{"dispatched": false, "reason": "workflow_not_dispatchable"}`
+  when GitHub answers the repository read with `404` or the dispatch with
+  `404` or `422`. In observed GitHub behaviour these mean no poll workflow,
+  no `workflow_dispatch` trigger, or Actions off. `202`
+  `{"dispatched": false, "reason": "app_not_installed"}` when the App is not
+  installed on the repository. `502` for any other GitHub failure, including
+  a dispatch answer other than 2xx, `404` or `422`, so GitHub records a
+  failed delivery that can be redelivered. `500` when the mint cannot read the `fullsend` key or sign
+  the App JWT.
+- **Logs:** one line per request with the delivery ID (`X-GitHub-Delivery`),
+  event, action, repository and outcome. An answer from the limiter is
+  logged with `source=cache`. Never the body, the signature or the token.
+
+### Mint Timer
+
+The mint timer redelivers the orchestrator App's failed webhook deliveries
+(only while the webhook route is on) and dispatches the poll of every served
+repository once per sweep period through the same path as the webhook route
+(the sweep). How each host starts a tick:
+
+| Host | Trigger | Created by |
+|------|---------|------------|
+| Standalone | In-process timer | Nothing to create |
+| Cloudflare Worker | Cron Trigger on the Worker script, calling the `scheduled` handler (no HTTP route) | `mint deploy --platform cloudflare` (durable only) |
+| Cloud Function | Cloud Scheduler job `fullsend-mint-tick` calling `POST /v1/tick` with an OIDC ID token of `fullsend-mint-tick@<project>.iam.gserviceaccount.com` | `mint deploy --platform gcp` (not with `--skip-deploy`) |
+
+Settings, read at startup on every host: `FULLSEND_MINT_TICK_INTERVAL`
+(default `5m`, `1m` to `5m`; `mint deploy --tick-interval` sets it and the
+host schedule together), `FULLSEND_POLL_SWEEP_PERIOD` (default `15m`, at
+least the interval) and `FULLSEND_POLL_SWEEP` (`off` turns the sweep off).
+The Cloud Function's tick route also needs `FULLSEND_TICK_AUDIENCE` (the
+function URL) and `FULLSEND_TICK_SERVICE_ACCOUNT`, both set by `mint deploy`;
+it answers `404` without them. On GCP the deploy needs
+`cloudscheduler.googleapis.com`, `roles/cloudscheduler.admin` and
+`roles/iam.serviceAccountUser`, and raises the function timeout to 360 s.
+Details, limits and troubleshooting:
+[Mint administration](mint-administration.md#mint-timer).
+
 ---
 
 ## Inference — Agent Platform with Workload Identity Federation

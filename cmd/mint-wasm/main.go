@@ -11,6 +11,10 @@
 //     ResponseWriter, and returns {status, headers, body} for the Worker to
 //     convert back into a Response.
 //
+//   - mintcoreTick() — runs one mint timer tick (Handler.Tick) and resolves
+//     to a short JSON summary. The Worker's scheduled handler (Cron Trigger)
+//     calls it; there is no HTTP route for the tick.
+//
 // The Worker JS side acts as the listener/host; mintcore keeps using
 // Handler.ServeHTTP as the request path, the same contract used by GCF
 // and cmd/mint.
@@ -59,6 +63,7 @@ var handler *mintcore.Handler
 func main() {
 	js.Global().Set("mintcoreInitMint", js.FuncOf(initMint))
 	js.Global().Set("mintcoreHandleFetch", js.FuncOf(handleFetch))
+	js.Global().Set("mintcoreTick", js.FuncOf(tick))
 
 	// Block forever — the Worker runtime keeps the WASM instance alive.
 	select {}
@@ -239,6 +244,49 @@ func handleFetch(_ js.Value, args []js.Value) interface{} {
 			"headers": string(respHeadersBytes),
 			"body":    rec.Body.String(),
 		}))
+	}()
+
+	return promise
+}
+
+// tick runs one mint timer tick for the Worker's Cron Trigger.
+// JS signature: mintcoreTick() => Promise<string>
+//
+// The Promise resolves to the JSON-encoded mintcore.TickResult (counts
+// only, never a token). It rejects only when the mint is not initialized
+// or the tick panics; Tick itself never fails. As in handleFetch, the tick
+// runs on its own goroutine so the JS event loop stays free for the host
+// fetch and PEM Promises it awaits. When the mint timer has no work
+// (TickEnabled is false), Tick logs that once and returns at once.
+//
+// The tick's context ends after one tick interval, the same bound the
+// standalone mint uses; the Worker adds its own backstop timeout.
+func tick(_ js.Value, _ []js.Value) interface{} {
+	if handler == nil {
+		return newPromiseReject("mint not initialized; call mintcoreInitMint first")
+	}
+	h := handler
+
+	var resolve, reject js.Value
+	executor := js.FuncOf(func(_ js.Value, promiseArgs []js.Value) interface{} {
+		resolve = promiseArgs[0]
+		reject = promiseArgs[1]
+		return nil
+	})
+	promise := js.Global().Get("Promise").New(executor)
+	executor.Release()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				reject.Invoke(js.Global().Get("Error").New(
+					fmt.Sprintf("panic in Tick: %v", r)))
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), h.TickInterval())
+		defer cancel()
+		summary, _ := json.Marshal(h.Tick(ctx))
+		resolve.Invoke(string(summary))
 	}()
 
 	return promise

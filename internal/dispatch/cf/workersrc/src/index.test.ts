@@ -7,6 +7,7 @@
 import { env, exports } from "cloudflare:workers";
 import {
   createExecutionContext,
+  createScheduledController,
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -96,6 +97,69 @@ describe("mint worker rate limiting", () => {
     expect(res.status).toBe(429);
     const body = (await res.json()) as { error?: string };
     expect(body.error).toBe("rate_limited");
+  });
+
+  it("returns 429 rate_limited when MINT_TOKEN_RATE_LIMITER denies POST /v1/webhooks/github", async () => {
+    const req = new Request("https://worker.test/v1/webhooks/github", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const limitedEnv: Env = {
+      ...env,
+      MINT_TOKEN_RATE_LIMITER: denyRateLimit,
+    } as Env;
+    const res = await worker.fetch(req, limitedEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("rate_limited");
+  });
+
+  it("rate-limits an otherwise-encoded /v1/webhooks/github path on its decoded form", async () => {
+    const req = new Request("https://worker.test/v1/webhooks/git%68ub", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const limitedEnv: Env = {
+      ...env,
+      MINT_TOKEN_RATE_LIMITER: denyRateLimit,
+    } as Env;
+    const res = await worker.fetch(req, limitedEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(429);
+  });
+
+  it("allows POST /v1/webhooks/github when rate limiter permits", async () => {
+    const keys: string[] = [];
+    const capturingRateLimit: Env["MINT_TOKEN_RATE_LIMITER"] = {
+      limit: async (opts: { key: string }) => {
+        keys.push(opts.key);
+        return { success: true };
+      },
+    };
+    const req = new Request("https://worker.test/v1/webhooks/github", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(
+      req,
+      { ...env, MINT_TOKEN_RATE_LIMITER: capturingRateLimit } as Env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    // Passes through to the WASM handler (404 while the route is off),
+    // not 429, on its own counter.
+    expect(res.status).not.toBe(429);
+    expect(keys).toEqual(["worker.test:/v1/webhooks/github:1.2.3.4"]);
   });
 
   it("rejects an encoded slash in the path instead of skipping the limiter", async () => {
@@ -306,5 +370,82 @@ describe("mint worker tracing disabled", () => {
     expect(res.status).toBeLessThan(500);
     expect(res.status).not.toBe(429);
     expect(urls).toEqual([]);
+  });
+});
+
+describe("mint worker scheduled tick", () => {
+  const globals = globalThis as Record<string, unknown>;
+  let savedTick: unknown;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (savedTick !== undefined) {
+      globals["mintcoreTick"] = savedTick;
+      savedTick = undefined;
+    }
+  });
+
+  async function runScheduled(): Promise<void> {
+    const ctx = createExecutionContext();
+    await worker.scheduled(
+      createScheduledController({
+        cron: "*/5 * * * *",
+        scheduledTime: Date.now(),
+      }),
+      env as Env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+  }
+
+  // Boot the Go runtime first, so the bridge functions are on globalThis.
+  async function bootBridge(): Promise<void> {
+    const resp = await exports.default.fetch("https://worker.test/health");
+    expect(resp.status).toBe(200);
+  }
+
+  it("calls the mintcoreTick bridge and logs its summary", async () => {
+    await bootBridge();
+    savedTick = globals["mintcoreTick"];
+    expect(typeof savedTick).toBe("function");
+    const tickSpy = vi.fn(() => (savedTick as () => Promise<string>)());
+    globals["mintcoreTick"] = tickSpy;
+    const logSpy = vi.spyOn(console, "log");
+
+    await runScheduled();
+
+    expect(tickSpy).toHaveBeenCalledTimes(1);
+    // The smoke bindings have no fullsend App and no webhook secret, so
+    // the real Go tick has no work and reports both jobs off.
+    const finished = logSpy.mock.calls
+      .map((args) => args.join(" "))
+      .find((line) => line.startsWith("mint tick finished:"));
+    expect(finished).toBeDefined();
+    expect(finished).toContain("cron=*/5 * * * *");
+    expect(finished).toContain('"redelivery":false');
+    expect(finished).toContain('"sweep":false');
+  });
+
+  it("does not throw when the tick rejects", async () => {
+    await bootBridge();
+    savedTick = globals["mintcoreTick"];
+    globals["mintcoreTick"] = () => Promise.reject(new Error("boom"));
+    const errSpy = vi.spyOn(console, "error");
+
+    await expect(runScheduled()).resolves.toBeUndefined();
+    expect(errSpy).toHaveBeenCalledWith("mint tick failed:", "boom");
+  });
+
+  it("does not throw when the bridge is missing", async () => {
+    await bootBridge();
+    savedTick = globals["mintcoreTick"];
+    globals["mintcoreTick"] = undefined;
+    const errSpy = vi.spyOn(console, "error");
+
+    await expect(runScheduled()).resolves.toBeUndefined();
+    expect(errSpy).toHaveBeenCalledWith(
+      "mint tick failed:",
+      expect.stringContaining("mintcoreTick not registered"),
+    );
   });
 });

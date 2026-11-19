@@ -46,7 +46,7 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/trace_consts.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/bot_role.go.embed mintsrc/mintcore/bot_role_trace.go.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/env.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/http_client.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/mintconsts/mintconsts.go.embed mintsrc/mintcore/oidc_verify.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/status_auth.go.embed mintsrc/mintcore/status_consts.go.embed mintsrc/mintcore/status_github.go.embed mintsrc/mintcore/status_github_stub.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/tracing.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/trace_consts.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/bot_role.go.embed mintsrc/mintcore/bot_role_trace.go.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/env.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/http_client.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/mintconsts/mintconsts.go.embed mintsrc/mintcore/oidc_verify.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/status_auth.go.embed mintsrc/mintcore/status_consts.go.embed mintsrc/mintcore/status_github.go.embed mintsrc/mintcore/status_github_stub.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/tick.go.embed mintsrc/mintcore/tick_route.go.embed mintsrc/mintcore/tracing.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/webhook.go.embed mintsrc/mintcore/wif.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
@@ -80,8 +80,11 @@ var embeddedMintFiles = map[string]string{
 	"mintcore/status_github.go.embed":         "mintcore/status_github.go",
 	"mintcore/status_github_stub.go.embed":    "mintcore/status_github_stub.go",
 	"mintcore/sts_verifier.go.embed":          "mintcore/sts_verifier.go",
+	"mintcore/tick.go.embed":                  "mintcore/tick.go",
+	"mintcore/tick_route.go.embed":            "mintcore/tick_route.go",
 	"mintcore/tracing.go.embed":               "mintcore/tracing.go",
 	"mintcore/version.go.embed":               "mintcore/version.go",
+	"mintcore/webhook.go.embed":               "mintcore/webhook.go",
 	"mintcore/wif.go.embed":                   "mintcore/wif.go",
 }
 
@@ -117,8 +120,46 @@ const (
 	DefaultInferencePool = mintcore.DefaultInferencePool
 )
 
+// Mint timer (ADR 0171) on the Cloud Function: a Cloud Scheduler job POSTs
+// <function URL>/v1/tick every tick interval with an OIDC ID token of a
+// dedicated service account, and the mint checks that token
+// (internal/mintcore/tick_route.go).
+const (
+	// TickJobID is the Cloud Scheduler job ID, in the function's region.
+	TickJobID = "fullsend-mint-tick"
+	// tickSAName is the account ID of the service account the job signs
+	// its ID token as. It has roles/run.invoker on the mint's Cloud Run
+	// service and nothing else.
+	tickSAName = "fullsend-mint-tick"
+
+	// tickPath is the mint's tick route.
+	tickPath = "/v1/tick"
+
+	// The mint settings the route checks the token against.
+	tickAudienceEnv       = "FULLSEND_TICK_AUDIENCE"
+	tickServiceAccountEnv = "FULLSEND_TICK_SERVICE_ACCOUNT"
+
+	// mintFunctionTimeoutSeconds is the function's request timeout. The
+	// tick route bounds one tick by the tick interval, at most 5 minutes,
+	// so the timeout must be longer. The Cloud Scheduler attempt deadline
+	// is the same.
+	mintFunctionTimeoutSeconds = 360
+)
+
+// TickServiceAccountEmail returns the email of the service account the
+// mint timer's Cloud Scheduler job signs its ID token as.
+func TickServiceAccountEmail(projectID string) string {
+	return tickSAName + "@" + projectID + ".iam.gserviceaccount.com"
+}
+
 // Config holds the inputs for GCF mint provisioning.
 type Config struct {
+	// TickInterval is the mint timer interval, whole minutes from 1m to
+	// 5m; zero means dispatch.DefaultMintTickInterval. A deploy sets
+	// FULLSEND_MINT_TICK_INTERVAL to it and the Cloud Scheduler job's
+	// schedule to the matching cron, so the two never disagree.
+	TickInterval time.Duration
+
 	ProjectID         string
 	Region            string // default: "us-central1"
 	WIFPoolName       string // default: "fullsend-pool"
@@ -842,6 +883,11 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	if err := p.validateTracing(); err != nil {
 		return nil, err
 	}
+	if p.cfg.TickInterval != 0 {
+		if _, err := dispatch.ParseMintTickInterval(p.cfg.TickInterval.String()); err != nil {
+			return nil, err
+		}
+	}
 	if p.cfg.Tracing.Endpoint != "" && p.cfg.DeployMode == DeploySkip {
 		return nil, fmt.Errorf("tracing cannot be configured with --skip-mint-deploy: the endpoint is stamped into the function source")
 	}
@@ -928,12 +974,19 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 				if err != nil {
 					return nil, fmt.Errorf("validating function source: %w", err)
 				}
-				needsDeploy = existing.EnvVars["FULLSEND_SOURCE_HASH"] != sha256Hex(earlySourceZip)
+				needsDeploy = p.needsCodeDeploy(existing, sha256Hex(earlySourceZip))
 			}
 
 			if !needsDeploy {
 				if err := p.gcpAPI.SetCloudRunInvoker(ctx, p.cfg.ProjectID, p.cfg.Region, functionName); err != nil {
 					return nil, fmt.Errorf("setting function invoker policy: %w", err)
+				}
+				// --skip-deploy reuses the function as it is, so it
+				// leaves the mint timer alone too.
+				if p.cfg.DeployMode != DeploySkip {
+					if err := p.ensureMintTimer(ctx, existing.URI); err != nil {
+						return nil, err
+					}
 				}
 				p.cfg.MintURL = existing.URI
 				return p.provisionWithExistingMint(ctx)
@@ -1012,6 +1065,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			StorageSource:  storageSource,
 			EntryPoint:     "ServeHTTP",
 			Runtime:        "go126",
+			TimeoutSeconds: mintFunctionTimeoutSeconds,
 		}
 
 		opName, err := p.gcpAPI.CreateFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, fnCfg)
@@ -1054,6 +1108,13 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			deployEnvVars["ALLOWED_WORKFLOW_FILES"] = "*"
 		}
 		deployEnvVars["FULLSEND_SOURCE_HASH"] = sourceHash
+		// The function URL is known, so the mint timer settings go into
+		// this revision; ensureMintTimer below then finds them in place.
+		if existing.URI != "" {
+			for k, v := range p.tickEnvVars(existing.URI) {
+				deployEnvVars[k] = v
+			}
+		}
 
 		storageSource, err := p.gcpAPI.UploadFunctionSource(ctx, p.cfg.ProjectID, p.cfg.Region, sourceZip)
 		if err != nil {
@@ -1067,6 +1128,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			StorageSource:  storageSource,
 			EntryPoint:     "ServeHTTP",
 			Runtime:        "go126",
+			TimeoutSeconds: mintFunctionTimeoutSeconds,
 		}
 
 		opName, err := p.gcpAPI.UpdateFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, fnCfg)
@@ -1090,6 +1152,14 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		return nil, fmt.Errorf("function %s not found or has no URI", functionName)
 	}
 	mintURL := existing.URI
+
+	// The mint timer first, so per-repo registration below is the last
+	// env var write of this deploy.
+	if p.cfg.DeployMode != DeploySkip {
+		if err := p.ensureMintTimer(ctx, mintURL); err != nil {
+			return nil, err
+		}
+	}
 
 	if p.cfg.Repo != "" {
 		publicMint, err := p.isTrafficMintPublic(ctx)
@@ -2246,10 +2316,14 @@ func sha256Hex(data []byte) string {
 }
 
 // needsCodeDeploy determines whether the Cloud Function code needs (re)deployment.
-// Only checks the source hash — enrollment env vars (PER_REPO_WIF_REPOS,
-// ROLE_APP_IDS) are handled separately. Infrastructure env vars set during
-// initial deploy (FULLSEND_SOURCE_HASH, GCP_PROJECT_ID) are NOT reconciled on
-// subsequent runs; a code redeploy is required to update them.
+// It checks the source hash and the request timeout — enrollment env vars
+// (PER_REPO_WIF_REPOS, ROLE_APP_IDS) are handled separately. Infrastructure
+// env vars set during initial deploy (FULLSEND_SOURCE_HASH, GCP_PROJECT_ID)
+// are NOT reconciled on subsequent runs; a code redeploy is required to
+// update them. A function whose known timeout is below
+// mintFunctionTimeoutSeconds (one deployed before the mint timer, at the
+// 60 s default) is redeployed so a tick is not cut short; a zero
+// (unreported) timeout is not treated as short.
 func (p *Provisioner) needsCodeDeploy(existing *FunctionInfo, sourceHash string) bool {
 	if p.cfg.DeployMode == DeploySkip {
 		return false
@@ -2260,5 +2334,105 @@ func (p *Provisioner) needsCodeDeploy(existing *FunctionInfo, sourceHash string)
 	if existing.State != "ACTIVE" || existing.URI == "" {
 		return true
 	}
+	if existing.TimeoutSeconds > 0 && existing.TimeoutSeconds < mintFunctionTimeoutSeconds {
+		return true
+	}
 	return existing.EnvVars["FULLSEND_SOURCE_HASH"] != sourceHash
+}
+
+// tickInterval is the configured mint timer interval or the default.
+func (p *Provisioner) tickInterval() time.Duration {
+	if p.cfg.TickInterval == 0 {
+		return dispatch.DefaultMintTickInterval
+	}
+	return p.cfg.TickInterval
+}
+
+// tickEnvVars are the mint settings of the mint timer for a function
+// served at mintURL: the interval, and the audience and service account
+// the tick route pins.
+func (p *Provisioner) tickEnvVars(mintURL string) map[string]string {
+	return map[string]string{
+		dispatch.MintTickIntervalEnv: dispatch.MintTickIntervalValue(p.tickInterval()),
+		tickAudienceEnv:              mintURL,
+		tickServiceAccountEnv:        TickServiceAccountEmail(p.cfg.ProjectID),
+	}
+}
+
+// ensureMintTimer wires the mint timer to the function served at mintURL.
+// Every step is idempotent, so a re-run after a partial failure is safe:
+//
+//  1. create the fullsend-mint-tick service account;
+//  2. grant it roles/run.invoker on the mint's Cloud Run service only;
+//  3. set FULLSEND_MINT_TICK_INTERVAL, FULLSEND_TICK_AUDIENCE (mintURL)
+//     and FULLSEND_TICK_SERVICE_ACCOUNT on the serving revision, keeping
+//     every other env var, when any of them differs;
+//  4. create or update the fullsend-mint-tick Cloud Scheduler job: POST
+//     <mintURL>/v1/tick with an OIDC token of that account for mintURL,
+//     on the cron of the interval in UTC, no retries, and an attempt
+//     deadline equal to the function timeout.
+//
+// The job is created last, so it does not call the route before the
+// settings that turn it on are live. It does not resume a paused job.
+func (p *Provisioner) ensureMintTimer(ctx context.Context, mintURL string) error {
+	saEmail := TickServiceAccountEmail(p.cfg.ProjectID)
+	if err := p.gcpAPI.CreateServiceAccount(ctx, p.cfg.ProjectID, tickSAName, "Fullsend mint timer (Cloud Scheduler)"); err != nil {
+		return fmt.Errorf("creating mint timer service account: %w", err)
+	}
+	if err := p.gcpAPI.AddCloudRunInvoker(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, "serviceAccount:"+saEmail); err != nil {
+		return fmt.Errorf("granting the mint timer service account invoker on %s: %w", functionName, err)
+	}
+
+	want := p.tickEnvVars(mintURL)
+	current, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+	stale := false
+	for k, v := range want {
+		if current[k] != v {
+			stale = true
+			break
+		}
+	}
+	if stale {
+		updated := make(map[string]string, len(current)+len(want))
+		for k, v := range current {
+			updated[k] = v
+		}
+		for k, v := range want {
+			updated[k] = v
+		}
+		rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+		if err != nil {
+			if rev != "" {
+				return fmt.Errorf("setting the mint timer env vars (revision %s created but traffic routing may have failed): %w", rev, err)
+			}
+			return fmt.Errorf("setting the mint timer env vars: %w", err)
+		}
+	}
+
+	job := SchedulerJob{
+		ID:                  TickJobID,
+		Description:         "fullsend mint timer (ADR 0171): webhook redelivery and the fork PR review poll sweep",
+		Schedule:            dispatch.MintTickCron(p.tickInterval()),
+		TimeZone:            "Etc/UTC",
+		URI:                 strings.TrimRight(mintURL, "/") + tickPath,
+		Audience:            mintURL,
+		ServiceAccountEmail: saEmail,
+		AttemptDeadline:     mintFunctionTimeoutSeconds * time.Second,
+	}
+	if err := p.gcpAPI.UpsertSchedulerJob(ctx, p.cfg.ProjectID, p.cfg.Region, job); err != nil {
+		return fmt.Errorf("creating the mint timer Cloud Scheduler job: %w", err)
+	}
+	return nil
+}
+
+// DeleteMintTimer deletes the mint timer's Cloud Scheduler job and its
+// service account. Missing resources are not an error.
+func (p *Provisioner) DeleteMintTimer(ctx context.Context) error {
+	if err := p.gcpAPI.DeleteSchedulerJob(ctx, p.cfg.ProjectID, p.cfg.Region, TickJobID); err != nil {
+		return err
+	}
+	return p.gcpAPI.DeleteServiceAccount(ctx, p.cfg.ProjectID, TickServiceAccountEmail(p.cfg.ProjectID))
 }

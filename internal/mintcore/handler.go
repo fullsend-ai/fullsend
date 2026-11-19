@@ -90,6 +90,37 @@ type Handler struct {
 
 	// tracer records and exports request spans. Nil disables tracing.
 	tracer *Tracer
+
+	// webhookSecret is FULLSEND_WEBHOOK_SECRET, the HMAC secret of the
+	// orchestrator App's webhook. Nil turns the webhook route off: it is
+	// left nil while the secret is unset or ALLOWED_ROLES does not allow
+	// webhookRole.
+	webhookSecret []byte
+
+	// webhookLimits debounces dispatches and remembers negative results
+	// per repository, in this instance only. The webhook route and the
+	// mint timer's sweep share it. Nil while both are off.
+	webhookLimits *webhookLimiter
+
+	// Mint timer (tick.go), read once in NewHandler by readTickSettings.
+	// tickInterval is how often a host calls Tick, sweepPeriod how often
+	// the sweep reaches each repository; sweepEnabled is false when
+	// FULLSEND_POLL_SWEEP is off or the fullsend App is not configured.
+	tickInterval time.Duration
+	sweepPeriod  time.Duration
+	sweepEnabled bool
+	// tickNow is the mint timer's clock and tickMaxCalls its GitHub call
+	// budget per tick; tests replace both.
+	tickNow      func() time.Time
+	tickMaxCalls int
+
+	// Mint timer route (tick_route.go), read once in NewHandler by
+	// readTickRouteSettings: the pinned audience and service account of
+	// the Google ID token POST /v1/tick accepts, and the verifier holding
+	// Google's keys. tickVerifier is nil while the route is off.
+	tickAudience       string
+	tickServiceAccount string
+	tickVerifier       *JWKSVerifier
 }
 
 type foreignInflight struct {
@@ -100,10 +131,13 @@ type foreignInflight struct {
 
 // NewHandler creates a Handler with the given dependencies.
 // Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES,
-// ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS)
-// are read once at construction time via the package-internal mintEnv
-// accessor. On native platforms mintEnv delegates to os.Getenv; on WASM
-// the CF Worker calls RegisterEnv before constructing the handler.
+// ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS,
+// FULLSEND_WEBHOOK_SECRET, FULLSEND_MINT_TICK_INTERVAL,
+// FULLSEND_POLL_SWEEP_PERIOD, FULLSEND_POLL_SWEEP) are read once at
+// construction time via the
+// package-internal mintEnv accessor. On native platforms mintEnv
+// delegates to os.Getenv; on WASM the CF Worker calls RegisterEnv before
+// constructing the handler.
 //
 // The HTTP client for GitHub API calls is obtained from the
 // package-internal mintHTTP accessor. On native platforms this is a
@@ -160,7 +194,6 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		allowedWorkflowFiles: SplitCSV(mintEnv("ALLOWED_WORKFLOW_FILES")),
 		workflowHostRepos:    workflowHostRepos,
 	}
-
 	if raw := mintEnv("ROLE_APP_IDS"); raw != "" {
 		var ids map[string]string
 		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
@@ -200,6 +233,31 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		}
 	}
 
+	if secret := mintEnv(webhookSecretEnv); secret != "" {
+		if h.checkAllowedRole(webhookRole) {
+			h.webhookSecret = []byte(secret)
+		} else {
+			log.Printf("github webhook: %s is set but ALLOWED_ROLES does not allow role %q; the route is off",
+				webhookSecretEnv, webhookRole)
+		}
+	}
+
+	settings, err := readTickSettings()
+	if err != nil {
+		return nil, err
+	}
+	h.tickInterval, h.sweepPeriod = settings.interval, settings.sweepPeriod
+	h.tickNow, h.tickMaxCalls = time.Now, tickMaxGitHubCalls
+	h.sweepEnabled = settings.sweepOn && h.pemAccessor != nil && h.checkAllowedRole(webhookRole)
+	if h.sweepEnabled {
+		_, err := h.lookupRoleAppID(webhookRole)
+		h.sweepEnabled = err == nil
+	}
+	if h.webhookSecret != nil || h.sweepEnabled {
+		h.webhookLimits = newWebhookLimiter()
+	}
+	h.readTickRouteSettings()
+
 	return h, nil
 }
 
@@ -238,6 +296,20 @@ func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if r.URL.Path == botRolePath {
 		h.handleBotRole(w, r)
+		return
+	}
+	// The webhook route answers 404 like an unknown path until
+	// FULLSEND_WEBHOOK_SECRET is configured and ALLOWED_ROLES allows the
+	// fullsend role.
+	if r.URL.Path == webhookPath && h.webhookSecret != nil {
+		h.handleGitHubWebhook(w, r)
+		return
+	}
+	// The mint timer route answers 404 like an unknown path until
+	// FULLSEND_TICK_AUDIENCE and FULLSEND_TICK_SERVICE_ACCOUNT are set and
+	// the timer has work.
+	if r.URL.Path == tickPath && h.tickRouteEnabled() {
+		h.handleTickRoute(w, r)
 		return
 	}
 
