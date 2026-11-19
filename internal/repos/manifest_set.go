@@ -572,6 +572,8 @@ func forgeFieldError(forge string, t reflect.Type, name, prefix string) error {
 		return fmt.Errorf("%s is not supported; %s is a GitLab-only field", full, name)
 	case t == repoEntryType && forge == ForgeGitLab && slices.Contains(githubOnlyFields, name):
 		return fmt.Errorf("%s is only supported for GitHub repos", full)
+	case t == repoEntryType && forge == ForgeGitHub && name == "allow_insecure_pipeline_variables":
+		return fmt.Errorf("%s is only supported for GitLab repos", full)
 	}
 	return nil
 }

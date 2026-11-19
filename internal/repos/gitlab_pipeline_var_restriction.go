@@ -49,7 +49,7 @@ func requireGitLabRestrictionBeforeDelivery(ctx context.Context, client forge.Cl
 	if err != nil {
 		return fmt.Errorf("verifying GitLab restriction before scaffold delivery: %w", err)
 	}
-	if role != forge.PipelineVarOverrideNoOneAllowed {
+	if !gitlabPipelineVarRoleAccepted(ctx, owner, repo, role) {
 		return fmt.Errorf("refusing to deliver runnable typed GitLab jobs: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; to apply the restriction, %s, then retry the installation", displayPipelineVarRole(role), gitlabPipelineVarRestrictionHint)
 	}
 	return nil
@@ -181,6 +181,18 @@ func EnsureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.
 			return GitLabPipelineVarRestrictionResult{Action: "unsupported"}, nil
 		}
 		return GitLabPipelineVarRestrictionResult{}, fmt.Errorf("reading ci_pipeline_variables_minimum_override_role: %w", err)
+	}
+
+	if current != forge.PipelineVarOverrideNoOneAllowed && gitlabPipelineVarOptedIn(ctx, owner, repo) {
+		// ADR 0175: the repository opted in to a relaxed setting, so
+		// accept it as is. Never flip the project setting here, even when
+		// automation is enforced: the opt-in exists because the adopter
+		// cannot use no_one_allowed.
+		return GitLabPipelineVarRestrictionResult{
+			Role:   current,
+			Action: "accepted-insecure",
+			Detail: fmt.Sprintf("accepting ci_pipeline_variables_minimum_override_role %s because allow_insecure_pipeline_variables is set (ADR 0175)", displayPipelineVarRole(current)),
+		}, nil
 	}
 
 	if current != forge.PipelineVarOverrideNoOneAllowed && !GitLabPipelineVarRestrictionEnforced() {
