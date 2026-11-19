@@ -349,7 +349,8 @@ func TestSanitizeJSONDocument_CleanKeyWinsSanitizedCollision(t *testing.T) {
 // TestSanitizeJSONLines_RepeatedRecordsFailsClosed pins that a cross-record
 // match is not localized by a substring search a repeated record can fool. A
 // later untouched copy must never stand in for a covered record: keeping the
-// original bytes would write the spanning secret back out.
+// original bytes would write the spanning secret back out. Duplicates outside
+// the changed region are still preserved.
 func TestSanitizeJSONLines_RepeatedRecordsFailsClosed(t *testing.T) {
 	ResetRuntimeSecretsForTest()
 	t.Cleanup(ResetRuntimeSecretsForTest)
@@ -368,14 +369,16 @@ func TestSanitizeJSONLines_RepeatedRecordsFailsClosed(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, findings)
 	assert.NotContains(t, string(out), secret, "the spanning secret must not be reassembled")
-	assert.NotContains(t, string(out), `{"v":"aaa"}`, "ambiguous localization must fail closed")
 
 	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
 	require.Len(t, lines, 5, "record count must not change")
-	for _, line := range lines {
-		assert.True(t, json.Valid([]byte(line)), "each record must stay valid JSON: %s", line)
+	for _, line := range lines[:2] {
+		assert.True(t, json.Valid([]byte(line)), "each replaced record must stay valid JSON: %s", line)
 		assert.Contains(t, line, "output removed")
 	}
+	assert.Equal(t, `{"v":"aaa"}`, lines[2], "an untouched duplicate outside the change must survive")
+	assert.Equal(t, `{"v":"ccc"}`, lines[3])
+	assert.Equal(t, `{"v":"bbb"}`, lines[4], "an untouched duplicate outside the change must survive")
 }
 
 // TestSanitizeJSONLines_RepeatedCleanRecordInsideCrossRecordMatch pins the
@@ -719,6 +722,23 @@ func TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersFailsClosed(t *testi
 	require.NotEmpty(t, findings)
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+	assert.Contains(t, string(out), "output removed")
+}
+
+// TestSanitizeJSONDocument_UnterminatedBeginBeforeCompleteBlockFailsClosed pins
+// that a lazy match starting at one leaf's BEGIN and ending at another leaf's
+// END cannot cancel out a complete leaf block: containment is judged per match.
+func TestSanitizeJSONDocument_UnterminatedBeginBeforeCompleteBlockFailsClosed(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := []byte(`{"a":"` + begin + `\nMIIEfirstkeymaterial","b":"` + begin + `\nZZZZZZZZ\n` + end + `"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "MIIEfirstkeymaterial", "the unterminated block must not survive")
 	assert.Contains(t, string(out), "output removed")
 }
 

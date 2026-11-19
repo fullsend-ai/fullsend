@@ -461,3 +461,23 @@ func TestScanOutputFiles_NumericRuntimeSecretRedacted(t *testing.T) {
 	require.Len(t, lines, 1)
 	assert.True(t, json.Valid([]byte(lines[0])))
 }
+
+// TestScanOutputFiles_WriteFailureRemovesUnredactedBytes pins that a file whose
+// sanitized content cannot be written is replaced with a fail-closed marker, so
+// the unredacted bytes cannot reach the uploaded artifact.
+func TestScanOutputFiles_WriteFailureRemovesUnredactedBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	const secret = "ghp_FAKEtesttoken000000000000000000000000"
+	require.NoError(t, os.WriteFile(path, []byte("Token: "+secret), 0o644))
+
+	err := scanOutputFilesWithWriter(dir, "trace-id", "", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
+		return os.ErrPermission
+	})
+	require.Error(t, err)
+
+	got, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(got), secret, "the unredacted bytes must not survive a write failure")
+	assert.JSONEq(t, `{"error":"output removed because it could not be redacted"}`, string(got))
+}

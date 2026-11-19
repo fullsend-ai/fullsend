@@ -347,7 +347,8 @@ download the artifact until it expires. The output scan masks secret
 literals; it does not remove personal data, customer names or other private
 business text. When a secret cannot be masked without breaking a file's JSON
 structure, the affected JSON document or JSONL record is replaced with a JSON
-error marker, and a sanitized file that cannot be written fails the run.
+error marker, a file whose redacted content cannot be written is replaced by
+such a marker, and the run itself fails.
 
 `fullsend run` leaves `output/` untouched. At the end of the job,
 `fullsend prepare-artifacts` builds a filtered copy at the level you set, and

@@ -92,8 +92,8 @@ var privateKeyRe = func() *regexp.Regexp {
 // marker with \u escapes, and masking a sensitive member removes the BEGIN
 // marker before the rewritten document is scanned.
 type jsonProvenance struct {
-	decoded   bytes.Buffer
-	leafCount int
+	decoded bytes.Buffer
+	ranges  []recordSpan
 }
 
 // decodedViewNormalizer normalizes decoded JSON text before it is matched for
@@ -105,15 +105,31 @@ var decodedViewNormalizer = NewUnicodeNormalizer()
 // private-key blocks it fully contains.
 func (v *jsonProvenance) addString(s string) {
 	s = decodedViewNormalizer.Scan(s).Sanitized
-	v.leafCount += len(privateKeyRe.FindAllIndex([]byte(s), -1))
+	start := v.decoded.Len()
 	v.decoded.WriteString(s)
 	v.decoded.WriteByte('\n')
+	v.ranges = append(v.ranges, recordSpan{start: start, end: v.decoded.Len() - 1})
 }
 
-// spanningBlocks reports how many private-key blocks exist in the decoded view
-// that no single key or leaf contains.
+// spanningBlocks reports how many private-key blocks in the decoded view are
+// not contained in a single key or leaf. Containment is checked per match: a
+// lazy pattern can start at one leaf's BEGIN and end at another leaf's END, and
+// counting differences would let that match cancel out a complete leaf block.
 func (v *jsonProvenance) spanningBlocks() int {
-	return len(privateKeyRe.FindAllIndex(v.decoded.Bytes(), -1)) - v.leafCount
+	count := 0
+	for _, match := range privateKeyRe.FindAllIndex(v.decoded.Bytes(), -1) {
+		contained := false
+		for _, r := range v.ranges {
+			if r.start <= match[0] && match[1] <= r.end {
+				contained = true
+				break
+			}
+		}
+		if !contained {
+			count++
+		}
+	}
+	return count
 }
 
 // preserveTrailingNewline drops the newline json.Encoder always appends and
@@ -372,13 +388,12 @@ func jsonLineSpans(content []byte) []recordSpan {
 func failClosedRecordSpans(stream []byte, spans []recordSpan, scan ScanResult) []byte {
 	sanitized := []byte(scan.Sanitized)
 
-	seen := make(map[string]struct{}, len(spans))
+	// Changes are confined to the region that differs between the stream and
+	// the redacted stream, so records outside it were not touched.
+	start, end := changedRegion(stream, sanitized)
+	counts := make(map[string]int, len(spans))
 	for _, span := range spans {
-		record := string(stream[span.start:span.end])
-		if _, ok := seen[record]; ok {
-			return replaceRecordSpans(stream, spans)
-		}
-		seen[record] = struct{}{}
+		counts[string(stream[span.start:span.end])]++
 	}
 
 	var out bytes.Buffer
@@ -386,10 +401,16 @@ func failClosedRecordSpans(stream []byte, spans []recordSpan, scan ScanResult) [
 	searchFrom := 0
 	for _, span := range spans {
 		record := stream[span.start:span.end]
+		if span.end <= start || span.start >= end {
+			// Outside the changed region: the bytes are untouched.
+			out.Write(stream[cursor:span.end])
+			cursor = span.end
+			continue
+		}
 		idx := bytes.Index(sanitized[searchFrom:], record)
-		// A surviving copy must be a whole record, not a substring of a longer
-		// record that happens to contain the same bytes.
-		if idx >= 0 && lineBounded(sanitized, searchFrom+idx, searchFrom+idx+len(record)) {
+		// A surviving copy must be a whole record, and it must be the only copy:
+		// otherwise a later untouched duplicate can stand in for a covered one.
+		if counts[string(record)] == 1 && idx >= 0 && lineBounded(sanitized, searchFrom+idx, searchFrom+idx+len(record)) {
 			searchFrom += idx + len(record)
 			out.Write(stream[cursor:span.end])
 			cursor = span.end
@@ -404,6 +425,22 @@ func failClosedRecordSpans(stream []byte, spans []recordSpan, scan ScanResult) [
 	}
 	out.Write(stream[cursor:])
 	return out.Bytes()
+}
+
+// changedRegion returns the half-open byte range that differs between a and b.
+// It is approximate for length-changing edits, which is enough: it is used as an
+// upper bound on the bytes a redaction touched.
+func changedRegion(a, b []byte) (int, int) {
+	limit := min(len(a), len(b))
+	start := 0
+	for start < limit && a[start] == b[start] {
+		start++
+	}
+	end := 0
+	for end < limit-start && a[len(a)-1-end] == b[len(b)-1-end] {
+		end++
+	}
+	return start, len(a) - end
 }
 
 // replaceRecordSpans replaces every record with a valid marker when the

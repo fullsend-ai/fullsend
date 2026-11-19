@@ -615,8 +615,9 @@ origins and warnings are documented in
 ### The post-run output scan
 
 `scanOutputFiles` runs the output pipeline (Unicode normalization, then secret
-redaction) over every file under `output/` except the skips above and
-`security/findings.jsonl`. Valid JSON is sanitized structurally so redaction
+redaction) over every file under `output/` except the skips above, any
+directory named `security` (which holds `findings.jsonl`), and the telemetry
+JSONL. Valid JSON is sanitized structurally so redaction
 never changes its syntax: every object key and scalar leaf is scanned
 individually through a token-preserving walk that keeps member order and
 duplicate keys, so an earlier value that map decoding would drop is still
@@ -645,7 +646,8 @@ like `{"error":"output removed because …"}` and are logged as findings in
 
 A sanitized file that cannot be written does not stop the walk: every
 remaining file is still scanned and redacted, and the run fails closed
-afterwards with all write errors joined. In `quiet` mode the affected paths
+afterwards with all write errors joined. The file itself is replaced with a
+fail-closed marker so the unredacted bytes never reach the uploaded artifact. In `quiet` mode the affected paths
 are counted, not named (ADR 0163).
 
 ## Agent rule layering

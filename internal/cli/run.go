@@ -7131,7 +7131,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 					})
 				}
 				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
-					writeErrs = append(writeErrs, writeFailure(quiet, relPath, writeErr, &unwritable))
+					writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
 				}
 			}
 			return nil
@@ -7157,7 +7157,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 					})
 				}
 				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
-					writeErrs = append(writeErrs, writeFailure(quiet, relPath, writeErr, &unwritable))
+					writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
 				}
 			}
 			return nil
@@ -7191,7 +7191,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 				out = `{"error":"output removed because text redaction would invalidate JSON"}`
 			}
 			if writeErr := writeFile(path, []byte(out), 0o644); writeErr != nil {
-				writeErrs = append(writeErrs, writeFailure(quiet, relPath, writeErr, &unwritable))
+				writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
 			}
 		}
 		return nil
@@ -7220,13 +7220,22 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 // writeFailure records a sanitized-output write error. At the quiet progress
 // level the path is withheld because it can carry an agent-chosen name
 // (ADR 0163); non-quiet callers name it.
-func writeFailure(quiet bool, relPath string, writeErr error, unwritable *int) error {
+func writeFailure(quiet bool, path, relPath string, writeErr error, unwritable *int) error {
 	*unwritable++
+	// The unredacted bytes must not reach the uploaded artifact, so replace the
+	// file with a valid fail-closed marker; remove it if even that fails.
+	if err := os.WriteFile(path, []byte(unwritableOutputMarker), 0o644); err != nil {
+		_ = os.Remove(path)
+	}
 	if quiet {
 		return fmt.Errorf("could not write sanitized output file")
 	}
 	return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 }
+
+// unwritableOutputMarker replaces a file whose sanitized content could not be
+// written. It is valid JSON so downstream parsers keep working.
+const unwritableOutputMarker = `{"error":"output removed because it could not be redacted"}`
 
 // downloadSandboxFindings extracts the sandbox-side findings directory. It is a
 // variable so tests can observe the ordering contract of
