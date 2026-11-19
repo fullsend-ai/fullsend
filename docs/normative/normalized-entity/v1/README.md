@@ -73,11 +73,17 @@ as recorded; do not include the repository or project path or ID. For example,
 `github`, `github.com`, `work_item`, and `I_kwDOExample53` yield
 `fullsend:entity:v1:github:github.com:work_item:I_kwDOExample53`. GitLab
 record IDs are unique across projects within a kind; Jira issue IDs are
-site-wide; GitHub node IDs are host-wide. GitHub `source_id` producers send
-the `X-Github-Next-Global-ID: 1` header on their GraphQL queries so node
-IDs come back in the new global format on old and new entities alike;
-GraphQL `node()` accepts either input format, so a legacy-format node ID
-still resolves. Including the system, host, and
+site-wide; GitHub node IDs are host-wide. GitHub `source_id` producers that
+query GraphQL send the `X-Github-Next-Global-ID: 1` header so node IDs come
+back in the new global format on old and new entities alike; GraphQL
+`node()` accepts either input format, so a legacy-format node ID still
+resolves. The header is GraphQL-only: REST and webhook `node_id` fields
+still return the legacy format on older objects, so a producer reading IDs
+from those payloads emits the legacy format. Entity IDs are compared as the
+recorded strings, so a legacy-format ID and a GraphQL-derived ID for the
+same entity do not match, and a comparison that cannot resolve both sides
+to one format must refuse rather than answer. Which canonical format every
+producer can emit is not settled. Including the system, host, and
 kind prevents cross-source and cross-kind collisions while preserving identity
 through a repository or Jira project move. A source migrated to a different
 host is a different identity unless a separate migration mapping relates it.
