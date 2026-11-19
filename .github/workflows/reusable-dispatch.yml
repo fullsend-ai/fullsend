@@ -543,7 +543,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
 
       - name: Validate cached fullsend CLI for review dedup
         id: review-cli-cache-validation
@@ -564,10 +564,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/fullsend"
-          cp .fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
-          chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
-          echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+          mkdir -p "${RUNNER_TEMP}/fullsend-review-dedup"
+          cp .fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
+          chmod +x "${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
 
       - name: Checkout review dedup CLI installer
         if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true')
@@ -590,6 +589,8 @@ jobs:
         uses: ./.review-dedup-actions/.github/actions/install-fullsend-cli
         with:
           mode: upstream
+          install_dir: ${{ runner.temp }}/fullsend-review-dedup
+          add_to_path: 'false'
           workflow_repository: ${{ job.workflow_repository }}
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
@@ -600,29 +601,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          install_dir="${RUNNER_TEMP}/fullsend"
+          install_dir="${RUNNER_TEMP}/fullsend-review-dedup"
           mkdir -p "${install_dir}"
           cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
           chmod +x "${install_dir}/fullsend"
-          echo "${install_dir}" >> "${GITHUB_PATH}"
 
       - name: Prepare fullsend CLI cache artifact for review dedup
         id: review-cli-cache-prepare
-        if: steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true'
+        if: steps.review-cli-mode.outcome == 'success' && (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
+          if [[ ! -x "${RUNNER_TEMP}/fullsend-review-dedup/fullsend" ]]; then
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
           mkdir -p "${RUNNER_TEMP}/fullsend-cache"
-          cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+          cp "${RUNNER_TEMP}/fullsend-review-dedup/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+          "${RUNNER_TEMP}/fullsend-cache/fullsend" review-dedup --help >/dev/null 2>&1
+          echo "ready=true" >> "${GITHUB_OUTPUT}"
 
       - name: Save fullsend CLI cache for review dedup
-        if: (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true') && steps.review-cli-cache-prepare.outcome == 'success'
+        if: (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true') && steps.review-cli-cache-prepare.outcome == 'success' && steps.review-cli-cache-prepare.outputs.ready == 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
 
       # A synchronize event can be caused by merging the base branch into a
       # PR without changing its effective diff. Missing or incomplete
@@ -640,7 +646,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "skip=false" >> "${GITHUB_OUTPUT}"
-          if ! decision="$(fullsend review-dedup \
+          dedup_cli="${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
+          if [[ ! -x "${dedup_cli}" ]]; then
+            echo "::warning::Review deduplication CLI unavailable; running review"
+            exit 0
+          fi
+          if ! decision="$("${dedup_cli}" review-dedup \
             --repo "${SOURCE_REPO}" \
             --pr "${PR_NUMBER}" \
             --app-set "${FULLSEND_APP_SET}" \
@@ -827,8 +838,7 @@ jobs:
           set -euo pipefail
           if [[ -f cel-route/.defaults/action.yml || -f cel-route/.fullsend/.defaults/action.yml ]] \
             && [[ -x cel-route/.fullsend/bin/fullsend ]] \
-            && cel-route/.fullsend/bin/fullsend dispatch --help >/dev/null 2>&1 \
-            && cel-route/.fullsend/bin/fullsend review-dedup --help >/dev/null 2>&1; then
+            && cel-route/.fullsend/bin/fullsend dispatch --help >/dev/null 2>&1; then
             echo "mode=vendored" >> "${GITHUB_OUTPUT}"
           else
             echo "mode=upstream" >> "${GITHUB_OUTPUT}"
@@ -852,7 +862,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -x "${RUNNER_TEMP}/fullsend-cache/fullsend" ]] && "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1 && "${RUNNER_TEMP}/fullsend-cache/fullsend" review-dedup --help >/dev/null 2>&1; then
+          if [[ -x "${RUNNER_TEMP}/fullsend-cache/fullsend" ]] && "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1; then
             echo "valid=true" >> "${GITHUB_OUTPUT}"
           else
             echo "valid=false" >> "${GITHUB_OUTPUT}"
@@ -913,7 +923,6 @@ jobs:
           mkdir -p "${install_dir}"
           cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
           chmod +x "${install_dir}/fullsend"
-          echo "${install_dir}" >> "${GITHUB_PATH}"
 
       - name: Prepare fullsend CLI cache artifact for CEL route
         id: cel-cli-cache-prepare
@@ -925,7 +934,6 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/fullsend-cache"
           cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
           "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1
-          "${RUNNER_TEMP}/fullsend-cache/fullsend" review-dedup --help >/dev/null 2>&1
 
       - name: Save fullsend CLI cache for CEL route
         if: steps.cel-config.outcome == 'success' && (steps.cel-cli-cache.outputs.cache-hit != 'true' || steps.cel-cli-cache-validation.outputs.valid != 'true') && steps.cel-cli-cache-prepare.outcome == 'success'
@@ -959,7 +967,7 @@ jobs:
             while [[ "${v}" == *::* ]]; do v=${v//::/: :}; done
             printf '%s' "${v}"
           }
-          DECISION_JSON=$(fullsend dispatch \
+          DECISION_JSON=$("${RUNNER_TEMP}/fullsend/fullsend" dispatch \
             --input-driver gha-event \
             --config-dir cel-route/.fullsend \
             --event-action "${EVENT_ACTION}" \
@@ -1150,7 +1158,12 @@ jobs:
             echo "::notice::Review-App token was unavailable; running the full review"
             exit 0
           fi
-          if ! decision="$(fullsend review-dedup \
+          dedup_cli="${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
+          if [[ ! -x "${dedup_cli}" ]]; then
+            echo "::warning::Review deduplication CLI unavailable; running review"
+            exit 0
+          fi
+          if ! decision="$("${dedup_cli}" review-dedup \
             --repo "${SOURCE_REPO}" \
             --pr "${PR_NUMBER}" \
             --app-set "${FULLSEND_APP_SET}" \
@@ -1679,7 +1692,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
 
       - name: Validate cached fullsend CLI for review job
         id: review-job-cli-cache-validation
@@ -1700,10 +1713,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/fullsend"
-          cp .fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
-          chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
-          echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+          mkdir -p "${RUNNER_TEMP}/fullsend-review-dedup"
+          cp .fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
+          chmod +x "${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
 
       - name: Checkout review dedup CLI installer
         if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true')
@@ -1726,6 +1738,8 @@ jobs:
         uses: ./.review-dedup-actions/.github/actions/install-fullsend-cli
         with:
           mode: upstream
+          install_dir: ${{ runner.temp }}/fullsend-review-dedup
+          add_to_path: 'false'
           workflow_repository: ${{ job.workflow_repository }}
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
@@ -1736,11 +1750,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          install_dir="${RUNNER_TEMP}/fullsend"
+          install_dir="${RUNNER_TEMP}/fullsend-review-dedup"
           mkdir -p "${install_dir}"
           cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
           chmod +x "${install_dir}/fullsend"
-          echo "${install_dir}" >> "${GITHUB_PATH}"
 
       - name: Prepare fullsend CLI cache artifact for review job
         id: review-job-cli-cache-prepare
@@ -1749,16 +1762,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ ! -x "${RUNNER_TEMP}/fullsend-review-dedup/fullsend" ]]; then
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
           mkdir -p "${RUNNER_TEMP}/fullsend-cache"
-          cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+          cp "${RUNNER_TEMP}/fullsend-review-dedup/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+          "${RUNNER_TEMP}/fullsend-cache/fullsend" review-dedup --help >/dev/null 2>&1
+          echo "ready=true" >> "${GITHUB_OUTPUT}"
 
       - name: Save fullsend CLI cache for review job
-        if: (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true') && steps.review-job-cli-cache-prepare.outcome == 'success'
+        if: (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true') && steps.review-job-cli-cache-prepare.outcome == 'success' && steps.review-job-cli-cache-prepare.outputs.ready == 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
 
       - name: Prepare workspace
         id: workspace
@@ -1814,7 +1833,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          fullsend review-dedup \
+          if [[ ! -x "${RUNNER_TEMP}/fullsend-review-dedup/fullsend" ]]; then
+            echo "::warning::Review deduplication CLI unavailable; skipping supersede"
+            exit 0
+          fi
+          "${RUNNER_TEMP}/fullsend-review-dedup/fullsend" review-dedup \
             --repo "${SOURCE_REPO}" \
             --pr "${PR_NUMBER}" \
             --app-set "${FULLSEND_APP_SET}" \
