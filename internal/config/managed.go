@@ -342,12 +342,17 @@ type DeclaredInfrastructure struct {
 	// token audience and the service account it impersonates.
 	InferenceWIFAudience    string
 	InferenceServiceAccount string
+	// InferenceGateway is the layered inference.gateway block (trimmed).
+	// It is zero when no layer declares one; a partial block is returned
+	// as declared so callers can report what is missing.
+	InferenceGateway InferenceGatewayConfig
 }
 
-// DeclaredInfrastructureValues returns the mint URL and Vertex inference
-// values declared by overlay (which wins) or by baseYAML. baseYAML may be
-// empty. Code defaults are deliberately not consulted, so callers can tell
-// a declared value from an inherited default.
+// DeclaredInfrastructureValues returns the mint URL, Vertex inference and
+// inference gateway values declared by overlay (which wins) or by
+// baseYAML. baseYAML may be empty. Code defaults are deliberately not
+// consulted, so callers can tell a declared value from an inherited
+// default.
 func DeclaredInfrastructureValues(overlay PerRepoConfigWriter, baseYAML []byte) (DeclaredInfrastructure, error) {
 	layered := clonePerRepo(asPerRepo(overlay))
 	if layered == nil {
@@ -369,6 +374,7 @@ func DeclaredInfrastructureValues(overlay PerRepoConfigWriter, baseYAML []byte) 
 		InferenceWIFProvider:    layered.ConfigInferenceWIFProvider(),
 		InferenceWIFAudience:    layered.ConfigInferenceWIFAudience(),
 		InferenceServiceAccount: layered.ConfigInferenceServiceAccount(),
+		InferenceGateway:        layered.ConfigInferenceGateway().Trimmed(),
 	}, nil
 }
 
@@ -442,6 +448,34 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	out.Artifacts = cloneArtifacts(src.Artifacts)
 	out.Progress = cloneProgress(src.Progress)
 	out.TraceContextBlock = cloneTraceContext(src.TraceContextBlock)
+	out.Connections = cloneSecretConnections(src.Connections)
+	out.Secrets = cloneSecretSources(src.Secrets)
+	return out
+}
+
+// cloneSecretConnections copies a connections mapping, preserving nil.
+func cloneSecretConnections(in map[string]SecretConnection) map[string]SecretConnection {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]SecretConnection, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// cloneSecretSources copies a secrets mapping, including each entry's
+// vault_secrets list, preserving nil.
+func cloneSecretSources(in map[string]SecretSource) map[string]SecretSource {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]SecretSource, len(in))
+	for k, v := range in {
+		v.VaultSecrets = cloneStringSlice(v.VaultSecrets)
+		out[k] = v
+	}
 	return out
 }
 
@@ -560,6 +594,24 @@ func applyManagedLayer(out, child *perRepoConfig) {
 	if child.TraceContextBlock != nil {
 		out.TraceContextBlock = cloneTraceContext(child.TraceContextBlock)
 	}
+	// Connections and secrets merge by name; a more-specific layer replaces
+	// a whole entry, matching ConfigConnections and ConfigSecrets.
+	if len(child.Connections) > 0 {
+		if out.Connections == nil {
+			out.Connections = make(map[string]SecretConnection, len(child.Connections))
+		}
+		for k, v := range child.Connections {
+			out.Connections[k] = v
+		}
+	}
+	if len(child.Secrets) > 0 {
+		if out.Secrets == nil {
+			out.Secrets = make(map[string]SecretSource, len(child.Secrets))
+		}
+		for k, v := range cloneSecretSources(child.Secrets) {
+			out.Secrets[k] = v
+		}
+	}
 }
 
 func cloneStringSlice(in []string) []string {
@@ -627,6 +679,8 @@ func cloneAgentEntries(in []AgentEntry) []AgentEntry {
 			}
 			out[i].Subagents = m
 		}
+		out[i].Harness = a.Harness.clone()
+		out[i].inheritedHarness = cloneAgentHarnesses(a.inheritedHarness)
 	}
 	return out
 }

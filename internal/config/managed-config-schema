@@ -3,4 +3,4 @@
 # render .fullsend/config.yaml in the shape that ref reads. Increment it, and
 # config.ManagedConfigSchemaVersion with a renderer for the previous version,
 # whenever a per-repo configuration change is not readable by older releases.
-2
+3

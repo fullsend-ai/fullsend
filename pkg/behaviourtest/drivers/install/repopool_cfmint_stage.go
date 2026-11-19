@@ -70,6 +70,9 @@ func NewRepoPoolCFMintStage(pool PoolConfig) (Driver, error) {
 	if err := pool.validate(); err != nil {
 		return nil, fmt.Errorf("stage cfmint factory: %w", err)
 	}
+	if err := requireGitHubAccess(); err != nil {
+		return nil, fmt.Errorf("stage cfmint factory: %w", err)
+	}
 	if orgs := pool.Layout.Orgs(); len(orgs) != 1 || orgs[0] != StageOrg {
 		return nil, fmt.Errorf("stage cfmint factory: pool must be the single org %q, got %v", StageOrg, orgs)
 	}

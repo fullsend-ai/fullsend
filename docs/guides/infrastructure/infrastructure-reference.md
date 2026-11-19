@@ -363,6 +363,14 @@ Secrets and variables are deployed on the target repository.
 > **Planned:** delivery of `FULLSEND_TRACE_SIGNING_KEY` to runs
 > ([#9060](https://github.com/fullsend-ai/fullsend/issues/9060)).
 
+Gateway-only repositories (a complete `inference.gateway` block and no `inference.auth`) need no provider secrets and no `FULLSEND_GCP_*` secrets or variables. In the gateway's `api-key` mode, `repos install` and `repos status` check that `FULLSEND_INFERENCE_GATEWAY_API_KEY` exists and, on GitLab, that it is a masked, protected, non-file-type variable available to all environments. Install reports a missing or unusable key before any write. See [Inference gateway route](../../cli/repos.md#inference-gateway-route).
+
+`JIRA_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS`,
+and `FULLSEND_GITHUB_RUNNER_SECRETS` can come from HashiCorp Vault instead of a
+forge secret. Fullsend authenticates to Vault with the job's OIDC identity; on
+GitLab the agent job must declare a `FULLSEND_VAULT_ID_TOKEN` ID token. See
+[`connections` and `secrets`](../../reference/config-reference.md#connections).
+
 Repos whose `inference.auth` is `openai-wif` need no fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
 **Target repo variables:**
@@ -376,6 +384,8 @@ Repos whose `inference.auth` is `openai-wif` need no fullsend-managed inference 
   by `repos uninstall`
 
 #### GitLab
+
+Agent jobs that resolve Vault secrets must declare a job-level `FULLSEND_VAULT_ID_TOKEN` whose `aud` is the connection's `vault_audience`; see the [`connections` forge support note](../../reference/config-reference.md#connections).
 
 **Target repo CI/CD variables (protected):**
 - `FULLSEND_FORGE_TOKEN` — Project access token for bot identity at Developer (30) access (stored as protected CI/CD variable). Reduced from Maintainer (40) once poller state moved onto unprotected poll-state branches (#7381).
@@ -458,7 +468,7 @@ access instead of Maintainer.
 - `FULLSEND_FAILED_KEYS_FAST` — Legacy; superseded by `failed_keys_fast` in `state.json` on `fullsend-poll-state-slash`
 - `FULLSEND_FAILED_KEYS_FULL` — Legacy; superseded by `failed_keys_full` in `state.json` on `fullsend-poll-state-events`
 
-**Inference variables (required when inference is configured):**
+**Inference variables (required when inference is configured; a gateway-only project needs none of the GCP variables below, only `FULLSEND_INFERENCE_GATEWAY_API_KEY` in the `api-key` mode):**
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)

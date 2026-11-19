@@ -346,12 +346,13 @@ to CEL:
 
 | Your configuration | Who decides |
 |---|---|
-| No `review` entry, or one with only `runtime`, `model`, `effort` or `subagents` | The dispatch workflow, as before |
+| No `review` entry, or one with only `runtime`, `model`, `effort`, `subagents` or a `harness:` block | The dispatch workflow, as before |
 | `trigger` on the `review` entry | The trigger |
 | A `review` entry with `source:` whose harness sets or inherits `trigger:` | The dispatch workflow, as before |
 
 A harness `trigger:` field never changes when a built-in agent runs, whether
-your own harness writes it or inherits it through `base:`. To route review by
+your own harness writes it, inherits it through `base:`, or the entry's
+`harness:` block sets it. To route review by
 a trigger you keep in a harness, copy the expression into the `review` entry's
 `trigger` in `config.yaml`. The kill switch and `enabled: false` on the review
 entry keep working as before. The `Route`

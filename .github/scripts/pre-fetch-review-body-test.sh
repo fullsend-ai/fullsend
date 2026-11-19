@@ -87,6 +87,15 @@ fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
+# The mock wc pads the byte count with leading spaces, as BSD/macOS wc does,
+# so the padding regression (#9298) is caught on GNU/Linux too.
+REAL_WC="$(command -v wc)"
+cat > "${MOCK_BIN}/wc" <<MOCKEOF
+#!/usr/bin/env bash
+printf '%8s\n' "\$("${REAL_WC}" "\$@" | tr -d '[:space:]')"
+MOCKEOF
+chmod +x "${MOCK_BIN}/wc"
+
 # run_test runs the script against the current mock pages.
 #   $1 — test name
 #   $2 — expected exit code
@@ -236,7 +245,8 @@ reset_pages
 jq -n --arg login "${ORG_BOT}" \
   '[{id: 1, user: {login: $login}, state: "CHANGES_REQUESTED", body: ("x" * 1048577)}]' \
   > "${TMPDIR}/page-1.json"
-run_test "oversized body rejected" 1 "${ORG_BOT}" "" "::error::Review body is"
+run_test "oversized body rejected" 1 "${ORG_BOT}" "" \
+  "::error::Review body is 1048578 bytes (max: 1048576)"
 
 echo ""
 if [[ "${FAILURES}" -gt 0 ]]; then

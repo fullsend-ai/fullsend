@@ -1,10 +1,13 @@
 package poll
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -586,8 +589,10 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 		{"open long ago", "open", oldOpen, nil, "older than"},
 		{"open by someone else", "open", sameProjectMR(3, "opened"), nil, ""},
 		{"reopen", "reopen", sameProjectMR(3, "opened"), nil, "no event-time actor evidence"},
-		{"label update", "update", sameProjectMR(3, "opened"), map[string]any{"labels": labelChange(nil, []string{"ready-for-review"})}, "not supported"},
-		{"bare update", "update", sameProjectMR(3, "opened"), nil, "uncheckable"},
+		{"label update with empty diff", "update", sameProjectMR(3, "opened"), map[string]any{"labels": labelChange([]string{"bug"}, []string{"bug"})}, "does not resolve"},
+		{"label update without title", "update", sameProjectMR(3, "opened"), map[string]any{"labels": map[string]any{"previous": []any{}, "current": []any{map[string]any{"name": "bug"}}}}, "no title"},
+		{"label update with null labels", "update", sameProjectMR(3, "opened"), map[string]any{"labels": nil}, "merge request update has an unusable changes.labels"},
+		{"label update with non-object labels", "update", sameProjectMR(3, "opened"), map[string]any{"labels": "bug"}, "merge request update has an unusable changes.labels"},
 		{"unknown action", "approved", sameProjectMR(3, "opened"), nil, "not a checkable transition"},
 	}
 	for _, tt := range failures {
@@ -607,6 +612,43 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 			}
 		})
 	}
+
+	ignored := []struct {
+		name    string
+		changes map[string]any
+		wantLog string
+	}{
+		{"bare update ignored", nil, "ignoring merge request !3 update without changes.labels"},
+		{"bare update with other changes ignored", map[string]any{"title": map[string]any{"previous": "a", "current": "b"}}, "ignoring merge request !3 update without changes.labels"},
+		{"label update ignored", map[string]any{"labels": labelChange(nil, []string{"ready-for-review"})}, "ignoring merge request !3 label change"},
+	}
+	for _, tt := range ignored {
+		t.Run(tt.name, func(t *testing.T) {
+			mc := newMockClient()
+			// A re-fetch would fail: an ignored update must not reach the API.
+			mc.mrErr[3] = fmt.Errorf("re-fetch must not be attempted")
+			var logs bytes.Buffer
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
+			got, err := newWebhookPoller(mc).BuildWebhookEvents(context.Background(), mrPayload(t, "update", alice.ID, 3, tt.changes))
+			if err != nil {
+				t.Fatalf("merge request update must be ignored, got error: %v", err)
+			}
+			if len(got) != 0 {
+				t.Errorf("events = %+v, want none for an ignored merge request update", got)
+			}
+			if !strings.Contains(logs.String(), tt.wantLog) {
+				t.Errorf("log = %q, want containing %q", logs.String(), tt.wantLog)
+			}
+		})
+	}
+	t.Run("update without iid", func(t *testing.T) {
+		p := newWebhookPoller(newMockClient())
+		_, err := p.BuildWebhookEvents(context.Background(), mrPayload(t, "update", alice.ID, 0, nil))
+		if err == nil || !strings.Contains(err.Error(), "no valid iid") {
+			t.Fatalf("err = %v, want iid validation error", err)
+		}
+	})
 
 	t.Run("MR not found", func(t *testing.T) {
 		p := newWebhookPoller(newMockClient())

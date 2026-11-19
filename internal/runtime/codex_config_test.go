@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -622,16 +623,19 @@ func TestRenderCodexConfig_MultiAgentV2Table(t *testing.T) {
 	require.NoError(t, err)
 	rendered := string(v2)
 
-	const table = "[features]\nplugins = false\n\n[features.multi_agent_v2]\nenabled = true\n" +
-		"disable_direct_message = true\nexpose_spawn_agent_model_overrides = false\n\n" +
+	waitCap := "max_wait_timeout_ms = " + strconv.Itoa(codexWaitTimeoutMaxMS) + "\n"
+	table := "[features]\nplugins = false\n\n[features.multi_agent_v2]\nenabled = true\n" +
+		"disable_direct_message = true\n" + waitCap + "expose_spawn_agent_model_overrides = false\n\n" +
 		"[agents]\nenabled = true\nmax_concurrent_threads_per_session = 4\n"
 	assert.Contains(t, rendered, table)
+	assert.NotContains(t, string(v1), "max_wait_timeout_ms",
+		"V1 has no wait setting, and the table is deny_unknown_fields: only a V2 parent renders the key")
 	_, fromTable, _ := strings.Cut(rendered, "[features.multi_agent_v2]")
 	tableOnly, _, _ := strings.Cut(fromTable, "[agents]")
 	assert.NotContains(t, tableOnly, "max_concurrent_threads_per_session",
 		"codex derives the V2 cap from the [agents] key plus the root; a cap here would count the root too")
 	assert.Equal(t, strings.Replace(string(v1), "enabled = false\n\n[agents]",
-		"enabled = true\ndisable_direct_message = true\nexpose_spawn_agent_model_overrides = false\n\n[agents]", 1),
+		"enabled = true\ndisable_direct_message = true\n"+waitCap+"expose_spawn_agent_model_overrides = false\n\n[agents]", 1),
 		rendered, "the table is the only difference from the V1 config")
 
 	_, err = renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "", "", true)
@@ -651,7 +655,8 @@ func TestRenderCodexConfig_DelegatingParsesAsTOML(t *testing.T) {
 	}{
 		"v1": {false, map[string]any{"plugins": false, "multi_agent_v2": map[string]any{"enabled": false}}},
 		"v2": {true, map[string]any{"plugins": false, "multi_agent_v2": map[string]any{
-			"enabled": true, "disable_direct_message": true, "expose_spawn_agent_model_overrides": false}}},
+			"enabled": true, "disable_direct_message": true, "max_wait_timeout_ms": float64(codexWaitTimeoutMaxMS),
+			"expose_spawn_agent_model_overrides": false}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			roles := codexTestDelegatingRoles()

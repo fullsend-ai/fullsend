@@ -18,7 +18,8 @@ Common configuration goals:
 
 | Goal | How |
 |------|-----|
-| Change model, timeout, or image | Override scalar fields via `base:` composition |
+| Change a setting of an agent's harness, such as a timeout or a variable it declares (for example `REVIEW_FINDING_SEVERITY_THRESHOLD`) | Set it in the agent entry's [`harness:` block](../../reference/config-reference.md#agents) in `config.yaml`; no `base:` harness needed, and the agent keeps getting updates |
+| Change model, timeout, or image in a harness file of your own | Override scalar fields via `base:` composition |
 | Add org-specific skills | Add entries to the `skills:` list |
 | Add environment variables | Add entries under `env.runner` or `env.sandbox` |
 | Install GitHub Packages npm dependencies | Add a repo-level GitHub Packages provider (see [Private registries and GitHub Packages](#private-registries-and-github-packages)) |

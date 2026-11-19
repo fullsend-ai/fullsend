@@ -384,7 +384,8 @@ the `#sha256=...` integrity hash suffix is stripped from the displayed source
 for readability. Disabled agents (`enabled: false`) are included in the listing.
 A built-in agent tuned by an entry without `source:` shows `(built-in)`. An
 entry's settings follow in brackets, for example `[model=sonnet effort=high]`;
-an entry with an `agents[].trigger` shows `trigger` there.
+an entry with an `agents[].trigger` shows `trigger` there, and one with a
+`harness:` block shows `harness`.
 
 Example output:
 ```
@@ -444,6 +445,10 @@ dispatch on each runtime.
 ## `agent remove`
 
 Remove an agent from config. If the removed agent was the last one using a given `allowed_remote_resources` prefix, that prefix is cleaned from the config's own list only. Entries the parent chain resolves (fullsend's defaults, `GITHUB_SERVER_URL`-derived prefixes, `config.base.yaml` entries) are never carried into the cleaned list, and a prefix the base owns is left to the base. When the cleaned local list becomes empty, the local `allowed_remote_resources` key is dropped so the parent chain resolves again. Over a chain that resolves to deny-all (a base `[]`), the command instead writes the fullsend default prefixes a remaining agent still uses. Those can be host-specific when `GITHUB_SERVER_URL` names a GitHub Enterprise host.
+
+The command edits `config.yaml` only. For an agent that `config.base.yaml`
+registers, it fails and writes nothing. To turn that agent off, add an entry
+with its `name` and `enabled: false` to `config.yaml`.
 
 ```bash
 fullsend agent remove triage

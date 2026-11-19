@@ -118,6 +118,16 @@ func (d *perRepoDefaults) ConfigInferenceGateway() InferenceGatewayConfig {
 // defaults are compiled into the runtimes).
 func (d *perRepoDefaults) ConfigModelAliases() map[string]string { return nil }
 
+// ConfigConnections returns the default connections (none).
+func (d *perRepoDefaults) ConfigConnections() map[string]SecretConnection { return nil }
+
+// ConfigSecrets returns the default secret source selections (none: every
+// secret uses its forge-native source).
+func (d *perRepoDefaults) ConfigSecrets() map[string]SecretSource { return nil }
+
+// ValidateSecretSources reports no error: the defaults declare nothing.
+func (d *perRepoDefaults) ValidateSecretSources() error { return nil }
+
 // ConfigArtifactsContent returns the default run artifact level ("all" —
 // the whole output/ directory, as before ADR 0161).
 func (d *perRepoDefaults) ConfigArtifactsContent() string { return ArtifactContentAll }

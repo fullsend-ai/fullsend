@@ -169,9 +169,15 @@ Federation), `openai-api-key`, or `openai-wif` (OpenAI through Workload
 Identity Federation, GitHub only). There is no implicit default. A
 repo with no selection is reported as a configuration error by
 `repos install` and `repos status`, before any forge change is made for
-that repo. Uninstall does not need the setting: it removes every
-fullsend-managed inference credential whether `inference.auth` is set,
-valid, or missing.
+that repo. The exception is a repo whose effective configuration (for
+example `defaults.config.inference.gateway`, or the `config_base`
+preset) declares a complete `inference.gateway` block. The gateway
+authenticates on its own, so such a repo needs no `inference.auth` and
+install provisions no provider credentials for it (see
+[Inference gateway route](../../cli/repos.md#inference-gateway-route)).
+Uninstall does not need the setting: it removes every fullsend-managed
+inference credential whether `inference.auth` is set, valid, or
+missing.
 
 The selection can be set under `defaults`, in each forge section, and on
 repo or glob entries. It resolves entry → forge section → `defaults`
@@ -382,7 +388,11 @@ non-empty `allowed_remote_resources` list is unioned with the inherited
 prefixes, and an explicit empty list replaces the inherited value. The
 managed file is sparse and cannot record that reset, so validation rejects a
 non-empty `allowed_remote_resources` list declared in a more specific layer
-than an explicit empty one; declare the full list in a single layer. A
+than an explicit empty one; declare the full list in a single layer.
+Validation also rejects an agent's `harness:` block that is set in more than
+one of the `defaults`, forge section and repository `config` layers, because
+they render into one `config.yaml`. Set the block in one layer (see the
+[config reference](../../reference/config-reference.md#agents)). A
 forge section's `config` never affects repositories of the other forge.
 The managed configuration contains only explicitly supplied values —
 code defaults and `config.base.yaml` are not baked into the file.
@@ -1061,8 +1071,10 @@ no inference authentication selected for acme/api: set inference.auth (vertex-wi
 ```
 
 The repo resolves no `inference.auth` from its entry, its forge section,
-or `defaults`. This is expected after upgrading from a release without
-the setting. Add the selection at the appropriate level (see
+or `defaults`, and its effective configuration declares no complete
+`inference.gateway` block. If the message says the gateway is partial
+or invalid, complete or fix the block instead. This is expected after
+upgrading from a release without the setting. Add the selection at the appropriate level (see
 [Inference authentication](#inference-authentication)) and re-run.
 `fullsend repos set defaults.inference.auth vertex-wif` restores
 the previous Vertex WIF behaviour for every repo. An unrecognised value

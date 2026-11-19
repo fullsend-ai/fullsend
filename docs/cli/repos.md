@@ -104,8 +104,12 @@ declared in a more specific layer than an explicit empty one (for example
 `defaults.config` `[]` with a non-empty `github.config` or repository list)
 unless the most specific declared list is itself empty, which denies every
 remote resource whatever the earlier layers say; declare the full list in a
-single layer instead. Omitted values inherit and are not written into the
-managed file. Every repository selected from the manifest has a managed
+single layer instead. Validation also rejects an agent's `harness:` block that
+is set in more than one of these three layers, because they render into one
+`config.yaml`. Set the block in one layer (see the
+[config reference](../reference/config-reference.md#agents)). Omitted values
+inherit and are not written into the managed file. Every repository selected
+from the manifest has a managed
 `.fullsend/config.yaml`; no `config` key is required. With no `config` declared,
 install renders the canonical sparse file carrying only the ownership marker
 (omitted values still inherit from a declared preset and the code defaults).
@@ -216,9 +220,15 @@ key plus `create_issues.allow_targets`. A setting that schema cannot express
 repository with an error that names the setting. The ownership marker is the
 same in every schema.
 
+An agent entry's `harness:` block needs a ref that declares schema version 3
+or later. For a ref on an older schema, install fails that repository with an
+error that names the entry, and `repos status` reports a block that is already
+in the installed file as `incompatible`.
+
 The pinned ref is looked up only when the managed configuration or the
-installed file declares `tracker` or `create_issues`, the only keys whose shape
-differs between known schemas. Looking it up needs the upstream GitHub client.
+installed file declares `tracker`, `create_issues` or a `harness:` block on an
+agent entry, the only settings that known schemas read differently. Looking it
+up needs the upstream GitHub client.
 When the ref or its schema cannot be determined (the ref does not resolve, no
 upstream client is available, or the ref declares a schema version this CLI
 does not know), install leaves `.fullsend/config.yaml` unchanged and fails that
@@ -388,7 +398,7 @@ On GitLab, scaffold commits go through the Commits API, and GitLab treats commit
 
 ### Inference authentication selection
 
-Every repo that `repos install` converges or `repos status` checks must resolve an explicit inference authentication method, `inference.auth`. Three values are accepted:
+Every repo that `repos install` converges or `repos status` checks must resolve an explicit inference authentication method, `inference.auth`, unless it routes inference through the [inference gateway](#inference-gateway-route). Three values are accepted:
 
 | Value | Meaning |
 |-------|---------|
@@ -417,11 +427,15 @@ gitlab:
     - name: group/project
 ```
 
-There is no implicit default. When no level selects a method, `repos install` (convergence) and `repos status` report a per-repo configuration error: `no inference authentication selected for <repo>`. The error names the levels where `inference.auth` can be set. Install reports it before any forge mutation for that repo, and other repos in the run still converge. An invalid value fails manifest validation. `repos uninstall` does not need the setting and does not validate its value, so a missing or invalid selection never blocks teardown.
+There is no implicit default. When no level selects a method and no [gateway route](#inference-gateway-route) applies, `repos install` (convergence) and `repos status` report a per-repo configuration error: `no inference authentication selected for <repo>`. The error names the levels where `inference.auth` can be set. Install reports it before any forge mutation for that repo, and other repos in the run still converge. An invalid value fails manifest validation. `repos uninstall` does not need the setting and does not validate its value, so a missing or invalid selection never blocks teardown.
+
+#### Inference gateway route
+
+A repo whose effective configuration declares a complete `inference.gateway` block ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md); see the [hosted gateway route guide](../guides/user/inference-gateway.md)) does not need `inference.auth`. The effective configuration is the managed configuration (for example `defaults.config.inference.gateway`) layered over the `config_base` preset, so the block can come from either. The gateway authenticates the job itself, so a gateway-only repo (with a gateway block but no `inference.auth`) gets no provider credentials. Install writes no `FULLSEND_GCP_*` secrets, `FULLSEND_GCP_REGION`, or `FULLSEND_OPENAI_API_KEY`, and leaves existing ones in place. It also rejects `--vertex-project`, `--vertex-wif-provider`, and `--openai-api-key` when no selected repo consumes them. A complete block needs `url`, plus `audience` in the default `oidc` mode. In the `api-key` mode, install does not write the gateway key: set `FULLSEND_INFERENCE_GATEWAY_API_KEY` as a repository secret (a masked CI/CD variable on GitLab) first. On GitLab it must be a masked, protected variable available to all environments and not a file-type variable, the same usability check as `FULLSEND_OPENAI_API_KEY`. Install reports a gateway-only `api-key` repo without a usable key as a per-repo error before any write, and `repos status` reports its absence or defect as drift; the `oidc` mode needs no secret. The `oidc` mode is GitHub only (the runtime fetches its assertion from the GitHub Actions OIDC endpoint), so a gateway-only GitLab repo must use `auth: api-key` or set `inference.auth`. A partial or invalid block is reported as the same per-repo configuration error, naming what is missing. Set `inference.auth` as well when agents also use models outside the gateway: an explicit selection keeps its usual credentials and validation.
 
 There is no command-line selection: the former `--inference-auth` flag was removed. Set the method with [`repos set`](#repos-set) at the level you want, for example `defaults.inference.auth`, `github.inference.auth`, `gitlab.inference.auth`, or `'github.repos["acme/api"].inference.auth'`.
 
-This readiness rule is deliberately stricter than `github setup`, which can scaffold a repository without any inference credentials. Install converges many repositories unattended, so it requires an explicit method for each one: it then provisions exactly that method's credentials, removes the other method's leftover fullsend-managed secrets, and fails early instead of leaving agents that cannot reach a model. Every selected repository must resolve `inference.auth`, and that method's credentials must already exist on the repository or be supplied (by flags or by declared configuration; see [Inference credentials](#inference-credentials)).
+This readiness rule is deliberately stricter than `github setup`, which can scaffold a repository without any inference credentials. Install converges many repositories unattended, so it requires an explicit method for each one: it then provisions exactly that method's credentials, removes the other method's leftover fullsend-managed secrets, and fails early instead of leaving agents that cannot reach a model. Every selected repository must resolve `inference.auth` (or route inference through the gateway), and that method's credentials must already exist on the repository or be supplied (by flags or by declared configuration; see [Inference credentials](#inference-credentials)).
 
 #### Upgrading existing manifests
 

@@ -211,7 +211,10 @@ spawn is final for that role: the parent runs that
 sub-agent definition itself. In a fleet-shaped V1 `review` run on
 [#6970](https://github.com/fullsend-ai/fullsend/issues/6970) the parent dropped the denied persona
 instead, and its result did not say so ([#9073](https://github.com/fullsend-ai/fullsend/issues/9073)).
-A spawn the hook did not admit fails the run after the fact, within
+Unlike a denied spawn, a refused wait is not final. On V2 Codex refuses a `wait_agent` whose
+`timeout_ms` is over 120000, a max the runner sets in Codex's own config, and the parent waits
+again with a shorter timeout; on V1 Codex has no such setting, and the runtime note asks for the
+same cap. A spawn the hook did not admit fails the run after the fact, within
 the limits named in [Troubleshooting](#troubleshooting): per iteration the runner counts the
 spawns seen in the event stream or in the children's rollouts on disk, each child once, and
 compares the run's total with the admissions the hook recorded. Every child's rollout is saved and redacted like the

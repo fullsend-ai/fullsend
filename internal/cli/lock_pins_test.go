@@ -78,7 +78,7 @@ func TestReadRunLock_PinsURLBaseFiles(t *testing.T) {
 // runLockPins returns the pins readRunLock builds for agentName.
 func runLockPins(t *testing.T, dir, agentName, harnessPath string) map[string]harness.LockedPin {
 	t.Helper()
-	st, err := readRunLock(dir, agentName, harnessPath)
+	st, err := readRunLock(dir, agentName, harnessPath, nil)
 	require.NoError(t, err)
 	return st.pins
 }
@@ -125,7 +125,7 @@ func TestReadRunLock_NoPins(t *testing.T) {
 
 	t.Run("no lock file", func(t *testing.T) {
 		dir, harnessPath := setup(t, nil)
-		st, err := readRunLock(dir, "code", harnessPath)
+		st, err := readRunLock(dir, "code", harnessPath, nil)
 		require.NoError(t, err)
 		assert.Equal(t, runLockState{}, st)
 	})
@@ -133,7 +133,7 @@ func TestReadRunLock_NoPins(t *testing.T) {
 	t.Run("unreadable lock file", func(t *testing.T) {
 		dir, harnessPath := setup(t, nil)
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "lock.yaml"), []byte("version: [\n"), 0o644))
-		st, err := readRunLock(dir, "code", harnessPath)
+		st, err := readRunLock(dir, "code", harnessPath, nil)
 		require.NoError(t, err)
 		assert.Error(t, st.loadErr)
 		assert.Nil(t, st.pins)
@@ -141,14 +141,14 @@ func TestReadRunLock_NoPins(t *testing.T) {
 
 	t.Run("no entry for the agent", func(t *testing.T) {
 		dir, harnessPath := setup(t, entry(harnessHash))
-		st, err := readRunLock(dir, "other", harnessPath)
+		st, err := readRunLock(dir, "other", harnessPath, nil)
 		require.NoError(t, err)
 		assert.Equal(t, runLockState{}, st)
 	})
 
 	t.Run("stale entry", func(t *testing.T) {
 		dir, harnessPath := setup(t, entry(fetch.ComputeSHA256([]byte("older harness"))))
-		st, err := readRunLock(dir, "code", harnessPath)
+		st, err := readRunLock(dir, "code", harnessPath, nil)
 		require.NoError(t, err)
 		assert.True(t, st.stale)
 		assert.NotNil(t, st.entry)
@@ -157,7 +157,7 @@ func TestReadRunLock_NoPins(t *testing.T) {
 
 	t.Run("missing harness file", func(t *testing.T) {
 		dir, _ := setup(t, entry(harnessHash))
-		_, err := readRunLock(dir, "code", filepath.Join(dir, "harness", "missing.yaml"))
+		_, err := readRunLock(dir, "code", filepath.Join(dir, "harness", "missing.yaml"), nil)
 		assert.ErrorContains(t, err, "reading harness file for lock check")
 	})
 
