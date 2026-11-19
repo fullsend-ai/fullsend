@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -133,6 +134,103 @@ func TestRequireGitHubOIDCHost(t *testing.T) {
 	} {
 		assert.Error(t, RequireGitHubOIDCHost(bad), bad)
 	}
+}
+
+func TestRequireGitHubOIDCHost_ConfiguredServer(t *testing.T) {
+	cases := []struct {
+		name, server, oidcURL string
+		ok                    bool
+	}{
+		{"server host", "https://ghes.example.com", "https://ghes.example.com/_services/token?api-version=2.0", true},
+		{"server url case and slash", "https://GHES.example.com/", "https://ghes.EXAMPLE.com/_services/token", true},
+		{"explicit default port", "https://ghes.example.com", "https://ghes.example.com:443/_services/token", true},
+		{"server with port", "https://ghes.example.com:8443", "https://ghes.example.com:8443/_services/token", true},
+		{"other port", "https://ghes.example.com:8443", "https://ghes.example.com/_services/token", false},
+		{"other host", "https://ghes.example.com", "https://elsewhere.example/token", false},
+		{"look-alike host", "https://ghes.example.com", "https://ghes.example.com.evil.example/token", false},
+		{"subdomain of server", "https://ghes.example.com", "https://x.ghes.example.com/token", false},
+		{"plain http on server", "https://ghes.example.com", "http://ghes.example.com/token", false},
+		{"http server url", "http://ghes.example.com", "https://ghes.example.com/token", false},
+		{"server url with path", "https://ghes.example.com/sub", "https://ghes.example.com/token", false},
+		{"github.com server", "https://github.com", "https://github.com/token", false},
+		{"unset server", "", "https://ghes.example.com/token", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GITHUB_SERVER_URL", tc.server)
+			err := RequireGitHubOIDCHost(tc.oidcURL)
+			if tc.ok {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorContains(t, err, "not GitHub's Actions token service")
+			}
+		})
+	}
+}
+
+func TestRequireGitHubOIDCHost_GitHubComUnchanged(t *testing.T) {
+	for _, server := range []string{"", "https://github.com", "https://GitHub.com/"} {
+		t.Run(server, func(t *testing.T) {
+			t.Setenv("GITHUB_SERVER_URL", server)
+			assert.NoError(t, RequireGitHubOIDCHost("https://pipelines.actions.githubusercontent.com/abc/token"))
+			assert.Error(t, RequireGitHubOIDCHost("https://github.com/token"))
+			assert.Error(t, RequireGitHubOIDCHost("https://example.com/"))
+		})
+	}
+}
+
+// TestFetchAssertion_ConfiguredServer fetches an assertion from a token
+// service on a GitHub server other than github.com: the request URL is on
+// the GITHUB_SERVER_URL host, and the request reaches it with the audience
+// and the bearer token.
+func TestFetchAssertion_ConfiguredServer(t *testing.T) {
+	tok := testJWT(t, map[string]any{"iat": 1000, "exp": 1300})
+	var gotHost, gotPath, gotAudience, gotVersion, gotAuth string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotPath = r.URL.Path
+		gotAudience = r.URL.Query().Get("audience")
+		gotVersion = r.URL.Query().Get("api-version")
+		gotAuth = r.Header.Get("Authorization")
+		fmt.Fprintf(w, `{"value":%q}`, tok)
+	}))
+	t.Cleanup(srv.Close)
+	// The test server's certificate names example.com; dial the server for
+	// it so the request goes to a non-loopback, non-github.com host name.
+	client := srv.Client()
+	transport := client.Transport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+	}
+	client.Transport = transport
+	t.Setenv("GITHUB_SERVER_URL", "https://example.com")
+
+	a, err := FetchAssertion(context.Background(), AssertionConfig{
+		Audience:         "gw-aud",
+		OIDCRequestURL:   "https://example.com/_services/token?api-version=2.0",
+		OIDCRequestToken: "req-token",
+		HTTPClient:       client,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "example.com", gotHost)
+	assert.Equal(t, "/_services/token", gotPath)
+	assert.Equal(t, "gw-aud", gotAudience)
+	assert.Equal(t, "2.0", gotVersion)
+	assert.Equal(t, "bearer req-token", gotAuth)
+	assert.Equal(t, tok, a.Value)
+
+	// With no GitHub server configured the same URL is refused before any
+	// request is made.
+	gotHost = ""
+	t.Setenv("GITHUB_SERVER_URL", "")
+	_, err = FetchAssertion(context.Background(), AssertionConfig{
+		Audience:         "gw-aud",
+		OIDCRequestURL:   "https://example.com/_services/token?api-version=2.0",
+		OIDCRequestToken: "req-token",
+		HTTPClient:       client,
+	})
+	assert.ErrorContains(t, err, "not GitHub's Actions token service")
+	assert.Empty(t, gotHost, "no request is sent to a refused host")
 }
 
 func TestRequireSecureURL(t *testing.T) {

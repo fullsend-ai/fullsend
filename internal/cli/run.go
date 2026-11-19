@@ -1739,6 +1739,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// base composition don't trigger false integrity errors.
 	result.Providers = dedupResolvedProviders(result.Providers)
 
+	// githubServer is the GitHub server other than github.com that this
+	// run is configured for, or nil; ensureEmbeddedProfile adds it to the
+	// embedded GitHub profiles as the block below does to listed ones.
+	var githubServer *githubServerHosts
+
 	// Auto-generate a GitLab provider profile when running on a self-hosted
 	// GitLab instance (#6615). Prepended so that a user-defined profile
 	// with the same ID wins via last-wins dedup. Inserted before the
@@ -1781,6 +1786,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		defer cleanupBound()
 		result.Profiles = boundProfiles
+	} else {
+		// On a GitHub server other than github.com (GITHUB_SERVER_URL, set
+		// by the Actions runner), the GH_TOKEN placeholder of the stock
+		// GitHub profiles resolves only at api.github.com and github.com,
+		// so the configured server's endpoints are added to every profile
+		// that issues it.
+		ghServer, ok, err := configuredGitHubServerHosts()
+		if err != nil {
+			printer.StepFail("Failed to resolve the GitHub server")
+			return err
+		}
+		if ok {
+			githubServer = &ghServer
+			boundProfiles, cleanupBound, err := bindGitHubCredentialToServer(result.Profiles, ghServer, printer)
+			if err != nil {
+				printer.StepFail("Failed to add the GitHub server to provider profiles")
+				return fmt.Errorf("binding GitHub server to provider profiles: %w", err)
+			}
+			defer cleanupBound()
+			result.Profiles = boundProfiles
+		}
 	}
 
 	if intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
@@ -2003,7 +2029,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					// warnReservedProfileCopies); importing the embedded one
 					// now would replace it under the same id (#7268).
 					if _, hasProfileOverride := profileOverrides[pd.Type]; !hasProfileOverride {
-						if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
+						if err := ensureEmbeddedProfile(ctx, pd.Type, githubServer, printer); err != nil {
 							return err
 						}
 					}
@@ -2045,7 +2071,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepInfo(fmt.Sprintf("Provider %q declared by the harness but not needed by runtime %s with model %s; skipped", pd.Name, runtimeBackend.Runtime.Name(), model))
 				continue
 			}
-			if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
+			if err := ensureEmbeddedProfile(ctx, pd.Type, githubServer, printer); err != nil {
 				return err
 			}
 			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), runtimeBackend, ciCreds, printer)

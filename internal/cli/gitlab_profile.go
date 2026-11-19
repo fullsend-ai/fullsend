@@ -246,27 +246,28 @@ func bindGitLabCredentialToForgeHost(profiles []resolve.ResolvedProfile, host, p
 	return out, cleanup, nil
 }
 
-// validateForgeDestination rejects a forge destination that is not a single
-// concrete endpoint. The host comes from operator-set environment variables
+// validateForgeDestination rejects a forge destination (a GitLab forge host,
+// or a GitHub server host for bindGitHubCredentialToServer) that is not a
+// single concrete endpoint. The host comes from operator-set environment variables
 // and is bound to a credential, so wildcard or glob syntax (which url.Parse
 // accepts in a host) must never reach a policy endpoint. The host must be an
 // IP address or a DNS name made of letters, digits, hyphens, underscores,
 // and dots, and the port must be in 1-65535.
 func validateForgeDestination(host string, port int) error {
 	if port < 1 || port > 65535 {
-		return fmt.Errorf("GitLab port %d is out of range 1-65535", port)
+		return fmt.Errorf("forge port %d is out of range 1-65535", port)
 	}
 	if net.ParseIP(host) != nil {
 		return nil
 	}
 	if strings.HasPrefix(host, ".") || strings.Contains(host, "..") {
-		return fmt.Errorf("GitLab forge host %q is not a concrete hostname", host)
+		return fmt.Errorf("forge host %q is not a concrete hostname", host)
 	}
 	for _, r := range host {
 		ok := r == '-' || r == '_' || r == '.' ||
 			(r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
 		if !ok {
-			return fmt.Errorf("GitLab forge host %q is not a concrete hostname (wildcards and special characters are not allowed)", host)
+			return fmt.Errorf("forge host %q is not a concrete hostname (wildcards and special characters are not allowed)", host)
 		}
 	}
 	return nil
