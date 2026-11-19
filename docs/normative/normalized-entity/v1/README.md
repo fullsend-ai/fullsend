@@ -73,9 +73,12 @@ as recorded; do not include the repository or project path or ID. For example,
 `github`, `github.com`, `work_item`, and `I_kwDOExample53` yield
 `fullsend:entity:v1:github:github.com:work_item:I_kwDOExample53`. GitLab
 record IDs are unique across projects within a kind; Jira issue IDs are
-site-wide; GitHub node IDs are host-wide. GitHub `source_id` producers that
-query GraphQL send the `X-Github-Next-Global-ID: 1` header so node IDs come
-back in the new global format on old and new entities alike; GraphQL
+site-wide; GitHub node IDs are host-wide. GitHub `source_id` producers on
+github.com that query GraphQL send the `X-Github-Next-Global-ID: 1` header
+so node IDs come back in the new global format on old and new entities
+alike; GitHub documents the header for github.com only, and on GitHub
+Enterprise Server the ID format follows the server, so a producer must take
+the entity ID and the comment IDs from the same API. GraphQL
 `node()` accepts either input format, so a legacy-format node ID still
 resolves. The header is GraphQL-only: REST and webhook `node_id` fields
 still return the legacy format on older objects, so a producer reading IDs
