@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/normentity"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -18,11 +19,13 @@ const githubGraphQLTimeout = 30 * time.Second
 
 // githubCommentActors answers the bot-role helper's GitHub questions (#9602)
 // — the canonical entity ID of the issue or pull request a run handles, and
-// a comment's current-revision actor — through the GitHub forge client. A
-// client is built per lookup with the run's GitHub token at that moment
-// (newAuthenticatedGitHubClient), so a re-minted stage token is used for
-// that stage's lookups, and the API endpoint is the configured one
-// (GITHUB_API_URL, GitHub Enterprise Server included).
+// a comment's current-revision actor — through forge.GitHubExtensions, the
+// interface the forge abstraction doc requires callers outside
+// internal/forge/github/ to consume. A client is built per lookup with the
+// run's GitHub token at that moment (newAuthenticatedGitHubClient), so a
+// re-minted stage token is used for that stage's lookups, and the API
+// endpoint is the configured one (GITHUB_API_URL, GitHub Enterprise Server
+// included).
 type githubCommentActors struct {
 	// host is the source host the canonical entity ID names:
 	// GITHUB_SERVER_URL's host (config.GitHubServerBaseURL), default
@@ -60,7 +63,8 @@ func (g *githubCommentActors) EntityID(ctx context.Context, repo, number string)
 	if err != nil || n < 1 {
 		return "", fmt.Errorf("issue number %q is not a positive integer", number)
 	}
-	client, err := newAuthenticatedGitHubClient("", "")
+	var client forge.GitHubExtensions
+	client, err = newAuthenticatedGitHubClient("", "")
 	if err != nil {
 		return "", err
 	}
@@ -75,6 +79,7 @@ func (g *githubCommentActors) EntityID(ctx context.Context, repo, number string)
 // on. A Bot actor's login is returned in the REST form (slug[bot]) the mint
 // takes; a deleted account is not a bot.
 func (g *githubCommentActors) CommentActor(ctx context.Context, commentID string) (commentActor, error) {
+	var client forge.GitHubExtensions
 	client, err := newAuthenticatedGitHubClient("", "")
 	if err != nil {
 		return commentActor{}, err

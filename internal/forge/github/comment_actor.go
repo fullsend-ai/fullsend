@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // maxCommentActorResponseBytes bounds a GraphQL response the comment-actor
@@ -17,13 +19,10 @@ const maxCommentActorResponseBytes = 1 << 20
 // request it is on, as GitHub GraphQL reports them (#9602). ActorType is
 // the actor's GraphQL type (Bot, User, …) and ActorLogin its login as
 // GraphQL spells it (a Bot without the REST "[bot]" suffix); both are empty
-// for a deleted account.
-type CommentActor struct {
-	OnPullRequest bool
-	EntityNodeID  string
-	ActorType     string
-	ActorLogin    string
-}
+// for a deleted account. The shape is forge.CommentActor: the lookup is
+// declared on forge.GitHubExtensions, so its result type lives in the forge
+// package and this alias keeps the GitHub spelling.
+type CommentActor = forge.CommentActor
 
 // IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
 // "PullRequest") and node ID of issue or pull request number in owner/repo.
@@ -44,7 +43,7 @@ func (c *LiveClient) IssueOrPullRequestNodeID(ctx context.Context, owner, repo s
 		return "", "", err
 	}
 	if data.Repository == nil || data.Repository.IssueOrPullRequest == nil {
-		return "", "", fmt.Errorf("%s/%s#%d not found", owner, repo, number)
+		return "", "", fmt.Errorf("%w: %s/%s#%d", forge.ErrNotFound, owner, repo, number)
 	}
 	n := data.Repository.IssueOrPullRequest
 	if (n.Typename != "Issue" && n.Typename != "PullRequest") || n.ID == "" {
@@ -105,7 +104,7 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (Commen
 	}
 	n := data.Node
 	if n == nil {
-		return CommentActor{}, fmt.Errorf("comment %q not found", commentID)
+		return CommentActor{}, fmt.Errorf("%w: comment %s", forge.ErrNotFound, commentID)
 	}
 	if n.Typename != "IssueComment" && n.Typename != "PullRequestReviewComment" {
 		return CommentActor{}, fmt.Errorf("node %q is a %s, not an issue, pull-request or review-thread comment", commentID, n.Typename)
@@ -142,8 +141,10 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (Commen
 
 // graphqlQuery runs one GraphQL query against the client's GraphQL endpoint
 // and decodes its data into out. A transport error, a non-200 status or a
-// GraphQL error fails. Extra headers (e.g. nextGlobalIDHeader) are set on
-// the request.
+// GraphQL error fails; a NOT_FOUND GraphQL error is returned wrapped in
+// forge.ErrNotFound, the sentinel the forge.GitHubExtensions doc comments
+// promise for a missing node. Extra headers (e.g. nextGlobalIDHeader) are
+// set on the request.
 func (c *LiveClient) graphqlQuery(ctx context.Context, query string, variables map[string]any, out any, headers ...requestHeader) error {
 	resp, err := c.do(ctx, http.MethodPost, c.graphqlEndpoint(), map[string]any{"query": query, "variables": variables}, headers...)
 	if err != nil {
@@ -161,12 +162,16 @@ func (c *LiveClient) graphqlQuery(ctx context.Context, query string, variables m
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
 			Message string `json:"message"`
+			Type    string `json:"type"`
 		} `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return fmt.Errorf("decode graphql response: %w", err)
 	}
 	if len(envelope.Errors) > 0 {
+		if envelope.Errors[0].Type == "NOT_FOUND" {
+			return fmt.Errorf("%w: %s", forge.ErrNotFound, envelope.Errors[0].Message)
+		}
 		return fmt.Errorf("graphql query: %s", envelope.Errors[0].Message)
 	}
 	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {

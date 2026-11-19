@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,24 +114,30 @@ func TestCommentActor(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct {
-		status int
-		body   string
+		status       int
+		body         string
+		wantNotFound bool
 	}{
-		"not found":                            {http.StatusOK, `{"data":{"node":null}}`},
-		"a review body":                        {http.StatusOK, `{"data":{"node":{"__typename":"PullRequestReview"}}}`},
-		"no parent":                            {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":null}}}`},
-		"edited, editor gone":                  {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":null,"editedAt":"2026-11-18T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`},
-		"edited, no history":                   {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[]},"issue":{"id":"I_1"}}}}`},
-		"newest edit is not the last revision": {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"Bot","login":"x"},"editedAt":"2026-11-17T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`},
-		"graphql error":                        {http.StatusOK, `{"errors":[{"message":"Could not resolve to a node"}]}`},
-		"empty data":                           {http.StatusOK, `{"data":null}`},
-		"not json":                             {http.StatusOK, `<html>`},
-		"http error":                           {http.StatusBadGateway, `{}`},
+		"not found":                            {http.StatusOK, `{"data":{"node":null}}`, false},
+		"a review body":                        {http.StatusOK, `{"data":{"node":{"__typename":"PullRequestReview"}}}`, false},
+		"no parent":                            {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":null}}}`, false},
+		"edited, editor gone":                  {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":null,"editedAt":"2026-11-18T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`, false},
+		"edited, no history":                   {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[]},"issue":{"id":"I_1"}}}}`, false},
+		"newest edit is not the last revision": {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"Bot","login":"x"},"editedAt":"2026-11-17T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`, false},
+		"graphql error":                        {http.StatusOK, `{"errors":[{"message":"Could not resolve to a node"}]}`, false},
+		"graphql not-found error":              {http.StatusOK, `{"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a node"}]}`, true},
+		"empty data":                           {http.StatusOK, `{"data":null}`, false},
+		"not json":                             {http.StatusOK, `<html>`, false},
+		"http error":                           {http.StatusBadGateway, `{}`, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _ := graphqlServer(t, tc.status, tc.body)
 			_, err := c.CommentActor(context.Background(), "C_1")
-			assert.Error(t, err)
+			if tc.wantNotFound {
+				assert.ErrorIs(t, err, forge.ErrNotFound)
+			} else {
+				assert.Error(t, err)
+			}
 		})
 	}
 }

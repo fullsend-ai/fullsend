@@ -175,8 +175,10 @@ func startBotRoleHelperService(resolver botidentity.BotRoleResolver, target, ent
 	// The token reaches host-side scripts, whose stdout/stderr is tee'd to
 	// the Actions log and can flow into the completion comment: register
 	// it with the runtime-secret redaction registry like every other
-	// runner-held credential (see the pre-mint workflow token).
+	// runner-held credential (see the pre-mint workflow token), and ask
+	// Actions to mask it in the job log the same way.
 	security.RegisterRuntimeSecret(token)
+	maskActionsValue(token)
 
 	errLog := log.New(log.Writer(), "botrole: ", log.LstdFlags)
 	handler := withBearerAuth(token, &botRoleHelper{resolver: resolver, target: target, entity: entity, comments: comments, errLog: errLog})

@@ -253,6 +253,25 @@ func TestStartBotRoleHelperService(t *testing.T) {
 	assert.Equal(t, "fullsend-ai/agents", resolver.queries[0].Target)
 }
 
+// Starting the helper asks GitHub Actions to mask its bearer token in the
+// job log, the same treatment every other runner-held credential gets: a
+// pre-script that uses shell tracing or dumps its environment cannot print
+// FULLSEND_BOT_ROLE_TOKEN there.
+func TestStartBotRoleHelperService_MasksTokenInActionsLog(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	var env botRoleHelperEnv
+	stderr := captureStderr(t, func() {
+		var shutdown func()
+		var err error
+		env, shutdown, err = startBotRoleHelperService(&fakeBotRoleResolver{}, "fullsend-ai/agents", testEntityID, nil)
+		require.NoError(t, err)
+		t.Cleanup(shutdown)
+	})
+	require.NotEmpty(t, env.token)
+	assert.Contains(t, stderr, "::add-mask::"+env.token+"\n")
+}
+
 // githubCommentActors reads a comment's current-revision actor and the
 // entity it is on from GitHub GraphQL: the last editor when the comment
 // was edited, its author otherwise; a Bot actor in its REST login form.
