@@ -477,7 +477,9 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		require.Equal(t, want, actualCounts[kind], "%s model-send count; output: %s", kind, output)
 	}
 	if !lsProbe && !errorProbe {
-		assert.Contains(t, string(captured), "executed", "control command output must reach a model continuation; output: %s", output)
+		control := openCodeProbeResultFor(t, captured, "probe-allowed")
+		assert.False(t, control.IsError, "control command must execute successfully")
+		assert.Contains(t, string(control.Content), "executed", "control command output must reach a model continuation; output: %s", output)
 	}
 	assert.NoFileExists(t, filepath.Join(work, "forbidden"))
 	assert.NotContains(t, string(captured), "FULLSEND_PROBE_ORIGINAL_", "raw output reached a model request")
@@ -598,7 +600,9 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		allowed, err := os.ReadFile(filepath.Join(work, "src", "allowed.txt"))
 		require.NoError(t, err, "path-scoped trusted edit rule must allow native writes")
 		assert.Equal(t, "path-scoped allowed", string(allowed))
-		assert.Contains(t, string(captured), "path-scoped allowed", "path-scoped trusted read rule must allow native reads")
+		read := openCodeProbeResultFor(t, captured, filepath.Join(work, "src", "allowed.txt"))
+		assert.False(t, read.IsError, "path-scoped trusted read rule must allow native reads")
+		assert.Contains(t, string(read.Content), "path-scoped allowed", "the native read must return the file content")
 		assert.NoFileExists(t, filepath.Join(work, "src", "private.txt"))
 		assert.NoFileExists(t, filepath.Join(work, "denied.txt"))
 		return
@@ -695,6 +699,7 @@ type openCodeProbeResult struct {
 }
 
 // Inspect actual tool results, not matching text in the model's tool inputs.
+// Bash calls are selected by description; native reads by their exact file path.
 func openCodeProbeResultFor(t *testing.T, captured []byte, description string) openCodeProbeResult {
 	t.Helper()
 	var callID string
@@ -704,10 +709,12 @@ func openCodeProbeResultFor(t *testing.T, captured []byte, description string) o
 			Messages []struct {
 				Content []struct {
 					Type      string `json:"type"`
+					Name      string `json:"name"`
 					ID        string `json:"id"`
 					ToolUseID string `json:"tool_use_id"`
 					Input     struct {
 						Description string `json:"description"`
+						FilePath    string `json:"filePath"`
 					} `json:"input"`
 					openCodeProbeResult
 				} `json:"content"`
@@ -716,7 +723,7 @@ func openCodeProbeResultFor(t *testing.T, captured []byte, description string) o
 		require.NoError(t, json.Unmarshal(body, &request))
 		for _, message := range request.Messages {
 			for _, part := range message.Content {
-				if part.Type == "tool_use" && part.Input.Description == description {
+				if part.Type == "tool_use" && (part.Input.Description == description || (part.Name == "read" && part.Input.FilePath == description)) {
 					callID = part.ID
 				}
 				if part.Type == "tool_result" {
