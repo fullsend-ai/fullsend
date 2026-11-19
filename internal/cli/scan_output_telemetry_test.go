@@ -319,9 +319,9 @@ func TestScanOutputFiles_JSONLCrossValuePrivateKeyRemainsValid(t *testing.T) {
 func TestSanitizeJSONLinesKeepsCleanDuplicateRecordWhenAnotherRecordChanges(t *testing.T) {
 	pipeline := security.OutputPipeline()
 	content := []byte("{\"a\":1,\"a\":2}\n{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\"}\n")
-	got, findings, _, err := sanitizeJSONLines(content, pipeline)
+	got, findings, err := security.SanitizeJSONLines(content, pipeline)
 	require.NoError(t, err)
-	assert.Positive(t, findings)
+	assert.NotEmpty(t, findings)
 	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
 	require.Len(t, lines, 2)
 	assert.Equal(t, `{"a":1,"a":2}`, lines[0], "clean duplicate-key record must remain unchanged")
@@ -334,11 +334,10 @@ func TestSanitizeJSONLinesFailsClosedForPrivateKeyAcrossRecords(t *testing.T) {
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	content := []byte(fmt.Sprintf("[%q]\n[%q]\n[%q]\n", begin, "MIIEpAIBAAKCAQEA0123456789abcdefghijklmnop", end))
-	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	got, findings, err := security.SanitizeJSONLines(content, pipeline)
 	require.NoError(t, err)
-	assert.Positive(t, findings)
-	require.NotEmpty(t, details)
-	assert.Equal(t, "private_key", details[0].Name)
+	require.NotEmpty(t, findings)
+	assert.Equal(t, "private_key", findings[0].Name)
 	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
 	require.Len(t, lines, 3)
 	for _, line := range lines {
@@ -352,11 +351,10 @@ func TestSanitizeJSONLinesFailsClosedForRawMultilinePEM(t *testing.T) {
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	content := []byte(fmt.Sprintf("%s\nMIIEpAIBAAKCAQEA0123456789abcdefghijklmnop\n%s\n", begin, end))
-	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	got, findings, err := security.SanitizeJSONLines(content, pipeline)
 	require.NoError(t, err)
-	assert.Positive(t, findings)
-	require.NotEmpty(t, details)
-	assert.Equal(t, "private_key", details[0].Name)
+	require.NotEmpty(t, findings)
+	assert.Equal(t, "private_key", findings[0].Name)
 	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
 	require.Len(t, lines, 3)
 	for _, line := range lines {
@@ -385,19 +383,20 @@ func TestScanOutputFiles_JSONLRawMultilinePEMRemainsValid(t *testing.T) {
 	}
 }
 
-func TestSanitizeJSONLines_DuplicateKeyRecordWithStructuralFindingsFailsClosed(t *testing.T) {
+func TestSanitizeJSONLines_DuplicateKeyRecordRedactsEscapedSecret(t *testing.T) {
 	pipeline := security.OutputPipeline()
 	// A secret encoded with JSON Unicode escapes in a record that also has duplicate keys.
-	// Raw text scanner doesn't match the unicode escapes, but structural scan decodes and finds it.
+	// Raw text scanning doesn't match the unicode escapes and map decoding drops the
+	// earlier duplicate, so only a token-preserving walk finds and removes it.
 	content := []byte("{\"a\":\"first\",\"a\":\"second\",\"password\":\"\\u0073\\u0065\\u0063\\u0072\\u0065\\u0074_password_1234\"}\n")
-	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	got, findings, err := security.SanitizeJSONLines(content, pipeline)
 	require.NoError(t, err)
-	assert.Positive(t, findings)
-	require.NotEmpty(t, details)
+	assert.NotEmpty(t, findings)
 	line := strings.TrimSpace(string(got))
 	assert.True(t, json.Valid([]byte(line)))
-	assert.Contains(t, line, "output removed")
 	assert.NotContains(t, line, "password_1234")
+	assert.Contains(t, line, `"a":"first"`, "an earlier duplicate value must survive redaction")
+	assert.Contains(t, line, `"a":"second"`, "the second duplicate value must survive redaction")
 }
 
 func TestSanitizeJSONLines_BackstopNoStructuralFindingsPreservesLineCount(t *testing.T) {
@@ -408,10 +407,9 @@ func TestSanitizeJSONLines_BackstopNoStructuralFindingsPreservesLineCount(t *tes
 
 	pipeline := security.OutputPipeline()
 	content := []byte("{\"field1\":\"foo\",\"field2\":\"bar\"}\n{\"field3\":\"second record\"}\n")
-	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	got, findings, err := security.SanitizeJSONLines(content, pipeline)
 	require.NoError(t, err)
-	assert.Positive(t, findings)
-	require.NotEmpty(t, details)
+	require.NotEmpty(t, findings)
 	assert.Equal(t, 2, strings.Count(string(got), "\n"), "line count must remain exactly 2, no extra blank lines")
 	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
 	require.Len(t, lines, 2)
@@ -420,18 +418,20 @@ func TestSanitizeJSONLines_BackstopNoStructuralFindingsPreservesLineCount(t *tes
 	assert.NotContains(t, lines[0], secretVal)
 }
 
-func TestSanitizeJSONLines_NeedsRewriteWithBackstopPrivateKeyFailsClosed(t *testing.T) {
+func TestSanitizeJSONLines_SingleRecordPrivateKeyRedactedInPlace(t *testing.T) {
 	pipeline := security.OutputPipeline()
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	content := []byte(fmt.Sprintf("{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\",\"pem\":\"%s\\n%s\"}\n", begin, end))
-	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	got, findings, err := security.SanitizeJSONLines(content, pipeline)
 	require.NoError(t, err)
-	assert.Positive(t, findings)
-	require.NotEmpty(t, details)
+	assert.NotEmpty(t, findings)
 	line := strings.TrimSpace(string(got))
 	assert.True(t, json.Valid([]byte(line)))
-	assert.Contains(t, line, "output removed")
+	assert.Equal(t, 1, strings.Count(string(got), "\n"), "one record must stay one record")
+	assert.NotContains(t, line, "ghp_FAKEtesttoken")
+	assert.NotContains(t, line, "PRIVATE KEY-----")
+	assert.Contains(t, line, "[REDACTED PRIVATE KEY]", "a key confined to one record is redacted in place, not failed closed")
 }
 
 func TestScanOutputFiles_QuietJSONFallbackDoesNotPrintPath(t *testing.T) {
@@ -467,6 +467,31 @@ func TestScanOutputFiles_QuietJSONWriteFailureIsFatal(t *testing.T) {
 	assert.EqualError(t, err, "could not write sanitized output file")
 }
 
+// TestScanOutputFiles_ContinuesRedactingAfterWriteFailure pins that one
+// unwritable file does not stop the walk: every other file is still redacted,
+// and the run fails closed with the collected error afterwards.
+func TestScanOutputFiles_ContinuesRedactingAfterWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "a-secret.txt")
+	second := filepath.Join(dir, "b-secret.txt")
+	const secret = "ghp_FAKEtesttoken000000000000000000000000"
+	require.NoError(t, os.WriteFile(first, []byte("Token: "+secret), 0o644))
+	require.NoError(t, os.WriteFile(second, []byte("Token: "+secret), 0o644))
+
+	err := scanOutputFilesWithWriter(dir, "trace-id", "", ui.New(&bytes.Buffer{}), func(path string, data []byte, mode os.FileMode) error {
+		if path == first {
+			return os.ErrPermission
+		}
+		return os.WriteFile(path, data, mode)
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not write sanitized a-secret.txt")
+
+	got, readErr := os.ReadFile(second)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(got), secret, "files after a write failure must still be redacted")
+}
+
 func TestScanOutputFiles_BackstopDoesNotRemaskExistingMask(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-result.json")
@@ -497,9 +522,8 @@ func TestSanitizeJSONStructure_CleanKeyWinsSanitizedCollision(t *testing.T) {
 		"ghp_FAKEtesttoken000000000000000000000000": "secretkeyval",
 		sanitized: "plainval",
 	}
-	input["ghp_FAKEtesttoken000000000000000000000000"] = "secretkeyval"
 	for range 20 {
-		got, findings := sanitizeJSONStructure(input, pipeline)
+		got, findings := security.SanitizeJSONStructure(input, pipeline)
 		require.NotEmpty(t, findings)
 		result := got.(map[string]any)
 		assert.Equal(t, "plainval", result[sanitized], "clean key must retain its name and value")
@@ -527,6 +551,8 @@ func TestScanOutputFiles_CleanJSON(t *testing.T) {
 
 func TestScanOutputFiles_NumericRuntimeSecretRedacted(t *testing.T) {
 	const secretNum = "123456789012"
+	security.ResetRuntimeSecretsForTest()
+	t.Cleanup(security.ResetRuntimeSecretsForTest)
 	require.True(t, security.RegisterRuntimeSecret(secretNum))
 
 	dir := t.TempDir()
@@ -572,7 +598,7 @@ func TestHasDuplicateJSONKeys(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, hasDuplicateJSONKeys([]byte(tc.json)))
+			assert.Equal(t, tc.want, security.HasDuplicateJSONKeys([]byte(tc.json)))
 		})
 	}
 }

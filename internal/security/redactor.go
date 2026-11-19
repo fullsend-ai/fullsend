@@ -207,20 +207,17 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 			if len(secret) == 0 {
 				continue
 			}
+			// A captured value that is already a mask placeholder is the
+			// product of an earlier redaction pass, not a new leak. Re-masking
+			// it would discard the informative prefix for no security gain,
+			// and it lets the serialized-JSON backstop run on every document
+			// without degrading prior redactions.
+			if isAlreadyMasked(secret) {
+				continue
+			}
 			masked := Mask(secret)
 			if originalLen < minLen {
 				continue
-			}
-			if p.name != "json_field" && end < len(current) && (current[end] == '"' || current[end] == '\'') {
-				numBackslashes := 0
-				for k := len(secret) - 1; k >= 0 && secret[k] == '\\'; k-- {
-					numBackslashes++
-				}
-				if numBackslashes%2 == 1 {
-					// The quote is escaped in the source. Keep the escaping
-					// backslash outside the redacted span.
-					masked += "\\"
-				}
 			}
 			result.Findings = append(result.Findings, Finding{
 				Scanner:  "secret_redactor",
@@ -252,6 +249,12 @@ func Mask(value string) string {
 		return "***"
 	}
 	return prefix + "..."
+}
+
+// isAlreadyMasked reports whether value is already a redaction placeholder
+// produced by Mask.
+func isAlreadyMasked(value string) bool {
+	return value == "***" || len(value) == 7 && strings.HasSuffix(value, "...")
 }
 
 func defaultPrefixPatterns() []secretPattern {

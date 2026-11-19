@@ -612,6 +612,31 @@ The post-run output scan skips `<runDir>/skills/` and
 origins and warnings are documented in
 [Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file).
 
+### The post-run output scan
+
+`scanOutputFiles` runs the output pipeline (Unicode normalization, then secret
+redaction) over every file under `output/` except the skips above and
+`security/findings.jsonl`. Valid JSON is sanitized structurally so redaction
+never changes its syntax: object keys and scalar leaves are scanned
+individually, and a document with duplicate keys goes through a
+token-preserving walk so every decoded occurrence is scanned, including an
+earlier value that map decoding would drop. `.jsonl`/`.ndjson` files are
+sanitized one record at a time to preserve the record framing; a secret that
+spans records cannot be redacted without rewriting that framing, so only the
+records it covers are replaced.
+
+Some content cannot be redacted in place. A JSON document or JSONL record is
+replaced with a valid fail-closed marker instead — never with corrupted
+syntax — when a private-key block or a cross-record match spans JSON
+framing, or when a text redaction would leave invalid JSON. Markers look
+like `{"error":"output removed because …"}` and are logged as findings in
+`security/findings.jsonl`.
+
+A sanitized file that cannot be written does not stop the walk: every
+remaining file is still scanned and redacted, and the run fails closed
+afterwards with all write errors joined. In `quiet` mode the affected paths
+are counted, not named (ADR 0163).
+
 ## Agent rule layering
 
 When `fullsend run` executes an agent, Claude Code loads instructions from

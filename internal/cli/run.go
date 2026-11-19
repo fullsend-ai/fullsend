@@ -7087,6 +7087,10 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 	findingCount := 0
 	// At quiet, unreadable and unwritable files are counted, not named.
 	unreadable, unwritable := 0, 0
+	// Write failures are collected rather than returned from the walk callback
+	// so every remaining file is still scanned and redacted. The run still
+	// fails closed once the walk finishes (#5705).
+	var writeErrs []error
 	findingsPath := filepath.Join(outputDir, "security", "findings.jsonl")
 
 	err := filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
@@ -7117,185 +7121,69 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 			return nil
 		}
 		content, readErr := os.ReadFile(path)
+		relPath, _ := filepath.Rel(outputDir, path)
 		if readErr != nil {
 			if quiet {
 				unreadable++
 				return nil
 			}
-			relPath, _ := filepath.Rel(outputDir, path)
 			printer.StepWarn(fmt.Sprintf("Could not read %s: %v", relPath, readErr))
 			return nil
 		}
-		isJSONL := strings.EqualFold(filepath.Ext(path), ".jsonl") || strings.EqualFold(filepath.Ext(path), ".ndjson")
-		if isJSONL {
-			out, jsonLineFindings, jsonLineDetails, scanErr := sanitizeJSONLines(content, pipeline)
+		ext := strings.ToLower(filepath.Ext(path))
+
+		// JSONL and NDJSON are sanitized record by record so one record never
+		// rewrites another (#5705).
+		if ext == ".jsonl" || ext == ".ndjson" {
+			out, jsonLineFindings, scanErr := security.SanitizeJSONLines(content, pipeline)
 			if scanErr != nil {
-				return fmt.Errorf("could not sanitize JSONL output: %w", scanErr)
+				return fmt.Errorf("could not sanitize JSONL output %s: %w", relPath, scanErr)
 			}
-			if jsonLineFindings > 0 {
-				findingCount += jsonLineFindings
-				for _, f := range jsonLineDetails {
+			if len(jsonLineFindings) > 0 {
+				findingCount += len(jsonLineFindings)
+				for _, f := range jsonLineFindings {
 					if !quiet {
-						printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, filepath.Base(path), f.Detail))
+						printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
 					}
 					security.AppendFinding(findingsPath, security.TracedFinding{
 						TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
 						Phase: "host_output", Finding: f,
 					})
 				}
-				// JSONL record handling is complete above; preserve the writer
-				// error contract and quiet-mode path redaction.
 				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
-					if quiet {
-						return fmt.Errorf("could not write sanitized output file")
-					}
-					return fmt.Errorf("could not write sanitized %s: %w", filepath.Base(path), writeErr)
+					writeErrs = append(writeErrs, writeFailure(quiet, relPath, writeErr, &unwritable))
 				}
 			}
 			return nil
 		}
 
-		relPath, _ := filepath.Rel(outputDir, path)
-
-		ext := strings.ToLower(filepath.Ext(path))
-		isJSONL = ext == ".jsonl" || ext == ".ndjson"
-
-		// If the file is valid JSON (and not JSONL or containing duplicate keys), structurally
-		// sanitize keys and string leaves to guarantee that redaction never breaks JSON syntax
-		// and fails closed (#5705).
-		if !isJSONL && !hasDuplicateJSONKeys(content) {
-			dec := json.NewDecoder(bytes.NewReader(content))
-			dec.UseNumber()
-			var jsonVal any
-			if dec.Decode(&jsonVal) == nil {
-				var trailing any
-				if dec.Decode(&trailing) == io.EOF {
-					sanitizedVal, findings := sanitizeJSONStructure(jsonVal, pipeline)
-					if len(findings) > 0 {
-						findingCount += len(findings)
-						structuralFindings := findings
-						for _, f := range findings {
-							if !quiet {
-								printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
-							}
-							security.AppendFinding(findingsPath,
-								security.TracedFinding{
-									TraceID:   traceID,
-									Timestamp: time.Now().UTC().Format(time.RFC3339),
-									Phase:     "host_output",
-									Finding:   f,
-								})
-						}
-						var buf bytes.Buffer
-						enc := json.NewEncoder(&buf)
-						enc.SetEscapeHTML(false)
-						if bytes.Contains(bytes.TrimRight(content, "\r\n"), []byte("\n")) {
-							enc.SetIndent("", "  ")
-						}
-						if err := enc.Encode(sanitizedVal); err != nil {
-							if !quiet {
-								printer.StepWarn(fmt.Sprintf("Could not marshal sanitized JSON %s: %v; falling back to text scan", relPath, err))
-							}
-							// Fall through to plain text scan below instead of failing open.
-						} else {
-							marshaled := buf.Bytes()
-							// Backstop the serialized output. If text redaction finds
-							// another secret, only accept it when the result remains valid
-							// JSON; otherwise discard the potentially malformed payload.
-							backstop := pipeline.Scan(string(marshaled))
-							if len(backstop.Findings) > 0 {
-								changed := false
-								privateKey := false
-								for _, finding := range backstop.Findings {
-									if finding.Name == "private_key" {
-										privateKey = true
-									}
-								}
-								changed = privateKey || len(structuralFindings) == 0 || backstopHasNewFinding(backstop.Findings, structuralFindings)
-								if changed {
-									findingCount += len(backstop.Findings)
-									for _, f := range backstop.Findings {
-										if !quiet {
-											printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
-										}
-										security.AppendFinding(findingsPath, security.TracedFinding{
-											TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
-											Phase: "host_output", Finding: f,
-										})
-									}
-									if backstop.Sanitized != "" && (privateKey || len(structuralFindings) == 0 || backstopHasNewFinding(backstop.Findings, structuralFindings)) {
-										if privateKey || !json.Valid([]byte(backstop.Sanitized)) {
-											marshaled = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
-										} else {
-											marshaled = []byte(backstop.Sanitized)
-										}
-									}
-								}
-							}
-							if writeErr := writeFile(path, marshaled, 0o644); writeErr != nil {
-								if quiet {
-									return fmt.Errorf("could not write sanitized output file")
-								}
-								if !isJSONL {
-									return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
-								}
-								return fmt.Errorf("could not write sanitized output file: %w", writeErr)
-							}
-							return nil
-						}
-					} else {
-						// Scan encoded JSON for patterns spanning separate leaves. Such a
-						// match cannot be safely applied as raw text, so replace the
-						// whole document with a valid fail-closed marker.
-						var buf bytes.Buffer
-						enc := json.NewEncoder(&buf)
-						enc.SetEscapeHTML(false)
-						if err := enc.Encode(jsonVal); err != nil {
-							return fmt.Errorf("could not encode JSON output for security scan")
-						}
-						backstop := pipeline.Scan(buf.String())
-						hasNewFinding := false
-						privateKey := false
-						for _, f := range backstop.Findings {
-							if f.Name == "private_key" {
-								privateKey = true
-								hasNewFinding = true
-							} else if f.Name == "runtime_secret" {
-								hasNewFinding = true
-							}
-						}
-						if !hasNewFinding {
-							return nil
-						}
-						findingCount += len(backstop.Findings)
-						for _, f := range backstop.Findings {
-							if !quiet {
-								printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
-							}
-							security.AppendFinding(findingsPath, security.TracedFinding{
-								TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
-								Phase: "host_output", Finding: f,
-							})
-						}
-						var finalBytes []byte
-						if privateKey || backstop.Sanitized == "" || !json.Valid([]byte(backstop.Sanitized)) {
-							finalBytes = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
-						} else {
-							finalBytes = []byte(backstop.Sanitized)
-						}
-						if writeErr := writeFile(path, finalBytes, 0o644); writeErr != nil {
-							if quiet {
-								return fmt.Errorf("could not write sanitized output file")
-							}
-							return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
-						}
-						return nil
+		// Structurally sanitize valid JSON so redaction never breaks JSON
+		// syntax and fails closed (#5705). Non-JSON files fall through to the
+		// plain text scan below.
+		if json.Valid(bytes.TrimSpace(content)) {
+			out, jsonFindings, jsonErr := security.SanitizeJSONDocument(content, pipeline)
+			if jsonErr != nil {
+				return fmt.Errorf("could not sanitize JSON output %s: %w", relPath, jsonErr)
+			}
+			if len(jsonFindings) > 0 {
+				findingCount += len(jsonFindings)
+				for _, f := range jsonFindings {
+					if !quiet {
+						printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
 					}
+					security.AppendFinding(findingsPath, security.TracedFinding{
+						TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
+						Phase: "host_output", Finding: f,
+					})
+				}
+				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
+					writeErrs = append(writeErrs, writeFailure(quiet, relPath, writeErr, &unwritable))
 				}
 			}
+			return nil
 		}
 
-		// Non-JSON files or fallback: run plain text pipeline scan.
+		// Non-JSON files: run plain text pipeline scan.
 		text := string(content)
 		result := pipeline.Scan(text)
 		if len(result.Findings) > 0 {
@@ -7314,10 +7202,8 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 			}
 			// Sanitized may be empty when all content was invisible characters.
 			out := result.Sanitized
-			// Duplicate-key JSON and malformed/non-JSON inputs use the raw-text
-			// fallback. If a valid JSON document reaches this path (for example,
-			// because it has duplicate keys), preserve the valid structure rather
-			// than writing a cross-value redaction that creates invalid JSON.
+			// A malformed input that still parses as JSON must not be turned
+			// into invalid JSON by a cross-value text redaction.
 			if json.Valid(content) && !json.Valid([]byte(out)) {
 				if !quiet {
 					printer.StepWarn(fmt.Sprintf("Text redaction would invalidate JSON in %s; replacing output with a redacted JSON marker", relPath))
@@ -7325,10 +7211,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 				out = `{"error":"output removed because text redaction would invalidate JSON"}`
 			}
 			if writeErr := writeFile(path, []byte(out), 0o644); writeErr != nil {
-				if quiet {
-					return fmt.Errorf("could not write sanitized output file")
-				}
-				return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
+				writeErrs = append(writeErrs, writeFailure(quiet, relPath, writeErr, &unwritable))
 			}
 		}
 		return nil
@@ -7348,317 +7231,21 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 	} else {
 		printer.StepDone("Output files clean — no issues found")
 	}
+	if err := errors.Join(writeErrs...); err != nil {
+		return err
+	}
 	return nil
 }
 
-type jsonContainerFrame struct {
-	isObject     bool
-	expectingKey bool
-	keys         map[string]bool
-}
-
-func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int, []security.Finding, error) {
-	var out bytes.Buffer
-	findings := 0
-	var allFindings []security.Finding
-	// Keep a whole-stream pass for multiline patterns such as PEM private keys
-	// that can span otherwise-valid JSONL records. We only use it as a detector:
-	// raw replacement would consume JSON framing, so matching streams are
-	// replaced record-by-record with valid fail-closed JSON markers.
-	streamScan := pipeline.Scan(string(content))
-	streamHasPrivateKey := false
-	for _, finding := range streamScan.Findings {
-		streamHasPrivateKey = streamHasPrivateKey || finding.Name == "private_key"
+// writeFailure records a sanitized-output write error. At the quiet progress
+// level the path is withheld because it can carry an agent-chosen name
+// (ADR 0163); non-quiet callers name it.
+func writeFailure(quiet bool, relPath string, writeErr error, unwritable *int) error {
+	*unwritable++
+	if quiet {
+		return fmt.Errorf("could not write sanitized output file")
 	}
-	for len(content) > 0 {
-		line := content
-		newline := bytes.IndexByte(content, '\n')
-		hasNewline := newline >= 0
-		if hasNewline {
-			line = content[:newline]
-			content = content[newline+1:]
-		} else {
-			content = nil
-		}
-		trimmed := bytes.TrimSpace(line)
-		if len(trimmed) > 0 {
-			if streamHasPrivateKey {
-				line = []byte(`{"error":"output removed because output contained a cross-record private key"}`)
-				if len(allFindings) == 0 {
-					findings += len(streamScan.Findings)
-					allFindings = append(allFindings, streamScan.Findings...)
-				}
-			} else if !json.Valid(trimmed) {
-				result := pipeline.Scan(string(line))
-				if len(result.Findings) > 0 {
-					findings += len(result.Findings)
-					allFindings = append(allFindings, result.Findings...)
-					line = []byte(result.Sanitized)
-				}
-			} else {
-				var value any
-				dec := json.NewDecoder(bytes.NewReader(trimmed))
-				dec.UseNumber()
-				if err := dec.Decode(&value); err != nil {
-					return nil, findings, allFindings, err
-				}
-				sanitized, fs := sanitizeJSONStructure(value, pipeline)
-				findings += len(fs)
-				allFindings = append(allFindings, fs...)
-				if hasDuplicateJSONKeys(trimmed) {
-					result := pipeline.Scan(string(line))
-					if len(fs) > 0 {
-						line = []byte(`{"error":"output removed because structural findings cannot be safely applied to duplicate-key JSON"}`)
-					} else if len(result.Findings) > 0 {
-						findings += len(result.Findings)
-						allFindings = append(allFindings, result.Findings...)
-						if result.Sanitized != "" {
-							line = []byte(result.Sanitized)
-							if !json.Valid(line) {
-								line = []byte(`{"error":"output removed because text redaction would invalidate JSON"}`)
-							}
-						}
-					}
-				} else {
-					needsRewrite := len(fs) > 0
-					if !needsRewrite {
-						var encodedOriginal bytes.Buffer
-						enc := json.NewEncoder(&encodedOriginal)
-						enc.SetEscapeHTML(false)
-						if err := enc.Encode(value); err != nil {
-							return nil, findings, allFindings, err
-						}
-						encodedBytes := bytes.TrimSuffix(encodedOriginal.Bytes(), []byte("\n"))
-						originalBackstop := pipeline.Scan(string(encodedBytes))
-						hasNewFinding := false
-						privateKey := false
-						for _, f := range originalBackstop.Findings {
-							if f.Name == "private_key" {
-								privateKey = true
-								hasNewFinding = true
-							} else if f.Name == "runtime_secret" {
-								hasNewFinding = true
-							}
-						}
-						if hasNewFinding {
-							findings += len(originalBackstop.Findings)
-							allFindings = append(allFindings, originalBackstop.Findings...)
-							if privateKey || originalBackstop.Sanitized == "" || !json.Valid([]byte(originalBackstop.Sanitized)) {
-								line = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
-							} else {
-								line = bytes.TrimSuffix([]byte(originalBackstop.Sanitized), []byte("\n"))
-							}
-						}
-					}
-					if needsRewrite {
-						var encoded bytes.Buffer
-						enc := json.NewEncoder(&encoded)
-						enc.SetEscapeHTML(false)
-						if err := enc.Encode(sanitized); err != nil {
-							return nil, findings, allFindings, err
-						}
-						line = bytes.TrimSuffix(encoded.Bytes(), []byte("\n"))
-						backstop := pipeline.Scan(string(line))
-						if len(backstop.Findings) > 0 {
-							findings += len(backstop.Findings)
-							allFindings = append(allFindings, backstop.Findings...)
-							privateKey := false
-							for _, finding := range backstop.Findings {
-								privateKey = privateKey || finding.Name == "private_key"
-							}
-							if privateKey || !json.Valid([]byte(backstop.Sanitized)) {
-								line = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
-							} else {
-								line = []byte(backstop.Sanitized)
-							}
-						}
-					}
-				}
-			}
-		}
-		out.Write(line)
-		if hasNewline {
-			out.WriteByte('\n')
-		}
-	}
-	return out.Bytes(), findings, allFindings, nil
-}
-
-func backstopHasNewFinding(backstop, structural []security.Finding) bool {
-	counts := make(map[string]int, len(structural))
-	for _, finding := range structural {
-		counts[finding.Name]++
-	}
-	for _, finding := range backstop {
-		if counts[finding.Name] == 0 {
-			return true
-		}
-		counts[finding.Name]--
-	}
-	return false
-}
-
-// hasDuplicateJSONKeys parses content token by token and returns true if any
-// JSON object within the payload contains duplicate keys.
-func hasDuplicateJSONKeys(content []byte) bool {
-	dec := json.NewDecoder(bytes.NewReader(content))
-	dec.UseNumber()
-	var stack []*jsonContainerFrame
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			return false
-		}
-		switch t := tok.(type) {
-		case json.Delim:
-			switch t {
-			case '{':
-				stack = append(stack, &jsonContainerFrame{
-					isObject:     true,
-					expectingKey: true,
-					keys:         make(map[string]bool),
-				})
-			case '[':
-				stack = append(stack, &jsonContainerFrame{
-					isObject: false,
-				})
-			case '}', ']':
-				if len(stack) > 0 {
-					stack = stack[:len(stack)-1]
-				}
-				if len(stack) > 0 && stack[len(stack)-1].isObject {
-					stack[len(stack)-1].expectingKey = true
-				}
-			}
-		case string:
-			if len(stack) > 0 && stack[len(stack)-1].isObject {
-				top := stack[len(stack)-1]
-				if top.expectingKey {
-					if top.keys[t] {
-						return true
-					}
-					top.keys[t] = true
-					top.expectingKey = false
-				} else {
-					top.expectingKey = true
-				}
-			}
-		default:
-			if len(stack) > 0 && stack[len(stack)-1].isObject {
-				stack[len(stack)-1].expectingKey = true
-			}
-		}
-	}
-}
-
-var sensitiveJSONKeyRegex = regexp.MustCompile(`(?i)(?:key|token|secret|password|credential|auth)`)
-
-// sanitizeJSONStructure recursively visits all keys and string values in parsed JSON data,
-// scans each key and string leaf using the pipeline, and collects any findings.
-func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.Finding) {
-	var findings []security.Finding
-	switch val := v.(type) {
-	case string:
-		res := pipeline.Scan(val)
-		if len(res.Findings) > 0 {
-			findings = append(findings, res.Findings...)
-			if res.Sanitized != "" {
-				return res.Sanitized, findings
-			}
-			return "", findings
-		}
-		return val, nil
-	case map[string]any:
-		newMap := make(map[string]any, len(val))
-		keys := make([]string, 0, len(val))
-		for k := range val {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		// Reserve clean original names before assigning sanitized names so a
-		// secret key can never steal a legitimate key's name/value slot.
-		for _, k := range keys {
-			if keyRes := pipeline.Scan(k); len(keyRes.Findings) == 0 {
-				newMap[k] = nil
-			}
-		}
-		for _, k := range keys {
-			item := val[k]
-			sanitizedKey := k
-			keyRes := pipeline.Scan(k)
-			keyNeedsSanitization := len(keyRes.Findings) > 0
-			if len(keyRes.Findings) > 0 {
-				findings = append(findings, keyRes.Findings...)
-				if keyRes.Sanitized != "" {
-					sanitizedKey = keyRes.Sanitized
-				}
-			}
-			targetKey := sanitizedKey
-			if !keyNeedsSanitization {
-				targetKey = k
-			}
-			if _, exists := newMap[targetKey]; exists && keyNeedsSanitization {
-				for i := 1; ; i++ {
-					cand := fmt.Sprintf("%s_%d", sanitizedKey, i)
-					if _, exists := newMap[cand]; !exists {
-						targetKey = cand
-						break
-					}
-				}
-			}
-			if strVal, ok := item.(string); ok {
-				valRes := pipeline.Scan(strVal)
-				if len(valRes.Findings) > 0 {
-					findings = append(findings, valRes.Findings...)
-					strVal = valRes.Sanitized
-				}
-				if sensitiveJSONKeyRegex.MatchString(sanitizedKey) && len(strVal) >= 8 && !isAlreadyMasked(strVal) {
-					masked := security.Mask(strVal)
-					findings = append(findings, security.Finding{
-						Scanner:  "secret_redactor",
-						Name:     "json_field",
-						Severity: "high",
-						Detail:   fmt.Sprintf("Redacted json_field (%d chars) -> %s", len(strVal), masked),
-					})
-					strVal = masked
-				}
-				newMap[targetKey] = strVal
-				continue
-			}
-			newVal, f := sanitizeJSONStructure(item, pipeline)
-			if len(f) > 0 {
-				findings = append(findings, f...)
-			}
-			newMap[targetKey] = newVal
-		}
-		return newMap, findings
-	case []any:
-		newSlice := make([]any, len(val))
-		for i, item := range val {
-			newVal, f := sanitizeJSONStructure(item, pipeline)
-			if len(f) > 0 {
-				findings = append(findings, f...)
-			}
-			newSlice[i] = newVal
-		}
-		return newSlice, findings
-	case json.Number:
-		res := pipeline.Scan(val.String())
-		if len(res.Findings) > 0 {
-			findings = append(findings, res.Findings...)
-			if res.Sanitized != "" {
-				return res.Sanitized, findings
-			}
-			return "", findings
-		}
-		return val, nil
-	default:
-		return val, nil
-	}
-}
-
-func isAlreadyMasked(value string) bool {
-	return value == "***" || strings.HasSuffix(value, "...") && len(value) == 7
+	return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 }
 
 // injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.
