@@ -25,6 +25,9 @@ inputs:
   add_to_path:
     description: Add the install directory to PATH for subsequent steps.
     default: 'true'
+  source_dir:
+    description: Directory used for an upstream source checkout and build.
+    default: ${{ runner.temp }}/fullsend-src
 
 outputs:
   fullsend-path:
@@ -34,25 +37,43 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Validate install inputs
+      shell: bash
+      env:
+        INSTALL_DIR: ${{ inputs.install_dir }}
+        ADD_TO_PATH: ${{ inputs.add_to_path }}
+      run: |
+        set -euo pipefail
+        if [[ "${ADD_TO_PATH}" != "true" && "${ADD_TO_PATH}" != "false" ]]; then
+          echo "add_to_path must be true or false" >&2
+          exit 1
+        fi
+        if [[ "${INSTALL_DIR}" == *$'\n'* || "${INSTALL_DIR}" == *$'\r'* ]]; then
+          echo "install_dir must not contain newlines" >&2
+          exit 1
+        fi
+
     - name: Install vendored binary
       id: install-vendored
       if: inputs.mode == 'vendored'
       shell: bash
       env:
         VENDORED: ${{ inputs.vendored_path }}
+        INSTALL_DIR: ${{ inputs.install_dir }}
+        ADD_TO_PATH: ${{ inputs.add_to_path }}
       run: |
         set -euo pipefail
         if [[ ! -f "${VENDORED}" ]]; then
           echo "vendored binary not found" >&2
           exit 1
         fi
-        mkdir -p "${{ inputs.install_dir }}"
-        cp "${VENDORED}" "${{ inputs.install_dir }}/fullsend"
-        chmod +x "${{ inputs.install_dir }}/fullsend"
-        if [[ "${{ inputs.add_to_path }}" == "true" ]]; then
-          echo "${{ inputs.install_dir }}" >> "${GITHUB_PATH}"
+        mkdir -p "${INSTALL_DIR}"
+        cp "${VENDORED}" "${INSTALL_DIR}/fullsend"
+        chmod +x "${INSTALL_DIR}/fullsend"
+        if [[ "${ADD_TO_PATH}" == "true" ]]; then
+          echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
         fi
-        echo "fullsend-path=${{ inputs.install_dir }}/fullsend" >> "${GITHUB_OUTPUT}"
+        echo "fullsend-path=${INSTALL_DIR}/fullsend" >> "${GITHUB_OUTPUT}"
 
     - name: Resolve SHA to release tag
       id: resolve-tag
@@ -134,6 +155,8 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
         RUNNER_OS: ${{ runner.os }}
         RUNNER_ARCH: ${{ runner.arch }}
+        INSTALL_DIR: ${{ inputs.install_dir }}
+        ADD_TO_PATH: ${{ inputs.add_to_path }}
       run: |
         set -euo pipefail
         retry() {
@@ -163,16 +186,16 @@ runs:
         esac
 
         ASSET="fullsend_${VERSION}_${os}_${arch}.tar.gz"
-        mkdir -p "${{ inputs.install_dir }}"
+        mkdir -p "${INSTALL_DIR}"
         echo "Downloading ${ASSET} from release ${TAG}"
-        retry gh release download "${TAG}" -R "${WORKFLOW_REPOSITORY}" -p "${ASSET}" -D "${{ inputs.install_dir }}" --clobber
-        tar -xzf "${{ inputs.install_dir }}/${ASSET}" -C "${{ inputs.install_dir }}"
-        rm -f "${{ inputs.install_dir }}/${ASSET}"
-        chmod +x "${{ inputs.install_dir }}/fullsend"
-        if [[ "${{ inputs.add_to_path }}" == "true" ]]; then
-          echo "${{ inputs.install_dir }}" >> "${GITHUB_PATH}"
+        retry gh release download "${TAG}" -R "${WORKFLOW_REPOSITORY}" -p "${ASSET}" -D "${INSTALL_DIR}" --clobber
+        tar -xzf "${INSTALL_DIR}/${ASSET}" -C "${INSTALL_DIR}"
+        rm -f "${INSTALL_DIR}/${ASSET}"
+        chmod +x "${INSTALL_DIR}/fullsend"
+        if [[ "${ADD_TO_PATH}" == "true" ]]; then
+          echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
         fi
-        echo "fullsend-path=${{ inputs.install_dir }}/fullsend" >> "${GITHUB_OUTPUT}"
+        echo "fullsend-path=${INSTALL_DIR}/fullsend" >> "${GITHUB_OUTPUT}"
 
     - name: Clone fullsend at workflow SHA for source build
       if: inputs.mode == 'upstream' && (steps.resolve-tag.outputs.tag == '' || steps.install-release.outcome == 'failure')
@@ -182,13 +205,14 @@ runs:
         WORKFLOW_SHA: ${{ inputs.workflow_sha }}
         GH_TOKEN: ${{ inputs.github_token }}
         INSTALL_RELEASE_OUTCOME: ${{ steps.install-release.outcome }}
+        SOURCE_DIR: ${{ inputs.source_dir }}
       run: |
         set -euo pipefail
         if [[ "${INSTALL_RELEASE_OUTCOME}" == "failure" ]]; then
           echo "::warning::Release download failed; falling back to source build"
         fi
         echo "::add-mask::${GH_TOKEN}"
-        SRC="${RUNNER_TEMP}/fullsend-src"
+        SRC="${SOURCE_DIR}"
         REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${WORKFLOW_REPOSITORY}.git"
         echo "Cloning ${WORKFLOW_REPOSITORY} at ref: ${WORKFLOW_SHA}"
         git init "${SRC}"
@@ -206,26 +230,32 @@ runs:
       if: inputs.mode == 'upstream' && (steps.resolve-tag.outputs.tag == '' || steps.install-release.outcome == 'failure')
       uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
-        go-version-file: ${{ runner.temp }}/fullsend-src/go.mod
-        cache-dependency-path: ${{ runner.temp }}/fullsend-src/go.sum
+        go-version-file: ${{ inputs.source_dir }}/go.mod
+        cache-dependency-path: ${{ inputs.source_dir }}/go.sum
 
     - name: Build fullsend from source
       id: install-upstream
       if: inputs.mode == 'upstream' && (steps.resolve-tag.outputs.tag == '' || steps.install-release.outcome == 'failure')
       shell: bash
+      env:
+        INSTALL_DIR: ${{ inputs.install_dir }}
+        ADD_TO_PATH: ${{ inputs.add_to_path }}
+        SOURCE_DIR: ${{ inputs.source_dir }}
       run: |
         set -euo pipefail
-        mkdir -p "${{ inputs.install_dir }}"
-        cd "${RUNNER_TEMP}/fullsend-src"
+        mkdir -p "${INSTALL_DIR}"
+        cd "${SOURCE_DIR}"
         make go-build
-        cp bin/fullsend "${{ inputs.install_dir }}/fullsend"
-        chmod +x "${{ inputs.install_dir }}/fullsend"
-        if [[ "${{ inputs.add_to_path }}" == "true" ]]; then
-          echo "${{ inputs.install_dir }}" >> "${GITHUB_PATH}"
+        cp bin/fullsend "${INSTALL_DIR}/fullsend"
+        chmod +x "${INSTALL_DIR}/fullsend"
+        if [[ "${ADD_TO_PATH}" == "true" ]]; then
+          echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
         fi
-        echo "fullsend-path=${{ inputs.install_dir }}/fullsend" >> "${GITHUB_OUTPUT}"
+        echo "fullsend-path=${INSTALL_DIR}/fullsend" >> "${GITHUB_OUTPUT}"
 
     - name: Print fullsend version
       shell: bash
+      env:
+        INSTALL_DIR: ${{ inputs.install_dir }}
       run: |
-        "${{ inputs.install_dir }}/fullsend" --version
+        "${INSTALL_DIR}/fullsend" --version

@@ -623,6 +623,7 @@ jobs:
           mode: upstream
           install_dir: ${{ runner.temp }}/fullsend-review-dedup
           add_to_path: 'false'
+          source_dir: ${{ runner.temp }}/fullsend-review-dedup-src
           workflow_repository: ${{ job.workflow_repository }}
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
@@ -1891,6 +1892,7 @@ jobs:
           mode: upstream
           install_dir: ${{ runner.temp }}/fullsend-review-dedup
           add_to_path: 'false'
+          source_dir: ${{ runner.temp }}/fullsend-review-dedup-src
           workflow_repository: ${{ job.workflow_repository }}
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
