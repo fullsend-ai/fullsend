@@ -137,7 +137,12 @@ func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, upda
 		return err
 	}
 
-	result, err := lockOneAgent(ctx, agentName, fullsendDir, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
+	// --update re-resolves each URL once per invocation: the set of index
+	// keys already re-resolved is shared across every agent and forge
+	// platform this invocation composes.
+	resolvedKeys := make(map[string]bool)
+
+	result, err := lockOneAgent(ctx, agentName, fullsendDir, absFullsendDir, forgeFlag, update, lf, rFlags, resolvedKeys, printer)
 	if err != nil {
 		return err
 	}
@@ -206,7 +211,7 @@ func loadLockConfig(path string) (config.ConfigWriter, error) {
 // lockOneAgent resolves dependencies for a single harness and returns the
 // lock entry without writing to disk. Returns nil (no error) when the harness
 // has no remote dependencies or the lock entry is already up to date.
-func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, forgeFlag string, update bool, lf *lock.LockFile, rFlags resolveFlags, printer *ui.Printer) (*lockResult, error) {
+func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, forgeFlag string, update bool, lf *lock.LockFile, rFlags resolveFlags, resolvedKeys map[string]bool, printer *ui.Printer) (*lockResult, error) {
 	// Load org config early — needed for config-driven agent resolution
 	// fallback and later for allowlist validation.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
@@ -319,12 +324,16 @@ func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, f
 	}
 
 	// --update re-resolves each URL from its source once per invocation,
-	// not once per forge platform: the set of index keys already
-	// re-resolved is shared across the loop's LoadWithBase passes, so a
-	// later platform takes the index entry the first pass wrote instead of
-	// re-fetching every shared URL (and re-hitting the rate-limited tree
-	// fetcher) once per platform.
-	resolvedKeys := make(map[string]bool)
+	// not once per forge platform or once per agent: the set of index keys
+	// already re-resolved is created by the caller (runLock or runLockAll)
+	// and shared across every LoadWithBase pass of the invocation, so a
+	// later platform — and, under --all, a later agent — takes the index
+	// entry the first pass wrote instead of re-fetching every shared URL
+	// (and re-hitting the rate-limited tree fetcher) once per platform or
+	// per agent.
+	if resolvedKeys == nil {
+		resolvedKeys = make(map[string]bool)
+	}
 
 	for _, platform := range forgePlatforms {
 		h, baseDeps, loadErr := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
@@ -605,11 +614,17 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 	var locked []string
 	var upToDate int
 	var pruned []string
+
+	// --update re-resolves each URL once per invocation, shared across
+	// every agent: agents that share a base take the index entries the
+	// first agent's compose passes wrote instead of re-fetching them.
+	resolvedKeys := make(map[string]bool)
+
 	for _, name := range agentNames {
 		printer.Header("Locking dependencies: " + name)
 		printer.Blank()
 
-		result, lockErr := lockOneAgent(ctx, name, fullsendDir, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
+		result, lockErr := lockOneAgent(ctx, name, fullsendDir, absFullsendDir, forgeFlag, update, lf, rFlags, resolvedKeys, printer)
 		if lockErr != nil {
 			if len(locked) > 0 {
 				printer.StepStart("Writing partial lock file (preserving progress)")
