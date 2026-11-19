@@ -1896,8 +1896,9 @@ type CommentActor struct {
 }
 
 // IssueOrPullRequestNode is the GraphQL type ("Issue" or "PullRequest") and
-// node ID of an issue or pull request, as IssueOrPullRequestNodeID reports
-// them.
+// node ID of an issue or pull request: the value type the fake records for
+// IssueOrPullRequestNodeID lookups. The interface method itself returns the
+// typename and node ID as strings.
 type IssueOrPullRequestNode struct {
 	Typename string
 	NodeID   string

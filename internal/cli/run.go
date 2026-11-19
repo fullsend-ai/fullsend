@@ -3837,7 +3837,18 @@ func inheritedScriptEnv() []string {
 // env.sandbox, host_files, validation_loop.schema) and stripped from
 // pre/post/validation child environments.
 func harnessExpansionDenied(key string) bool {
-	return oidcDenyKeys[key] || providerOnlyKeys[key]
+	return oidcDenyKeys[key] || providerOnlyKeys[key] || isBotRoleHelperSecretKey(key)
+}
+
+// isBotRoleHelperSecretKey reports whether key is the bot-role helper's
+// runner-owned address or credential (#9602). The pair is refused at every
+// harness-controlled expansion site, not only the sandbox-bound ones: a
+// pre- or post-script that starts a nested `fullsend run` leaves the outer
+// helper URL and token in the nested process's environment, and without
+// this refusal the nested harness could copy the outer token into its own
+// env.runner or runner_env entry under a different name.
+func isBotRoleHelperSecretKey(key string) bool {
+	return key == "FULLSEND_BOT_ROLE_URL" || key == "FULLSEND_BOT_ROLE_TOKEN"
 }
 
 // harnessEnvExpand is the expander used for harness YAML ${VAR} sites.
@@ -3852,9 +3863,11 @@ func harnessEnvExpand(key string) string {
 // but no sandbox-bound site (env.sandbox values, expanded host_files content)
 // may expand: the Jira repository secrets the
 // composite action passes to the fullsend run step (#9079), and the
-// bot-role helper's runner-owned pair (#9602). They stay out of
+// bot-role helper's runner-owned pair (#9602). The Jira secrets stay out of
 // harnessExpansionDenied because that map also gates env.runner, where a
-// harness declares them on purpose.
+// harness declares them on purpose; the bot-role pair is denied there too
+// (isBotRoleHelperSecretKey), so a nested run's env.runner entry cannot
+// copy an outer helper token under a different name.
 //
 // The standalone runner secrets that ADR 0155 lets a Vault connection
 // supply (JIRA_TOKEN and the OTLP header variables) are listed too, so a

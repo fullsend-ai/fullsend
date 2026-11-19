@@ -168,10 +168,10 @@ func writeBotRoleJSON(w http.ResponseWriter, status int, resp botidentity.MintBo
 // startBotRoleHelperService starts the loopback bot-role helper service for
 // one run, answering for comments on entity through comments (nil when the
 // run has no trusted comment lookup). It returns the helper's env (its URL,
-// bearer token and entity), a shutdown function, and any error. Unlike the runtime fetch service, which
-// the sandbox container must reach and therefore binds all interfaces
-// (ADR-0046), the consumers here are host-side scripts, so the listener is
-// loopback-only.
+// bearer token and entity), a shutdown function, and any error. Unlike the
+// runtime fetch service, which the sandbox container must reach and
+// therefore binds all interfaces (ADR-0046), the consumers here are
+// host-side scripts, so the listener is loopback-only.
 func startBotRoleHelperService(resolver botidentity.BotRoleResolver, target, entity string, comments commentActorLookup) (botRoleHelperEnv, func(), error) {
 	token, err := generateToken()
 	if err != nil {
