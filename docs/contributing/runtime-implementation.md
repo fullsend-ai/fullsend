@@ -623,10 +623,14 @@ duplicate keys, so an earlier value that map decoding would drop is still
 scanned, and a secret spanning JSON framing stays visible in the rewritten
 bytes. A sanitized key that would collide with a different member is
 disambiguated (`<key>_<N>`). The bytes actually written are scanned as well, so
-a secret that only exists in the serialized form is still caught.
+a secret that only exists in the serialized form is still caught, and a
+private-key block spanning members is detected in the original framing before
+masking a member value can hide its BEGIN marker.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
-rewriting that framing, so only the records it covers are replaced.
+rewriting that framing, so only the records it covers are replaced. When those
+records cannot be identified unambiguously — their contents also appear
+elsewhere in the stream — every record fails closed.
 
 Some content cannot be redacted in place. A JSON document or JSONL record is
 replaced with a valid fail-closed marker instead — never with corrupted

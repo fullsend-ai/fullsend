@@ -52,6 +52,19 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	out := doc
 	if len(findings) > 0 {
 		out = rebuilt
+		// Masking a member value can hide a private-key block that spans
+		// members: a sensitive member name masks the BEGIN marker, leaving the
+		// key body and END marker behind in a form the rewritten scan can no
+		// longer recognize. Detect the block in the original framing first.
+		if bytes.Contains(trimmed, []byte("BEGIN")) && len(privateKeyFindings(findings)) == 0 && privateKeyRe.Match(trimmed) {
+			return preserveTrailingNewline([]byte(failClosedInvalidJSON), doc),
+				append(findings, Finding{
+					Scanner:  "secret_redactor",
+					Name:     "private_key",
+					Severity: "critical",
+					Detail:   "Private key block spans JSON framing and cannot be localized; output removed",
+				}), nil
+		}
 	}
 	// Scan the bytes that will actually be written. The walk above already
 	// scanned every decoded key and leaf, so a match here spans JSON framing
@@ -59,6 +72,29 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	// to a single leaf.
 	sanitizedOut, outputFindings := redactJSONOutput(out, p)
 	return preserveTrailingNewline(sanitizedOut, doc), append(findings, outputFindings...), nil
+}
+
+// privateKeyRe is the structural private-key pattern. A block that spans JSON
+// framing has to be detected on the raw document: running the whole pipeline
+// first lets a sensitive-named member mask the BEGIN marker and hide it.
+var privateKeyRe = func() *regexp.Regexp {
+	for _, pattern := range defaultStructuralPatterns() {
+		if pattern.name == "private_key" {
+			return pattern.regex
+		}
+	}
+	panic("private_key structural pattern is missing")
+}()
+
+// privateKeyFindings returns the private-key findings in findings.
+func privateKeyFindings(findings []Finding) []Finding {
+	var pk []Finding
+	for _, finding := range findings {
+		if finding.Name == "private_key" {
+			pk = append(pk, finding)
+		}
+	}
+	return pk
 }
 
 // preserveTrailingNewline drops the newline json.Encoder always appends and
@@ -183,18 +219,33 @@ type recordSpan struct {
 // the clean records between them.
 //
 // The per-record pass has already handled every match a single record could
-// account for, so a remaining match spans a record boundary. Redaction masks
-// every occurrence of a match, so a record that still appears byte-for-byte in
-// the sanitized stream cannot carry one of the secrets just removed.
+// account for, so a remaining match spans a record boundary. Locating the
+// records it covers means finding each record's bytes again in the redacted
+// stream, which is only trustworthy when every record is distinct: with a
+// repeated record, a later untouched copy can stand in for the copy a match
+// covered, and the original bytes — carrying part of the secret — would be
+// written back. When that happens the whole stream fails closed.
 func failClosedRecordSpans(stream []byte, spans []recordSpan, scan ScanResult) []byte {
 	sanitized := []byte(scan.Sanitized)
+
+	seen := make(map[string]struct{}, len(spans))
+	for _, span := range spans {
+		record := string(stream[span.start:span.end])
+		if _, ok := seen[record]; ok {
+			return replaceRecordSpans(stream, spans)
+		}
+		seen[record] = struct{}{}
+	}
 
 	var out bytes.Buffer
 	cursor := 0
 	searchFrom := 0
 	for _, span := range spans {
 		record := stream[span.start:span.end]
-		if idx := bytes.Index(sanitized[searchFrom:], record); idx >= 0 {
+		idx := bytes.Index(sanitized[searchFrom:], record)
+		// A surviving copy must be a whole record, not a substring of a longer
+		// record that happens to contain the same bytes.
+		if idx >= 0 && lineBounded(sanitized, searchFrom+idx, searchFrom+idx+len(record)) {
 			searchFrom += idx + len(record)
 			out.Write(stream[cursor:span.end])
 			cursor = span.end
@@ -209,6 +260,36 @@ func failClosedRecordSpans(stream []byte, spans []recordSpan, scan ScanResult) [
 	}
 	out.Write(stream[cursor:])
 	return out.Bytes()
+}
+
+// replaceRecordSpans replaces every record with a valid marker when the
+// records a match covers cannot be identified unambiguously.
+func replaceRecordSpans(stream []byte, spans []recordSpan) []byte {
+	var out bytes.Buffer
+	cursor := 0
+	for _, span := range spans {
+		out.Write(stream[cursor:span.start])
+		out.WriteString(failClosedCrossRecordJSON)
+		cursor = span.end
+	}
+	out.Write(stream[cursor:])
+	return out.Bytes()
+}
+
+// lineBounded reports whether data[start:end] is a whole newline-delimited
+// line.
+func lineBounded(data []byte, start, end int) bool {
+	if start > 0 && data[start-1] != '\n' {
+		return false
+	}
+	switch {
+	case end == len(data), data[end] == '\n':
+		return true
+	case data[end] == '\r':
+		return end+1 < len(data) && data[end+1] == '\n'
+	default:
+		return false
+	}
 }
 
 // rewriteJSONTokens walks every token in doc, sanitizes each object key and
