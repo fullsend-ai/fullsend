@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,15 +19,17 @@ import (
 )
 
 // fakeCommentActors answers CommentActor from a fixed map, recording each
-// comment asked about.
+// comment asked about and the context each lookup ran under.
 type fakeCommentActors struct {
-	actors map[string]commentActor
-	err    error
-	asked  []string
+	actors   map[string]commentActor
+	err      error
+	asked    []string
+	contexts []context.Context
 }
 
-func (f *fakeCommentActors) CommentActor(_ context.Context, commentID string) (commentActor, error) {
+func (f *fakeCommentActors) CommentActor(ctx context.Context, commentID string) (commentActor, error) {
 	f.asked = append(f.asked, commentID)
+	f.contexts = append(f.contexts, ctx)
 	if f.err != nil {
 		return commentActor{}, f.err
 	}
@@ -133,6 +136,51 @@ func TestBotRoleHelper_OtherEntityRefused(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, code)
 		assert.Empty(t, resp.Outcome)
 		assert.Empty(t, resolver.queries, "a comment on another entity must not be answered")
+	})
+
+	t.Run("request names a legacy-format entity ID", func(t *testing.T) {
+		resolver := &fakeBotRoleResolver{role: "triage"}
+		h, comments := newCommentHelper(resolver, map[string]commentActor{
+			testCommentID: {Entity: testEntityID, Bot: true, Login: "fullsend-ai-triage[bot]"},
+		})
+		// A REST or webhook node_id producer still emits the legacy format
+		// for older objects; entity IDs are compared as the recorded
+		// strings, so the mismatch must be refused, never answered.
+		legacy := "fullsend:entity:v1:github:github.com:work_item:MDExOlB1bGxSZXF1ZXN0MTA5OTU5NDE="
+		code, resp := askHelper(t, h, commentRequest(legacy, testCommentID))
+		assert.Equal(t, http.StatusBadRequest, code)
+		assert.Empty(t, resp.Outcome)
+		assert.Empty(t, comments.asked, "a legacy-format entity ID must not reach the forge")
+		assert.Empty(t, resolver.queries)
+	})
+}
+
+// Each GitHub comment lookup runs under githubGraphQLTimeout, like the
+// run-start entity call, so a slow lookup cannot outlive the bounds the
+// WriteTimeout and botRoleCmdTimeout comments count.
+func TestBotRoleHelper_GitHubLookupBounded(t *testing.T) {
+	t.Run("lookup context carries the GitHub timeout", func(t *testing.T) {
+		resolver := &fakeBotRoleResolver{role: "triage"}
+		h, comments := newCommentHelper(resolver, map[string]commentActor{
+			testCommentID: {Entity: testEntityID, Bot: true, Login: "fullsend-ai-triage[bot]"},
+		})
+		code, resp := askHelper(t, h, commentRequest(testEntityID, testCommentID))
+		require.Equal(t, http.StatusOK, code)
+		assert.Equal(t, botidentity.MintOutcomeRecognized, resp.Outcome)
+		require.Len(t, comments.contexts, 1)
+		deadline, ok := comments.contexts[0].Deadline()
+		require.True(t, ok, "the comment lookup must run under a deadline")
+		assert.WithinDuration(t, time.Now().Add(githubGraphQLTimeout), deadline, 5*time.Second,
+			"the comment lookup deadline must be githubGraphQLTimeout out")
+	})
+
+	t.Run("deadline exceeded answers the fixed failure", func(t *testing.T) {
+		comments := &fakeCommentActors{err: context.DeadlineExceeded}
+		h := &botRoleHelper{resolver: &fakeBotRoleResolver{role: "triage"}, target: "fullsend-ai/agents", entity: testEntityID, comments: comments}
+		code, resp := askHelper(t, h, commentRequest(testEntityID, testCommentID))
+		assert.Equal(t, http.StatusBadGateway, code)
+		assert.Empty(t, resp.Outcome)
+		assert.NotContains(t, resp.Error, "deadline", "context detail must stay runner-side")
 	})
 }
 
