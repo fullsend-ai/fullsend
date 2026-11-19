@@ -3841,11 +3841,14 @@ func convergeRepoCredentials(ctx context.Context, d convergeDiscovery, wifProvid
 // scaffold files already queued. A repair for a pin-only ref path (see
 // collectConvergeScaffoldFiles) replaces that queued file in place, so one
 // run delivers both the new pin and any template change shipped with it,
-// such as a changed shim trigger (#9714). A shim repair rendered at the
-// other workflow extension (.yml vs .yaml) replaces the queued shim at its
-// installed path instead of adding a second shim. Other repairs are
-// appended.
-func supersedePinOnlyRefFiles(files, driftFiles []forge.TreeFile, pinOnly map[string]bool, workflowPaths []string) []forge.TreeFile {
+// such as a changed shim trigger (#9714). The replacement keeps the pin the
+// ref upgrade wrote (withQueuedPin), so the repository's pinning style
+// (SHA with tag comment, plain tag or branch) does not change. A shim
+// repair rendered at the other workflow extension (.yml vs .yaml) replaces
+// the queued shim at its installed path instead of adding a second shim.
+// Other repairs are appended.
+func supersedePinOnlyRefFiles(files, driftFiles []forge.TreeFile, pinOnly map[string]bool, fc ForgeConfig) []forge.TreeFile {
+	workflowPaths := fc.WorkflowPaths
 	for _, df := range driftFiles {
 		idx := slices.IndexFunc(files, func(f forge.TreeFile) bool {
 			if !pinOnly[f.Path] {
@@ -3858,9 +3861,26 @@ func supersedePinOnlyRefFiles(files, driftFiles []forge.TreeFile, pinOnly map[st
 			files = append(files, df)
 			continue
 		}
-		files[idx].Content = df.Content
+		files[idx].Content = withQueuedPin(df.Content, files[idx].Content, fc)
 	}
 	return files
+}
+
+// withQueuedPin returns full with every fullsend workflow pin replaced by
+// the pin in queued, the pin-only rewrite convergeRefFiles produced. The
+// content-drift template always renders a semver target as "<sha>  # tag",
+// while the ref upgrade keeps a repository's own style (a plain tag stays
+// a plain tag). When queued has no pin, full is returned unchanged.
+func withQueuedPin(full, queued []byte, fc ForgeConfig) []byte {
+	if fc.ShimRefPattern == nil {
+		return full
+	}
+	m := fc.ShimRefPattern.FindSubmatchIndex(queued)
+	if m == nil {
+		return full
+	}
+	pin := strings.ReplaceAll(string(queued[m[3]:m[1]]), "$", "$$")
+	return []byte(fc.ShimRefPattern.ReplaceAllString(string(full), "${1}"+pin))
 }
 
 // collectConvergeScaffoldFiles plans atomic scaffold and configuration delivery.
@@ -3984,7 +4004,7 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 		return allScaffoldFiles, actions, fmt.Errorf("convergence errors: %s", strings.Join(contentErrors, "; "))
 	}
 	allScaffoldFiles = supersedePinOnlyRefFiles(allScaffoldFiles, contentDriftFiles,
-		pinOnlyPaths, resolved.ForgeConfig.WorkflowPaths)
+		pinOnlyPaths, resolved.ForgeConfig)
 
 	// Root input migration uses the wrapper that will actually be committed,
 	// including ref upgrades, repairs and remote pinned templates.

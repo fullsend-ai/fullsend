@@ -1352,7 +1352,6 @@ func TestConverge_RefUpgradeDeliversFullShimTemplate(t *testing.T) {
 }
 
 func TestSupersedePinOnlyRefFiles(t *testing.T) {
-	wfPaths := GitHubForgeConfig().WorkflowPaths
 	queued := []forge.TreeFile{
 		{Path: ".github/workflows/fullsend.yml", Content: []byte("pin-only shim"), Mode: "100644"},
 		{Path: ".github/workflows/prioritize.yml", Content: []byte("pin-only caller"), Mode: "100644"},
@@ -1365,7 +1364,7 @@ func TestSupersedePinOnlyRefFiles(t *testing.T) {
 		{Path: ".fullsend/other.yaml", Content: []byte("other"), Mode: "100644"},
 	}
 
-	got := supersedePinOnlyRefFiles(slices.Clone(queued), drift, pinOnly, wfPaths)
+	got := supersedePinOnlyRefFiles(slices.Clone(queued), drift, pinOnly, GitHubForgeConfig())
 	want := []forge.TreeFile{
 		{Path: ".github/workflows/fullsend.yml", Content: []byte("full shim"), Mode: "100644"},
 		{Path: ".github/workflows/prioritize.yml", Content: []byte("full caller"), Mode: "100644"},
@@ -1382,8 +1381,36 @@ func TestSupersedePinOnlyRefFiles(t *testing.T) {
 	}
 
 	// Without pin-only paths every repair is appended.
-	if got := supersedePinOnlyRefFiles(slices.Clone(queued), drift, nil, wfPaths); len(got) != len(queued)+len(drift) {
+	if got := supersedePinOnlyRefFiles(slices.Clone(queued), drift, nil, GitHubForgeConfig()); len(got) != len(queued)+len(drift) {
 		t.Errorf("nil pinOnly: got %d files, want %d", len(got), len(queued)+len(drift))
+	}
+}
+
+// TestSupersedePinOnlyRefFiles_KeepsPinStyle checks that a superseding
+// template keeps the pin the ref upgrade wrote. The drift template renders
+// a semver target as "<sha>  # tag"; a repository pinned to a plain tag
+// must keep the plain tag (#9714).
+func TestSupersedePinOnlyRefFiles_KeepsPinStyle(t *testing.T) {
+	const shim = ".github/workflows/fullsend.yaml"
+	const prefix = "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@"
+	cases := []struct{ name, queuedPin, wantPin string }{
+		{"plain tag", "v2.0.0", "v2.0.0"},
+		{"sha with tag comment", "abc1234567890abc1234567890abc1234567890a  # v2.0.0", "abc1234567890abc1234567890abc1234567890a  # v2.0.0"},
+		{"branch", "main", "main"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			queued := []forge.TreeFile{{Path: shim, Content: []byte("on:\n  pull_request_target:\n" + prefix + tc.queuedPin + "\n"), Mode: "100644"}}
+			drift := []forge.TreeFile{{Path: shim, Content: []byte("on:\n  pull_request:\n" + prefix + "fffffffffffffffffffffffffffffffffffffff0  # v2.0.0\n"), Mode: "100644"}}
+			got := supersedePinOnlyRefFiles(queued, drift, map[string]bool{shim: true}, GitHubForgeConfig())
+			if len(got) != 1 {
+				t.Fatalf("got %d files, want 1", len(got))
+			}
+			want := "on:\n  pull_request:\n" + prefix + tc.wantPin + "\n"
+			if string(got[0].Content) != want {
+				t.Errorf("content = %q, want %q", got[0].Content, want)
+			}
+		})
 	}
 }
 
