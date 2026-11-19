@@ -11,9 +11,8 @@ Performs retrospectives on agent workflows — analyzes what happened, identifie
 ## How the agent works
 
 The retro agent is triggered after a workflow completes when the event actor
-has write access and closes or merges its PR. Users with write access can also
-start it
-with `/fs-retro`. It reconstructs the full workflow graph — [triage](triage.md),
+has write access and closes or merges a same-repository PR. Users with write
+access can also start it with `/fs-retro`. It reconstructs the full workflow graph — [triage](triage.md),
 [code](code.md), [review](review.md), [fix](fix.md), and human interactions —
 by fetching issue and PR timelines, agent run logs, and review threads.
 GitLab merge requests use the same write-level requirement: the actor who
@@ -48,8 +47,10 @@ to focus on:
 - `/fs-retro figure out why the review agent approved this and make sure it never happens again`
 - `/fs-retro the code agent spent 30 minutes on a 2-line fix, what went wrong`
 
-The retro agent also runs automatically when a PR is closed (merged or not) by
-an actor with write access. Merge-queue events follow the same rule: the event
+The retro agent also runs automatically when a same-repository PR is closed
+(merged or not) by an actor with write access. Fork PRs get no automatic
+retro; a user with write access can run `/fs-retro` on a closed or merged fork PR.
+Merge-queue events follow the same rule: the event
 sender must have write access. Other automated senders without repository
 write access do not start retro; a write-authorized user can run `/fs-retro`
 afterward. On GitLab, merged or closed MRs also start retro only when the actor
