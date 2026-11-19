@@ -72,31 +72,31 @@ func TestIssueOrPullRequestNodeID(t *testing.T) {
 func TestCommentActor(t *testing.T) {
 	for name, tc := range map[string]struct {
 		body string
-		want CommentActor
+		want forge.CommentActor
 	}{
 		"bot author on an issue": {
 			`{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"fs-triage"},"lastEditedAt":null,"userContentEdits":null,"issue":{"id":"I_1"},"pullRequest":null}}}`,
-			CommentActor{EntityNodeID: "I_1", ActorType: "Bot", ActorLogin: "fs-triage"},
+			forge.CommentActor{EntityNodeID: "I_1", ActorType: "Bot", ActorLogin: "fs-triage"},
 		},
 		"human editor of the newest revision wins": {
 			`{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"fs-triage"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"User","login":"octocat"},"editedAt":"2026-11-18T00:00:00Z"}]},"issue":{"id":"I_1"},"pullRequest":null}}}`,
-			CommentActor{EntityNodeID: "I_1", ActorType: "User", ActorLogin: "octocat"},
+			forge.CommentActor{EntityNodeID: "I_1", ActorType: "User", ActorLogin: "octocat"},
 		},
 		"conversation comment on a pull request": {
 			`{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"fs-review"},"lastEditedAt":null,"issue":{"id":"I_9"},"pullRequest":{"id":"PR_1"}}}}`,
-			CommentActor{OnPullRequest: true, EntityNodeID: "PR_1", ActorType: "Bot", ActorLogin: "fs-review"},
+			forge.CommentActor{OnPullRequest: true, EntityNodeID: "PR_1", ActorType: "Bot", ActorLogin: "fs-review"},
 		},
 		"review-thread comment": {
 			`{"data":{"node":{"__typename":"PullRequestReviewComment","author":{"__typename":"Bot","login":"fs-review"},"lastEditedAt":null,"pullRequest":{"id":"PR_1"}}}}`,
-			CommentActor{OnPullRequest: true, EntityNodeID: "PR_1", ActorType: "Bot", ActorLogin: "fs-review"},
+			forge.CommentActor{OnPullRequest: true, EntityNodeID: "PR_1", ActorType: "Bot", ActorLogin: "fs-review"},
 		},
 		"legacy-format comment node id": {
 			`{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"fs-triage"},"lastEditedAt":null,"issue":{"id":"I_1"}}}}`,
-			CommentActor{EntityNodeID: "I_1", ActorType: "Bot", ActorLogin: "fs-triage"},
+			forge.CommentActor{EntityNodeID: "I_1", ActorType: "Bot", ActorLogin: "fs-triage"},
 		},
 		"deleted author": {
 			`{"data":{"node":{"__typename":"IssueComment","author":null,"lastEditedAt":null,"issue":{"id":"I_1"}}}}`,
-			CommentActor{EntityNodeID: "I_1"},
+			forge.CommentActor{EntityNodeID: "I_1"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -137,6 +137,11 @@ func TestCommentActor(t *testing.T) {
 				assert.ErrorIs(t, err, forge.ErrNotFound)
 			} else {
 				assert.Error(t, err)
+			}
+			if name == "not found" {
+				// The comment ID is quoted, like the other commentID
+				// errors in the lookup.
+				assert.ErrorContains(t, err, `comment "C_1"`)
 			}
 		})
 	}

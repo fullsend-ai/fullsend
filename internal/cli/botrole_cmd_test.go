@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -143,6 +144,12 @@ func TestBotRoleCmd_LookupFailureDistinctFromNoMatch(t *testing.T) {
 			stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 			require.Error(t, err, "a lookup failure must fail the command so the caller can fail closed")
 			assert.Empty(t, stdout, "a failed lookup must print nothing a caller could read as a result")
+			// The refusal names the helper, never the mint: the helper
+			// refuses before any mint call, so "mint answered" would send
+			// a script author debugging the wrong component.
+			assert.ErrorContains(t, err, fmt.Sprintf("bot-role helper refused (HTTP %d)", status))
+			assert.ErrorContains(t, err, "bot-role lookup failed")
+			assert.NotContains(t, err.Error(), "mint answered")
 		})
 	}
 
