@@ -70,6 +70,7 @@ case "$1" in
     exit $?
     ;;
   show)
+    if [ "${SHOW_FAILS:-0}" = "1" ]; then exit 1; fi
     if [ -s "${MAIN_PID_FILE}" ]; then cat "${MAIN_PID_FILE}"; else echo "${MAIN_PID:-4242}"; fi
     ;;
   kill)
@@ -578,6 +579,24 @@ elif ! printf '%s' "${RUN_OUT}" | grep -Fq 'waiting for gitlab-runner to drain (
 else
   pass "a pending auto-restart is logged and not treated as drained"
 fi
+
+for bad_pid in "failed query" "zero"; do
+  reset_fixtures
+  if [ "${bad_pid}" = "zero" ]; then
+    DNF_CHECK_RC=100 MAIN_PID=0 run_update
+  else
+    DNF_CHECK_RC=100 SHOW_FAILS=1 run_update
+  fi
+  if [ "${RUN_RC}" -eq 0 ]; then
+    fail "unusable baseline MainPID (${bad_pid}) should fail the unit: ${RUN_OUT}"
+  elif called 'QUIT' || called 'dnf -y upgrade'; then
+    fail "QUIT or upgrade ran without a usable baseline MainPID (${bad_pid}): $(calls)"
+  elif [ -e "${HOLD_FILE}" ] || [ "$(cat "${SVC_STATE}")" != "active" ]; then
+    fail "runner not left available after an unusable baseline MainPID (${bad_pid})"
+  else
+    pass "an unusable baseline MainPID (${bad_pid}) aborts the drain before QUIT"
+  fi
+done
 
 echo "== other guards =="
 reset_fixtures

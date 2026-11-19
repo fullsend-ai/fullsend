@@ -226,7 +226,15 @@ drain_runner() {
     return 2
   fi
   sleep "${RELOAD_SETTLE_SEC}"
+  # The restart recovery in the loop below compares MainPID against the
+  # process that gets SIGQUIT, so an empty (failed query) or 0 (no main
+  # process, for example systemd waiting to restart) baseline would disable
+  # it silently. Abort before SIGQUIT rather than risk the stall of #9690.
   quit_pid=$(runner_main_pid)
+  if [ -z "${quit_pid}" ] || [ "${quit_pid}" = "0" ]; then
+    err "could not read a running ${RUNNER_SERVICE} main PID (got '${quit_pid}') — not draining"
+    return 2
+  fi
   if ! systemctl kill --kill-whom=main -s QUIT "${RUNNER_SERVICE}" >/dev/null 2>&1; then
     warn "could not signal ${RUNNER_SERVICE} — waiting for it to stop anyway"
   fi
@@ -259,8 +267,7 @@ drain_runner() {
         # would never end. Send it the same graceful SIGQUIT: a job it
         # picked up still finishes, under the raised shutdown_timeout it
         # read from config.toml at start.
-        if [ -n "${quit_pid}" ] && [ "${quit_pid}" != "0" ] \
-          && [ -n "${main_pid}" ] && [ "${main_pid}" != "0" ] \
+        if [ -n "${main_pid}" ] && [ "${main_pid}" != "0" ] \
           && [ "${main_pid}" != "${quit_pid}" ]; then
           warn "${RUNNER_SERVICE} restarted during the drain (pid ${quit_pid} -> ${main_pid}) — sending SIGQUIT again"
           if systemctl kill --kill-whom=main -s QUIT "${RUNNER_SERVICE}" >/dev/null 2>&1; then
