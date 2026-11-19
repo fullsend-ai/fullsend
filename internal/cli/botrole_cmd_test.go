@@ -79,6 +79,7 @@ var commentArgs = []string{"--entity", testEntityID, "--comment", testCommentID}
 func TestBotRoleCmd_RegisteredOnRoot(t *testing.T) {
 	cmd := botRoleCmd(t)
 	assert.Equal(t, "bot-role", cmd.Name())
+	assert.Equal(t, "bot-role", cmd.Use, "Use carries the command name only; flags are declared with cmd.Flags(), so usage output does not list them twice")
 }
 
 func TestBotRoleCmd_PrintsRegisteredRole(t *testing.T) {
