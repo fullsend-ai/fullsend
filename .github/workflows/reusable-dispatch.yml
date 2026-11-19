@@ -1691,9 +1691,14 @@ jobs:
       # failure fails closed here where the CEL ladder degrades to bash
       # routing (a vendored binary too old for --print-event blocks the
       # stages until the repo re-vendors, by the same policy).
+      #
+      # Every step here gates on the same effective stage as the job-level
+      # `stage` output: when the review is skipped on an unchanged-diff
+      # synchronize push no stage job runs, so the ladder and the payload
+      # step stay off that push too.
       - name: Detect CLI install mode for event payload
         id: payload-cli
-        if: steps.route.outputs.stage != '' && steps.agent-check.outputs.skipped != 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -1709,7 +1714,7 @@ jobs:
           fi
 
       - name: Restore fullsend CLI cache for event payload
-        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream'
         id: payload-cli-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1717,7 +1722,7 @@ jobs:
           key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ job.workflow_sha }}
 
       - name: Install fullsend CLI for event payload (vendored)
-        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'vendored'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'vendored'
         shell: bash
         run: |
           set -euo pipefail
@@ -1731,7 +1736,7 @@ jobs:
           echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
       - name: Checkout upstream install action for event payload
-        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -1743,7 +1748,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Install fullsend CLI for event payload (upstream workflow)
-        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
         uses: ./.workflow-actions/.github/actions/install-fullsend-cli
         with:
           mode: upstream
@@ -1752,7 +1757,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for event payload
-        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit == 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -1763,7 +1768,7 @@ jobs:
           echo "${install_dir}" >> "${GITHUB_PATH}"
 
       - name: Prepare fullsend CLI cache artifact for event payload
-        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -1771,7 +1776,7 @@ jobs:
           cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
 
       - name: Save fullsend CLI cache for event payload
-        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
@@ -1779,7 +1784,7 @@ jobs:
 
       - name: Build event payload
         id: payload
-        if: steps.route.outputs.stage != '' && steps.agent-check.outputs.skipped != 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true'
         env:
           # A fork PR's workflow_run event carries no pull_request: merge the
           # one "Resolve fork pull request for workflow_run" fetched.
