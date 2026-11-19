@@ -12,8 +12,11 @@ import (
 )
 
 func TestReviewDedupHelpers(t *testing.T) {
-	assert.Equal(t, "owner", func() string { owner, _, _ := splitReviewRepo("owner/repo"); return owner }())
-	_, _, err := splitReviewRepo("invalid")
+	owner, repo, err := splitReviewRepo("owner/repo")
+	require.NoError(t, err)
+	assert.Equal(t, "owner", owner)
+	assert.Equal(t, "repo", repo)
+	_, _, err = splitReviewRepo("invalid")
 	assert.Error(t, err)
 
 	var stdout, stderr bytes.Buffer
@@ -48,12 +51,12 @@ func TestPublishReviewSkip_CreatesAndUpdatesVerifiedNote(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
 	fc.IssueComments = map[string][]forge.IssueComment{}
-	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, "https://example.test/review", "fullsend-ai", "client"))
+	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, "https://example.test/review", "client"))
 	require.Len(t, fc.IssueComments["o/r/1"], 1)
 	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "unchanged")
 
 	fc.IssueComments["o/r/1"][0].AppClientID = "client"
-	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, "", "fullsend-ai", "client"))
+	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, "", "client"))
 	require.Len(t, fc.IssueComments["o/r/1"], 1)
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "https://example.test/review")
 }
@@ -68,7 +71,7 @@ func TestPublishReviewSkip_UpdatesNewestVerifiedNote(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, "", "fullsend-ai", "client"))
+	require.NoError(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, "", "client"))
 	require.Len(t, fc.UpdatedComments, 1)
 	assert.Equal(t, 11, fc.UpdatedComments[0].CommentID)
 	assert.Contains(t, fc.IssueComments["o/r/1"][1].Body, "unchanged")
@@ -165,6 +168,64 @@ func TestDecideReviewDedup_FailsOpenWhenModesAreUnverified(t *testing.T) {
 
 	result := decideReviewDedup(context.Background(), fc, "o", "r", 1, "fullsend-ai", "client")
 	assert.False(t, result.Skip)
+}
+
+func newValidReviewDedupFixture(t *testing.T) (*forge.FakeClient, string, string) {
+	t.Helper()
+	const head = "0123456789012345678901234567890123456789"
+	const base = "abcdefabcdefabcdefabcdefabcdefabcdefabcdef"
+	fc := forge.NewFakeClient()
+	fc.PullRequestInfos = map[string]forge.PullRequestInfo{
+		"o/r/1": {Number: 1, BaseSHA: base, HeadSHA: head, ChangedFiles: 1},
+	}
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "file.go", Status: "modified", Patch: "@@ -1 +1 @@\n-old\n+new", OldMode: "100644", NewMode: "100644", ModesVerified: true}},
+	}
+	diffs, err := fc.ListPullRequestFileDiffs(context.Background(), "o", "r", 1)
+	require.NoError(t, err)
+	hash, err := pullRequestDiffHashFromDiffs(diffs, nil)
+	require.NoError(t, err)
+	fc.IssueComments = map[string][]forge.IssueComment{"o/r/1": {{
+		HTMLURL: "https://example.test/review", Author: "fullsend-ai-review[bot]", AppClientID: "client",
+		CreatedAt: "2026-01-01T00:00:00Z", Body: "<!-- fullsend:review-agent -->\n<!-- fullsend:review-diff-hash:" + hash + " -->\n<!-- fullsend:review-head:" + head + " -->",
+	}}}
+	fc.PRReviews = map[string][]forge.PullRequestReview{"o/r/1": {{
+		User: "fullsend-ai-review[bot]", State: "APPROVED", CommitID: head, SubmittedAt: "2026-01-01T00:00:01Z",
+	}}}
+	return fc, base, head
+}
+
+func TestDecideReviewDedup_FailsOpenForIncompleteInputs(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*forge.FakeClient)
+	}{
+		{name: "pull request lookup error", setup: func(fc *forge.FakeClient) { fc.Errors["GetPullRequestInfo"] = assert.AnError }},
+		{name: "diff lookup error", setup: func(fc *forge.FakeClient) { fc.Errors["ListPullRequestFileDiffs"] = assert.AnError }},
+		{name: "diff count mismatch", setup: func(fc *forge.FakeClient) {
+			fc.PullRequestInfos["o/r/1"] = forge.PullRequestInfo{Number: 1, BaseSHA: "base", HeadSHA: "head", ChangedFiles: 2}
+		}},
+		{name: "comments lookup error", setup: func(fc *forge.FakeClient) { fc.Errors["ListIssueComments"] = assert.AnError }},
+		{name: "reviews lookup error", setup: func(fc *forge.FakeClient) { fc.Errors["ListPullRequestReviews"] = assert.AnError }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fc, _, _ := newValidReviewDedupFixture(t)
+			tc.setup(fc)
+			assert.False(t, decideReviewDedup(context.Background(), fc, "o", "r", 1, "fullsend-ai", "client").Skip)
+		})
+	}
+}
+
+func TestPublishReviewSkip_FailsOpenOnPublicationErrors(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
+	fc.Errors = map[string]error{"ListIssueComments": assert.AnError}
+	assert.Error(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, "", "client"))
+
+	fc.Errors = nil
+	fc.AuthenticatedUser = ""
+	assert.Error(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, "", "client"))
 }
 
 func TestSupersedeReviewSkip_UpdatesOnlyVerifiedBotNotes(t *testing.T) {

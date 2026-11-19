@@ -60,7 +60,7 @@ func newReviewDedupCmd() *cobra.Command {
 			result := decideReviewDedup(cmd.Context(), client, owner, repoName, pr, appSet, appClientID)
 			writeReviewDedupOutput(cmd, result)
 			if publish && result.Skip {
-				if err := publishReviewSkip(cmd.Context(), client, owner, repoName, pr, result.PriorURL, appSet, appClientID); err != nil {
+				if err := publishReviewSkip(cmd.Context(), client, owner, repoName, pr, result.PriorURL, appClientID); err != nil {
 					fmt.Fprintln(cmd.ErrOrStderr(), "::warning::Could not publish review skip note; running review")
 					fmt.Fprintln(cmd.OutOrStdout(), "skipped=false")
 					return nil
@@ -221,7 +221,7 @@ func hasApprovedReview(reviews []forge.PullRequestReview, owner, appSet, head st
 	return latest != nil && latest.State == "APPROVED" && latest.CommitID != "" && strings.EqualFold(latest.CommitID, head)
 }
 
-func publishReviewSkip(ctx context.Context, client forge.Client, owner, repo string, pr int, priorURL, appSet, appClientID string) error {
+func publishReviewSkip(ctx context.Context, client forge.Client, owner, repo string, pr int, priorURL, appClientID string) error {
 	body := reviewSkipMarker + "\nFullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review"
 	if priorURL != "" {
 		body += " (" + priorURL + ")"

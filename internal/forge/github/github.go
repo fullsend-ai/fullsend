@@ -4506,13 +4506,10 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 			User   struct {
 				Login string `json:"login"`
 			} `json:"user"`
-			State                 string `json:"state"`
-			Body                  string `json:"body"`
-			SubmittedAt           string `json:"submitted_at"`
-			CommitID              string `json:"commit_id"`
-			PerformedViaGitHubApp *struct {
-				ClientID string `json:"client_id"`
-			} `json:"performed_via_github_app"`
+			State       string `json:"state"`
+			Body        string `json:"body"`
+			SubmittedAt string `json:"submitted_at"`
+			CommitID    string `json:"commit_id"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding pull request reviews page %d: %w", page, err)
