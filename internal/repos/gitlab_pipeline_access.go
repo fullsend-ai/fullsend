@@ -339,8 +339,11 @@ func EnsureGitLabPollerPipelineAccess(ctx context.Context, client forge.Client, 
 // create pipelines on the protected default branch. Returns true when
 // a new drift entry was added. Missing repo metadata or unsupported
 // forges are skipped rather than failing the whole status check.
+// status.Installed is false for a repository with no Fullsend
+// components yet: there is no poller identity to check, and install
+// provisions the poller and grants its access, so nothing is reported.
 func AppendGitLabPipelineRefStatus(ctx context.Context, client forge.Client, owner, repo string, userIDs []int, status *RepoStatus) bool {
-	if status == nil || client == nil {
+	if status == nil || client == nil || !status.Installed {
 		return false
 	}
 	branch, rule, err := loadDefaultBranchRule(ctx, client, owner, repo)
