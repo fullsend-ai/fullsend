@@ -1049,15 +1049,29 @@ func unpinnedDeps(deps []harness.Dependency, pins map[string]harness.LockedPin) 
 //
 // Its cache-miss, allowlist and missing-lock-entry errors advise
 // lockUpdateCommand (the caller's `fullsend lock <name> --update`), so the
-// advice names the harness and succeeds as written.
+// advice names the harness and succeeds as written. The cache-miss advice is
+// worded for the run's mode (offline, the caller's fetch policy): only an
+// offline run is told to rerun without --offline to fetch the pinned content;
+// an online run is already falling back to normal resolution, which re-fetches
+// the pinned content and verifies it against the lock.
 //
 // All changes are made on a working copy of target (lockReplayCopy), which
 // replaces *target only when replay succeeds. Any error therefore leaves
 // target exactly as it was passed in, and the caller can safely fall back to
 // network-based resolution with it. Cache-side effects (named symlinks, file
 // permissions) may still have been applied.
-func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, lockUpdateCommand, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
+func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, lockUpdateCommand, workspaceRoot string, orgAllowlist []string, offline bool, printer *ui.Printer) (resolve.ResolveResult, error) {
 	h := lockReplayCopy(target)
+
+	// The cache-miss advice names what the run's mode can actually do: an
+	// offline run is the one that can be told to rerun without --offline to
+	// fetch the pinned content; an online run is already falling back to
+	// normal resolution, which re-fetches the pinned content and verifies it
+	// against the lock.
+	cacheMissAdvice := "an online run re-fetches and verifies it (run falls back to normal resolution)"
+	if offline {
+		cacheMissAdvice = "rerun without --offline to fetch the pinned content (run falls back to normal resolution)"
+	}
 
 	type mutation struct {
 		field     string
@@ -1093,7 +1107,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, lockUpdat
 				return resolve.ResolveResult{}, fmt.Errorf("dir cache integrity check failed for %s: %w", lockDep.Field, err)
 			}
 			if treePath == "" {
-				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — rerun without --offline to fetch the pinned content (run falls back to normal resolution), or run %s to re-pin to its source", lockDep.Field, lockDep.URL, lockDep.SHA256, lockUpdateCommand)
+				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — %s, or run %s to re-pin to its source", lockDep.Field, lockDep.URL, lockDep.SHA256, cacheMissAdvice, lockUpdateCommand)
 			}
 			localPath = treePath
 			if isScriptLockField(lockDep.Field) {
@@ -1124,7 +1138,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, lockUpdat
 				return resolve.ResolveResult{}, fmt.Errorf("cache integrity check failed for %s: %w", lockDep.Field, err)
 			}
 			if content == nil {
-				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — rerun without --offline to fetch the pinned content (run falls back to normal resolution), or run %s to re-pin to its source", lockDep.Field, lockDep.URL, lockDep.SHA256, lockUpdateCommand)
+				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — %s, or run %s to re-pin to its source", lockDep.Field, lockDep.URL, lockDep.SHA256, cacheMissAdvice, lockUpdateCommand)
 			}
 			cachedContent = content
 			cachePath, err := fetch.CachePath(workspaceRoot, lockDep.SHA256)
