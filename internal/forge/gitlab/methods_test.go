@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -91,6 +92,7 @@ func TestCreateIssue(t *testing.T) {
 
 func TestListPullRequestReviewThreads(t *testing.T) {
 	client, mux := setupTest(t)
+	mockReviewThreadDiffRefs(t, mux, currentReviewThreadRefs)
 	actorRequests := map[string]int{}
 	roleRequests := map[string]int{}
 	mux.HandleFunc("/api/v4/users/", func(w http.ResponseWriter, r *http.Request) {
@@ -136,14 +138,14 @@ func TestListPullRequestReviewThreads(t *testing.T) {
 						"resolvable": true, "resolved": true,
 						"author":      map[string]any{"id": 10, "username": "botuser"},
 						"resolved_by": map[string]any{"id": 20, "username": "reviewer"},
-						"position":    map[string]any{"new_path": "main.go", "old_path": "main.go", "new_line": 17, "old_line": 16},
+						"position":    withRefs(currentReviewThreadRefs, map[string]any{"new_path": "main.go", "old_path": "main.go", "new_line": 17, "old_line": 16}),
 					},
 				},
 			},
 			{
 				"id": "discussion-2",
 				"notes": []map[string]any{
-					{"id": 8, "body": "unresolved", "resolvable": true, "resolved": false, "author": map[string]any{"id": 20, "username": "reviewer"}, "position": map[string]any{"new_path": "unresolved.go", "new_line": 3}},
+					{"id": 8, "body": "unresolved", "resolvable": true, "resolved": false, "author": map[string]any{"id": 20, "username": "reviewer"}, "position": withRefs(currentReviewThreadRefs, map[string]any{"new_path": "unresolved.go", "new_line": 3})},
 				},
 			},
 			{
@@ -252,10 +254,11 @@ func TestListPullRequestReviewThreads(t *testing.T) {
 
 func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
 	client, mux := setupTest(t)
+	mockReviewThreadDiffRefs(t, mux, currentReviewThreadRefs)
 	note := func(position map[string]any) map[string]any {
 		n := map[string]any{"id": 1, "body": "comment", "resolvable": true, "resolved": false}
 		if position != nil {
-			n["position"] = position
+			n["position"] = withRefs(currentReviewThreadRefs, position)
 		}
 		return n
 	}
@@ -295,8 +298,12 @@ func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
 	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
 	require.NoError(t, err)
 	require.Len(t, got.Threads, 6)
+	for _, thread := range got.Threads[:5] {
+		require.NotNil(t, thread.IsOutdated, "%s: a position on the current diff has known outdated state", thread.ID)
+		assert.False(t, *thread.IsOutdated, "%s", thread.ID)
+	}
+	assert.Nil(t, got.Threads[5].IsOutdated, "a general discussion has no position to compare")
 	for _, thread := range got.Threads {
-		assert.Nil(t, thread.IsOutdated, "%s: GitLab does not expose outdated state", thread.ID)
 		assert.Nil(t, thread.OriginalLine, "%s: GitLab does not expose the original position", thread.ID)
 		assert.Nil(t, thread.OriginalStartLine, "%s", thread.ID)
 	}
@@ -344,6 +351,285 @@ func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
 	assert.Nil(t, general.NewLine)
 	assert.Nil(t, general.StartLine)
 }
+
+// currentReviewThreadRefs are the diff_refs served for MR !42 by
+// mockReviewThreadDiffRefs.
+var currentReviewThreadRefs = map[string]any{
+	"base_sha": "base-current", "start_sha": "start-current", "head_sha": "head-current",
+}
+
+// staleReviewThreadRefs identify an older diff version of MR !42.
+var staleReviewThreadRefs = map[string]any{
+	"base_sha": "base-current", "start_sha": "start-current", "head_sha": "head-old",
+}
+
+// withRefs returns a copy of position carrying the given diff refs.
+func withRefs(refs, position map[string]any) map[string]any {
+	out := make(map[string]any, len(position)+len(refs))
+	maps.Copy(out, position)
+	maps.Copy(out, refs)
+	return out
+}
+
+// mockReviewThreadDiffRefs serves MR !42 with refs as its current
+// diff_refs and returns a counter of the requests it received.
+func mockReviewThreadDiffRefs(t *testing.T, mux *http.ServeMux, refs map[string]any) *atomic.Int32 {
+	t.Helper()
+	var requests atomic.Int32
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42", func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{"iid": 42, "diff_refs": refs})
+	})
+	return &requests
+}
+
+func TestListPullRequestReviewThreads_OutdatedState(t *testing.T) {
+	multiLine := func(start, end int) map[string]any {
+		return map[string]any{
+			"new_path": "main.go", "old_path": "main.go", "new_line": end,
+			"line_range": map[string]any{
+				"start": map[string]any{"type": "new", "new_line": start},
+				"end":   map[string]any{"type": "new", "new_line": end},
+			},
+		}
+	}
+	tests := []struct {
+		name string
+		// mrRefs is the MR's current diff_refs; nil means the MR request fails
+		// with mrStatus.
+		mrRefs   map[string]any
+		mrStatus int
+		position map[string]any
+
+		wantOutdated  *bool
+		wantPath      string
+		wantSide      forge.DiffSide
+		wantLine      *int
+		wantStartSide *forge.DiffSide
+		wantStartLine *int
+		wantOldLine   *int
+		wantNewLine   *int
+	}{
+		{
+			name:     "line shifted by an earlier insertion is current",
+			mrRefs:   currentReviewThreadRefs,
+			position: withRefs(currentReviewThreadRefs, map[string]any{"new_path": "main.go", "old_path": "main.go", "new_line": 25}),
+			// GitLab traced the note from line 20 to line 25 after an
+			// insertion above it and stamped the current refs.
+			wantOutdated: ptrBool(false), wantPath: "main.go", wantSide: forge.DiffSideRight,
+			wantLine: ptrInt(25), wantNewLine: ptrInt(25),
+		},
+		{
+			name:         "position on an older diff is outdated",
+			mrRefs:       currentReviewThreadRefs,
+			position:     withRefs(staleReviewThreadRefs, map[string]any{"new_path": "main.go", "old_path": "main.go", "new_line": 20, "old_line": 19}),
+			wantOutdated: ptrBool(true), wantPath: "main.go", wantSide: forge.DiffSideRight,
+		},
+		{
+			name:         "different base sha is outdated",
+			mrRefs:       currentReviewThreadRefs,
+			position:     withRefs(map[string]any{"base_sha": "base-old", "start_sha": "start-current", "head_sha": "head-current"}, map[string]any{"new_path": "main.go", "new_line": 20}),
+			wantOutdated: ptrBool(true), wantPath: "main.go", wantSide: forge.DiffSideRight,
+		},
+		{
+			name:         "sha comparison ignores case",
+			mrRefs:       currentReviewThreadRefs,
+			position:     withRefs(map[string]any{"base_sha": "BASE-CURRENT", "start_sha": "START-CURRENT", "head_sha": "HEAD-CURRENT"}, map[string]any{"new_path": "main.go", "new_line": 20}),
+			wantOutdated: ptrBool(false), wantPath: "main.go", wantSide: forge.DiffSideRight,
+			wantLine: ptrInt(20), wantNewLine: ptrInt(20),
+		},
+		{
+			name:     "incomplete position refs are unknown",
+			mrRefs:   currentReviewThreadRefs,
+			position: map[string]any{"base_sha": "base-current", "head_sha": "head-current", "new_path": "main.go", "new_line": 20},
+			wantPath: "main.go", wantSide: forge.DiffSideRight,
+		},
+		{
+			name:     "position without refs is unknown",
+			mrRefs:   currentReviewThreadRefs,
+			position: map[string]any{"new_path": "main.go", "old_path": "main.go", "new_line": 20, "old_line": 19},
+			wantPath: "main.go", wantSide: forge.DiffSideRight,
+		},
+		{
+			name:     "incomplete MR refs are unknown",
+			mrRefs:   map[string]any{"base_sha": "base-current", "start_sha": "", "head_sha": "head-current"},
+			position: withRefs(currentReviewThreadRefs, map[string]any{"new_path": "main.go", "new_line": 20}),
+			wantPath: "main.go", wantSide: forge.DiffSideRight,
+		},
+		{
+			name:     "MR refs not found are unknown",
+			mrStatus: http.StatusNotFound,
+			position: withRefs(currentReviewThreadRefs, map[string]any{"new_path": "main.go", "new_line": 20}),
+			wantPath: "main.go", wantSide: forge.DiffSideRight,
+		},
+		{
+			name:     "MR refs server error is unknown",
+			mrStatus: http.StatusInternalServerError,
+			position: withRefs(currentReviewThreadRefs, map[string]any{"new_path": "main.go", "new_line": 20}),
+			wantPath: "main.go", wantSide: forge.DiffSideRight,
+		},
+		{
+			name:         "renamed file on the current diff",
+			mrRefs:       currentReviewThreadRefs,
+			position:     withRefs(currentReviewThreadRefs, map[string]any{"new_path": "renamed.go", "old_path": "original.go", "new_line": 8, "old_line": 8}),
+			wantOutdated: ptrBool(false), wantPath: "renamed.go", wantSide: forge.DiffSideRight,
+			wantLine: ptrInt(8), wantOldLine: ptrInt(8), wantNewLine: ptrInt(8),
+		},
+		{
+			name:         "removed line in a renamed file on the current diff",
+			mrRefs:       currentReviewThreadRefs,
+			position:     withRefs(currentReviewThreadRefs, map[string]any{"new_path": "renamed.go", "old_path": "original.go", "old_line": 4}),
+			wantOutdated: ptrBool(false), wantPath: "original.go", wantSide: forge.DiffSideLeft,
+			wantLine: ptrInt(4), wantOldLine: ptrInt(4),
+		},
+		{
+			name:         "renamed file on an older diff",
+			mrRefs:       currentReviewThreadRefs,
+			position:     withRefs(staleReviewThreadRefs, map[string]any{"new_path": "renamed.go", "old_path": "original.go", "new_line": 8}),
+			wantOutdated: ptrBool(true), wantPath: "renamed.go", wantSide: forge.DiffSideRight,
+		},
+		{
+			name:         "multiline discussion on the current diff",
+			mrRefs:       currentReviewThreadRefs,
+			position:     withRefs(currentReviewThreadRefs, multiLine(10, 12)),
+			wantOutdated: ptrBool(false), wantPath: "main.go", wantSide: forge.DiffSideRight,
+			wantLine: ptrInt(12), wantNewLine: ptrInt(12),
+			wantStartSide: ptrSide(forge.DiffSideRight), wantStartLine: ptrInt(10),
+		},
+		{
+			name:         "multiline discussion on an older diff",
+			mrRefs:       currentReviewThreadRefs,
+			position:     withRefs(staleReviewThreadRefs, multiLine(10, 12)),
+			wantOutdated: ptrBool(true), wantPath: "main.go", wantSide: forge.DiffSideRight,
+			wantStartSide: ptrSide(forge.DiffSideRight),
+		},
+		{
+			name:     "multiline discussion with unknown state",
+			mrStatus: http.StatusNotFound,
+			position: withRefs(currentReviewThreadRefs, multiLine(10, 12)),
+			wantPath: "main.go", wantSide: forge.DiffSideRight,
+			wantStartSide: ptrSide(forge.DiffSideRight),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			if tt.mrRefs != nil {
+				mockReviewThreadDiffRefs(t, mux, tt.mrRefs)
+			} else {
+				mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42", func(w http.ResponseWriter, _ *http.Request) {
+					writeJSON(t, w, tt.mrStatus, map[string]string{"message": http.StatusText(tt.mrStatus)})
+				})
+			}
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, http.StatusOK, []map[string]any{{
+					"id": "discussion-1",
+					"notes": []map[string]any{{
+						"id": 1, "body": "finding", "resolvable": true, "resolved": false,
+						"author":   map[string]any{"id": 0, "username": "reviewer"},
+						"position": tt.position,
+					}},
+				}})
+			})
+
+			got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+			require.NoError(t, err, "a diff_refs failure must not fail the listing")
+			require.Len(t, got.Threads, 1)
+			thread := got.Threads[0]
+			assert.Equal(t, "discussion-1", thread.ID)
+			require.Len(t, thread.Comments, 1)
+			assert.Equal(t, tt.wantOutdated, thread.IsOutdated)
+			assert.Equal(t, tt.wantPath, thread.Path)
+			require.NotNil(t, thread.Side)
+			assert.Equal(t, tt.wantSide, *thread.Side)
+			assert.Equal(t, tt.wantLine, thread.Line)
+			assert.Equal(t, tt.wantStartSide, thread.StartSide)
+			assert.Equal(t, tt.wantStartLine, thread.StartLine)
+			assert.Equal(t, tt.wantOldLine, thread.OldLine)
+			assert.Equal(t, tt.wantNewLine, thread.NewLine)
+			assert.Nil(t, thread.OriginalLine)
+			assert.Nil(t, thread.OriginalStartLine)
+		})
+	}
+}
+
+func TestListPullRequestReviewThreads_FetchesDiffRefsOnce(t *testing.T) {
+	client, mux := setupTest(t)
+	refRequests := mockReviewThreadDiffRefs(t, mux, currentReviewThreadRefs)
+	var pages int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
+		pages++
+		count := 100
+		if pages == 2 {
+			count = 1
+		}
+		discussions := make([]map[string]any, count)
+		for i := range discussions {
+			discussions[i] = map[string]any{
+				"id": fmt.Sprintf("discussion-%d-%d", pages, i),
+				"notes": []map[string]any{{
+					"id": i, "body": "finding", "resolvable": true,
+					"position": withRefs(currentReviewThreadRefs, map[string]any{"new_path": "main.go", "new_line": i + 1}),
+				}},
+			}
+		}
+		writeJSON(t, w, http.StatusOK, discussions)
+	})
+
+	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 2, pages)
+	require.Len(t, got.Threads, 101)
+	assert.Equal(t, int32(1), refRequests.Load(), "current diff_refs are fetched once per listing")
+	for _, thread := range got.Threads {
+		require.NotNil(t, thread.IsOutdated, thread.ID)
+		assert.False(t, *thread.IsOutdated, thread.ID)
+	}
+}
+
+func TestListPullRequestReviewThreads_NoPositionsSkipsDiffRefs(t *testing.T) {
+	client, mux := setupTest(t)
+	refRequests := mockReviewThreadDiffRefs(t, mux, currentReviewThreadRefs)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": "general", "notes": []map[string]any{{"id": 1, "body": "general comment"}}},
+		})
+	})
+
+	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	require.Len(t, got.Threads, 1)
+	assert.Nil(t, got.Threads[0].IsOutdated)
+	assert.Zero(t, refRequests.Load(), "discussions without positions need no diff_refs")
+}
+
+func TestGitLabPositionOutdated(t *testing.T) {
+	current := &mrDiffRefs{BaseSHA: "b", StartSHA: "s", HeadSHA: "h"}
+	tests := []struct {
+		name     string
+		position *mrDiffRefs
+		current  *mrDiffRefs
+		want     *bool
+	}{
+		{name: "matching refs", position: &mrDiffRefs{BaseSHA: "b", StartSHA: "s", HeadSHA: "h"}, current: current, want: ptrBool(false)},
+		{name: "different head", position: &mrDiffRefs{BaseSHA: "b", StartSHA: "s", HeadSHA: "old"}, current: current, want: ptrBool(true)},
+		{name: "different start", position: &mrDiffRefs{BaseSHA: "b", StartSHA: "old", HeadSHA: "h"}, current: current, want: ptrBool(true)},
+		{name: "incomplete position", position: &mrDiffRefs{BaseSHA: "b", HeadSHA: "h"}, current: current},
+		{name: "incomplete current", position: current, current: &mrDiffRefs{BaseSHA: "b", StartSHA: "s"}},
+		{name: "nil current", position: current},
+		{name: "nil position", current: current},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, gitlabPositionOutdated(tt.position, tt.current))
+		})
+	}
+}
+
+func ptrBool(v bool) *bool { return &v }
+
+func ptrInt(v int) *int { return &v }
 
 func TestGitLabSideLine(t *testing.T) {
 	one, two := 1, 2

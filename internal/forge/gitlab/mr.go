@@ -875,6 +875,8 @@ type gitlabDiscussionActor struct {
 // common review-thread model. A discussion is resolved when all of its
 // resolvable notes are marked resolved; the latest resolver and note authors
 // are preserved so consumers can distinguish human and bot resolutions.
+// Positions are compared with the MR's current diff_refs: only a position
+// on the current diff reports current line numbers and IsOutdated false.
 func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, repo string, number int) (forge.ReviewThreadPage, error) {
 	proj := projectPath(owner, repo)
 	result := forge.ReviewThreadPage{}
@@ -928,6 +930,26 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 		}{role, true}
 		return role, true
 	}
+	// The MR's current diff_refs are fetched at most once, on the first
+	// positioned note. A failed fetch leaves them nil, so every position's
+	// outdated state stays unknown rather than failing the listing.
+	var currentRefs *mrDiffRefs
+	currentRefsFetched := false
+	currentDiffRefs := func() *mrDiffRefs {
+		if currentRefsFetched {
+			return currentRefs
+		}
+		currentRefsFetched = true
+		refs, err := c.getMergeRequestDiffRefs(ctx, proj, number)
+		if err != nil {
+			if forge.IsTransient(err) {
+				log.Printf("get merge request !%d diff refs failed, discussion positions left unverified: %v", number, err)
+			}
+			return nil
+		}
+		currentRefs = refs
+		return currentRefs
+	}
 
 	for page := 1; page <= 20; page++ {
 		path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions?per_page=100&page=%d",
@@ -950,6 +972,9 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 				Author     gitlabDiscussionActor  `json:"author"`
 				ResolvedBy *gitlabDiscussionActor `json:"resolved_by"`
 				Position   *struct {
+					BaseSHA   string `json:"base_sha"`
+					StartSHA  string `json:"start_sha"`
+					HeadSHA   string `json:"head_sha"`
 					NewPath   string `json:"new_path"`
 					OldPath   string `json:"old_path"`
 					NewLine   *int   `json:"new_line"`
@@ -1022,15 +1047,32 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 					} else if thread.Path == "" {
 						thread.Path = note.Position.OldPath
 					}
-					thread.OldLine = note.Position.OldLine
-					thread.NewLine = note.Position.NewLine
-					thread.Side, thread.Line = gitlabSideLine("", note.Position.OldLine, note.Position.NewLine)
-					thread.StartSide, thread.StartLine = nil, nil
+					var line, startLine *int
+					thread.Side, line = gitlabSideLine("", note.Position.OldLine, note.Position.NewLine)
+					thread.StartSide = nil
 					if lr := note.Position.LineRange; lr != nil && lr.Start != nil {
-						startSide, startLine := gitlabSideLine(lr.Start.Type, lr.Start.OldLine, lr.Start.NewLine)
-						if startLine != nil && (thread.Line == nil || *startLine != *thread.Line || *startSide != *thread.Side) {
-							thread.StartSide, thread.StartLine = startSide, startLine
+						rangeStartSide, rangeStartLine := gitlabSideLine(lr.Start.Type, lr.Start.OldLine, lr.Start.NewLine)
+						if rangeStartLine != nil && (line == nil || *rangeStartLine != *line || *rangeStartSide != *thread.Side) {
+							thread.StartSide, startLine = rangeStartSide, rangeStartLine
 						}
+					}
+
+					// Only a position whose diff refs match the MR's current
+					// diff_refs is a current position. Outdated and unknown
+					// positions keep their path and sides but expose no
+					// current line numbers.
+					positionRefs := &mrDiffRefs{
+						BaseSHA:  note.Position.BaseSHA,
+						StartSHA: note.Position.StartSHA,
+						HeadSHA:  note.Position.HeadSHA,
+					}
+					thread.IsOutdated = gitlabPositionOutdated(positionRefs, currentDiffRefs())
+					if thread.IsOutdated != nil && !*thread.IsOutdated {
+						thread.Line, thread.StartLine = line, startLine
+						thread.OldLine, thread.NewLine = note.Position.OldLine, note.Position.NewLine
+					} else {
+						thread.Line, thread.StartLine = nil, nil
+						thread.OldLine, thread.NewLine = nil, nil
 					}
 				}
 			}
@@ -1046,6 +1088,20 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 	}
 
 	return result, nil
+}
+
+// gitlabPositionOutdated compares a discussion position's diff refs with
+// the MR's current diff_refs, mirroring GitLab's own check for an active
+// diff note. It returns nil when either set of refs is incomplete or
+// unavailable, so an unverifiable position is never reported as current.
+func gitlabPositionOutdated(position, current *mrDiffRefs) *bool {
+	if !position.usable("") || !current.usable("") {
+		return nil
+	}
+	outdated := !strings.EqualFold(position.BaseSHA, current.BaseSHA) ||
+		!strings.EqualFold(position.StartSHA, current.StartSHA) ||
+		!strings.EqualFold(position.HeadSHA, current.HeadSHA)
+	return &outdated
 }
 
 // gitlabActorType fails closed when GitLab does not identify whether an actor
