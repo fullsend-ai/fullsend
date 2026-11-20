@@ -208,7 +208,10 @@ run at once on V2; the depth is one. A runner-owned hook admits a spawn only for
 role with that fresh context and no model or effort override; it denies resume, V2's message and
 follow-up calls, Codex's built-in `explorer` and `worker`, and any spawn from a child. A denied
 spawn is final for that role: the parent runs that
-sub-agent definition itself. A wait works the other way. On V2 Codex refuses a `wait_agent` whose
+sub-agent definition itself. In a fleet-shaped V1 `review` run on
+[#6970](https://github.com/fullsend-ai/fullsend/issues/6970) the parent dropped the denied persona
+instead, and its result did not say so ([#9073](https://github.com/fullsend-ai/fullsend/issues/9073)).
+Unlike a denied spawn, a refused wait is not final. On V2 Codex refuses a `wait_agent` whose
 `timeout_ms` is over 120000, a max the runner sets in Codex's own config, and the parent waits
 again with a shorter timeout; on V1 Codex has no such setting, and the runtime note asks for the
 same cap. A spawn the hook did not admit fails the run after the fact, within
@@ -347,9 +350,10 @@ What a local codex run needs, beyond the guide:
 - **Debugging** — `--debug='*'` (the `=` is required); sandbox-side failures land in
   `codex-debug.log` inside the run directory, next to the transcripts, not in the runner's output.
 
-- **Platforms** — the runtime was brought up and smoke-tested on macOS Apple Silicon (podman
-  machine, Homebrew `openshell`, arm64 image); the local guide's platform notes otherwise apply
-  unchanged.
+- **Platforms** — the runtime was brought up and smoke-tested locally on macOS Apple Silicon
+  (podman machine, Homebrew `openshell`, arm64 image), and `review` and `retro` also ran with
+  fullsend and OpenShell 0.1.4 (CI's pin) inside a Fedora CoreOS (aarch64) podman VM on the same
+  Mac. The local guide's platform notes otherwise apply unchanged.
 
 ## Behaviour differences worth knowing
 
@@ -433,28 +437,43 @@ What a local codex run needs, beyond the guide:
 
 ## Not yet exercised
 
-**Start on a disposable repo,** with `triage` or `prioritize` before `code` or `fix`. Codex has been
-run end to end by hand — the fleet's own `triage` and `review` harnesses, on `openai/gpt-5.6-luna`,
-on macOS — but not yet through a full fleet lifecycle, and not yet on the CI credential path: the
-Workload Identity route needs an OpenAI organization mapped to the repositories, which does not
-exist yet, so local runs use `OPENAI_API_KEY` on the runner. Until that mapping exists codex also
-has no default behaviour-test coverage; its scenario is gated. What was run, and on which versions,
-is recorded in [codex runtime
-internals](../contributing/runtime-implementation.md#codex-runtime-internals-6920).
+**Start on a disposable repo,** with `triage` or `prioritize` before `code` or `fix`. Codex has
+been run end to end by hand, locally on macOS Apple Silicon. On `openai/gpt-5.6-luna`, a V1
+parent, the fleet's own `triage`, `code`, `fix`, `review` and `retro` harnesses ran natively,
+and `review` and `retro` also ran in a Fedora CoreOS (aarch64) podman VM. On an
+`openai/gpt-6.1-sol` parent, a V2 one, `review` and `retro` ran natively. None of these runs
+went through a full fleet lifecycle or the CI credential path: the Workload Identity route needs
+an OpenAI organization mapped to the repositories, which does not exist yet, so local runs use
+`OPENAI_API_KEY` on the runner. Until that mapping exists codex also has no default
+behaviour-test coverage; its scenario is gated. What was run, and on which versions, is recorded
+in [codex runtime internals](../contributing/runtime-implementation.md#codex-runtime-internals-6920),
+in [#8836](https://github.com/fullsend-ai/fullsend/pull/8836) (`triage`, `code` and `fix`), on
+[#6970](https://github.com/fullsend-ai/fullsend/issues/6970) (`review` and `retro` on V1) and on
+[#9085](https://github.com/fullsend-ai/fullsend/issues/9085#issuecomment-6920231259) (`review`
+and `retro` on V2).
 
-**Keep `review` and `retro` on Claude Code.** Their sub-agents run as native Codex children
-([Sub-agents](#sub-agents)), but that path has not completed a fleet-shaped run yet. Nothing
-prevents a repo-wide `runtime: codex` from applying to them — they will run — so pin them with
-`runtime: claude` on their `agents:` entries until it has:
+**`review` and `retro` delegate.** On a V1 or V2 parent on the direct route with
+harness security on, `review` runs its skill's personas and `retro` its
+investigation tasks as native Codex children ([Sub-agents](#sub-agents));
+otherwise, and on a V2 parent when a child model selects V2, they run in one
+context. Both have run fleet-shaped that way on
+`gpt-5.6-luna`, a V1 parent, locally on macOS Apple Silicon, natively and in a Fedora
+CoreOS (aarch64) podman VM, not through the fleet workflows
+([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)). Every run
+exited 0, but in two of the three `review` runs on #6970 a persona the skill
+selects did not run, and neither result said so
+([#9073](https://github.com/fullsend-ai/fullsend/issues/9073),
+[#9657](https://github.com/fullsend-ai/fullsend/issues/9657)). On a `gpt-6.1-sol` parent, a V2
+one, with `gpt-5.6-luna` children, `review` ran eight personas and `retro` four tasks natively on
+macOS, and each child's result reached the parent once
+([#9085](https://github.com/fullsend-ai/fullsend/issues/9085#issuecomment-6920231259)); the `review`
+parent then dropped the challenger's kept findings after its own check of the repository
+([#9657](https://github.com/fullsend-ai/fullsend/issues/9657)). To keep either agent on Claude Code,
+set `runtime: claude` on its `agents:` entry ([per-agent
+settings](../runtimes.md#per-agent-runtime-model-and-effort)).
 
-```yaml
-agents:
-  - name: review
-    runtime: claude
-```
-
-**`code` and `fix` delegate too.** They declare no `tools:`, so on a V1 or V2 parent on the
-direct route with harness security on they get the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
+**`code` and `fix` delegate too.** They declare no `tools:`, so under the same conditions they get
+the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
 the spawn guard and the dispatch note, as `review` does. Both have run end to end that way on
 `gpt-5.6-luna` and chose not to spawn, so neither has run a native child yet.
 
