@@ -30,8 +30,13 @@ type State struct {
 	userGroups map[string][]string // accountID → group IDs, backing GET /user/groups
 }
 
+// jiraTimeLayout is the timestamp format Jira Cloud serves.
+const jiraTimeLayout = "2006-01-02T15:04:05.000-0700"
+
 // AddIssue inserts an issue with the given key and labels. A synthetic
-// numeric ID and timestamp are assigned automatically. An issue without
+// numeric ID and creation time are assigned automatically, and updated
+// starts equal to created; the activity helpers move it forward as Jira
+// does, while entity property calls leave it alone. An issue without
 // labels is served with an empty list, as Jira Cloud was observed serving it
 // (checked 2026-11-01).
 func (s *State) AddIssue(key string, labels []string) {
@@ -44,6 +49,7 @@ func (s *State) AddIssue(key string, labels []string) {
 
 	s.nextID++
 	id := strconv.Itoa(s.nextID + 10000)
+	created := time.Now().Add(-1 * time.Hour).Format(jiraTimeLayout)
 
 	s.issues[key] = &jira.Issue{
 		ID:  id,
@@ -61,8 +67,8 @@ func (s *State) AddIssue(key string, labels []string) {
 				AccountType: "atlassian",
 				Active:      true,
 			},
-			Created: time.Now().Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
-			Updated: time.Now().Format("2006-01-02T15:04:05.000-0700"),
+			Created: created,
+			Updated: created,
 		},
 	}
 }
@@ -102,7 +108,10 @@ func (s *State) AddCommentFromActorAt(issueKey, body, accountID, displayName str
 	defer s.mu.Unlock()
 
 	id := strconv.Itoa(len(s.comments[issueKey]) + 1)
-	now := at.Format("2006-01-02T15:04:05.000-0700")
+	now := at.Format(jiraTimeLayout)
+	if issue, ok := s.issues[issueKey]; ok {
+		touch(issue, at)
+	}
 
 	s.comments[issueKey] = append(s.comments[issueKey], jira.Comment{
 		ID:   id,
@@ -192,7 +201,8 @@ func (s *State) AddLabelChangeAt(issueKey, label string, at time.Time) {
 	toLabels := strings.Join(issue.Fields.Labels, " ")
 
 	id := strconv.Itoa(len(s.changelog[issueKey]) + 1)
-	now := at.Format("2006-01-02T15:04:05.000-0700")
+	now := at.Format(jiraTimeLayout)
+	touch(issue, at)
 
 	s.changelog[issueKey] = append(s.changelog[issueKey], jira.ChangelogEntry{
 		ID: id,
@@ -211,6 +221,15 @@ func (s *State) AddLabelChangeAt(issueKey, label string, at time.Time) {
 			},
 		},
 	})
+}
+
+// touch moves the issue's updated value forward to at, never back. The
+// caller holds s.mu.
+func touch(issue *jira.Issue, at time.Time) {
+	if cur, err := time.Parse(jiraTimeLayout, issue.Fields.Updated); err == nil && !at.After(cur) {
+		return
+	}
+	issue.Fields.Updated = at.Format(jiraTimeLayout)
 }
 
 // NewServer creates a mock Jira REST API server and returns the httptest

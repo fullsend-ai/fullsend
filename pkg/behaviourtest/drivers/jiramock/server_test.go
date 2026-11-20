@@ -294,3 +294,56 @@ func TestSetIssueLabels(t *testing.T) {
 	require.Len(t, labels, 31)
 	require.Equal(t, "ready-to-code", labels[len(labels)-1])
 }
+
+// The served updated value follows the issue's activity forward, as Jira's
+// does, and entity property writes leave it alone (ADR 0160 relies on
+// both).
+func TestUpdatedFollowsActivity(t *testing.T) {
+	t.Parallel()
+	srv, state := NewServer()
+	defer srv.Close()
+
+	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	served := func() (created, updated time.Time) {
+		t.Helper()
+		issues, err := client.SearchIssues(ctx, "project = PROJ", 0)
+		require.NoError(t, err)
+		require.Len(t, issues, 1)
+		created, err = time.Parse("2006-01-02T15:04:05.000-0700", issues[0].Fields.Created)
+		require.NoError(t, err)
+		updated, err = time.Parse("2006-01-02T15:04:05.000-0700", issues[0].Fields.Updated)
+		require.NoError(t, err)
+		return created, updated
+	}
+
+	state.AddIssue("PROJ-1", nil)
+	created, updated := served()
+	assert.True(t, updated.Equal(created), "a new issue's updated = %s, want its created %s", updated, created)
+
+	t1 := time.Now().Add(-30 * time.Minute).Truncate(time.Millisecond)
+	t2 := t1.Add(5 * time.Minute)
+	t0 := t1.Add(-time.Minute)
+
+	state.AddCommentFromActorAt("PROJ-1", "first", "dev-001", "Dev", t1)
+	_, updated = served()
+	assert.True(t, updated.Equal(t1), "after a comment, updated = %s, want %s", updated, t1)
+
+	state.AddLabelChangeAt("PROJ-1", "ready-to-code", t2)
+	_, updated = served()
+	assert.True(t, updated.Equal(t2), "after a label change, updated = %s, want %s", updated, t2)
+
+	state.AddCommentFromActorAt("PROJ-1", "older", "dev-001", "Dev", t0)
+	_, updated = served()
+	assert.True(t, updated.Equal(t2), "an older comment moved updated back to %s", updated)
+
+	// A comment for an issue the mock does not hold is still accepted.
+	state.AddCommentFromActorAt("PROJ-404", "orphan", "dev-001", "Dev", time.Now())
+
+	require.NoError(t, client.SetEntityProperty(ctx, "PROJ-1", "fullsend.poll.o.r.lastCheck", time.Now().UTC().Format(time.RFC3339Nano)))
+	require.NoError(t, client.DeleteEntityProperty(ctx, "PROJ-1", "fullsend.poll.o.r.lastCheck"))
+	_, updated = served()
+	assert.True(t, updated.Equal(t2), "property calls moved updated to %s", updated)
+}
