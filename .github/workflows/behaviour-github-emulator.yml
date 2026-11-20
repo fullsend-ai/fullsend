@@ -268,7 +268,9 @@ jobs:
           BEHAVIOUR_POOL_SIZE: "6"
           GODOG_CONCURRENCY: "6"
           SUITE_TIMEOUT: 45m
-          BEHAVIOUR_CAPABILITIES: applier-branch-namespace,review-skill-overrides
+          # Not review-skill-overrides: its custom-persona scenario needs a
+          # real model, so it stays in the agents repository's live job.
+          BEHAVIOUR_CAPABILITIES: applier-branch-namespace
         run: e2e/behaviour/github-emulator/run-job.sh
 
       - name: Upload logs
