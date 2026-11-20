@@ -58,6 +58,26 @@ func OutputRemoval(sanitized []byte) (string, bool) {
 	return "", false
 }
 
+// OutputRecordRemovals returns the reason stated by each fail-closed marker
+// record in a sanitized JSONL stream, in order and without repeats. A JSONL file
+// keeps its framing when records are replaced, so it is never a whole-file
+// marker, yet the records it lost still have to reach an operator (#5705).
+func OutputRecordRemovals(sanitized []byte) []string {
+	var (
+		reasons []string
+		seen    = map[string]bool{}
+	)
+	for _, line := range bytes.Split(sanitized, []byte("\n")) {
+		reason, removed := OutputRemoval(line)
+		if !removed || seen[reason] {
+			continue
+		}
+		seen[reason] = true
+		reasons = append(reasons, reason)
+	}
+	return reasons
+}
+
 // sensitiveJSONKeyRe matches object keys whose values are masked even when the
 // value itself does not match a secret pattern.
 var sensitiveJSONKeyRe = regexp.MustCompile(`(?i)(?:key|token|secret|password|credential|auth)`)
@@ -108,10 +128,10 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	if spans.localized > 0 {
 		findings = append(findings, privateKeySpanFinding(spans.localized, true))
 	}
-	// Scan the bytes that will actually be written. The walk above already
-	// scanned every decoded key and leaf, so a match here spans JSON framing
-	// (for example a PEM block split across members) and cannot be mapped back
-	// to a single leaf.
+	// Scan the bytes that will actually be written, for the whole-value secrets
+	// a leaf scan cannot see: a runtime value or a private-key block that spans
+	// JSON framing (for example a PEM block split across members) and so cannot
+	// be mapped back to a single leaf.
 	sanitizedOut, outputFindings := redactJSONOutput(out, p)
 	return preserveTrailingNewline(sanitizedOut, doc), append(findings, outputFindings...), nil
 }
@@ -247,8 +267,14 @@ func preserveTrailingNewline(encoded, doc []byte) []byte {
 // it is applied only when the redacted text is still valid JSON; otherwise the
 // document fails closed with a valid marker. clean is returned unchanged when
 // the scan finds nothing.
+//
+// Only whole-value patterns run here. The leaf walk has already applied the
+// value patterns to the decoded document, so a value match on the re-encoded
+// bytes is a redaction placeholder followed by JSON escape characters rather
+// than a secret, and masking it again would drop both the placeholder's prefix
+// and a non-secret backslash (#5705).
 func redactJSONOutput(clean []byte, p *Pipeline) ([]byte, []Finding) {
-	res := p.Scan(string(clean))
+	res := p.ScanWholeValueSecrets(string(clean))
 	if len(res.Findings) == 0 {
 		return clean, nil
 	}

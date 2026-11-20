@@ -544,6 +544,31 @@ func TestSecretRedactor(t *testing.T) {
 		assert.NotContains(t, result.Sanitized, "ijklmnop")
 	})
 
+	t.Run("json_field redacts a single-quoted value spanning a raw newline", func(t *testing.T) {
+		// Base matched `'([^']{8,})'`, which crosses newlines. Handling escaped
+		// delimiters must not narrow the pattern: a raw newline inside the
+		// value is still part of the secret.
+		result := r.Scan("'password': 'line1\nline2line3'")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "line2line3")
+	})
+
+	t.Run("json_field multi-line value does not swallow the next field", func(t *testing.T) {
+		input := "'password': 'line1\nline2line3'\n'secret': 'ijklmnop'"
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		findings := 0
+		for _, f := range result.Findings {
+			if f.Name == "json_field" {
+				findings++
+			}
+		}
+		assert.Equal(t, 2, findings, "both fields must be detected and redacted")
+		assert.NotContains(t, result.Sanitized, "line2line3")
+		assert.NotContains(t, result.Sanitized, "ijklmnop")
+	})
+
 	t.Run("json_field minimum counts runes, not bytes", func(t *testing.T) {
 		// Three CJK characters are nine bytes. The {8,} quantifier the value
 		// pattern used before it spanned escaped quotes counted characters, so

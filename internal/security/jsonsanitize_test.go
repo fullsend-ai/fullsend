@@ -220,6 +220,30 @@ func TestSanitizeJSONLines_DisjointCrossRecordMatchesKeepCleanRecord(t *testing.
 	}
 }
 
+// TestSanitizeJSONDocument_BackstopKeepsEarlierMask pins that the
+// serialized-bytes backstop never masks a redaction placeholder a second time.
+// The leaf pass masked part of an escaped sequence, so re-encoding left the
+// placeholder followed by doubled backslashes. A value pattern captured that
+// tail, found no complete mask, and masked again — dropping the informative
+// prefix and a non-secret backslash, and logging a duplicate finding (#5705).
+func TestSanitizeJSONDocument_BackstopKeepsEarlierMask(t *testing.T) {
+	p := OutputPipeline()
+	doc := []byte(`{"body":"x token_usage = metrics.get(\\\"token_usage\\\") or {}"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.Len(t, findings, 1, "only the leaf match may be reported: %+v", findings)
+	assert.Equal(t, "env_assignment", findings[0].Name)
+
+	var decoded struct {
+		Body string `json:"body"`
+	}
+	require.NoError(t, json.Unmarshal(out, &decoded))
+	assert.Equal(t, `x token_usage = metr...\"token_usage\") or {}`, decoded.Body,
+		"the earlier mask and the non-secret backslashes must survive")
+}
+
 // TestSanitizeJSONDocument_BackstopRedactsSecondRuntimeSecret pins that a
 // runtime secret exposed only by serializing the parsed document is still
 // handled when another runtime secret was already found in a leaf.
@@ -315,6 +339,22 @@ func TestOutputRemoval(t *testing.T) {
 			assert.Equal(t, tc.reason, reason)
 		})
 	}
+}
+
+// TestOutputRecordRemovals pins that a JSONL stream whose records were replaced
+// reports each distinct reason once. A replaced record keeps the file's framing,
+// so the file never equals a whole-file marker, and this is how its loss reaches
+// an operator (#5705).
+func TestOutputRecordRemovals(t *testing.T) {
+	stream := []byte(
+		`{"event":"clean"}` + "\n" +
+			failClosedCrossRecordJSON + "\r\n" +
+			failClosedCrossRecordJSON + "\n" +
+			failClosedSpansMembersJSON + "\n")
+	assert.Equal(t,
+		[]string{"a secret spanned multiple records", "a private key block spans JSON framing"},
+		OutputRecordRemovals(stream))
+	assert.Empty(t, OutputRecordRemovals([]byte(`{"event":"clean"}`+"\n")))
 }
 
 // TestJSONProvenance_UnmappableBlock pins the defensive fallback: a block that no

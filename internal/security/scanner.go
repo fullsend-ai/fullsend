@@ -79,6 +79,42 @@ func (p *Pipeline) Scan(text string) ScanResult {
 	return aggregate
 }
 
+// wholeValueScanner masks only the secrets whose match is the entire value.
+// Pipeline.ScanWholeValueSecrets uses it to rescan bytes an earlier pass has
+// already redacted without mistaking a redaction placeholder for a secret.
+type wholeValueScanner interface {
+	ScanWholeValueSecrets(text string) ScanResult
+}
+
+// ScanWholeValueSecrets runs only the whole-value masking of the pipeline's
+// scanners: registered runtime values and private-key blocks. Normalizers and
+// value patterns are skipped, because the leaf scan has already applied them to
+// the decoded document, and re-running them over serialized bytes can only
+// damage the redactions they produced (#5705).
+func (p *Pipeline) ScanWholeValueSecrets(text string) ScanResult {
+	aggregate := ScanResult{Safe: true, Sanitized: text}
+	current := text
+	for _, s := range p.scanners {
+		w, ok := s.(wholeValueScanner)
+		if !ok {
+			continue
+		}
+		result := w.ScanWholeValueSecrets(current)
+		aggregate.Findings = append(aggregate.Findings, result.Findings...)
+		if !result.Safe {
+			aggregate.Safe = false
+		}
+		if result.Sanitized != "" {
+			current = result.Sanitized
+			aggregate.Sanitized = current
+		}
+	}
+	if aggregate.Sanitized == text {
+		aggregate.Sanitized = "" // no changes
+	}
+	return aggregate
+}
+
 // InputPipeline returns the standard input scanning pipeline for
 // untrusted text entering the agent. Order matters:
 //  1. UnicodeNormalizer — strip invisible chars, normalize fullwidth
