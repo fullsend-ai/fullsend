@@ -70,8 +70,9 @@ repository.
   A `/ok-to-test <sha>` comment from a triage user does not authorize the
   optional Forgejo behaviour suite in this repository. Ask someone with
   the Write role to comment it.
-- Pull requests from any author, forks included, get the required
-  behaviour and playback checks from the GitHub emulator automatically.
+- Pull requests from any author, forks included, run the behaviour and
+  playback scenarios on the GitHub emulator automatically (the required
+  `behaviour-github-emulator` check).
   `/ok-to-test <sha>`, from someone with the Write role, authorizes only
   the optional Forgejo behaviour suite on your PRs.
 
@@ -120,8 +121,8 @@ repository.
   the PR's latest commit (Commits tab, or
   `gh pr view N --json headRefOid`). Your own PRs from a fork also need
   a `/ok-to-test <sha>` comment for it, which you may post yourself.
-  The required behaviour and playback checks need no authorization:
-  every PR, forks included, gets them from the GitHub emulator
+  The required `behaviour-github-emulator` check needs no
+  authorization: every PR, forks included, runs it
 
 **Criteria:**
 

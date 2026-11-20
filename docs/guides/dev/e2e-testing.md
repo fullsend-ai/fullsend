@@ -824,10 +824,10 @@ Pull requests trigger e2e through
 [blocks by default](https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2/)
 on public repositories from 2026-12-02
 ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)).
-Pull requests from any author, forks included, get the required `behaviour`
-and `playback` checks from the GitHub emulator
-([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml))
-with no authorization. The live `behaviour` and `playback` jobs in `e2e.yml`,
+Pull requests from any author, forks included, run the behaviour and playback
+scenarios on the GitHub emulator
+([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml),
+required check `behaviour-github-emulator`) with no authorization. The live `behaviour` and `playback` jobs in `e2e.yml`,
 which use repository secrets, run only in the merge queue and on push to
 `main`; on a pull request they skip. The only `e2e.yml` suite that runs PR-head
 code on a pull request is the optional `forgejo-behaviour` job, so a
@@ -857,9 +857,9 @@ automatically.
 
 ### Who needs `/ok-to-test`
 
-`/ok-to-test` is needed only for the optional `forgejo-behaviour` suite. The
-required `behaviour` and `playback` checks come from the GitHub emulator on
-every PR, forks included, without it.
+`/ok-to-test` is needed only for the optional `forgejo-behaviour` suite. Every
+PR, forks included, runs the required `behaviour-github-emulator` check
+without it.
 
 To run `forgejo-behaviour` on a PR from a fork, a user with write access (Write
 role or above) reviews the latest push and comments **`/ok-to-test <sha>`** on
@@ -920,8 +920,8 @@ the "How to check" links in [LADDER.md](../../../LADDER.md).
 1. **PR open/sync** — **E2E Tests** runs on `pull_request`. For a
    same-repository PR the gate authorizes a write+ / trusted-bot author, then
    `forgejo-behaviour` runs. For a fork PR the gate and suites are skipped.
-   `behaviour` and `playback` skip on every PR; the GitHub emulator
-   workflow reports those checks instead.
+   `behaviour` and `playback` skip on every PR, which their required checks
+   accept; the GitHub emulator workflow reports `behaviour-github-emulator`.
 2. **`/ok-to-test <sha>` comment** — the **E2E ok-to-test** workflow runs on
    `issue_comment`. Its authorize job checks the commenter's permission and
    that the PR head is the named sha, then calls the same suite via `workflow_call` for
