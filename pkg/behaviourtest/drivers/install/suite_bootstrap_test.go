@@ -62,7 +62,7 @@ func TestComposedDriver_DefaultOrgFailsWhenNoOrgCanBeMinted(t *testing.T) {
 func TestBootstrapFor_FallbackForNonPoolDriver(t *testing.T) {
 	t.Parallel()
 
-	d, err := NewForgejoDev(PoolConfig{})
+	d, err := newForgejoDev(PoolConfig{}, startedWith(&fakeForgejoStack{}, nil))
 	require.NoError(t, err)
 
 	b := BootstrapFor(d)

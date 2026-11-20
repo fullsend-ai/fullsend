@@ -830,7 +830,8 @@ BEHAVIOUR_FAILURE_CLASS_FILE=  # extra direct path for failure-class.json; the r
 BEHAVIOUR_TRACE_COLLECTOR=     # job-scoped OTel Collector: unset = on in GitHub Actions when BEHAVIOUR_ARTIFACT_DIR is set; true/false to force
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
-ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), or forgejo-dev (Forgejo driver stubs)
+ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), or forgejo-dev (managed local Forgejo stack)
+DOCKER_HOST=                  # forgejo-dev only: unix:// engine socket (then CONTAINER_HOST, then the Docker/Podman default sockets)
 E2E_GCP_PROJECT_ID=...        # inference project; install resolves (and if needed provisions) inference WIF once per pool repo name
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
 TEST_ACTOR_WRITE_PAT=...      # write-level human-like actor PAT (CI: same-named repo secret)
@@ -838,7 +839,7 @@ TEST_ACTOR_TRIAGE_PAT=...     # triage-level human-like actor PAT
 TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on base)
 ```
 
-`ENVIRONMENT` is `dev`, `stage`, or `forgejo-dev`. Local runs default to `dev` when unset. `forgejo-dev` selects the Forgejo SCM, CI, and install drivers, which are not-implemented stubs for now (see [Forgejo driver stubs](behaviour-drivers.md#forgejo-driver-stubs)). The standard `behaviour` job sets it to match its GitHub Environment (`dev` on authorized pull requests and the merge queue, `stage` on push to `main`). The separate, non-required `forgejo-behaviour` job selects only `@forgejo` scenarios and always sets `ENVIRONMENT=forgejo-dev`; its GitHub Environment is `forgejo-stage` on push to `main` and `forgejo-dev` otherwise. Promotion to a required check is tracked in [#9656](https://github.com/fullsend-ai/fullsend/issues/9656).
+`ENVIRONMENT` is `dev`, `stage`, or `forgejo-dev`. Local runs default to `dev` when unset. `forgejo-dev` selects the Forgejo SCM, CI, and install drivers. The install driver starts an isolated Forgejo 17.0.1 and Forgejo Runner 13.2.1 stack on the host's Docker or Podman engine for the run, waits until it is ready, and tears it down when the run ends (see [Managed forgejo-dev stack](behaviour-drivers.md#managed-forgejo-dev-stack)). Repository allocation and the SCM and CI drivers are still not-implemented stubs (see [Forgejo drivers](behaviour-drivers.md#forgejo-drivers)). The standard `behaviour` job sets it to match its GitHub Environment (`dev` on authorized pull requests and the merge queue, `stage` on push to `main`). The separate, non-required `forgejo-behaviour` job selects only `@forgejo` scenarios and always sets `ENVIRONMENT=forgejo-dev`; its GitHub Environment is `forgejo-stage` on push to `main` and `forgejo-dev` otherwise. Promotion to a required check is tracked in [#9656](https://github.com/fullsend-ai/fullsend/issues/9656).
 
 When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
 
