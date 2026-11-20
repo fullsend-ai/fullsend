@@ -345,16 +345,17 @@ Tool results in those files can quote what the agent read, such as the text
 of a private Jira issue. On a public repository, any signed-in user can
 download the artifact until it expires. The output scan masks secret
 literals; it does not remove personal data, customer names or other private
-business text. When a secret cannot be masked without breaking a file's JSON
-structure, the affected JSON document or JSONL record is replaced with a JSON
-error marker; a file whose redacted content cannot be written or computed is
-replaced by such a marker and fails the run. A marked document or record leaves
-its keys in place but masks the string values that carry key material inside the
-matched span. When a
+business text. A secret that cannot be localized replaces the whole JSON
+document or JSONL record with a JSON error marker, and a file whose redacted
+content cannot be written or computed is replaced by such a marker and fails
+the run. A private-key block that spans JSON members is handled in place
+instead: the keys keep their names, and each string value that carries block
+text or base64 key material becomes `[REDACTED PRIVATE KEY]`. When a
 replacement happens in a run that still exits 0, the job log carries an error
-annotation to say so — on GitHub Actions only; on GitLab and Forgejo the run's
-log and exit status are the signal. A write or sanitize failure needs no
-annotation because the run itself fails.
+annotation to say so. The annotation is a workflow command, so it appears
+whenever the job sets `GITHUB_ACTIONS=true`, which covers GitHub Actions and
+Forgejo Actions; on GitLab the run's log and exit status are the signal. A
+write or sanitize failure needs no annotation because the run itself fails.
 
 `fullsend run` leaves `output/` untouched. At the end of the job,
 `fullsend prepare-artifacts` builds a filtered copy at the level you set, and

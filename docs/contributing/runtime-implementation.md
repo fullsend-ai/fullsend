@@ -617,10 +617,13 @@ origins and warnings are documented in
 ### The post-run output scan
 
 `scanOutputFiles` runs the output pipeline (Unicode normalization, then secret
-redaction) over every file under `output/` except the skips above, any
-directory named `security` (which holds `findings.jsonl`), and the telemetry
-JSONL. Valid JSON is sanitized structurally so redaction
-never changes its syntax: every object key and scalar leaf is scanned
+redaction) over every file under the run directory (`<runDir>/`, including
+`iteration-N/` transcripts) except the skips above, any directory named
+`security` (which holds `findings.jsonl`), and the telemetry
+JSONL. Valid JSON is sanitized structurally so redaction never changes its
+syntax. A leading UTF-8 BOM does not send a document to the text scan either:
+it is stripped before the token walk and restored on write, and a clean document
+comes back byte for byte. The walk visits every object key and scalar leaf
 individually through a token-preserving walk that keeps member order and
 duplicate keys, so an earlier value that map decoding would drop is still
 scanned, and a secret spanning JSON framing stays visible in the rewritten
@@ -672,14 +675,15 @@ unchanged.
 
 Some content cannot be redacted in place. A JSON document or JSONL record is
 replaced with a valid fail-closed marker instead — never with corrupted
-syntax — when a private-key block cannot be localized to members, when a match
-spans record boundaries, or when a text redaction would leave the document
-invalid. Markers look like `{"error":"output removed because …"}` and are logged
+syntax — when a private-key block cannot be localized to members or when a
+match spans record boundaries. Markers look like
+`{"error":"output removed because …"}` and are logged
 as findings in `security/findings.jsonl`. Because a replaced file or record loses
 everything the agent wrote into it, and because the run still exits 0, the reason
 a marker states is also emitted as a `::error::` workflow annotation whenever the
-file is written under GitHub Actions: one annotation for a file replaced whole,
-and one per distinct reason for a JSONL file whose records were replaced.
+job sets `GITHUB_ACTIONS=true` — GitHub Actions and Forgejo Actions both do: one
+annotation for a file replaced whole, and one per distinct reason for a JSONL
+file whose records were replaced.
 
 A sanitized file that cannot be written, and a file that cannot be sanitized at
 all, do not stop the walk: every remaining file is still scanned and redacted,
