@@ -605,6 +605,22 @@ repository's suite (`BT_SUITE=agents`) against the PR and fullsend-ai/agents
 required `behaviour-github-emulator` check: it shows a fullsend change that
 breaks the agents suite before it merges.
 
+#### Moving to a new emulator release
+
+1. The pin is `EMULATOR_REPO` / `EMULATOR_REF` in
+   `.github/workflows/behaviour-github-emulator.yml`. `EMULATOR_REF` is written
+   like an action pin: `<full 40-character commit sha> # <release tag>`.
+   Releases are CalVer tags on fullsend-ai/github-emulator. The
+   [release notes](https://github.com/fullsend-ai/github-emulator/releases)
+   list behaviour changes.
+2. Before you move the pin, make a branch of current fullsend `main` that
+   changes only `EMULATOR_REF` to the release's commit. Run the whole workflow
+   on it twice. Every shard and the playback job must pass both times, and the
+   `behaviour-github-emulator (agents)` job should pass too.
+3. The agents repository's emulator job reads the pin from the fullsend
+   checkout it builds. It follows this pin with no change of its own.
+4. Changing the pin edits a workflow file, so a maintainer adds it.
+
 ### Failure classification and infrastructure retry
 
 Behaviour tests run against live infrastructure — the GitHub API, Actions
