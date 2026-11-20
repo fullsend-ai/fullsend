@@ -599,6 +599,12 @@ gated on a `@requires:capability:` tag, goes in
 `e2e/behaviour/github-emulator/not-sharded.txt` instead, one
 `<feature[:line]>` per line with a `#` comment giving the reason.
 
+On pull requests, `behaviour-github-emulator.yml` also runs the agents
+repository's suite (`BT_SUITE=agents`) against the PR and fullsend-ai/agents
+`main`, as the `behaviour-github-emulator (agents)` job. It is not part of the
+required `behaviour-github-emulator` check: it shows a fullsend change that
+breaks the agents suite before it merges.
+
 ### Failure classification and infrastructure retry
 
 Behaviour tests run against live infrastructure — the GitHub API, Actions
