@@ -136,6 +136,7 @@ func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
 	if err != nil {
 		return fmt.Errorf("build CEL matcher: %w", err)
 	}
+	warnNoJiraDispatchCandidates(cmd.ErrOrStderr(), matcher)
 
 	glClient, err := gitlab.New(forgeToken, gitlab.WithBaseURL(gitlabURL))
 	if err != nil {
