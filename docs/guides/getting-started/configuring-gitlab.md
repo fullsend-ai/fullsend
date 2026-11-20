@@ -1059,9 +1059,13 @@ reason and resource IDs.
   `GitLab trigger dispatch prerequisites verified`. When the trigger account
   defers instead, the gate is not reached, but install still warns, one line
   per finding, about every committed CI job or include that a trigger, agent
-  child (`source=pipeline`) or scheduled (`source=schedule`) pipeline would run
-  besides fullsend's own, because the managed polling schedules run on the
-  protected default branch whichever route dispatches. The check only reads:
+  child (`source=pipeline`), API-dispatched agent (`source=api`) or scheduled
+  (`source=schedule`) pipeline would run besides fullsend's own. Polling
+  dispatches each agent as a `source=api` pipeline, so a job admitted by a
+  default-branch rule alone runs inside every dispatched agent pipeline; add
+  `$CI_PIPELINE_SOURCE != "api"` (and the other reported sources) to its
+  rules. The managed polling schedules also run on the protected default
+  branch whichever route dispatches. The check only reads:
   every managed polling schedule (`fullsend slash poll`, `fullsend event poll`)
   must carry no pipeline variables (legacy schedules still set
   `FULLSEND_POLL_MODE`), and the live
@@ -1096,7 +1100,8 @@ reason and resource IDs.
   status, repair, rotation, or uninstall, even if schedules remain
   installer-owned. The gate also defers when a committed CI
   job, other than fullsend's own, would run in a trigger, agent child
-  (`source=pipeline`) or scheduled (`source=schedule`) pipeline, and while the
+  (`source=pipeline`), API-dispatched agent (`source=api`) or scheduled
+  (`source=schedule`) pipeline, and while the
   committed dispatch scripts, including helpers that run before authorization,
   do not match the shipped compatible scripts, or the managed poll, agent,
   and dispatcher jobs do not keep their shipped job configuration, including

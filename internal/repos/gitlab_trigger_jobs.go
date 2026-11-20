@@ -65,6 +65,16 @@ const triggerExtraWorkRemedy = "; add rules to it that reject $CI_PIPELINE_SOURC
 // pipeline either. Only the agent template include, which the Fullsend
 // wrapper admits for exactly api and pipeline sources, is allowed there.
 //
+// The same check runs for source=api (#9727): the poll job and the dispatcher
+// start the agent pipeline through the Poller-credential pipelines API
+// whenever the trigger-account child-pipeline route is not selected, which
+// includes every project that keeps polling as the dispatch path. GitLab
+// records source=api on the protected default branch and the Fullsend wrapper
+// admits the agent template include there too, so a user job that an api
+// pipeline would admit runs inside every dispatched agent pipeline with the
+// protected credentials. As for source=pipeline, only the agent template
+// include is allowed there.
+//
 // The same check runs for source=schedule (#8508): the managed polling
 // schedules move to the trigger-only account once dispatch activation is
 // recorded, so a job that a scheduled pipeline would admit runs as that
@@ -73,16 +83,19 @@ const triggerExtraWorkRemedy = "; add rules to it that reject $CI_PIPELINE_SOURC
 // which the Fullsend wrapper admits for exactly source=schedule, is allowed
 // there.
 //
-// agentChild selects whether the source=pipeline and source=schedule checks
-// also run. It is set for the trigger-dispatch activation gate, which is what
-// makes agent child pipelines reachable and moves schedule ownership; the
-// webhook fast path alone does neither, so a job that only a source=pipeline
-// or source=schedule pipeline would run does not defer it.
+// agentChild selects whether the source=pipeline, source=api and
+// source=schedule checks also run. It is set for the trigger-dispatch
+// activation gate, which is what makes agent child pipelines reachable and
+// moves schedule ownership, and for the install-time scan that runs when the
+// trigger account defers (#9708), which is where a polling-only project's
+// source=api finding is reported. The webhook fast path alone does none of
+// this, so a job that only a source=pipeline, source=api or source=schedule
+// pipeline would run does not defer it.
 //
 // Each source is evaluated independently and every source's problem is
 // returned (#9708), so a source=trigger finding does not hide the
-// source=pipeline or source=schedule finding for the same file. A problem that
-// reads the same for several sources is reported once.
+// source=pipeline, source=api or source=schedule finding for the same file. A
+// problem that reads the same for several sources is reported once.
 func triggerExtraWorkProblems(content []byte, file, defaultBranch string, agentChild bool, allowInclude func(*yaml.Node) bool, allowJob func(string) bool, sharedKey func(string) bool) []string {
 	var problems []string
 	add := func(problem string) {
@@ -98,6 +111,7 @@ func triggerExtraWorkProblems(content []byte, file, defaultBranch string, agentC
 		return (allowInclude != nil && allowInclude(n)) || namesAgentInclude(n)
 	}
 	add(triggerExtraWorkProblemForSource(content, file, defaultBranch, "pipeline", pipelineInclude, allowJob, nil, sharedKey))
+	add(triggerExtraWorkProblemForSource(content, file, defaultBranch, "api", pipelineInclude, allowJob, nil, sharedKey))
 	scheduleInclude := func(n *yaml.Node) bool {
 		return (allowInclude != nil && allowInclude(n)) || namesPollInclude(n)
 	}
@@ -185,6 +199,9 @@ func triggerExtraWorkProblemForSource(content []byte, file, defaultBranch, sourc
 	case "pipeline":
 		kind, alongside = "agent child pipelines (source=pipeline)", "an agent child pipeline (source=pipeline) would run alongside the agent job"
 		remedy = "; add rules to it that reject $CI_PIPELINE_SOURCE == \"pipeline\" pipelines (Fullsend does not edit user-owned jobs)"
+	case "api":
+		kind, alongside = "API-dispatched agent pipelines (source=api)", "an API-dispatched agent pipeline (source=api) would run alongside the agent job"
+		remedy = "; add rules to it that reject $CI_PIPELINE_SOURCE == \"api\" pipelines (Fullsend does not edit user-owned jobs)"
 	case "schedule":
 		kind, alongside = "scheduled pipelines (source=schedule)", "a scheduled pipeline (source=schedule) would run alongside the poll job as the trigger-only account"
 		remedy = "; add rules to it that reject $CI_PIPELINE_SOURCE == \"schedule\" pipelines (Fullsend does not edit user-owned jobs)"
@@ -572,14 +589,16 @@ func gitlabTriggerExtraWorkProblem(ctx context.Context, client forge.Client, own
 }
 
 // GitLabDispatchExtraWorkProblems is gitlabTriggerExtraWorkProblem plus the
-// source=pipeline and source=schedule checks (#8438, #8508): the
-// trigger-dispatch activation gate uses it so an unrelated user job cannot run
-// in an agent child or scheduled pipeline. It returns bare problem text (no
-// webhook fast-path prefix), one entry per problem, for the gate's reason list.
+// source=pipeline, source=api and source=schedule checks (#8438, #9727,
+// #8508): the trigger-dispatch activation gate uses it so an unrelated user
+// job cannot run in an agent child, API-dispatched agent or scheduled
+// pipeline. It returns bare problem text (no webhook fast-path prefix), one
+// entry per problem, for the gate's reason list.
 // Install also runs it when the trigger account defers and the gate is not
 // reached (#9708): the managed polling schedules keep running on the protected
 // default branch whatever the dispatch route, so the source=schedule findings
-// matter on the polling route too. It only reads.
+// matter on the polling route too, and that route dispatches the agent as
+// source=api pipelines (#9727). It only reads.
 func GitLabDispatchExtraWorkProblems(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) ([]string, error) {
 	return gitlabExtraWorkProblems(ctx, client, owner, repo, defaultBranch, true)
 }
@@ -601,10 +620,10 @@ func gitlabExtraWorkProblems(ctx context.Context, client forge.Client, owner, re
 	} else if !forge.IsNotFound(err) {
 		return nil, safeAPIError("reading "+fullsendDispatcherTemplatePath, err)
 	}
-	// The agent template is read once when the source=pipeline check runs: it
-	// is both scanned for unrelated work below and consulted here, because the
-	// agent job inherits global defaults unless it disables them, independently
-	// of the dispatcher's own inherit setting.
+	// The agent template is read once when the source=pipeline and source=api
+	// checks run: it is both scanned for unrelated work below and consulted
+	// here, because the agent job inherits global defaults unless it disables
+	// them, independently of the dispatcher's own inherit setting.
 	var agentContent []byte
 	if agentChild {
 		content, err := client.GetFileContent(ctx, owner, repo, fullsendAgentTemplatePath)
@@ -691,11 +710,14 @@ func gitlabExtraWorkProblems(ctx context.Context, client forge.Client, owner, re
 	// include or job and no execution surface outside run-agent-job.sh's
 	// checks: the agent include is admitted by name in the files above, so a
 	// job or include committed here would otherwise run in the agent child
-	// pipeline with the protected agent credentials unguarded (#8438).
+	// pipeline with the protected agent credentials unguarded (#8438). The
+	// wrapper admits the same include for source=api agent pipelines, so the
+	// template is scanned for that source too (#9727).
 	if agentContent != nil {
 		agentFile := "the committed " + fullsendAgentTemplatePath
 		allowAgentJob := func(n string) bool { return n == fullsendAgentJobName }
 		add(triggerExtraWorkProblemForSource(agentContent, agentFile, defaultBranch, "pipeline", nil, nil, allowAgentJob, sharedKey))
+		add(triggerExtraWorkProblemForSource(agentContent, agentFile, defaultBranch, "api", nil, nil, allowAgentJob, sharedKey))
 		add(triggerAgentExecProblem(agentContent, agentFile))
 		// Only the agent job's own inherit setting governs the agent template's
 		// global defaults; the dispatcher is not part of the agent child pipeline.

@@ -1306,9 +1306,11 @@ activation gate (`CheckGitLabTriggerDispatchGate`) and reports either
 unmet prerequisite, or `GitLab trigger dispatch prerequisites verified`.
 When the trigger account defers instead, the gate is not reached, but install
 still warns, one line per finding, about every committed CI job or include that
-a trigger, agent child (`source=pipeline`) or scheduled (`source=schedule`)
-pipeline would run besides fullsend's own: the managed polling schedules run on
-the protected default branch whichever route dispatches. The recheck lists every
+a trigger, agent child (`source=pipeline`), API-dispatched agent
+(`source=api`) or scheduled (`source=schedule`) pipeline would run besides
+fullsend's own: the managed polling schedules run on the protected default
+branch whichever route dispatches, and polling dispatches each agent as a
+`source=api` pipeline there. The recheck lists every
 unmet prerequisite: managed scheduled polling no longer uses
 pipeline variables (the canonical schedule specs and every live managed
 schedule; a failed schedule read defers), the live
@@ -1319,8 +1321,8 @@ already published), CI job-token repository push
 and unreported all defer), and the trigger account is ready on the default branch,
 verified against live GitLab state. A legacy install, whose schedules still set
 `FULLSEND_POLL_MODE`, defers, and so does a committed CI job that a trigger,
-agent child (`source=pipeline`) or scheduled (`source=schedule`) pipeline would
-run besides fullsend's own. Activation also defers until the committed
+agent child (`source=pipeline`), API-dispatched agent (`source=api`) or
+scheduled (`source=schedule`) pipeline would run besides fullsend's own. Activation also defers until the committed
 dispatch scripts and their pre-authorization helpers match the shipped
 compatible scripts. The managed poll, agent, and dispatcher jobs must keep
 their shipped job configuration, including image, cache, automatic admission,

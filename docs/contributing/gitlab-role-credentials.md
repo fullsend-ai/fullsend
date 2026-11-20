@@ -1017,10 +1017,13 @@ installer-owned and use the Poller route. On GitLab Free, individual Developer
 merge grants are unavailable, so a Maintainers-only merge rule uses this
 fallback without widening access. The gate also
 reads the committed CI files and defers when a job or include other than
-the managed ones would run in a trigger, an agent child (`source=pipeline`) or
-a scheduled (`source=schedule`) pipeline, or when a managed template's job-level
-or inherited global execution configuration (`after_script`, `services`,
-`hooks`) cannot be ruled out. The `source=schedule` check matters because the
+the managed ones would run in a trigger, an agent child (`source=pipeline`), an
+API-dispatched agent (`source=api`) or a scheduled (`source=schedule`)
+pipeline, or when a managed template's job-level or inherited global execution
+configuration (`after_script`, `services`, `hooks`) cannot be ruled out. The
+`source=api` check matters because the Poller-credential pipelines API route
+dispatches every agent while the child-pipeline route is not selected, and the
+wrapper admits the agent include there too. The `source=schedule` check matters because the
 managed polling schedules move to the trigger-only account, so a user job
 restricted to schedules would otherwise run as that account with its
 `CI_JOB_TOKEN`. `repos install` rechecks it whenever
