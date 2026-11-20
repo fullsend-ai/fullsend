@@ -455,3 +455,162 @@ func TestFilterLockedGitLabTargetReadsItsOwnKey(t *testing.T) {
 		t.Errorf("lastCheck only under the GitHub-style key: active %v, err %v; want active", active, err)
 	}
 }
+
+// runCycle runs one cycle on mc and returns the poller.
+func runCycle(t *testing.T, mc *mockClient, name string) *Poller {
+	t.Helper()
+	p := idleTestPoller(mc, t)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("%s: Run() error: %v", name, err)
+	}
+	return p
+}
+
+// After a look, lastCheck reaches the issue's updated value even when that
+// is after the newest comment, so the next cycle skips the issue.
+func TestRunLastCheckReachesUpdated(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	updated := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), updated)}
+	setLastCheck(mc, "PROJ-1", "acme", "platform", now.Add(-20*time.Minute))
+	addTriageComment(mc, "PROJ-1", "501", now.Add(-10*time.Minute))
+
+	if p := runCycle(t, mc, "cycle 1"); len(p.dispatches) != 1 {
+		t.Fatalf("cycle 1 dispatched %d, want 1", len(p.dispatches))
+	}
+	if lc := storedLastCheckAt(t, mc, "PROJ-1"); !lc.Equal(updated) {
+		t.Errorf("lastCheck after cycle 1 = %v, want updated %v", lc, updated)
+	}
+	listed := mc.listCommentsCalls["PROJ-1"]
+	if p := runCycle(t, mc, "cycle 2"); len(p.dispatches) != 0 {
+		t.Errorf("cycle 2 dispatched %d, want 0", len(p.dispatches))
+	}
+	if mc.listCommentsCalls["PROJ-1"] != listed {
+		t.Error("cycle 2 listed comments of an issue with nothing new")
+	}
+}
+
+// Jira moves updated for changes that leave no comment or changelog entry
+// (a worklog, an attachment, a deleted comment). One look finds nothing,
+// moves lastCheck to updated, and the issue goes quiet.
+func TestRunUpdatedWithoutEntryLooksOnce(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	updated := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), updated)}
+	setLastCheck(mc, "PROJ-1", "acme", "platform", now.Add(-20*time.Minute))
+	addTriageComment(mc, "PROJ-1", "501", now.Add(-30*time.Minute))
+
+	if p := runCycle(t, mc, "cycle 1"); len(p.dispatches) != 0 {
+		t.Errorf("cycle 1 dispatched %d, want 0", len(p.dispatches))
+	}
+	if mc.listCommentsCalls["PROJ-1"] != 1 {
+		t.Errorf("cycle 1 listed comments %d times, want 1", mc.listCommentsCalls["PROJ-1"])
+	}
+	if lc := storedLastCheckAt(t, mc, "PROJ-1"); !lc.Equal(updated) {
+		t.Errorf("lastCheck after cycle 1 = %v, want updated %v", lc, updated)
+	}
+	runCycle(t, mc, "cycle 2")
+	if mc.listCommentsCalls["PROJ-1"] != 1 {
+		t.Error("cycle 2 looked at an issue with nothing new")
+	}
+}
+
+// The search row can be older than the listings. The entry is handed off
+// on the look that finds it; the row then catches up a few milliseconds
+// past the entry, which costs one more look with no hand-off, and then the
+// issue is idle.
+func TestRunSearchRowOlderThanListing(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	commentAt := now.Add(-5 * time.Minute)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-15*time.Minute))}
+	setLastCheck(mc, "PROJ-1", "acme", "platform", now.Add(-20*time.Minute))
+	addTriageComment(mc, "PROJ-1", "501", commentAt)
+
+	if p := runCycle(t, mc, "cycle 1"); len(p.dispatches) != 1 {
+		t.Fatalf("cycle 1 dispatched %d, want 1", len(p.dispatches))
+	}
+	if lc := storedLastCheckAt(t, mc, "PROJ-1"); !lc.Equal(commentAt) {
+		t.Errorf("lastCheck after cycle 1 = %v, want the comment's time %v", lc, commentAt)
+	}
+
+	mc.searchResult[0].Fields.Updated = commentAt.Add(3 * time.Millisecond).Format(jiraTS)
+	if p := runCycle(t, mc, "cycle 2"); len(p.dispatches) != 0 {
+		t.Errorf("cycle 2 dispatched %d, want 0", len(p.dispatches))
+	}
+	if mc.listCommentsCalls["PROJ-1"] != 2 {
+		t.Errorf("comment listings after cycle 2 = %d, want 2", mc.listCommentsCalls["PROJ-1"])
+	}
+	runCycle(t, mc, "cycle 3")
+	if mc.listCommentsCalls["PROJ-1"] != 2 {
+		t.Error("cycle 3 looked at an issue with nothing new")
+	}
+}
+
+// A search row can lag a new comment (the search is eventually
+// consistent). The filter then skips the issue, but the comment is not
+// lost: it is handed off once the row catches up.
+func TestRunStaleSearchRowDelaysButDoesNotLose(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-20 * time.Minute)
+	commentAt := now.Add(-5 * time.Minute)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), lastCheck)}
+	setLastCheck(mc, "PROJ-1", "acme", "platform", lastCheck)
+	addTriageComment(mc, "PROJ-1", "501", commentAt)
+
+	if p := runCycle(t, mc, "cycle 1"); len(p.dispatches) != 0 || mc.listCommentsCalls["PROJ-1"] != 0 {
+		t.Fatalf("cycle 1 on a stale row: dispatched %d, listed %d; want the issue skipped", len(p.dispatches), mc.listCommentsCalls["PROJ-1"])
+	}
+
+	mc.searchResult[0].Fields.Updated = commentAt.Add(3 * time.Millisecond).Format(jiraTS)
+	if p := runCycle(t, mc, "cycle 2"); len(p.dispatches) != 1 {
+		t.Errorf("cycle 2 after the row caught up dispatched %d, want the comment once", len(p.dispatches))
+	}
+}
+
+// detectChanges raises maxSeen to the search row's updated value when that
+// is later, never lowers it, ignores an unparseable value, and still caps
+// the result below fetch start.
+func TestDetectChangesMaxSeenReachesUpdated(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-time.Hour)
+	commentAt := now.Add(-10 * time.Minute)
+	cases := []struct {
+		name    string
+		updated string
+		want    time.Time // zero: capped below fetch start
+	}{
+		{name: "after", updated: now.Add(-time.Minute).Format(jiraTS), want: now.Add(-time.Minute)},
+		{name: "before", updated: now.Add(-20 * time.Minute).Format(jiraTS), want: commentAt},
+		{name: "equal", updated: commentAt.Format(jiraTS), want: commentAt},
+		{name: "unparseable", updated: "soon", want: commentAt},
+		{name: "empty", updated: "", want: commentAt},
+		{name: "inside the margin", updated: now.Add(time.Second).Format(jiraTS)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := newMockClient()
+			addTriageComment(mc, "PROJ-1", "501", commentAt)
+			p := idleTestPoller(mc, t)
+			issue := jira.Issue{ID: "10001", Key: "PROJ-1", Fields: jira.IssueFields{Created: now.Add(-48 * time.Hour).Format(jiraTS), Updated: tc.updated}}
+			res, err := p.detectChanges(context.Background(), issue, lastCheck)
+			if err != nil {
+				t.Fatalf("detectChanges() error: %v", err)
+			}
+			if tc.want.IsZero() {
+				// Raised past the comment to updated, then capped at
+				// fetch start minus the 10 s margin.
+				if res.maxSeen.Before(now.Add(-10*time.Second)) || !res.maxSeen.Before(now.Add(-5*time.Second)) {
+					t.Errorf("maxSeen = %v, want raised to updated and capped 10 s below fetch start (now %v)", res.maxSeen, now)
+				}
+				return
+			}
+			if !res.maxSeen.Equal(tc.want) {
+				t.Errorf("maxSeen = %v, want %v", res.maxSeen, tc.want)
+			}
+		})
+	}
+}
