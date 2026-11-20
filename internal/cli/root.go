@@ -98,6 +98,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newPrepareArtifactsCmd())
 	cmd.AddCommand(newResolveMRSourceCmd())
 	cmd.AddCommand(newCheckProtectedBranchCmd())
+	cmd.AddCommand(newPushSignedCmd())
 	cmd.AddCommand(newLintCmd())
 	cmd.AddCommand(newSelfUpdateCmd())
 	return cmd
