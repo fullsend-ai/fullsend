@@ -10,7 +10,7 @@ This sits at the intersection of two existing problem areas: [testing-agents.md]
 
 ## Why this matters
 
-Without a feedback loop, every configuration choice ossifies. As soon as fullsend has any runtime selection between alternative agents, teams, or workflow shapes — even a hand-coded conditional — a bad default persists silently unless something measures its outcomes against alternatives. Deciding up front how that measurement works is cheaper than retrofitting it once defaults are entrenched.
+Without a feedback loop, every configuration choice ossifies. As soon as fullsend has any runtime selection between alternative agents, teams, or workflow shapes — even a hand-coded conditional — a bad default persists silently unless something measures its outcomes against alternatives. Deciding up front how that measurement works is cheaper than retrofitting it once defaults are entrenched. [Review autonomy evidence](review-autonomy-evidence.md#runtime-and-configuration-comparison-evidence) records a same-diff comparison of two review configurations after a runtime switch that shipped without that measurement, plus a re-evaluation checkpoint whose result is intended as a version-tagged input to the fitness function below.
 
 Fitness must be scoped by context. A team that is effective at one class of task (e.g., Python refactors) may be mediocre at another (e.g., GitHub Actions YAML edits or dependency bumps). If the platform ever supports more than one team or workflow, fitness data must be bucketed by context tuple (repo shape, language, issue type, phase, ...) — and that bucketing is much easier to design in than to bolt on.
 
@@ -187,6 +187,8 @@ The experiment should actively pressure-test three assumptions:
 ## Relationship to other problems
 
 **[Testing the Agents](testing-agents.md)**: Adaptive selection generates exactly the kind of outcome data an agent-eval framework needs — per-configuration, per-context performance metrics. The fitness data from adaptive selection could feed directly into agent regression testing.
+
+**[Review Autonomy Evidence](review-autonomy-evidence.md#runtime-and-configuration-comparison-evidence)**: Same-diff comparisons of two review configurations are a concrete fitness signal (catch vs. miss on a finding category, with cost). The recorded pair is N=1 and explicitly not a promotion decision; the attached re-evaluation checkpoint is meant to produce a version-tagged catch-rate data point this fitness function can consume.
 
 **[Production Feedback](production-feedback.md)**: Adaptive selection is one concrete mechanism for closing the production feedback loop. Instead of production signals only triggering reactive fixes, they contribute to the fitness function that guides proactive configuration selection.
 
