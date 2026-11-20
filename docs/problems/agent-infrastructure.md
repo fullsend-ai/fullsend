@@ -127,6 +127,11 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 
 ## Open questions
 
+- How can agents and separate processes avoid repeatedly spending GitHub API
+  quota on the same entities? (Shared HTTP caching through ghproxy and
+  permission-equivalent read-only mint tokens decided in
+  [ADR 0071](../ADRs/0071-share-github-api-cache-with-read-only-mint-tokens.md);
+  deployment ownership and cache storage remain implementation work.)
 - What is the right level of isolation per agent (process, container, microVM, separate cluster)?
 - How do we provide agents with “resources to do their work” (clone, tools,
   APIs) without over-privileging them or creating a single high-value target?
