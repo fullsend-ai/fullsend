@@ -47,7 +47,7 @@ env:
   # scripts/ci-seed-mint-apps.py run the stack, so a bump changes what
   # every scenario runs against. Bump on purpose, like an action pin.
   EMULATOR_REPO: fullsend-ai/github-emulator
-  EMULATOR_REF: c70f705a1a8c0888975ef3723ba913a2166277fa # 2026.11.20.1
+  EMULATOR_REF: 8e2ac09353f3f1cfbd138de29ebf158ce1f8451f # 2026.11.20.2
 
 jobs:
   behaviour-github-emulator:
