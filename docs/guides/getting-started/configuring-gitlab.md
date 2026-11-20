@@ -208,7 +208,9 @@ The opt-in:
 * does not enable the [webhook fast path](#webhook-fast-path) or the trigger
   account. Both stay deferred, because their trigger credential is only safe
   while callers cannot inject variables. Agents start from the poll schedules
-  instead.
+  instead. `repos status` reports the fast path as deferred, not drift. A
+  webhook or trigger credential left over from before the opt-in is still
+  drift, and `repos install` revokes it.
 * does not accept an instance that does not report the setting at all.
 
 To remove the opt-in, set **No one allowed** in the project, then run
