@@ -362,6 +362,9 @@ approval alone cannot demonstrate the required confidentiality property.
 - [Cross-run memory](cross-run-memory.md): lessons and evidence that a run
   carries forward can also carry private context to a later run with a wider
   audience.
+- [Deep security audit](deep-security-audit.md): findings about undisclosed
+  vulnerabilities are restricted output that must stay out of public logs,
+  artifacts and forge writes.
 
 ## Open questions
 
