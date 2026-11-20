@@ -58,9 +58,10 @@ contribution.
 
 ### Review etiquette
 
-- **Comment resolution belongs to the PR author.** When a reviewer leaves a comment, the PR author is free to address the feedback and resolve the conversation themselves. This keeps the review cycle moving.
+- A maintainer who **approves** a pull request should go ahead and merge that pull request, unless it is authored by / originates from another maintainer, in which case the originator is responsible for merge after receiving approval from the approver.
+- **Comment resolution belongs to the PR author,** but can also be done by the merging maintainer. In general, when a reviewer leaves a comment, the PR author is free to address the feedback and resolve the conversation themselves. This keeps the review cycle moving. If the approving / merging maintainer is ready to merge, they may resolve remaining comments in a sweep to unblock the PR.
 - **If you need to block a PR on your feedback, use "Request changes."** A comment alone is advisory — the author may resolve it at their discretion. The "Request changes" review status is how a reviewer signals that the PR should not merge until their concern is addressed. This is the only mechanism for enforcing your review.
-- **Be constructive.** This is a design exploration — disagreement is expected and valuable. Critique ideas, not people. When you push back on a proposal, suggest an alternative or explain what concern drives your objection.
+- **Be constructive.** Disagreement is expected and valuable. Critique ideas, not people. When you push back on a proposal, suggest an alternative or explain what concern drives your objection.
 
 ### Reworking a PR
 
