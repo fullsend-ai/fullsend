@@ -1,0 +1,16 @@
+# Behaviour scenarios deliberately in no shard of shards.txt: <feature[:line]> # why
+# shards_test.go fails when a scenario is in neither shards.txt nor this
+# file, so a scenario that cannot run on the emulator in a pull request is
+# listed here with the reason.
+features/runtime/agent-settings.feature:57 # @requires:capability:runtime-pi
+features/runtime/claude-gateway.feature:24 # @requires:capability:runtime-claude-gateway
+features/runtime/codex-gateway.feature:27 # @requires:capability:runtime-codex-gateway
+features/runtime/codex-openai.feature:26 # @requires:capability:runtime-codex-openai
+features/runtime/inference-gateway-api-key.feature:28 # @requires:capability:inference-gateway-api-key
+features/runtime/inference-gateway.feature:62 # @requires:capability:inference-gateway
+features/runtime/inference-gateway.feature:100 # @requires:capability:inference-gateway-reseed
+features/runtime/opencode.feature:19 # @requires:capability:runtime-opencode
+features/runtime/pi-gateway.feature:23 # @requires:capability:runtime-pi-gateway
+features/runtime/pi-openai.feature:19 # @requires:capability:runtime-pi-openai
+features/runtime/pi.feature:17 # @requires:capability:runtime-pi
+features/runtime/playback.feature:29 # @playback, run by the playback job

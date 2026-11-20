@@ -584,6 +584,15 @@ are balanced on measured scenario time, not on scenario count. When you add
 or move a scenario, update its line. List a Scenario Outline by its own line
 so all its rows stay on one shard.
 
+`e2e/behaviour/shards_test.go` enforces the list as part of the plain
+`go test ./...` unit run. It fails, naming each entry, when a scenario is in no
+shard, when an entry does not point at a `Scenario:` or `Scenario Outline:`
+header (for example after lines are added above it), or when a scenario is
+listed more than once. A scenario that cannot run on the emulator, such as one
+gated on a `@requires:capability:` tag, goes in
+`e2e/behaviour/github-emulator/not-sharded.txt` instead, one
+`<feature[:line]>` per line with a `#` comment giving the reason.
+
 ### Failure classification and infrastructure retry
 
 Behaviour tests run against live infrastructure — the GitHub API, Actions
