@@ -828,6 +828,7 @@ BEHAVIOUR_APP_SET=fullsend-test # app identities for both mint deployment and gi
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
 BEHAVIOUR_FAILURE_CLASS_FILE=  # extra direct path for failure-class.json; the retry wrapper sets it to a private temp file when BEHAVIOUR_ARTIFACT_DIR is unset
 BEHAVIOUR_TRACE_COLLECTOR=     # job-scoped OTel Collector: unset = on in GitHub Actions when BEHAVIOUR_ARTIFACT_DIR is set; true/false to force
+BEHAVIOUR_OPENBAO=             # feature-scoped OpenBao for Vault scenarios: unset = on in GitHub Actions with Podman, else skipped; true = required; false = off
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
 ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), or forgejo-dev (Forgejo driver stubs)
@@ -983,6 +984,51 @@ The tested fullsend workflows run on separate GitHub-hosted runners, so the suit
 `BEHAVIOUR_TRACE_COLLECTOR` controls the collector. When unset, it runs only in GitHub Actions and only when `BEHAVIOUR_ARTIFACT_DIR` is set. Set it to `true` to run the collector locally (requires Podman and `BEHAVIOUR_ARTIFACT_DIR`), or `false` to turn it off. Trace collection is diagnostic: if the collector cannot start (no Podman, image pull or tunnel failure), the suite logs a warning and runs without it. If a repository cannot be configured, the suite logs that and continues. A suite killed by the `go test` timeout skips `t.Cleanup`, so no trace files are saved for that run.
 
 To check the per-trace routing against the pinned Collector image, run `BT_OTELCOL_INTEGRATION=1 go test ./pkg/behaviourtest/drivers/install -run PerTraceFilesWithRealCollector` (requires Podman). The test sends interleaved spans of two trace IDs across several export requests and verifies that every span is preserved and each trace ID has its own file. The test is skipped otherwise.
+
+### Vault (OpenBao) server
+
+Behaviour scenarios for Vault-backed runner secrets
+([ADR 0155](../../ADRs/0155-configure-vault-backed-runner-secrets.md)) need a
+Vault server that the tested workflows can reach.
+`install.StartVaultServer` in `pkg/behaviourtest/drivers/install` provides one.
+A Vault feature starts the server once, reuses it across its scenarios and
+stops it at feature or job cleanup. Features that do not exercise Vault never
+start it.
+
+1. Generate a random root token. It is registered with the process secret
+   redactor and reaches the container only through Podman's environment, never
+   a command line. It stays on the CI worker.
+2. Start an OpenBao dev-mode server with Podman, published on `127.0.0.1` of
+   the CI worker. Dev mode keeps everything in memory and mounts KV v2 at
+   `secret/`.
+3. Enable JWT auth at the default `jwt` mount, bound to the GitHub Actions OIDC
+   issuer. OpenBao fetches the issuer's signing keys through OIDC discovery.
+   Then write a policy that grants `read` on `secret/data/fullsend-bt/*` and
+   nothing else.
+4. Start a Cloudflare quick tunnel to give the server a public HTTPS address,
+   as Vault connections require. The address goes into trusted base
+   configuration as the connection's `vault_address`.
+5. Log the startup time and the server container's memory use
+   (`podman stats`), so the cost on the behaviour-test runner is visible in
+   the job log.
+
+`AllowRepo` writes the default `fullsend-runner` role. The role binds the
+default Fullsend Vault audience (`https://fullsend.sh/vault`) and the job
+token's `repository` claim to every allowed leased repository, and attaches
+only the read policy. `PutSecret` writes a synthetic scenario secret under
+`secret/data/fullsend-bt/` and returns the KV v2 read path for a
+`vault_secrets` entry. `Stop` stops the tunnel, then the server, and removes
+both containers, which discards the root token and every secret. If removing
+a container fails, the next `Stop` call retries it. If a failed startup cannot
+remove its own containers, `StartVaultServer` returns the partially started
+server together with the error, so the caller can still retry `Stop` at feature
+or job cleanup.
+
+`BEHAVIOUR_OPENBAO` controls the server. When unset, Vault scenarios run only
+in GitHub Actions with Podman available, because the tested workflows need a
+job-issued OIDC token. Otherwise `StartVaultServer` returns a skip reason, so
+local runs skip them. Set it to `true` to make a missing prerequisite an error
+instead of a skip, or `false` to turn the scenarios off.
 
 ### Rate-limit observability
 
