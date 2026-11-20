@@ -800,6 +800,13 @@ is not `ready` delays dispatch by up to one poll interval instead of stopping
 it. A fresh install whose scaffold merge request is still open, or whose default
 branch is unprotected, dispatches nothing on either path until then.
 
+For installed GitLab repos, status also scans the default-branch CI
+configuration for unrelated CI work across trigger, agent child
+(`source=pipeline`) and scheduled (`source=schedule`) pipelines, whatever the
+trigger account state. Results appear as a warning section in table output and
+as `gitlab_unrelated_ci_work` in `--json` output, and they add no drift. See
+[`repos status` output](../../cli/repos.md#output).
+
 Use `--json` for machine-readable output:
 
 ```bash
