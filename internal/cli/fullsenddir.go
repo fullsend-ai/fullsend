@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -57,11 +58,12 @@ func fullsendDirArg(dir string) string {
 // rune is shell-safe (letters, digits, '-', '_', '.', '/'), otherwise
 // wrapped in single quotes with embedded quotes escaped, so a hint naming
 // an agent whose file has a space or shell metacharacter in it stays one
-// argument when the hint is copied as written. Control characters are
-// never passed through (escapeHintArg), so a crafted name cannot forge
-// log lines or alter how the printed command looks, and a name that
-// starts with '-' is always quoted — the hint builders guard it behind
-// the "--" end-of-options marker — so it cannot read as a flag.
+// argument when the hint is copied as written. Control, format and
+// separator characters are never passed through (escapeHintArg), so a
+// crafted name cannot forge log lines or alter how the printed command
+// looks, and a name that starts with '-' is always quoted — the hint
+// builders guard it behind the "--" end-of-options marker — so it cannot
+// read as a flag.
 func shellQuoteArg(s string) string {
 	if strings.HasPrefix(s, "-") {
 		return "'" + escapeHintArg(s) + "'"
@@ -74,16 +76,22 @@ func shellQuoteArg(s string) string {
 	return s
 }
 
-// isHintControl reports whether r is a control character a printed hint
-// must not carry literally: the C0 controls (newline, carriage return,
-// tab, escape, …), DEL, and the C1-range ANSI escapes all travel through
-// single quotes and could forge log lines or alter how the command looks.
+// isHintControl reports whether r is a character a printed hint must not
+// carry literally: the C0 controls (newline, carriage return, tab,
+// escape, …), DEL and the C1-range ANSI escapes travel through single
+// quotes and could forge log lines or alter how the command looks, and the
+// Unicode format characters (bidi overrides and isolates, zero-width and
+// BOM) plus the line and paragraph separators (U+2028/U+2029) could
+// reorder how the printed command looks or fake a log line in viewers
+// that break on them.
 func isHintControl(r rune) bool {
-	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) ||
+		unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
 }
 
 // hintControlEscapes names the control characters that get a readable
-// backslash sequence; the others render as \xNN.
+// backslash sequence; the others render as \xNN, or \u{XXXX} for the
+// Unicode format and separator characters above U+00FF.
 var hintControlEscapes = map[rune]string{
 	'\a': `\a`,
 	'\b': `\b`,
@@ -95,10 +103,22 @@ var hintControlEscapes = map[rune]string{
 	0x1b: `\e`,
 }
 
+// writeHintControl writes a hint-control rune's visible backslash
+// sequence: the C0/C1 range as \xNN, the wider Unicode format and
+// separator characters as \u{XXXX}.
+func writeHintControl(b *strings.Builder, r rune) {
+	if r <= 0xff {
+		fmt.Fprintf(b, `\x%02x`, r)
+	} else {
+		fmt.Fprintf(b, `\u{%04x}`, r)
+	}
+}
+
 // escapeHintArg prepares s for the inside of a printed hint's single
 // quotes: embedded quotes become '\” so the argument stays quoted, and
-// every control character becomes a visible backslash sequence so the
-// printed line cannot be forged or visually altered.
+// every control, format and separator character becomes a visible
+// backslash sequence so the printed line cannot be forged or visually
+// altered.
 func escapeHintArg(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -109,7 +129,7 @@ func escapeHintArg(s string) string {
 			if esc, ok := hintControlEscapes[r]; ok {
 				b.WriteString(esc)
 			} else if isHintControl(r) {
-				fmt.Fprintf(&b, `\x%02x`, r)
+				writeHintControl(&b, r)
 			} else {
 				b.WriteRune(r)
 			}
@@ -135,17 +155,18 @@ func lockForgeArg(harnessPath, forgePlatform string) string {
 }
 
 // escapeHintDisplay renders s for a printed hint's prose (outside the
-// quoted arguments): every control character becomes a visible backslash
-// sequence — the same treatment escapeHintArg gives hint arguments — so a
-// crafted name or dependency identifier cannot forge log lines, while
-// quotes are left as they are, since the prose is not shell syntax.
+// quoted arguments): every control, format and separator character
+// becomes a visible backslash sequence — the same treatment escapeHintArg
+// gives hint arguments — so a crafted name or dependency identifier cannot
+// forge log lines, while quotes are left as they are, since the prose is
+// not shell syntax.
 func escapeHintDisplay(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if esc, ok := hintControlEscapes[r]; ok {
 			b.WriteString(esc)
 		} else if isHintControl(r) {
-			fmt.Fprintf(&b, `\x%02x`, r)
+			writeHintControl(&b, r)
 		} else {
 			b.WriteRune(r)
 		}
