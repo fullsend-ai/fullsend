@@ -931,7 +931,7 @@ func TestAnnotateGitLabRoleLifecycleReportsPipelineRefDrift(t *testing.T) {
 
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{{
-			Owner: "group", Repo: "project"}},
+			Owner: "group", Repo: "project", Installed: true}},
 	}
 	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
 	assert.True(t, varsCalled, "variables handler was not called")
@@ -990,7 +990,7 @@ func TestAnnotateGitLabRoleLifecycleReportsPipelineRefWithoutRoleMode(t *testing
 
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{{
-			Owner: "group", Repo: "project",
+			Owner: "group", Repo: "project", Installed: true,
 		}},
 	}
 	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
@@ -1047,7 +1047,7 @@ func TestAnnotateGitLabRoleLifecyclePipelineRefWithoutTokenList(t *testing.T) {
 
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{{
-			Owner: "group", Repo: "project"}},
+			Owner: "group", Repo: "project", Installed: true}},
 	}
 	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
 	assert.True(t, tokensCalled, "access_tokens handler was not called")

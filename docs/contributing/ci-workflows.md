@@ -202,11 +202,13 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour, playback, and forgejo-behaviour jobs check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`):
+Pull requests run the behaviour and playback scenarios on a GitHub emulator ([`behaviour-github-emulator.yml`](../../.github/workflows/behaviour-github-emulator.yml)) with no secrets, no environment and no cloud OIDC, so fork pull requests run them on `pull_request` with no authorization step. `e2e.yml` runs the `behaviour` and `playback` suites, with secrets, only in the merge queue and on push to `main`; on a pull request those jobs skip, which their required checks accept.
 
-- **Same-repository PRs** — the gate authorizes authors with write access (collaborator permission API) and trusted bots. Fork `pull_request` runs get no secrets, so the suites skip them.
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the `forgejo-behaviour` job, the only `e2e.yml` suite that runs on pull requests, checks out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`):
+
+- **Same-repository PRs** — the gate authorizes authors with write access (collaborator permission API) and trusted bots. Fork `pull_request` runs get no secrets, so `forgejo-behaviour` skips them.
 - **Fork PRs** — require a user with write access (Write role or above) to review the PR diff and comment `/ok-to-test <sha>`, naming the reviewed commit, including when the fork author has write access. The gate reads the comment from the API, checks the commenter's permission, and authorizes the PR head only when it is the named sha. Another head is refused (`stale_ok_to_test`), and a comment with no sha is refused (`missing_sha`). The gate uses no timing. The `ok-to-test` label no longer starts e2e.
-- **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports the `behaviour`, `playback`, and `forgejo-behaviour` check runs on the authorized sha. The behaviour/playback jobs run on the PR-head checkout with `contents: read` and `id-token: write` only. The `forgejo-behaviour` job runs on the PR-head checkout with `contents: read` only.
+- **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports only the `forgejo-behaviour` check run on the authorized sha. The `forgejo-behaviour` job runs on the PR-head checkout with `contents: read` only.
 
 **Limitations of the gate:**
 
@@ -228,7 +230,7 @@ When a PR adds or modifies secret references in a `pull_request_target` job, rev
 
 ### Behaviour debug artifact redaction
 
-The behaviour job in `e2e.yml` uploads debug artifacts after every relevant run, whether the tests succeed or fail. Because PR-head code populates that directory on authorized PR runs (`pull_request` and `/ok-to-test`), a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
+The behaviour job in `e2e.yml` uploads debug artifacts after every relevant run, whether the tests succeed or fail. Because the code under test populates that directory on its runs (the merge queue and push to `main`), a malicious change that reaches the merge queue could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
 
 Before upload, the workflow checks out `scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.event.pull_request.base.sha` on `pull_request`, whose `github.sha` is the PR merge commit; the default-branch head on `/ok-to-test` runs; the merge-group head on `merge_group`) into a separate `base-scripts/` path. PR-head code cannot modify the checked-in script contents. The redaction step runs via `env -i` with a pinned `PATH` so earlier job steps cannot poison the interpreter search path or dynamic-linker hooks.
 

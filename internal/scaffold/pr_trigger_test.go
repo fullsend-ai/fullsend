@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -135,24 +136,51 @@ func TestEveryCheckoutHasTrustedRef(t *testing.T) {
 	}
 }
 
+// workflowSHAViolations counts the lines in a workflow whose expressions read
+// job.workflow_sha. For each line that reads it outside trustedWorkflowSHA it
+// returns "file:line: text", with a 1-based line number.
+func workflowSHAViolations(file string, content []byte) (uses int, violations []string) {
+	for i, line := range strings.Split(string(content), "\n") {
+		if !strings.Contains(line, "${{") || !strings.Contains(line, "job.workflow_sha") {
+			continue
+		}
+		uses++
+		if strings.Contains(strings.ReplaceAll(line, trustedWorkflowSHA, ""), "job.workflow_sha") {
+			violations = append(violations, fmt.Sprintf("%s:%d: %s", file, i+1, strings.TrimSpace(line)))
+		}
+	}
+	return uses, violations
+}
+
 // TestWorkflowSHAUsesAreTrusted checks that every expression that reads
 // job.workflow_sha (checkout refs, CLI install and version inputs, cache
 // keys) goes through trustedWorkflowSHA.
 func TestWorkflowSHAUsesAreTrusted(t *testing.T) {
 	for _, file := range []string{".github/workflows/reusable-dispatch.yml", ".github/workflows/reusable-prioritize.yml"} {
 		t.Run(file, func(t *testing.T) {
-			var uses int
-			for _, line := range strings.Split(string(loadRepoFile(file)(t)), "\n") {
-				if !strings.Contains(line, "${{") || !strings.Contains(line, "job.workflow_sha") {
-					continue
-				}
-				uses++
-				assert.NotContains(t, strings.ReplaceAll(line, trustedWorkflowSHA, ""), "job.workflow_sha",
-					"job.workflow_sha must be read through the trusted expression: %s", strings.TrimSpace(line))
+			uses, violations := workflowSHAViolations(file, loadRepoFile(file)(t))
+			for _, v := range violations {
+				t.Errorf("job.workflow_sha must be read through the trusted expression: %s", v)
 			}
 			assert.NotZero(t, uses)
 		})
 	}
+}
+
+// TestWorkflowSHAViolationsNamesFileAndLine checks that a bare
+// job.workflow_sha read is reported with the workflow file and its 1-based
+// line number, and that a read through trustedWorkflowSHA is not.
+func TestWorkflowSHAViolationsNamesFileAndLine(t *testing.T) {
+	content := []byte("jobs:\n" +
+		"  a:\n" +
+		"    steps:\n" +
+		"      - uses: actions/checkout@v4\n" +
+		"        with:\n" +
+		"          ref: ${{ " + trustedWorkflowSHA + " }}\n" +
+		"      - run: gh api \"x?ref=${{ job.workflow_sha }}\"\n")
+	uses, violations := workflowSHAViolations("wf.yml", content)
+	assert.Equal(t, 2, uses)
+	assert.Equal(t, []string{`wf.yml:7: - run: gh api "x?ref=${{ job.workflow_sha }}"`}, violations)
 }
 
 // prDispatchGuard skips fork and Dependabot PRs on pull_request.

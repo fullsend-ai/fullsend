@@ -7,8 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1021,7 +1019,6 @@ type probeOIDC struct {
 
 type probeKeys struct {
 	published, other *rsa.PrivateKey
-	cert             []byte // DER certificate of the published key
 }
 
 var probeTestKeys = sync.OnceValue(func() *probeKeys {
@@ -1032,19 +1029,7 @@ var probeTestKeys = sync.OnceValue(func() *probeKeys {
 		}
 		return k
 	}
-	k := &probeKeys{published: gen(), other: gen()}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "probe-test-signing-key"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &k.published.PublicKey, k.published)
-	if err != nil {
-		panic(err)
-	}
-	k.cert = der
-	return k
+	return &probeKeys{published: gen(), other: gen()}
 })
 
 // signedProbeOIDC returns a GitHub-style RS256 OIDC token and the JWKS that
@@ -1089,7 +1074,10 @@ func signedProbeOIDC(t *testing.T, o probeOIDC) (token, jwks string) {
 	if !o.noJWKS {
 		b, err := json.Marshal(map[string]any{"keys": []map[string]any{{
 			"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "probe-test-kid",
-			"x5c": []string{base64.StdEncoding.EncodeToString(keys.cert)},
+			// Modulus and exponent only, as GitHub's newest signing keys
+			// are published (no x5c certificate chain).
+			"n": base64.RawURLEncoding.EncodeToString(keys.published.N.Bytes()),
+			"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(keys.published.E)).Bytes()),
 		}}})
 		require.NoError(t, err)
 		jwks = string(b)

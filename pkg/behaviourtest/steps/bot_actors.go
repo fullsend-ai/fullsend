@@ -258,7 +258,7 @@ jobs:
               code="$(curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w '%%{http_code}' -X DELETE \
                 -H "Authorization: Bearer ${token}" \
                 -H "Accept: application/vnd.github+json" \
-                https://api.github.com/installation/token)" || code=000
+                "${GITHUB_API_URL}/installation/token")" || code=000
               if [[ "${code}" == 204 ]]; then
                 token=''
                 return 0
@@ -273,8 +273,14 @@ jobs:
             echo "FULLSEND_MINT_URL is not set on the repository"
             exit 1
           fi
-          if [[ "${MINT_URL}" != https://* ]]; then
-            echo "FULLSEND_MINT_URL must start with https://"
+          # The mint is https, or plain http on this runner's loopback, as
+          # fullsend's mint client allows.
+          mint_proto='=https'
+          loopback_re='^http://(127\.0\.0\.1|localhost)(:[0-9]+)?(/|$)'
+          if [[ "${MINT_URL}" =~ ${loopback_re} ]]; then
+            mint_proto='=http'
+          elif [[ "${MINT_URL}" != https://* ]]; then
+            echo "FULLSEND_MINT_URL must start with https:// (or http:// on loopback)"
             exit 1
           fi
           oidc_token="$(curl -sS --fail --retry 3 --retry-delay 2 --retry-all-errors \
@@ -288,7 +294,7 @@ jobs:
 
           request="$(jq -nc --arg role "${ROLE}" --arg repo "${REPO_NAME}" \
             '{role: $role, level: "write", repos: [$repo]}')"
-          minted="$(curl -sS --fail --proto '=https' --retry 2 --retry-delay 2 \
+          minted="$(curl -sS --fail --proto "${mint_proto}" --retry 2 --retry-delay 2 \
             -H "Authorization: Bearer ${oidc_token}" \
             -H "Content-Type: application/json" \
             -d "${request}" \
@@ -302,15 +308,15 @@ jobs:
 
           case "${ACTION}" in
             comment)
-              url="https://api.github.com/repos/${REPO}/issues/${ISSUE}/comments"
+              url="${GITHUB_API_URL}/repos/${REPO}/issues/${ISSUE}/comments"
               payload="$(jq -nc --arg body "${VALUE}" '{body: $body}')"
               ;;
             label)
-              url="https://api.github.com/repos/${REPO}/issues/${ISSUE}/labels"
+              url="${GITHUB_API_URL}/repos/${REPO}/issues/${ISSUE}/labels"
               payload="$(jq -nc --arg label "${VALUE}" '{labels: [$label]}')"
               ;;
             review)
-              url="https://api.github.com/repos/${REPO}/pulls/${ISSUE}/reviews"
+              url="${GITHUB_API_URL}/repos/${REPO}/pulls/${ISSUE}/reviews"
               payload="$(jq -nc --arg body "${VALUE}" '{event: "COMMENT", body: $body}')"
               ;;
             *)

@@ -96,6 +96,9 @@ var gitlabCIScaffoldLocalEnvVars = map[string]struct{}{
 	"FULLSEND_REPO":    {},
 	// GitLab CI OIDC id_token declared in fullsend-agent.yml.
 	"FULLSEND_ID_TOKEN": {},
+	// GitLab CI OIDC id_token for Vault-backed runner secrets (ADR 0155),
+	// declared in fullsend-agent.yml and read by `fullsend run`.
+	"FULLSEND_VAULT_ID_TOKEN": {},
 	// Harness/CLI: status comments target MRs rather than issues.
 	"FULLSEND_NOTE_TARGET": {},
 	// trust-ci-server-ca.sh idempotency flag.

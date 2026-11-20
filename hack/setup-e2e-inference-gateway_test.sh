@@ -1235,6 +1235,45 @@ cc_run && rc=0 || rc=$?
 expect_refused "a waiting release run behind 150 completed runs" 6
 expect_out "the busy check names the older run" "busy: release.yml run 999 is waiting"
 
+# Local-render overrides: a gateway run in a test VM against a GitHub
+# emulator. They change only --print-config output and are refused by every
+# other mode, so a deployed gateway never trusts another issuer.
+LOCAL_SETUP="${SCRIPT_DIR}/setup-e2e-inference-gateway.sh"
+LOCAL_OUT="${SHIM_DIR}/local-render.yaml"
+if bash "${LOCAL_SETUP}" --print-config --without-vertex \
+    --issuer https://ghemu.localhost:443 --jwks-url http://127.0.0.1:8000/.well-known/jwks \
+    --pool-org-id halfsend=1 --upstream-key-dir /tmp/agw-key > "${LOCAL_OUT}" 2> "${SHIM_DIR}/local-render.err"; then
+  pass "a local render needs no project"
+else
+  fail "local render: $(cat "${SHIM_DIR}/local-render.err")"
+fi
+for want in '- issuer: https://ghemu.localhost:443' 'jwks: { url: http://127.0.0.1:8000/.well-known/jwks }' \
+    'apiKey: { file: /tmp/agw-key/key }' '"^(1/halfsend|286139071/halfsend-01|'; do
+  if grep -qF -- "${want}" "${LOCAL_OUT}"; then pass "a local render carries ${want}"; else fail "a local render lacks ${want}"; fi
+done
+if grep -qF 'token.actions.githubusercontent.com' "${LOCAL_OUT}"; then
+  fail "a local render still trusts GitHub's issuer"
+else
+  pass "a local render trusts only the given issuer"
+fi
+for mode in "--dry-run" ""; do
+  if bash "${LOCAL_SETUP}" --project "${PROJECT}" --without-vertex ${mode} --issuer https://elsewhere.example \
+      > /dev/null 2> "${SHIM_DIR}/local-refuse.err"; then
+    fail "--issuer was accepted without --print-config (${mode:-deploy})"
+  elif grep -q 'only apply to --print-config' "${SHIM_DIR}/local-refuse.err"; then
+    pass "--issuer is refused without --print-config (${mode:-deploy})"
+  else
+    fail "--issuer without --print-config (${mode:-deploy}): $(cat "${SHIM_DIR}/local-refuse.err")"
+  fi
+done
+if bash "${LOCAL_SETUP}" --print-config --without-vertex --pool-org-id not-a-pool-org=7 > /dev/null 2> "${SHIM_DIR}/local-org.err"; then
+  fail "an unknown --pool-org-id org was accepted"
+elif grep -q "not a pool org" "${SHIM_DIR}/local-org.err"; then
+  pass "an unknown --pool-org-id org is refused"
+else
+  fail "unknown --pool-org-id org: $(cat "${SHIM_DIR}/local-org.err")"
+fi
+
 echo
 if (( FAILURES > 0 )); then
   echo "${FAILURES} failure(s)" >&2

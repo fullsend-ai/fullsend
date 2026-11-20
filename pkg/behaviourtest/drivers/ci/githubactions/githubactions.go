@@ -15,10 +15,15 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 )
 
+// pollInterval is how often a harness-run wait polls the run once it has
+// been detected. BEHAVIOUR_RUN_POLL_INTERVAL overrides it (a Go duration),
+// for a local forge where runs finish in seconds.
+var pollInterval = env.MustDuration("BEHAVIOUR_RUN_POLL_INTERVAL", 15*time.Second)
+
 const (
-	pollInterval = 15 * time.Second
 	// dispatchWait bounds how long WaitForHarnessAgent and friends wait
 	// for a harness run to settle. Raised from 12 to 20 minutes to give
 	// longer-running playback scenarios (which replay a full dummy-agent

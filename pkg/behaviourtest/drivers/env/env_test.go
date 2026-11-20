@@ -28,8 +28,8 @@ func TestLoadRunnerConfig_EnvironmentTrimsWhitespace(t *testing.T) {
 	assert.Equal(t, "stage", cfg.Environment)
 }
 
-func TestValidate_AcceptsDevAndStage(t *testing.T) {
-	for _, envName := range []string{"dev", "stage"} {
+func TestValidate_AcceptsDevStageAndGitHubEmulator(t *testing.T) {
+	for _, envName := range []string{"dev", "stage", "github-emulator"} {
 		t.Run(envName, func(t *testing.T) {
 			cfg := RunnerConfig{
 				SCM:         "github",

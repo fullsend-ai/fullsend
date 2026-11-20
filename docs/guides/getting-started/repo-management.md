@@ -800,6 +800,13 @@ is not `ready` delays dispatch by up to one poll interval instead of stopping
 it. A fresh install whose scaffold merge request is still open, or whose default
 branch is unprotected, dispatches nothing on either path until then.
 
+For installed GitLab repos, status also scans the default-branch CI
+configuration for unrelated CI work across trigger, agent child
+(`source=pipeline`) and scheduled (`source=schedule`) pipelines, whatever the
+trigger account state. Results appear as a warning section in table output and
+as `gitlab_unrelated_ci_work` in `--json` output, and they add no drift. See
+[`repos status` output](../../cli/repos.md#output).
+
 Use `--json` for machine-readable output:
 
 ```bash
@@ -1010,14 +1017,27 @@ December 2, 2026. Repositories whose `.github/workflows/fullsend.yaml` still
 triggers on it lose automatic review and retro from that date. Triage,
 `/fs-*` commands (including `/fs-review`) and the fix loop keep working.
 
-Upgrade every public repository before that date, using the steps in
-[Rolling out a new fullsend version](#rolling-out-a-new-fullsend-version).
+Upgrade every public repository before that date. Use the route that matches
+how the repository was set up:
+
+- **Repositories declared in a manifest:** run `fullsend repos install`,
+  using the steps in
+  [Rolling out a new fullsend version](#rolling-out-a-new-fullsend-version).
+  It rewrites the trigger and the workflow pin in one commit. If it cannot
+  fetch the templates of the new version, it upgrades only the pin and prints
+  `template fetch at the target ref failed: delivering the pin upgrade only;
+  run install again to deliver template changes`. Run it again once the
+  fetch works to deliver the trigger.
+- **Single repositories set up with `fullsend github setup`** and no manifest:
+  upgrade the CLI, re-run `fullsend github setup "$OWNER/$REPO"` with no
+  flags, and merge the setup PR it opens. Follow
+  [Upgrading a single repository](operations.md#upgrading-a-single-repository):
+  the re-run writes repository variables before the PR merges.
+
 Private and internal repositories are not blocked, and a shim that is not
 upgraded keeps working there (the warning appears only in public
 repositories). Any upgrade to a fullsend version with the new shim installs
-the same `pull_request` shim, with the effects below.
-`fullsend repos install` rewrites the trigger and the workflow pin in one
-commit. After the upgrade:
+the same `pull_request` shim, with the effects below. After the upgrade:
 
 - **Same-repo PRs** are reviewed automatically, as before, except while the
   PR has a merge conflict: GitHub does not run `pull_request` workflows until

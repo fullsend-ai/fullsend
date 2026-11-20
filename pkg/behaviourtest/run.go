@@ -12,6 +12,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/suite"
 )
 
@@ -82,16 +83,20 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		}
 	})
 
-	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), pool.Layout.SlotsPerOrg, driver.Capacity())
+	// The driver supplies its own default concurrency and description,
+	// so the runner never reads a pool layout (a non-pool driver such as
+	// forgejo-dev has none).
+	bootstrap := install.BootstrapFor(driver)
+	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), bootstrap.DefaultConcurrency(), driver.Capacity())
 	if err != nil {
 		failRun(t, nil, behaviourSuiteName, err)
 	}
 	if overCapacity {
 		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block while allocating", concurrency, driver.Capacity())
 	}
-	t.Logf("leasing repo slots across %d org(s) %v (%d slot(s)), godog concurrency %d", pool.Layout.OrgCount, pool.Layout.Orgs(), driver.Capacity(), concurrency)
+	t.Logf("%s, godog concurrency %d", bootstrap.Describe(), concurrency)
 
-	template := newTemplateWorld(t, behaviourSuiteName, ctx, cfg, pool, driver, opts)
+	template := newTemplateWorld(t, behaviourSuiteName, ctx, cfg, binary, driver, opts)
 
 	if outsiderPAT := os.Getenv("TEST_ACTOR_OUTSIDER_PAT"); outsiderPAT != "" {
 		outsiderClient := e2etest.NewLiveClient(outsiderPAT)

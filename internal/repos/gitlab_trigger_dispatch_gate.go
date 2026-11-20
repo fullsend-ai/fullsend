@@ -82,7 +82,7 @@ type GitLabTriggerPushGrant struct {
 //     dispatched pipeline rewrite the code later protected pipelines run.
 //     An enabled, unreadable, or unreported setting defers.
 //  4. The committed CI files run no unrelated job in a trigger or agent
-//     child (source=pipeline) pipeline (gitlabDispatchExtraWorkProblem).
+//     child (source=pipeline) pipeline (GitLabDispatchExtraWorkProblems).
 //  5. The trigger account (DiagnoseGitLabTriggerAccount) is ready on branch,
 //     verified against live project state.
 //  6. The committed poll, identity, agent and dispatcher scripts and the
@@ -139,13 +139,14 @@ func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, ap
 		// Schedule ownership only: a trigger account without merge access
 		// can still start webhook pipelines through its deploy-key grant.
 		scheduleOwnerDeferred = gitlabTriggerScheduleMergeAccessProblem(ctx, client, owner, repo, branch)
-		// Unrelated user jobs must not run in the trigger or agent child
-		// (source=pipeline) pipelines: they would receive the protected
-		// credentials those pipelines carry.
-		if problem, err := gitlabDispatchExtraWorkProblem(ctx, client, owner, repo, branch); err != nil {
+		// Unrelated user jobs must not run in the trigger, agent child
+		// (source=pipeline) or scheduled pipelines: they would receive the
+		// protected credentials those pipelines carry. Every source's
+		// finding is listed (#9708).
+		if problems, err := GitLabDispatchExtraWorkProblems(ctx, client, owner, repo, branch); err != nil {
 			deferred = append(deferred, "could not verify that unrelated jobs are excluded from trigger and agent child pipelines: "+err.Error())
-		} else if problem != "" {
-			deferred = append(deferred, problem)
+		} else {
+			deferred = append(deferred, problems...)
 		}
 	}
 	if reason := gitlabDispatchRouteScaffoldProblem(ctx, client, owner, repo, manifest); reason != "" {

@@ -128,10 +128,15 @@ jobs:
           # the mint does: RS256 signature against GitHub's published signing
           # key, issuer, audience and time claims. It prints the failing
           # check on stderr and succeeds only for a fully verified token.
+          # github.com's issuer; a GitHub server other than github.com (such
+          # as an emulator) issues the tokens from its own URL.
           oidc_issuer='https://token.actions.githubusercontent.com'
+          if [[ "${GITHUB_SERVER_URL:-https://github.com}" != https://github.com ]]; then
+            oidc_issuer="${GITHUB_SERVER_URL%/}"
+          fi
           oidc_audience='fullsend-mint'
           verify_oidc_token() {
-            local h p s header kid cert dir now jwks
+            local h p s header kid n e n_hex e_hex dir now jwks
             IFS=. read -r h p s <<<"$1"
             if [[ -z "${h}" || -z "${p}" || -z "${s}" ]]; then
               echo "not a three-part JWT" >&2
@@ -154,15 +159,19 @@ jobs:
               echo "fetching GitHub's signing keys failed" >&2
               return 1
             fi
-            cert="$(jq -er --arg kid "${kid}" '[.keys[] | select(.kid == $kid)][0].x5c[0] | select(type == "string" and test("^[A-Za-z0-9+/=]+$"))' <<<"${jwks}" 2>/dev/null)" \
+            # The key's modulus and exponent, which every JWKS key carries
+            # (GitHub's newer keys have no x5c certificate chain).
+            n="$(jq -er --arg kid "${kid}" '[.keys[] | select(.kid == $kid and .kty == "RSA")][0].n | select(type == "string" and test("^[A-Za-z0-9_-]+$"))' <<<"${jwks}" 2>/dev/null)" \
+              && e="$(jq -er --arg kid "${kid}" '[.keys[] | select(.kid == $kid and .kty == "RSA")][0].e | select(type == "string" and test("^[A-Za-z0-9_-]+$"))' <<<"${jwks}" 2>/dev/null)" \
               || { echo "no signing key for the token's kid" >&2; return 1; }
             dir="$(mktemp -d)" || return 1
-            {
-              echo '-----BEGIN CERTIFICATE-----'
-              fold -w 64 <<<"${cert}"
-              echo '-----END CERTIFICATE-----'
-            } >"${dir}/cert.pem"
-            if ! openssl x509 -in "${dir}/cert.pem" -pubkey -noout >"${dir}/pub.pem" 2>/dev/null \
+            n_hex="$(b64url_decode "${n}" | od -An -v -tx1 | tr -d ' \n')"
+            e_hex="$(b64url_decode "${e}" | od -An -v -tx1 | tr -d ' \n')"
+            printf '%s\n' 'asn1=SEQUENCE:spki' '[spki]' 'alg=SEQUENCE:alg' 'key=BITWRAP,SEQUENCE:rsakey' \
+              '[alg]' 'oid=OID:rsaEncryption' 'null=NULL' '[rsakey]' "n=INTEGER:0x${n_hex}" "e=INTEGER:0x${e_hex}" >"${dir}/key.cnf"
+            if [[ -z "${n_hex}" || -z "${e_hex}" ]] \
+              || ! openssl asn1parse -genconf "${dir}/key.cnf" -out "${dir}/key.der" -noout >/dev/null 2>&1 \
+              || ! openssl pkey -pubin -inform DER -in "${dir}/key.der" -out "${dir}/pub.pem" 2>/dev/null \
               || ! b64url_decode "${s}" >"${dir}/sig.bin" 2>/dev/null \
               || ! printf '%s' "${h}.${p}" | openssl dgst -sha256 -verify "${dir}/pub.pem" -signature "${dir}/sig.bin" >/dev/null 2>&1; then
               rm -rf "${dir}"
@@ -192,7 +201,7 @@ jobs:
               code="$(curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w '%{http_code}' -X DELETE \
                 -H "Authorization: Bearer ${token}" \
                 -H "Accept: application/vnd.github+json" \
-                https://api.github.com/installation/token)" || code=000
+                "${GITHUB_API_URL:-https://api.github.com}/installation/token")" || code=000
               if [[ "${code}" == 204 ]]; then
                 token=''
                 return 0

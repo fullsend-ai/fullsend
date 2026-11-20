@@ -48,7 +48,7 @@ agents:                              # Registered agent sources and per-agent tu
     runtime: claude                  # Per-agent runtime override
     model: opus                      # Per-agent model override (model id or provider/id)
     effort: high                     # Per-agent reasoning effort: low, medium, high, xhigh, max
-    subagents:                       # Per-agent sub-agent model map (pi and codex)
+    subagents:                       # Per-agent sub-agent model map (pi, codex and Claude Code)
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
     # trigger: <CEL expression>      # When the built-in review agent runs (review entry only)
@@ -261,7 +261,10 @@ effort, sub-agent models, the trigger and harness settings.
   segments joined by hyphens (max 64 chars). On codex, for an agent that
   delegates, the values must be OpenAI ids and a key must name a registered
   persona or `default`; see
-  [Codex › Child models](../runtimes/codex.md#child-models).
+  [Codex › Child models](../runtimes/codex.md#child-models). On Claude Code,
+  a block with a live entry registers each persona as a Claude Code agent
+  with the runner-resolved model; see
+  [Claude Code › Models](../runtimes/claude.md#models).
 - **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
   (a boolean over the normalized `event`). It decides routing for the
   built-in review, retro, triage and prioritize agents only: on one of those
@@ -868,6 +871,10 @@ set this to their own URL. See
 [Standalone Mint](../guides/infrastructure/standalone-mint.md) and
 [Mint Administration](../guides/infrastructure/mint-administration.md).
 
+The URL must use `https`. Plain `http` is accepted only for `localhost` or
+`127.0.0.1`, for a mint that runs on the same machine as the CLI or runner,
+such as in a test. A URL with userinfo (`user:pass@`) is rejected.
+
 For GitHub repositories managed with `fullsend repos install`, a `mint_url`
 declared in the managed configuration (`config.mint_url` in `repos.yaml`) or
 the `config_base` preset also sets the `FULLSEND_MINT_URL` repository
@@ -1193,9 +1200,14 @@ the CLI before adding them. Configs that use neither key are unaffected.
 **Forge support.** On GitHub Actions, Fullsend requests the job's OIDC token
 for `vault_audience`, so the job needs `id-token: write`. On GitLab CI, the
 agent job must declare an ID token named `FULLSEND_VAULT_ID_TOKEN` whose `aud`
-is the connection's `vault_audience`. Fullsend cannot change the audience of a
-token GitLab has already issued. Forgejo and local runs have no supported job
-OIDC integration, so an explicit Vault selection fails there. Secrets that omit
+is the connection's `vault_audience`. The scaffolded agent job
+(`.gitlab/ci/fullsend-agent.yml`) declares it with the default audience
+`https://fullsend.sh/vault`, so GitLab connections must keep the default
+`vault_audience`. A hand-edited `aud` differs from the shipped job, so
+`repos status` reports it as drift and `repos install` restores the default.
+Fullsend cannot change the audience of a token GitLab has already issued.
+Forgejo and local runs have no supported job OIDC integration, so an explicit
+Vault selection fails there. Secrets that omit
 `connection` or select `native` keep working on every forge.
 
 **Consumers.** Resolved OTLP header values are handed to the same consumer as
