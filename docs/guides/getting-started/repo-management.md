@@ -434,8 +434,8 @@ lists every key.
   example, the [retro agent](../../agents/retro.md) files its improvement
   proposals as issues, and the [triage agent](../../agents/triage.md) can file
   a prerequisite issue in an upstream repository. On Jira, `allowed_targets`
-  also limits the projects that `fullsend issues transition` can move an issue
-  to.
+  also restricts which projects' existing issues `fullsend issues transition`
+  can change the workflow status of.
 - **The default tracker for `fullsend issues`.** The selected provider is the
   default `--tracker` value of the
   [issue commands](../user/issues-commands.md). With no provider selected,
@@ -443,7 +443,8 @@ lists every key.
 - **The Jira connection.** `tracker.jira` holds the Jira site, project, and
   poller settings (see [Jira tracker](#jira-tracker)).
 
-`allowed_targets` limits only where agents create issues. It does not limit
+Apart from the Jira `fullsend issues transition` check above, `allowed_targets`
+limits only where agents create issues. It does not limit
 which issues agents read or search. For example, triage searches for
 duplicates and related issues whatever `allowed_targets` lists.
 
@@ -482,7 +483,7 @@ that repository's manifest entry:
 
 Install records the default only when all of these are true:
 
-- The repository has no Fullsend installation, no `.fullsend/config.yaml`,
+- The repository has no fullsend installation, no `.fullsend/config.yaml`,
   and no `.fullsend/config.base.yaml`.
 - No `config_base` preset is declared. A preset keeps its own `tracker`.
 - No layer of the manifest sets `tracker`. Install never overrides a value you
