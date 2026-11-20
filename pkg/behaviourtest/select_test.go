@@ -1,7 +1,6 @@
 package behaviourtest
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"testing"
@@ -9,9 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers"
 	fjci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/forgejoactions"
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
 	glci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/gitlabci"
@@ -65,16 +64,18 @@ func TestInstallFactoryFor_UnknownEnvironmentFailsClosed(t *testing.T) {
 	}
 }
 
-func TestInstallFactoryFor_ForgejoDevSelectsStub(t *testing.T) {
-	t.Parallel()
+func TestInstallFactoryFor_ForgejoDevStartsForgejoStack(t *testing.T) {
+	// A non-unix engine socket stops the stack before it contacts any
+	// engine; the driver itself is covered in package install.
+	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
 
 	factory, err := installFactoryFor("forgejo-dev")
 	require.NoError(t, err)
 	driver, err := factory(poolConfigFor("forgejo-dev", e2etest.EnvConfig{}, "", nil))
-	require.NoError(t, err)
-	assert.NotImplements(t, (*install.LeaseDriver)(nil), driver, "forgejo-dev must not be the GitHub slot pool driver")
-	_, err = driver.AllocateRepo(context.Background())
-	require.ErrorIs(t, err, drivers.ErrNotImplemented)
+	require.Error(t, err)
+	assert.Nil(t, driver)
+	assert.ErrorContains(t, err, "forgejo-dev: starting the Forgejo stack")
+	assert.True(t, behaviourfail.Is(err), "a stack startup failure is an infrastructure failure")
 }
 
 func TestPoolConfigFor(t *testing.T) {

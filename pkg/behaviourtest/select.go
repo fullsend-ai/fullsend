@@ -23,7 +23,7 @@ import (
 //
 //	dev (or empty) → CF preview mint (ephemeral per run)
 //	stage          → durable CF mint at stage-mint.fullsend.sh
-//	forgejo-dev    → Forgejo stub driver (provisioning not implemented)
+//	forgejo-dev    → managed local Forgejo + Runner stack (repo allocation not implemented)
 //
 // Any other environment is an error, so an unrecognised value never
 // falls back to the GitHub pool drivers.
