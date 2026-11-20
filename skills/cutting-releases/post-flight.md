@@ -29,8 +29,8 @@ gh release view <tag>
 ```
 
 Check that the title, changelog, and binary assets look correct. Breaking
-commits (`!` in the subject) should be listed first under **Breaking
-Changes**.
+changes (PRs whose release-note block starts with `action required`)
+should be listed under **Urgent Upgrade Notes**.
 Verify the release is not marked as a draft.
 
 ## B2. Verify agents validation and tag

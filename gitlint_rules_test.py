@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
 from gitlint.rules import RuleViolation
 
 from gitlint_rules.forbidden_type_scope import ForbiddenTypeScope
@@ -113,11 +112,3 @@ def commits_md_rows():
 
 def test_gitlint_types_match_commits_md():
     assert gitlint_types() == set(commits_md_rows())
-
-
-@pytest.mark.parametrize(
-    "ctype", sorted(t for t, notes in commits_md_rows().items() if notes == "No")
-)
-def test_hidden_types_excluded_from_release_notes(ctype):
-    goreleaser = yaml.safe_load((ROOT / ".goreleaser.yml").read_text())
-    assert f"^{ctype}(\\(.*\\))?:" in goreleaser["changelog"]["filters"]["exclude"]

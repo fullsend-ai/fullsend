@@ -94,12 +94,16 @@ Breaking changes **must** be marked in three places: the `!` suffix in
 every commit subject and the PR title, and an `action required`
 `release-note` block in the PR body.
 
-The release-note block is what users see: the release pipeline publishes
-it verbatim, so a breaking change is visible as soon as its PR exists.
+The release-note block is what users see. When the block starts with
+`action required`, the release-note check labels the PR
+`release-note-action-required`, and the release pipeline lists the note
+under **Urgent Upgrade Notes** in the published release notes (the
+gatherer strips the `action required:` prefix from the note text itself).
 The `!` marker stays required for reviewers and tooling. CI rejects a
-`NONE` release-note block when the PR title or any commit subject carries
-the `!` marker, so a breaking PR cannot ship without an `action required`
-entry. This closes the gap that caused real incidents — users upgraded
+`NONE` release-note block — and any block that does not start with
+`action required` — when the PR title or any commit subject carries the
+`!` marker, so a breaking PR cannot ship without a warning. This closes
+the gap that caused real incidents — users upgraded
 with no warning that their agents would stop working (#8366).
 
 **How to mark a breaking change:**

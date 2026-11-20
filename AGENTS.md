@@ -44,7 +44,9 @@ full documentation site.
   and PR titles. Every PR must carry a `release-note` block in its body (CI
   enforces it); release notes come from those blocks, not commit prefixes.
   Breaking changes require the `!` marker in both commit subjects and PR
-  titles, and an `action required` release-note block; a missing `!` is an
+  titles, and an `action required` release-note block (CI labels such PRs
+  `release-note-action-required` so the note lands under Urgent Upgrade
+  Notes); a missing `!` is an
   important-severity review finding; forbidden combinations (e.g.
   `fix(ci)`/`fix(e2e)`) are enforced as errors.
 - Human and human-driven agent commits require DCO sign-off (`git commit -s`);

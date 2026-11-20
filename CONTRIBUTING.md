@@ -49,9 +49,11 @@ contribution.
 - **If your PR introduces a breaking change**, the PR title and every breaking
   commit's subject must carry the `!` suffix (e.g., `feat(harness)!: require
   role field`), and the PR's `release-note` block must start with
-  `action required`. The block is what users see in the release notes — CI
-  rejects a `NONE` block on a PR that carries the `!` marker, so a breaking
-  change cannot ship without a warning. See
+  `action required`. The block is what users see — CI labels the PR
+  `release-note-action-required` so the note is listed under **Urgent
+  Upgrade Notes** in the release, and CI rejects a `NONE` block (or any
+  block without the prefix) on a PR that carries the `!` marker, so a
+  breaking change cannot ship without a warning. See
   [COMMITS.md](COMMITS.md#breaking-changes) for how to identify breaking
   changes and what to include in the commit body.
 - Wrap prose in Markdown files at about 80 columns, so diffs show only the

@@ -15,8 +15,9 @@
 <!-- Every PR needs a release-note block. Write prose for users, not for
 reviewers. Write NONE if users see no change. Start the block with
 "action required" if the change breaks something. CI rejects a PR whose
-block is missing or empty, and rejects NONE when the PR title or a commit
-subject carries the `!` marker. -->
+block is missing or empty, and rejects any block without the "action
+required" prefix when the PR title or a commit subject carries the `!`
+marker. -->
 
 ```release-note
 NONE
