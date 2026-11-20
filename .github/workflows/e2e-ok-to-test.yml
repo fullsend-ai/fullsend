@@ -39,8 +39,6 @@ jobs:
     outputs:
       authorized: ${{ steps.auth.outputs.authorized }}
       head_sha: ${{ steps.auth.outputs.head_sha }}
-      behaviour_check_id: ${{ steps.checks.outputs.behaviour }}
-      playback_check_id: ${{ steps.checks.outputs.playback }}
       forgejo_behaviour_check_id: ${{ steps.checks.outputs.forgejo_behaviour }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,7 +65,7 @@ jobs:
         run: |
           [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha '${HEAD_SHA}'"; exit 1; }
 
-      - name: Create behaviour, playback, and Forgejo behaviour checks on the PR head
+      - name: Create the Forgejo behaviour check on the PR head
         id: checks
         if: steps.auth.outputs.authorized == 'true'
         env:
@@ -77,7 +75,9 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          for name in behaviour playback forgejo-behaviour; do
+          # Behaviour and playback run on a GitHub emulator for every pull
+          # request (behaviour-github-emulator.yml), so /ok-to-test runs only Forgejo.
+          for name in forgejo-behaviour; do
             id=$(gh api -X POST "repos/${REPO}/check-runs" \
               -f name="${name}" -f head_sha="${HEAD_SHA}" -f status=in_progress \
               -f details_url="${RUN_URL}" \
@@ -127,15 +127,11 @@ jobs:
     permissions:
       checks: write
     steps:
-      - name: Complete behaviour, playback, and Forgejo behaviour checks
+      - name: Complete the Forgejo behaviour check
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_RESULT: ${{ needs.run.result }}
-          BEHAVIOUR_ID: ${{ needs.authorize.outputs.behaviour_check_id }}
-          BEHAVIOUR_RESULT: ${{ needs.run.outputs.behaviour_result }}
-          PLAYBACK_ID: ${{ needs.authorize.outputs.playback_check_id }}
-          PLAYBACK_RESULT: ${{ needs.run.outputs.playback_result }}
           FORGEJO_BEHAVIOUR_ID: ${{ needs.authorize.outputs.forgejo_behaviour_check_id }}
           FORGEJO_BEHAVIOUR_RESULT: ${{ needs.run.outputs.forgejo_behaviour_result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -150,10 +146,8 @@ jobs:
             esac
           }
           status=0
-          for pair in \
-            "behaviour:${BEHAVIOUR_ID}:${BEHAVIOUR_RESULT}" \
-            "playback:${PLAYBACK_ID}:${PLAYBACK_RESULT}" \
-            "forgejo-behaviour:${FORGEJO_BEHAVIOUR_ID}:${FORGEJO_BEHAVIOUR_RESULT}"; do
+          pairs=("forgejo-behaviour:${FORGEJO_BEHAVIOUR_ID}:${FORGEJO_BEHAVIOUR_RESULT}")
+          for pair in "${pairs[@]}"; do
             IFS=: read -r name id result <<<"${pair}"
             [[ -n "${id}" ]] || { echo "::error::no ${name} check run id"; status=1; continue; }
             c=$(conclusion "${result}")
