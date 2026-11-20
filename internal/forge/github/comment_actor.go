@@ -18,8 +18,11 @@ const maxCommentActorResponseBytes = 1 << 20
 // IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
 // "PullRequest") and node ID of issue or pull request number in owner/repo.
 // The node ID is in GitHub's new global-ID format (nextGlobalIDHeader), so
-// long-lived issues and pull requests report the same ID as newly created
-// ones and as every other producer of entity.source_id.
+// long-lived issues and pull requests report the same ID from this lookup
+// as newly created ones. REST and webhook node_id payloads still return
+// the legacy format on older objects, and which canonical format every
+// producer can emit is not settled (see the normalized-entity spec,
+// docs/normative/normalized-entity/v1/README.md).
 func (c *LiveClient) IssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (string, string, error) {
 	var data struct {
 		Repository *struct {
@@ -51,9 +54,14 @@ type graphqlActor struct {
 
 // nextGlobalIDHeader asks GitHub's GraphQL API to return node IDs in the
 // new global-ID format on every node, new or old, so the entity IDs this
-// package produces match every other producer of entity.source_id. node()
-// accepts either input format, so a caller holding a legacy-format comment
-// node ID still resolves.
+// package produces are in that format for long-lived and newly created
+// entities alike. REST and webhook node_id payloads still return the
+// legacy format on older objects, so a producer reading IDs from those
+// emits the legacy format, and which canonical format every producer can
+// emit is not settled (see the normalized-entity spec,
+// docs/normative/normalized-entity/v1/README.md). node() accepts either
+// input format, so a caller holding a legacy-format comment node ID still
+// resolves.
 const nextGlobalIDHeader = "X-Github-Next-Global-ID"
 
 // CommentActor reads a comment's current-revision actor and the issue or

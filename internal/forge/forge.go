@@ -1894,8 +1894,11 @@ type GitHubExtensions interface {
 	// IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
 	// "PullRequest") and node ID of issue or pull request number in
 	// owner/repo. The node ID is in GitHub's new global-ID format, so
-	// long-lived issues and pull requests report the same ID as newly
-	// created ones and as every other producer of entity.source_id.
+	// long-lived issues and pull requests report the same ID from this
+	// lookup as newly created ones. REST and webhook node_id payloads
+	// still return the legacy format on older objects, and which
+	// canonical format every producer can emit is not settled (see the
+	// normalized-entity spec, docs/normative/normalized-entity/v1/README.md).
 	// Returns forge.ErrNotFound when no such issue or pull request exists.
 	IssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (typename, nodeID string, err error)
 
