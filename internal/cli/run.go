@@ -2450,6 +2450,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	//     different iteration's checkout than what was validated).
 	// Callers (validation, post-script) must not use the dir when false.
 	var repoExtractedOK bool
+	var lastDownloadStrippedSymlinks []string
 
 	// validatedIterNum records which iteration passed validation (1-based),
 	// or 0 if none. Set by inline validation (step 9e break) or the
@@ -3377,6 +3378,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if h.ValidationLoop != nil {
 				printer.StepWarn(failureLine(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration)", hostRepositoryDownloadDir), clearErr, progressVerbosity))
 				repoExtractedOK = false
+				lastDownloadStrippedSymlinks = nil
 				if lastIterTimedOut {
 					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
 					break
@@ -3388,7 +3390,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
-		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot); err != nil {
+		strippedSymlinks, dlErr := sandbox.SafeDownloadWithReport(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot)
+		if dlErr != nil {
+			lastDownloadStrippedSymlinks = nil
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				emitTranscriptErrorsAt(tx, os.Stderr, es, progressVerbosity)
 			}
@@ -3399,13 +3403,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Clean up to prevent unsanitized content from reaching
 				// validation or the post-script. Output files (extracted in
 				// 9b) are unaffected.
-				printer.StepWarn(failureLine("Failed to extract target repo (cleaning up)", err, progressVerbosity))
+				printer.StepWarn(failureLine("Failed to extract target repo (cleaning up)", dlErr, progressVerbosity))
 				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
 					printer.StepWarn(failureLine("Failed to clean up repo dir after extraction failure", rmErr, progressVerbosity))
 				}
 				repoExtractedOK = false
-				validationFailed := errors.Is(err, sandbox.ErrRepositoryValidation)
-				rejected := errors.Is(err, sandbox.ErrRepositoryRejected)
+				validationFailed := errors.Is(dlErr, sandbox.ErrRepositoryValidation)
+				rejected := errors.Is(dlErr, sandbox.ErrRepositoryRejected)
 				if validationFailed && !lastIterTimedOut {
 					if feedbackEnabled && iteration < maxIterations {
 						feedback := repoValidationUncertainFeedback
@@ -3433,9 +3437,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				}
 				continue
 			}
-			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
+			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, dlErr)
 		}
 		repoExtractedOK = true
+		lastDownloadStrippedSymlinks = strippedSymlinks
 		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDownloadDir, time.Since(repoExtractStart).Seconds()))
 
 		// 9e. Run validation.
@@ -3580,6 +3585,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		runDir,
 		runnerInjectedSyncExcludes,
 		preRunSyncManifest,
+		lastDownloadStrippedSymlinks,
 		h.SecurityEnabled(),
 		h.FailModeClosed(),
 		preRunContextFindings,
@@ -7039,6 +7045,13 @@ type targetRepoSyncResult struct {
 	err                 error
 }
 
+const maxContextFileSize int64 = 1 << 20 // 1 MB
+
+type repoContextFinding struct {
+	relPath string
+	finding security.Finding
+}
+
 type contextFindingKey struct {
 	Scanner  string
 	Name     string
@@ -7047,32 +7060,37 @@ type contextFindingKey struct {
 	Position int
 }
 
+func makeContextFindingKey(f security.Finding) contextFindingKey {
+	return contextFindingKey{
+		Scanner:  f.Scanner,
+		Name:     f.Name,
+		Severity: f.Severity,
+		Detail:   f.Detail,
+		Position: f.Position,
+	}
+}
+
 // diffNewContextFindings returns findings present in current that were not
 // already present in baseline (matched as a multiset by finding fields).
-func diffNewContextFindings(current, baseline []security.Finding) []security.Finding {
+// file_too_large and scan_error findings from added/modified files are never
+// suppressed by baseline entries because the sandbox bytes changed and remain
+// unverified.
+func diffNewContextFindings(current []repoContextFinding, baseline []security.Finding) []security.Finding {
 	if len(current) == 0 {
 		return nil
 	}
 	baseCounts := make(map[contextFindingKey]int, len(baseline))
 	for _, f := range baseline {
-		k := contextFindingKey{
-			Scanner:  f.Scanner,
-			Name:     f.Name,
-			Severity: f.Severity,
-			Detail:   f.Detail,
-			Position: f.Position,
-		}
-		baseCounts[k]++
+		baseCounts[makeContextFindingKey(f)]++
 	}
 	var added []security.Finding
-	for _, f := range current {
-		k := contextFindingKey{
-			Scanner:  f.Scanner,
-			Name:     f.Name,
-			Severity: f.Severity,
-			Detail:   f.Detail,
-			Position: f.Position,
+	for _, cf := range current {
+		f := cf.finding
+		if f.Name == "file_too_large" || f.Name == "scan_error" {
+			added = append(added, f)
+			continue
 		}
+		k := makeContextFindingKey(f)
 		if baseCounts[k] > 0 {
 			baseCounts[k]--
 			continue
@@ -7082,20 +7100,192 @@ func diffNewContextFindings(current, baseline []security.Finding) []security.Fin
 	return added
 }
 
-// filterExcludedContextFindings drops findings for relative paths excluded from
-// synchronization (for example, runner-injected bridge files or the output dir).
-func filterExcludedContextFindings(findings []security.Finding, excludes []string) []security.Finding {
-	if len(findings) == 0 || len(excludes) == 0 {
+// filterExcludedContextFindings drops findings whose repo-relative path is
+// excluded from synchronization (for example, runner-injected bridge files or
+// the output dir). Matches on the structured relPath field rather than parsing
+// Finding.Detail so directory names containing ": " cannot bypass exclusion
+// checks.
+func filterExcludedContextFindings(findings []repoContextFinding, excludes []string) []repoContextFinding {
+	if len(findings) == 0 {
 		return findings
 	}
-	filtered := make([]security.Finding, 0, len(findings))
+	filtered := make([]repoContextFinding, 0, len(findings))
 	for _, f := range findings {
-		if relPath, _, ok := strings.Cut(f.Detail, ": "); ok && isExcludedPath(relPath, excludes) {
+		if f.relPath != "" && isExcludedPath(f.relPath, excludes) {
 			continue
 		}
 		filtered = append(filtered, f)
 	}
 	return filtered
+}
+
+func countPreSyncBlockingFindings(findings []security.Finding) (criticalCount, unscannableCount int) {
+	for _, f := range findings {
+		if f.Severity == "critical" {
+			criticalCount++
+		}
+		if f.Name == "file_too_large" || f.Name == "scan_error" {
+			unscannableCount++
+		}
+	}
+	return criticalCount, unscannableCount
+}
+
+func newContextScanErrorFinding(relPath, severity, detail string) repoContextFinding {
+	return repoContextFinding{
+		relPath: relPath,
+		finding: security.Finding{
+			Scanner:  "context_injection",
+			Name:     "scan_error",
+			Severity: severity,
+			Detail:   detail,
+			Position: -1,
+		},
+	}
+}
+
+// scanSyncChangedContextFiles scans every added or modified context file in
+// downloadDir that would be synchronized to targetDir, with no nesting depth
+// limit and without skipping directories such as node_modules, vendor, .venv,
+// or __pycache__. Unchanged entries matching preRunManifest are skipped because
+// sync will not write them.
+func scanSyncChangedContextFiles(downloadDir, targetDir string, excludes []string, preRunManifest map[string]string) []repoContextFinding {
+	absDownload, err := filepath.Abs(downloadDir)
+	if err != nil {
+		return []repoContextFinding{newContextScanErrorFinding("", "high", fmt.Sprintf("could not resolve download directory: %v", err))}
+	}
+	absDownloadResolved := absDownload
+	if resolved, evalErr := filepath.EvalSymlinks(absDownload); evalErr == nil {
+		absDownloadResolved = resolved
+	}
+	absTarget := targetDir
+	if abs, absErr := filepath.Abs(targetDir); absErr == nil {
+		absTarget = abs
+	}
+	absTargetResolved := absTarget
+	if resolved, evalErr := filepath.EvalSymlinks(absTarget); evalErr == nil {
+		absTargetResolved = resolved
+	}
+	dstCaseInsensitive := detectCaseInsensitiveDir(absTarget)
+	preRunLowerMap := buildLowerManifestMap(preRunManifest)
+
+	pipeline := security.InputPipeline()
+	var allFindings []repoContextFinding
+
+	walkErr := filepath.WalkDir(absDownload, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			relPath := relOrAbs(absDownload, path)
+			if relPath != "." && isExcludedPath(relPath, excludes) {
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			allFindings = append(allFindings, newContextScanErrorFinding(relPath, "medium", fmt.Sprintf("could not access %s: %v", relPath, err)))
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, relErr := filepath.Rel(absDownload, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel == "." {
+			return nil
+		}
+		if isExcludedPath(rel, excludes) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !security.ShouldScan(stripHFSIgnorable(d.Name())) {
+			return nil
+		}
+
+		manifestKey, hasCaseRename := resolveManifestKeyAndCaseRename(absDownload, rel, dstCaseInsensitive, preRunManifest, preRunLowerMap)
+		baseCaseChanged := hasCaseRename && filepath.Base(manifestKey) != filepath.Base(rel)
+
+		if d.Type()&os.ModeSymlink != 0 {
+			linkTarget, resolvedTarget, safe := resolveSafeInRepoSymlink(path, absDownloadResolved)
+			if !safe {
+				return nil
+			}
+			fi, statErr := os.Stat(resolvedTarget)
+			if statErr != nil {
+				allFindings = append(allFindings, newContextScanErrorFinding(rel, "medium", fmt.Sprintf("%s: could not stat symlink target: %v", rel, statErr)))
+				return nil
+			}
+			if !fi.Mode().IsRegular() {
+				return nil
+			}
+			linkUnchanged := !baseCaseChanged && isSandboxEntryUnchanged(preRunManifest, manifestKey, "symlink:"+linkTarget)
+			if linkUnchanged {
+				targetRel, tRelErr := filepath.Rel(absDownloadResolved, resolvedTarget)
+				if tRelErr == nil && targetRel != "." && targetRel != ".." && !strings.HasPrefix(targetRel, ".."+string(filepath.Separator)) {
+					// Verify the host pre-run symlink resolved to the same relative target
+					// path so retargeting an intermediate symlink in a chain cannot bypass
+					// the pre-sync scan.
+					_, preRunResolved, preRunSafe := resolveSafeInRepoSymlink(filepath.Join(absTarget, manifestKey), absTargetResolved)
+					preRunTargetRel, preRelErr := filepath.Rel(absTargetResolved, preRunResolved)
+					sameTargetPath := preRunSafe && preRelErr == nil &&
+						(preRunTargetRel == targetRel || (dstCaseInsensitive && strings.EqualFold(preRunTargetRel, targetRel)))
+					if sameTargetPath {
+						tKey, tCaseRename := resolveManifestKeyAndCaseRename(absDownload, targetRel, dstCaseInsensitive, preRunManifest, preRunLowerMap)
+						tBaseChanged := tCaseRename && filepath.Base(tKey) != filepath.Base(targetRel)
+						if !tBaseChanged && preRunManifest != nil {
+							if _, existed := preRunManifest[tKey]; existed {
+								targetDigest, tdErr := computeHostEntryDigest(resolvedTarget, fi)
+								if tdErr != nil {
+									allFindings = append(allFindings, newContextScanErrorFinding(rel, "medium", fmt.Sprintf("%s: could not read symlink target: %v", rel, tdErr)))
+									return nil
+								}
+								if isSandboxEntryUnchanged(preRunManifest, tKey, targetDigest) {
+									return nil
+								}
+							}
+						}
+					}
+				}
+			}
+			allFindings = append(allFindings, scanSingleContextFile(resolvedTarget, rel, fi, pipeline)...)
+			return nil
+		}
+
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			allFindings = append(allFindings, newContextScanErrorFinding(rel, "medium", fmt.Sprintf("%s: could not stat file: %v", rel, infoErr)))
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if !baseCaseChanged && preRunManifest != nil {
+			if _, existed := preRunManifest[manifestKey]; existed {
+				srcDigest, digestErr := computeHostEntryDigest(path, info)
+				if digestErr != nil {
+					allFindings = append(allFindings, newContextScanErrorFinding(rel, "medium", fmt.Sprintf("%s: could not read file: %v", rel, digestErr)))
+					return nil
+				}
+				if isSandboxEntryUnchanged(preRunManifest, manifestKey, srcDigest) {
+					return nil
+				}
+			}
+		}
+		allFindings = append(allFindings, scanSingleContextFile(path, rel, info, pipeline)...)
+		return nil
+	})
+	if walkErr != nil {
+		allFindings = append(allFindings, newContextScanErrorFinding("", "high", fmt.Sprintf("walk terminated: %v", walkErr)))
+	}
+	return allFindings
 }
 
 func isSandboxEntryUnchanged(preRunManifest map[string]string, manifestKey, srcDigest string) bool {
@@ -7165,10 +7355,10 @@ func runTargetRepoSync(
 	syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, inlineValidationPassed, timedOut, transcriptErr bool,
 	exitCode int, exitReason string, validatedIter, runCount int,
 	downloadDir, targetDir, outputBase, runDir string,
-	runnerInjectedExcludes []string, preRunManifest map[string]string,
+	runnerInjectedExcludes []string, preRunManifest map[string]string, strippedSymlinks []string,
 	securityEnabled, failModeClosed bool, preRunContextFindings []security.Finding,
 	printer *ui.Printer,
-	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) (*syncChanges, error),
+	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, strippedSymlinks []string, printer *ui.Printer) (*syncChanges, error),
 ) targetRepoSyncResult {
 	if !syncEnabled {
 		return targetRepoSyncResult{}
@@ -7194,22 +7384,48 @@ func runTargetRepoSync(
 	}
 	syncExcludes = append(syncExcludes, runnerInjectedExcludes...)
 
-	// Scan downloaded context files BEFORE writing anything into targetDir so
-	// fail_mode: closed blocks sync before untrusted context files hit disk.
+	// Scan added/modified downloaded context files BEFORE writing anything into
+	// targetDir so fail_mode: closed blocks sync before untrusted or unscannable
+	// context files hit disk.
 	if securityEnabled {
-		downloadFindings := filterExcludedContextFindings(scanRepoContextFiles(downloadDir), syncExcludes)
+		downloadFindings := filterExcludedContextFindings(
+			scanSyncChangedContextFiles(downloadDir, targetDir, syncExcludes, preRunManifest),
+			syncExcludes,
+		)
 		newFindings := diffNewContextFindings(downloadFindings, preRunContextFindings)
-		if security.HasCriticalFindings(newFindings) {
-			critCount := countCritical(newFindings)
+		critCount, unscannableCount := countPreSyncBlockingFindings(newFindings)
+		if critCount > 0 || unscannableCount > 0 {
 			if failModeClosed {
-				printer.StepFail(fmt.Sprintf("BLOCKED: %d new critical injection finding(s) in downloaded context files; skipping target repository sync", critCount))
+				var status, stepMsg, errMsg string
+				switch {
+				case critCount > 0 && unscannableCount > 0:
+					status = "blocked (critical injection findings and unscannable downloaded context files)"
+					stepMsg = fmt.Sprintf("BLOCKED: %d new critical injection finding(s) and %d unscannable context file(s) in downloaded context files; skipping target repository sync", critCount, unscannableCount)
+					errMsg = fmt.Sprintf("target repository synchronization blocked: %d new critical injection finding(s) and %d unscannable context file(s) in downloaded context files", critCount, unscannableCount)
+				case critCount > 0:
+					status = "blocked (critical injection findings in downloaded context files)"
+					stepMsg = fmt.Sprintf("BLOCKED: %d new critical injection finding(s) in downloaded context files; skipping target repository sync", critCount)
+					errMsg = fmt.Sprintf("target repository synchronization blocked: %d new critical injection finding(s) in downloaded context files", critCount)
+				default:
+					status = "blocked (unscannable downloaded context files)"
+					stepMsg = fmt.Sprintf("BLOCKED: %d unscannable downloaded context file(s) (oversized or unreadable); skipping target repository sync", unscannableCount)
+					errMsg = fmt.Sprintf("target repository synchronization blocked: %d unscannable downloaded context file(s) (oversized or unreadable)", unscannableCount)
+				}
+				printer.StepFail(stepMsg)
 				return targetRepoSyncResult{
-					status:              "blocked (critical injection findings in downloaded context files)",
+					status:              status,
 					preserveDownloadDir: repoExtractedOK,
-					err:                 &targetRepoSyncError{message: fmt.Sprintf("target repository synchronization blocked: %d new critical injection finding(s) in downloaded context files", critCount)},
+					err:                 &targetRepoSyncError{message: errMsg},
 				}
 			}
-			printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new critical finding(s) in downloaded context files (fail_mode: open); inspect before building or running tools", critCount))
+			switch {
+			case critCount > 0 && unscannableCount > 0:
+				printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new critical finding(s) and %d unscannable downloaded context file(s) (oversized or unreadable, fail_mode: open); inspect before building or running tools", critCount, unscannableCount))
+			case critCount > 0:
+				printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new critical finding(s) in downloaded context files (fail_mode: open); inspect before building or running tools", critCount))
+			default:
+				printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d unscannable downloaded context file(s) (oversized or unreadable, fail_mode: open); inspect before building or running tools", unscannableCount))
+			}
 		} else if len(newFindings) > 0 {
 			printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new finding(s) in downloaded context files", len(newFindings)))
 		}
@@ -7217,7 +7433,7 @@ func runTargetRepoSync(
 
 	syncStart := time.Now()
 	printer.StepStart("Synchronizing sandbox changes to target repository")
-	changes, err := syncFn(downloadDir, targetDir, syncExcludes, preRunManifest, printer)
+	changes, err := syncFn(downloadDir, targetDir, syncExcludes, preRunManifest, strippedSymlinks, printer)
 	if err != nil {
 		printer.StepWarn("Target repository synchronization failed: " + err.Error())
 		res := targetRepoSyncResult{
@@ -7449,20 +7665,31 @@ func checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel string) error 
 	}
 }
 
-// wouldSanitizeStripSymlink reports whether linkPath would have been removed by
-// sandbox.sanitizeDownload (unreadable link, absolute target, dangling/looping
-// target, or target resolving outside absRootResolved).
-func wouldSanitizeStripSymlink(linkPath, absRootResolved string) bool {
+// resolveSafeInRepoSymlink resolves linkPath relative to absRootResolved and
+// reports whether the symlink would survive sandbox.sanitizeDownload (readable,
+// relative, non-dangling/non-looping, and resolving inside absRootResolved).
+func resolveSafeInRepoSymlink(linkPath, absRootResolved string) (linkTarget, resolvedTarget string, safe bool) {
 	target, readErr := os.Readlink(linkPath)
 	if readErr != nil || filepath.IsAbs(target) {
-		return true
+		return "", "", false
 	}
 	rawPath := filepath.Dir(linkPath) + string(filepath.Separator) + target
 	resolved, evalErr := filepath.EvalSymlinks(rawPath)
 	if evalErr != nil {
-		return true
+		return "", "", false
 	}
-	return !strings.HasPrefix(resolved+string(filepath.Separator), absRootResolved+string(filepath.Separator))
+	if !strings.HasPrefix(resolved+string(filepath.Separator), absRootResolved+string(filepath.Separator)) {
+		return "", "", false
+	}
+	return target, resolved, true
+}
+
+// wouldSanitizeStripSymlink reports whether linkPath would have been removed by
+// sandbox.sanitizeDownload (unreadable link, absolute target, dangling/looping
+// target, or target resolving outside absRootResolved).
+func wouldSanitizeStripSymlink(linkPath, absRootResolved string) bool {
+	_, _, safe := resolveSafeInRepoSymlink(linkPath, absRootResolved)
+	return !safe
 }
 
 // symlinkResolvesIntoExcludedPath reports whether a relative symlink inside
@@ -7473,13 +7700,8 @@ func symlinkResolvesIntoExcludedPath(linkPath, absRootResolved string, excludes 
 	if len(excludes) == 0 {
 		return false
 	}
-	target, readErr := os.Readlink(linkPath)
-	if readErr != nil || filepath.IsAbs(target) {
-		return false
-	}
-	rawPath := filepath.Dir(linkPath) + string(filepath.Separator) + target
-	resolved, evalErr := filepath.EvalSymlinks(rawPath)
-	if evalErr != nil {
+	_, resolved, safe := resolveSafeInRepoSymlink(linkPath, absRootResolved)
+	if !safe {
 		return false
 	}
 	relTarget, relErr := filepath.Rel(absRootResolved, resolved)
@@ -7665,20 +7887,20 @@ func renameCaseOnlyPath(oldPath, newPath string) error {
 // syncTargetRepoDirWithManifest mirrors additions, modifications, and deletions from
 // srcDir into dstDir without a UI printer.
 func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, preRunManifest map[string]string) error {
-	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, nil, nil, nil)
+	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, nil, nil, nil, nil)
 }
 
 // syncTargetRepoDirWithPrinter mirrors additions, modifications, and deletions from
 // srcDir into dstDir, warning through printer when skipping non-regular entries.
 func syncTargetRepoDirWithPrinter(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) error {
-	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, printer, nil, nil)
+	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, nil, printer, nil, nil)
 }
 
 // syncTargetRepoDirWithReport mirrors additions, modifications, and deletions from
 // srcDir into dstDir and returns the list of added, modified, and deleted paths.
-func syncTargetRepoDirWithReport(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) (*syncChanges, error) {
+func syncTargetRepoDirWithReport(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, strippedSymlinks []string, printer *ui.Printer) (*syncChanges, error) {
 	changes := &syncChanges{}
-	if err := syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, printer, nil, changes); err != nil {
+	if err := syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, strippedSymlinks, printer, nil, changes); err != nil {
 		return changes, err
 	}
 	return changes, nil
@@ -7687,11 +7909,12 @@ func syncTargetRepoDirWithReport(srcDir, dstDir string, excludes []string, preRu
 // syncTargetRepoDirInternal implements target repository sync. When preRunManifest is
 // non-nil, entries unchanged in the sandbox preserve any concurrent host edits or
 // deletions (host edit wins), entries absent from both srcDir and preRunManifest
-// (host-only files created during an agent run) and symlinks recorded as
-// "symlink-stripped:" at pre-run are preserved, and a read-only pre-flight conflict
-// check runs before any host mutation so true conflicts leave dstDir untouched.
-// When preRunManifest is nil, pruning is disabled (fail-closed).
-func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer, forceDstCaseInsensitive *bool, changes *syncChanges) error {
+// (host-only files created during an agent run), symlinks recorded as
+// "symlink-stripped:" at pre-run, and entries whose sandbox symlink was stripped
+// by SafeDownload or skipped as unsafe are preserved, and a read-only pre-flight
+// conflict check runs before any host mutation so true conflicts leave dstDir
+// untouched. When preRunManifest is nil, pruning is disabled (fail-closed).
+func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, strippedSymlinks []string, printer *ui.Printer, forceDstCaseInsensitive *bool, changes *syncChanges) error {
 	absSrc, err := filepath.Abs(srcDir)
 	if err != nil {
 		return fmt.Errorf("resolving source directory: %w", err)
@@ -7747,9 +7970,9 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 		if walkErr != nil {
 			return nil
 		}
-		if strings.EqualFold(d.Name(), ".git") {
+		if pathSegmentsEqualFold(d.Name(), ".git") {
 			rel, rerr := filepath.Rel(absDst, path)
-			if rerr == nil && rel != "." && !strings.EqualFold(rel, ".git") {
+			if rerr == nil && rel != "." && !pathSegmentsEqualFold(rel, ".git") {
 				allExcludes = append(allExcludes, rel)
 			}
 			if d.IsDir() {
@@ -7758,6 +7981,38 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 		}
 		return nil
 	})
+
+	safeDownloadStripped := make(map[string]bool, len(strippedSymlinks))
+	var safeDownloadStrippedLower map[string]bool
+	if dstCaseInsensitive && len(strippedSymlinks) > 0 {
+		safeDownloadStrippedLower = make(map[string]bool, len(strippedSymlinks))
+	}
+	for _, s := range strippedSymlinks {
+		cleaned := filepath.Clean(s)
+		if cleaned == "" || cleaned == "." {
+			continue
+		}
+		safeDownloadStripped[cleaned] = true
+		if safeDownloadStrippedLower != nil {
+			safeDownloadStrippedLower[strings.ToLower(cleaned)] = true
+		}
+	}
+	skippedUnsafeSrc := make(map[string]bool)
+	var skippedUnsafeSrcLower map[string]bool
+	if dstCaseInsensitive {
+		skippedUnsafeSrcLower = make(map[string]bool)
+	}
+	recordSkippedUnsafeSrc := func(rel string) {
+		skippedUnsafeSrc[rel] = true
+		if skippedUnsafeSrcLower != nil {
+			skippedUnsafeSrcLower[strings.ToLower(rel)] = true
+		}
+	}
+	isPreservedStrippedSymlink := func(rel string) (fromSafeDownload, fromUnsafeSrc bool) {
+		fromSafeDownload = safeDownloadStripped[rel] || (safeDownloadStrippedLower != nil && safeDownloadStrippedLower[strings.ToLower(rel)])
+		fromUnsafeSrc = skippedUnsafeSrc[rel] || (skippedUnsafeSrcLower != nil && skippedUnsafeSrcLower[strings.ToLower(rel)])
+		return fromSafeDownload, fromUnsafeSrc
+	}
 
 	recordAdded := func(p string) {
 		if changes != nil {
@@ -7824,6 +8079,7 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", manifestKey)
 			}
 			if wouldSanitizeStripSymlink(path, absSrcResolved) {
+				recordSkippedUnsafeSrc(rel)
 				return nil
 			}
 			recordPreflightSrc(rel)
@@ -8005,6 +8261,12 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			if inSrc {
 				return nil
 			}
+			if fromSD, fromUnsafe := isPreservedStrippedSymlink(rel); fromSD || fromUnsafe {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			if isAncestorOfExcludedPath(rel, allExcludes) {
 				return nil
 			}
@@ -8119,6 +8381,10 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", manifestKey)
 			}
 			if wouldSanitizeStripSymlink(path, absSrcResolved) {
+				recordSkippedUnsafeSrc(rel)
+				if printer != nil {
+					printer.StepWarn(fmt.Sprintf("Skipping unsafe symlink during target repo sync: %s", rel))
+				}
 				return nil
 			}
 			srcEntries[rel] = true
@@ -8417,9 +8683,6 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			}
 
 			if !srcEntries[rel] {
-				if isAncestorOfExcludedPath(rel, allExcludes) {
-					return nil
-				}
 				manifestKey, recorded, ok := lookupPruneManifestEntry(rel, dstCaseInsensitive, preRunManifest, preRunLowerMap)
 				if !ok || caseRenamedPreRun[manifestKey] {
 					if d.IsDir() {
@@ -8428,6 +8691,18 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 					return nil
 				}
 				if d.Type()&os.ModeSymlink != 0 && strings.HasPrefix(recorded, "symlink-stripped:") {
+					return nil
+				}
+				if fromSD, fromUnsafe := isPreservedStrippedSymlink(rel); fromSD || fromUnsafe {
+					if fromSD && !fromUnsafe && printer != nil {
+						printer.StepWarn(fmt.Sprintf("Preserving host entry %q (sandbox symlink stripped by SafeDownload)", rel))
+					}
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				if isAncestorOfExcludedPath(rel, allExcludes) {
 					return nil
 				}
 				if err := checkPathNotUnderResolvedGit(absDstResolved, path, rel); err != nil {
@@ -8553,10 +8828,43 @@ func writeAtomicFile(targetPath, srcPath string, perm os.FileMode, removeBeforeR
 	return nil
 }
 
+// isHFSIgnorable reports whether r is one of the 16 Unicode code points ignored
+// by macOS HFS+ filename comparison (Apple TN1150 / git core.protectHFS).
+func isHFSIgnorable(r rune) bool {
+	return (r >= 0x200C && r <= 0x200F) ||
+		(r >= 0x202A && r <= 0x202E) ||
+		(r >= 0x206A && r <= 0x206F) ||
+		r == 0xFEFF
+}
+
+// stripHFSIgnorable returns s with all HFS+-ignorable code points removed.
+func stripHFSIgnorable(s string) string {
+	hasIgnorable := false
+	for _, r := range s {
+		if isHFSIgnorable(r) {
+			hasIgnorable = true
+			break
+		}
+	}
+	if !hasIgnorable {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isHFSIgnorable(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func pathSegmentsEqualFold(a, b string) bool {
+	return strings.EqualFold(stripHFSIgnorable(a), stripHFSIgnorable(b))
+}
+
 func hasGitPathSegment(relPath string) bool {
 	relClean := filepath.Clean(relPath)
 	for _, part := range strings.Split(relClean, string(filepath.Separator)) {
-		if strings.EqualFold(part, ".git") {
+		if pathSegmentsEqualFold(part, ".git") {
 			return true
 		}
 	}
@@ -8572,7 +8880,7 @@ func hasPathPrefixFold(path, prefix string) (equal bool, strictPrefix bool) {
 		return false, false
 	}
 	for i := range xSegs {
-		if !strings.EqualFold(pSegs[i], xSegs[i]) {
+		if !pathSegmentsEqualFold(pSegs[i], xSegs[i]) {
 			return false, false
 		}
 	}
@@ -8580,7 +8888,8 @@ func hasPathPrefixFold(path, prefix string) (equal bool, strictPrefix bool) {
 }
 
 func isExcludedPath(relPath string, excludes []string) bool {
-	// Match any path segment named ".git" case-insensitively (submodules, nested git repos, root .git)
+	// Match any path segment named ".git" case-insensitively after stripping
+	// HFS+-ignorable Unicode code points (root .git, submodules, nested repos).
 	if hasGitPathSegment(relPath) {
 		return true
 	}
@@ -8704,12 +9013,50 @@ func doBridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest string, print
 	}
 }
 
+// scanSingleContextFile checks file size, reads path, and runs pipeline.Scan,
+// returning structured findings tagged with relPath.
+func scanSingleContextFile(path, relPath string, info os.FileInfo, pipeline *security.Pipeline) []repoContextFinding {
+	if info.Size() > maxContextFileSize {
+		return []repoContextFinding{{
+			relPath: relPath,
+			finding: security.Finding{
+				Scanner:  "context_injection",
+				Name:     "file_too_large",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("%s: skipped, exceeds %d byte limit (%d bytes)", relPath, maxContextFileSize, info.Size()),
+				Position: -1,
+			},
+		}}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return []repoContextFinding{{
+			relPath: relPath,
+			finding: security.Finding{
+				Scanner:  "context_injection",
+				Name:     "scan_error",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("%s: could not read file: %v", relPath, err),
+				Position: -1,
+			},
+		}}
+	}
+	result := pipeline.Scan(string(content))
+	out := make([]repoContextFinding, 0, len(result.Findings))
+	for _, f := range result.Findings {
+		f.Detail = fmt.Sprintf("%s: %s", relPath, f.Detail)
+		out = append(out, repoContextFinding{
+			relPath: relPath,
+			finding: f,
+		})
+	}
+	return out
+}
+
 // scanRepoContextFiles walks the target repo directory for known context
 // files (CLAUDE.md, AGENTS.md, SKILL.md, etc.) and runs the InputPipeline
 // on each. Returns all findings across scanned files.
 func scanRepoContextFiles(repoDir string) []security.Finding {
-	const maxContextFileSize int64 = 1 << 20 // 1 MB
-
 	skipDirs := map[string]bool{
 		".git": true, "node_modules": true, "vendor": true,
 		"__pycache__": true, ".venv": true,
@@ -8762,32 +9109,9 @@ func scanRepoContextFiles(repoDir string) []security.Finding {
 			})
 			return nil
 		}
-		if info.Size() > maxContextFileSize {
-			allFindings = append(allFindings, security.Finding{
-				Scanner:  "context_injection",
-				Name:     "file_too_large",
-				Severity: "medium",
-				Detail:   fmt.Sprintf("%s: skipped, exceeds %d byte limit (%d bytes)", relPath, maxContextFileSize, info.Size()),
-				Position: -1,
-			})
-			return nil
+		for _, cf := range scanSingleContextFile(path, relPath, info, pipeline) {
+			allFindings = append(allFindings, cf.finding)
 		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			allFindings = append(allFindings, security.Finding{
-				Scanner:  "context_injection",
-				Name:     "scan_error",
-				Severity: "medium",
-				Detail:   fmt.Sprintf("%s: could not read file: %v", relPath, err),
-				Position: -1,
-			})
-			return nil
-		}
-		result := pipeline.Scan(string(content))
-		for i := range result.Findings {
-			result.Findings[i].Detail = fmt.Sprintf("%s: %s", relPath, result.Findings[i].Detail)
-		}
-		allFindings = append(allFindings, result.Findings...)
 		return nil
 	})
 	if err != nil {

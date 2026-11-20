@@ -159,13 +159,25 @@ func (e *errSymlink) Unwrap() error {
 }
 
 func sanitizeDownload(localDir string) error {
+	_, err := sanitizeDownloadReport(localDir)
+	return err
+}
+
+func sanitizeDownloadReport(localDir string) ([]string, error) {
 	absLocal, err := filepath.Abs(localDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	absLocal, err = filepath.EvalSymlinks(absLocal)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	var strippedSymlinks []string
+	recordStripped := func(path string) {
+		if rel, relErr := filepath.Rel(absLocal, path); relErr == nil && rel != "." {
+			strippedSymlinks = append(strippedSymlinks, rel)
+		}
 	}
 
 	var reftableDirs []string
@@ -267,6 +279,7 @@ func sanitizeDownload(localDir string) error {
 				if rmErr := os.Remove(path); rmErr != nil {
 					return &errSymlink{Path: path, Err: rmErr}
 				}
+				recordStripped(path)
 				return nil
 			}
 			// Absolute targets always point outside the repo root.
@@ -274,6 +287,7 @@ func sanitizeDownload(localDir string) error {
 				if rmErr := os.Remove(path); rmErr != nil {
 					return &errSymlink{Path: path, Target: target, Err: rmErr}
 				}
+				recordStripped(path)
 				return nil
 			}
 			// Use EvalSymlinks, not filepath.Clean: Clean is textual and misses
@@ -287,12 +301,14 @@ func sanitizeDownload(localDir string) error {
 				if rmErr := os.Remove(path); rmErr != nil {
 					return &errSymlink{Path: path, Target: target, Err: rmErr}
 				}
+				recordStripped(path)
 				return nil
 			}
 			if !strings.HasPrefix(resolved+string(filepath.Separator), absLocal+string(filepath.Separator)) {
 				if rmErr := os.Remove(path); rmErr != nil {
 					return &errSymlink{Path: path, Target: target, Err: rmErr}
 				}
+				recordStripped(path)
 				return nil
 			}
 			return nil
@@ -315,14 +331,14 @@ func sanitizeDownload(localDir string) error {
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Reject registered worktrees because they can carry additional ref stores
 	// that this walker does not inspect.
 	for _, gitDir := range reftableDirs {
 		if worktreeDirs[gitDir] {
-			return rejectRepository(fmt.Errorf("unsupported reftable worktree metadata %s", filepath.Join(gitDir, "worktrees")))
+			return nil, rejectRepository(fmt.Errorf("unsupported reftable worktree metadata %s", filepath.Join(gitDir, "worktrees")))
 		}
 	}
 
@@ -331,10 +347,10 @@ func sanitizeDownload(localDir string) error {
 	cwd := filepath.Dir(absLocal)
 	for _, gitDir := range reftableDirs {
 		if err := sanitizeReftableStore(cwd, gitDir); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return strippedSymlinks, nil
 }
 
 // inGitDir reports whether path is inside a .git directory and returns its path
@@ -2605,17 +2621,26 @@ func removeReplacementRefs(cwd, gitDir string) error {
 // The sanitized staging directory replaces localDir only after download,
 // sanitization, and that check succeed.
 func SafeDownload(sandboxName, remoteDir, localDir string, snapshot RepositorySnapshot) error {
+	_, err := SafeDownloadWithReport(sandboxName, remoteDir, localDir, snapshot)
+	return err
+}
+
+// SafeDownloadWithReport behaves like SafeDownload and also returns the
+// directory-relative paths of any symlinks removed during sanitization so
+// callers (such as --sync-target-repo) can distinguish sanitizer-stripped
+// symlinks from genuine deletions.
+func SafeDownloadWithReport(sandboxName, remoteDir, localDir string, snapshot RepositorySnapshot) ([]string, error) {
 	localDir = filepath.Clean(localDir)
 	parent := filepath.Dir(localDir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return fmt.Errorf("creating download parent %s: %w", parent, err)
+		return nil, fmt.Errorf("creating download parent %s: %w", parent, err)
 	}
 
 	var errs []error
 	for attempt := 1; attempt <= safeDownloadAttempts; attempt++ {
 		stagingDir, err := os.MkdirTemp(parent, ".fullsend-safe-download-*")
 		if err != nil {
-			return fmt.Errorf("creating download staging directory: %w", err)
+			return nil, fmt.Errorf("creating download staging directory: %w", err)
 		}
 
 		if err := Download(sandboxName, remoteDir, stagingDir); err != nil {
@@ -2626,7 +2651,7 @@ func SafeDownload(sandboxName, remoteDir, localDir string, snapshot RepositorySn
 			continue
 		}
 
-		err = sanitizeDownload(stagingDir)
+		strippedSymlinks, err := sanitizeDownloadReport(stagingDir)
 		var plain bool
 		if err == nil {
 			plain, err = ValidateRepositoryRoot(stagingDir)
@@ -2643,9 +2668,9 @@ func SafeDownload(sandboxName, remoteDir, localDir string, snapshot RepositorySn
 			err = fmt.Errorf("%w: %w", ErrRepositoryValidation, err)
 			cleanupErr := cleanupStagingDir(stagingDir)
 			if cleanupErr == nil {
-				return fmt.Errorf("sanitizing downloaded directory: %w", err)
+				return nil, fmt.Errorf("sanitizing downloaded directory: %w", err)
 			}
-			return errors.Join(
+			return nil, errors.Join(
 				fmt.Errorf("sanitizing downloaded directory: %w", err),
 				fmt.Errorf("cleaning staging directory after sanitization failure: %w", cleanupErr),
 			)
@@ -2653,15 +2678,15 @@ func SafeDownload(sandboxName, remoteDir, localDir string, snapshot RepositorySn
 		if err := replaceDownload(stagingDir, localDir); err != nil {
 			cleanupErr := cleanupStagingDir(stagingDir)
 			if cleanupErr == nil {
-				return err
+				return nil, err
 			}
-			return errors.Join(err, fmt.Errorf("cleaning staging directory after publish failure: %w", cleanupErr))
+			return nil, errors.Join(err, fmt.Errorf("cleaning staging directory after publish failure: %w", cleanupErr))
 		}
 		fmt.Fprintf(os.Stderr, "  sandbox download succeeded on attempt %d/%d\n", attempt, safeDownloadAttempts)
-		return nil
+		return strippedSymlinks, nil
 	}
 
-	return fmt.Errorf("safe download from sandbox failed after %d attempts: %w", safeDownloadAttempts, errors.Join(errs...))
+	return nil, fmt.Errorf("safe download from sandbox failed after %d attempts: %w", safeDownloadAttempts, errors.Join(errs...))
 }
 
 // cleanupStagingDir removes a staging tree after restoring write permission
