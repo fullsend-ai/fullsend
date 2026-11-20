@@ -11,6 +11,11 @@ organization-wide GitLab install path.
 GitHub repositories use a different command (`fullsend github setup`). See
 [Configuring GitHub](configuring-github.md) for that flow.
 
+Some GitHub features work differently on GitLab, and some are not yet
+available. See the
+[Platform Capability Matrix](../../reference/platform-capability-matrix.md)
+for the intentional differences and the known gaps.
+
 ## Prerequisites
 
 * For Vertex agents, a GCP project with Vertex AI enabled, from

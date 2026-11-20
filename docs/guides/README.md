@@ -6,6 +6,9 @@ Practical how-to documentation for fullsend, organized by audience. For design d
 
 Guides for onboarding organizations and configuring GitHub or GitLab — the first thing most users need.
 
+To compare what fullsend supports on GitHub, GitLab, and Jira, see the
+[Platform Capability Matrix](../reference/platform-capability-matrix.md).
+
 - [Mint enrollment](getting-started/README.md) — Enroll your repo in a token mint before configuring anything else
 - [Getting Inference](getting-started/getting-inference.md) — Provision GCP inference access for your org or repo
 - [Configuring GitHub](getting-started/configuring-github.md) — Install GitHub Apps and run the setup CLI
@@ -78,5 +81,6 @@ Guides for contributors developing and testing fullsend itself.
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
 - [Behaviour testing](dev/behaviour-testing.md) — Write Gherkin scenarios for end-to-end agent behaviour
 - [Behaviour test drivers](dev/behaviour-drivers.md) — Implement SCM and CI drivers for behaviour tests
+- [Platform Capability Matrix](../reference/platform-capability-matrix.md) — Agent support, intentional differences, known parity gaps, and test coverage across GitHub, GitLab, and Jira
 - [Testing workflow changes](dev/testing-workflows.md) — Point a test repository at a branch to test workflow, action, and agent changes before release, and run the PR CI checks locally with `make ci-local`
 - [Tracing internals](dev/tracing.md) — How the distributed tracing implementation works and how to extend it

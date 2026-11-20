@@ -4,6 +4,10 @@
 
 Connect fullsend to a Jira project so that Jira issue activity — comments, label changes — triggers the same agents that run on GitHub and GitLab.
 
+Only some agents run from Jira. See the
+[Platform Capability Matrix](../../reference/platform-capability-matrix.md)
+for which agents support Jira and the known gaps.
+
 > [!WARNING]
 > **Connect a private Jira project to a private repository.** A public
 > repository can expose private Jira data through its workflow artifacts,
