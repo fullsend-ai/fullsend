@@ -271,3 +271,77 @@ func TestRunAgent_BotRoleHelperResolvesThroughRunsOwnMint(t *testing.T) {
 		"the run's helper must resolve the comment author's bot login for REPO_FULL_NAME, not GITHUB_REPOSITORY")
 	assert.Equal(t, "Bearer "+jwt, got.auth, "the lookup must authenticate with the job's OIDC token")
 }
+
+// TestRunAgent_BotRoleHelperSkippedWhenLookupImpossible pins the cost side
+// of the helper's start condition: a run whose mint resolver could never
+// answer a lookup — here because the Actions OIDC request environment is
+// absent, so there is no credential to authenticate with — starts no
+// helper and makes no run-start entity call. Its pre-script gets no
+// FULLSEND_BOT_ROLE_* environment and fails closed at the first ask,
+// instead of every such run paying a blocking GraphQL call on the critical
+// path before its script.
+func TestRunAgent_BotRoleHelperSkippedWhenLookupImpossible(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	out := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_OUTPUT", out)
+
+	// Look like a real job for an issue on a target repository: a mint,
+	// the repository and issue the run handles, and the GitHub API that
+	// would name the issue's node — but no Actions OIDC environment, so
+	// no bot-role lookup could ever be answered.
+	mint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "unused", "expires_at": "2026-06-15T12:00:00Z"})
+	}))
+	t.Cleanup(mint.Close)
+	t.Setenv("FULLSEND_MINT_URL", mint.URL)
+	t.Setenv("GITHUB_REPOSITORY", "fullsend-ai/agents")
+	t.Setenv("REPO_FULL_NAME", "fullsend-ai/agents")
+	t.Setenv("ISSUE_NUMBER", "9602")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	// A GraphQL endpoint that records the entity question; the run must
+	// not ask it.
+	graphqlAsked := make(chan struct{}, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" {
+			graphqlAsked <- struct{}{}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("GITHUB_API_URL", srv.URL)
+	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
+	t.Setenv("GH_TOKEN", "ghs_fake_graphql_token")
+
+	origMint := statusMintToken
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_test_token_9602", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+	t.Cleanup(func() { statusMintToken = origMint })
+
+	marker := filepath.Join(t.TempDir(), "prescript-env")
+	dir := newSkipHarnessDir(t, "env > "+marker+"\n"+
+		`echo "skipped=true" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	require.NoError(t, runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{}))
+
+	dump, err := os.ReadFile(marker)
+	require.NoError(t, err, "the pre-script must run; its environment dump is the evidence")
+	env := string(dump)
+
+	for _, key := range []string{"FULLSEND_BOT_ROLE_URL", "FULLSEND_BOT_ROLE_TOKEN", "FULLSEND_ENTITY_ID"} {
+		_, present := scriptEnvValue(t, env, key)
+		assert.False(t, present, "%s must not reach a script of a run that cannot answer a bot-role lookup", key)
+	}
+	select {
+	case <-graphqlAsked:
+		t.Fatal("the run-start entity call must not be made when no bot-role lookup could ever be answered")
+	default:
+	}
+}

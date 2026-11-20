@@ -155,9 +155,11 @@ func TestBotRoleHelper_OtherEntityRefused(t *testing.T) {
 	})
 }
 
-// Each GitHub comment lookup runs under githubGraphQLTimeout, like the
-// run-start entity call, so a slow lookup cannot outlive the bounds the
-// WriteTimeout and botRoleCmdTimeout comments count.
+// Each GitHub comment lookup runs under githubGraphQLTimeout (the
+// run-start entity call runs under the tighter botRoleEntityTimeout
+// instead, on the critical path before a pre-script), so a slow lookup
+// cannot outlive the bounds the WriteTimeout and botRoleCmdTimeout
+// comments count.
 func TestBotRoleHelper_GitHubLookupBounded(t *testing.T) {
 	t.Run("lookup context carries the GitHub timeout", func(t *testing.T) {
 		resolver := &fakeBotRoleResolver{role: "triage"}
@@ -438,5 +440,43 @@ func TestBotRoleCommentLookup_OnlyGitHubRunsWithAResolvedEntity(t *testing.T) {
 			assert.Empty(t, entity)
 			assert.Nil(t, comments, "a run with no trusted lookup must give the helper none, so it refuses every lookup")
 		})
+	}
+}
+
+// The run-start entity call sits on the critical path before a pre-script,
+// so it runs under the tighter botRoleEntityTimeout instead of the 30s the
+// helper's own per-request lookups keep: a slow GitHub API ends the call on
+// that deadline and the run continues with no trusted lookup — failing
+// closed — instead of delaying the script's start.
+func TestBotRoleCommentLookup_EntityCallBounded(t *testing.T) {
+	printer := ui.New(io.Discard)
+	orig := botRoleEntityTimeout
+	botRoleEntityTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { botRoleEntityTimeout = orig })
+
+	asked := make(chan struct{}, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asked <- struct{}{}
+		time.Sleep(250 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"data":{"repository":{"issueOrPullRequest":{"__typename":"Issue","id":"I_1"}}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("GITHUB_API_URL", srv.URL)
+	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
+	t.Setenv("GH_TOKEN", "ghs_fake_graphql_token")
+	t.Setenv("REPO_FULL_NAME", "fullsend-ai/agents")
+	t.Setenv("ISSUE_NUMBER", "9602")
+	t.Setenv("PR_NUMBER", "")
+
+	start := time.Now()
+	entity, comments := botRoleCommentLookup(context.Background(), "github", "github", printer)
+	assert.Less(t, time.Since(start), 250*time.Millisecond,
+		"the run-start entity call must end on the botRoleEntityTimeout deadline, not wait out a slow API")
+	assert.Empty(t, entity, "a run whose entity call timed out gets no trusted lookup")
+	assert.Nil(t, comments)
+	select {
+	case <-asked:
+	default:
+		t.Fatal("the entity lookup must have been made once")
 	}
 }

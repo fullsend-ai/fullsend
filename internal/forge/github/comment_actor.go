@@ -58,15 +58,20 @@ const nextGlobalIDHeader = "X-Github-Next-Global-ID"
 
 // CommentActor reads a comment's current-revision actor and the issue or
 // pull request it is on (ADR 0133, ADR 0141). For an edited comment the
-// actor is the editor of the newest edit-history entry, and only when that
-// entry's editedAt equals lastEditedAt: GitHub does not document whether
-// the top-level editor field is the first or the last editor, so the edit
-// history is read instead and anything that does not match lastEditedAt is
-// an error. An unedited comment's actor is its author. It accepts the
-// comments the normalized entity lists: issue and pull-request
-// conversation comments (IssueComment) and pull-request review-thread
-// comments (PullRequestReviewComment). Any other node, and an edited
-// comment whose current revision cannot be attributed, is an error.
+// actor is the editor of the edit-history entry the lastEditedAt field
+// names: GitHub does not document whether the top-level editor field is
+// the first or the last editor, and it does not document the order of the
+// userContentEdits connection either, so a small page of the edit history
+// is read and the entry whose editedAt equals lastEditedAt is the current
+// revision, whichever end of the page it sits at. A page that does not
+// contain it, whose entry has no editor, or whose timestamp matches more
+// than one entry, is an error: the lookup fails closed rather than
+// guessing. An unedited comment's actor is its author.
+// It accepts the comments the normalized entity lists: issue and
+// pull-request conversation comments (IssueComment) and pull-request
+// review-thread comments (PullRequestReviewComment). Any other node, and
+// an edited comment whose current revision cannot be attributed, is an
+// error.
 func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (forge.CommentActor, error) {
 	var data struct {
 		Node *struct {
@@ -88,8 +93,8 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (forge.
 		} `json:"node"`
 	}
 	const q = `query($id:ID!){node(id:$id){__typename ` +
-		`... on IssueComment{author{__typename login} lastEditedAt userContentEdits(first:1){nodes{editor{__typename login} editedAt}} issue{id} pullRequest{id}} ` +
-		`... on PullRequestReviewComment{author{__typename login} lastEditedAt userContentEdits(first:1){nodes{editor{__typename login} editedAt}} pullRequest{id}}}}`
+		`... on IssueComment{author{__typename login} lastEditedAt userContentEdits(first:10){nodes{editor{__typename login} editedAt}} issue{id} pullRequest{id}} ` +
+		`... on PullRequestReviewComment{author{__typename login} lastEditedAt userContentEdits(first:10){nodes{editor{__typename login} editedAt}} pullRequest{id}}}}`
 	if err := c.graphqlQuery(ctx, q, map[string]any{"id": commentID}, &data, withHeader(nextGlobalIDHeader, "1")); err != nil {
 		return forge.CommentActor{}, err
 	}
@@ -111,18 +116,30 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (forge.
 	}
 	actor := n.Author
 	if n.LastEditedAt != nil {
-		// The current-revision actor is the newest edit's editor, and
-		// only when that edit is the revision lastEditedAt names:
-		// GitHub does not document the top-level editor field's
-		// meaning, so a mismatch or a missing editor fails closed.
-		edits := n.UserContentEdits
-		if edits == nil || len(edits.Nodes) == 0 || edits.Nodes[0].Editor == nil {
-			return forge.CommentActor{}, fmt.Errorf("comment %q was edited by an unknown actor", commentID)
+		// The current-revision actor is the editor of the edit whose
+		// editedAt equals lastEditedAt. GitHub does not document the
+		// order of the userContentEdits connection, so the revision is
+		// identified by its timestamp, not by its position in the page:
+		// whichever end the matching entry sits at, it is the one
+		// lastEditedAt names. A page that does not contain the last
+		// revision, whose entry has no editor, or whose timestamp
+		// matches more than one entry (DateTime values carry no
+		// sub-second precision, so two edits in one second are
+		// ambiguous), fails closed.
+		var editor *graphqlActor
+		matches := 0
+		if n.UserContentEdits != nil {
+			for _, e := range n.UserContentEdits.Nodes {
+				if e.EditedAt == *n.LastEditedAt {
+					matches++
+					editor = e.Editor
+				}
+			}
 		}
-		if edits.Nodes[0].EditedAt != *n.LastEditedAt {
-			return forge.CommentActor{}, fmt.Errorf("comment %q's newest edit does not match lastEditedAt", commentID)
+		if matches > 1 || editor == nil {
+			return forge.CommentActor{}, fmt.Errorf("comment %q's current edit is not in its edit history", commentID)
 		}
-		actor = edits.Nodes[0].Editor
+		actor = editor
 	}
 	if actor != nil {
 		out.ActorType, out.ActorLogin = actor.Typename, actor.Login
