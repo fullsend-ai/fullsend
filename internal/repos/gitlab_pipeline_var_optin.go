@@ -26,7 +26,9 @@ type gitlabPipelineVarOptInKey struct{}
 // WithGitLabPipelineVarOptIns returns a context that records which GitLab
 // repositories in m opted in to a relaxed pipeline-variable setting. The
 // restriction checks read it by owner/repo, so callers set it once after
-// loading the manifest. A nil manifest records no opt-ins.
+// loading the manifest: Converge, Status, and the CLI's repos install each
+// seed the context from the manifest they already resolved. A nil manifest
+// records no opt-ins.
 func WithGitLabPipelineVarOptIns(ctx context.Context, m *Manifest) context.Context {
 	set := map[string]bool{}
 	for _, name := range GitLabPipelineVarOptInRepos(m) {

@@ -3,6 +3,8 @@ package repos
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,8 +19,10 @@ func optInManifest(name string) *Manifest {
 	return &Manifest{
 		Version: 1,
 		GitLab: &PlatformConfig{
-			URL:   "https://gitlab.example.com",
-			Repos: []RepoEntry{{Name: name, AllowInsecurePipelineVariables: true}, {Name: "acme/strict"}},
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Inference:   InferenceSettings{Auth: InferenceAuthOpenAIAPIKey},
+			Repos:       []RepoEntry{{Name: name, AllowInsecurePipelineVariables: true}, {Name: "acme/strict"}},
 		},
 	}
 }
@@ -40,10 +44,7 @@ func TestValidate_AllowInsecurePipelineVariables(t *testing.T) {
 		assert.Contains(t, err.Error(), "needs a concrete owner/repo entry")
 	})
 	t.Run("accepted on a concrete GitLab entry", func(t *testing.T) {
-		err := optInManifest("acme/repo").Validate()
-		if err != nil {
-			assert.NotContains(t, err.Error(), "allow_insecure_pipeline_variables")
-		}
+		require.NoError(t, optInManifest("acme/repo").Validate(), "a fully valid manifest accepts the opt-in")
 	})
 }
 
@@ -107,7 +108,7 @@ func TestEnsureGitLabPipelineVariableOverrideRole_OptInAcceptsWithoutChanging(t 
 	}
 }
 
-func TestEnsureGitLabPipelineVariableOverrideRole_OptInStillReportsUnsupported(t *testing.T) {
+func TestRequireGitLabPipelineVariableRestriction_OptInStillReportsUnsupported(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["GetPipelineVariablesMinimumOverrideRole"] = forge.ErrNotSupported
 	err := requireGitLabPipelineVariableRestriction(optInCtx("acme/repo"), fc, "acme", "repo", true)
@@ -183,6 +184,78 @@ func TestInstall_OptInDeliversWithRelaxedRole(t *testing.T) {
 	}
 }
 
+// TestConverge_GitLabPipelineVarOptInSeedsContext covers the Converge entry
+// point's context wiring: Converge seeds the ADR 0175 opt-in from the
+// manifest it already resolved, so a weaker pipeline-variable role delivers
+// with the manifest opt-in and still refuses without it — no caller-supplied
+// context required.
+func TestConverge_GitLabPipelineVarOptInSeedsContext(t *testing.T) {
+	sc := &fakeScaffoldCommit{}
+
+	fc := newFakeClientForBatch("acme/api")
+	fc.PipelineVarOverrideRoles["acme/api"] = forge.PipelineVarOverrideDeveloper
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.Manifest.GitLab.Repos[0].AllowInsecurePipelineVariables = true
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, result.Failed(), "the manifest opt-in lets converge deliver to a weaker role")
+	require.Len(t, result.Installed(), 1)
+	assert.Equal(t, forge.PipelineVarOverrideDeveloper, fc.PipelineVarOverrideRoles["acme/api"], "converge never changes the project setting")
+
+	fc = newFakeClientForBatch("acme/api")
+	fc.PipelineVarOverrideRoles["acme/api"] = forge.PipelineVarOverrideDeveloper
+
+	result, err = Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
+	var refusal error
+	if err != nil {
+		// Per-repo failures normally land in the batch result; a batch error
+		// would still have to carry the delivery-gate refusal.
+		refusal = err
+	} else {
+		failed := result.Failed()
+		require.Len(t, failed, 1, "without the opt-in the weaker setting must block delivery")
+		require.NotNil(t, failed[0].Error)
+		refusal = failed[0].Error
+	}
+	assert.Contains(t, refusal.Error(), "refusing to deliver runnable typed GitLab jobs")
+}
+
+// TestStatus_GitLabPipelineVarOptInSeedsContext covers the Status entry
+// point's context wiring: Status seeds the ADR 0175 opt-in from the
+// manifest it resolves (status.go), so the webhook fast-path diagnosis
+// for an installed repo whose pipeline-variable role is weaker than
+// no_one_allowed carries the opt-in note — and stops at the plain
+// deferral without the manifest opt-in.
+func TestStatus_GitLabPipelineVarOptInSeedsContext(t *testing.T) {
+	diagnose := func(t *testing.T, optIn bool) GitLabWebhookStatus {
+		t.Helper()
+		fc := newUnstampedGitLabRepo(t)
+		fc.PipelineVarOverrideRoles["acme/api"] = forge.PipelineVarOverrideDeveloper
+		m := unstampedTaggedConvergeCfg().Manifest
+		require.NotNil(t, m.GitLab, "the shared fixture manifest carries a GitLab platform")
+		require.Len(t, m.GitLab.Repos, 1, "the shared fixture manifest targets exactly acme/api")
+		if optIn {
+			m.GitLab.Repos[0].AllowInsecurePipelineVariables = true
+		}
+		res, err := Status(context.Background(), m, newTestClientFactory(webhookFake{FakeClient: fc, base: webhookTestBase}), 1, nil)
+		require.NoError(t, err)
+		require.Len(t, res.Repos, 1)
+		require.Empty(t, res.Repos[0].Error)
+		require.NotNil(t, res.Repos[0].GitLabWebhook, "a client exposing a base URL gets the webhook fast-path diagnosis")
+		return *res.Repos[0].GitLabWebhook
+	}
+
+	optedIn := diagnose(t, true)
+	assert.Equal(t, GitLabWebhookStateDrifted, optedIn.State, "the weaker role still drifts the webhook fast path")
+	assert.Contains(t, strings.Join(optedIn.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
+
+	strict := diagnose(t, false)
+	assert.Equal(t, GitLabWebhookStateDrifted, strict.State, "the weaker role still drifts without the opt-in")
+	assert.Contains(t, strings.Join(strict.Reasons, "\n"), "webhook fast-path deferred", "the deferral is still reported")
+	assert.NotContains(t, strings.Join(strict.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
+}
+
 func newFakeClientWithRoleFor(role string) *forge.FakeClient {
 	fc := newFakeClientWithRepo()
 	fc.PipelineVarOverrideRoles["acme/widgets"] = role
@@ -190,7 +263,7 @@ func newFakeClientWithRoleFor(role string) *forge.FakeClient {
 }
 
 func TestSetManifestValue_AllowInsecurePipelineVariables(t *testing.T) {
-	path := t.TempDir() + "/repos.yaml"
+	path := filepath.Join(t.TempDir(), "repos.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/web\ngitlab:\n  url: https://gitlab.example.com\n  repos:\n    - name: group/project\n"), 0o600))
 
 	_, err := SetManifestValue(path, `gitlab.repos["group/project"].allow_insecure_pipeline_variables`, "true")
