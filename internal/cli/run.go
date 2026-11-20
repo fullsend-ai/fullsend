@@ -7063,6 +7063,14 @@ func printExtractedOutputFiles(printer *ui.Printer, extracted []string, elapsed 
 	printer.StepDone(fmt.Sprintf("Extracted %d output file(s) (%.1fs)", len(extracted), elapsed.Seconds()))
 }
 
+// The structural sanitizers are variables so tests can inject a sanitizer
+// failure: their error path has no natural trigger, because they only fail on a
+// decoder limit after json.Valid has accepted the document.
+var (
+	sanitizeJSONDocument = security.SanitizeJSONDocument
+	sanitizeJSONLines    = security.SanitizeJSONLines
+)
+
 // scanOutputFiles runs the output security pipeline (unicode normalization and
 // secret redaction) on extracted output files, recursively walking all
 // subdirectories (iteration-N/output/, etc.). At the quiet progress level
@@ -7082,10 +7090,10 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 	pipeline := security.OutputPipeline()
 	findingCount := 0
 	// At quiet, unreadable and unwritable files are counted, not named.
-	unreadable, unwritable := 0, 0
-	// Write failures are collected rather than returned from the walk callback
-	// so every remaining file is still scanned and redacted. The run still
-	// fails closed once the walk finishes (#5705).
+	unreadable, unwritable, unsanitizable := 0, 0, 0
+	// Write and sanitizer failures are collected rather than returned from the
+	// walk callback so every remaining file is still scanned and redacted. The
+	// run still fails closed once the walk finishes (#5705).
 	var writeErrs []error
 	findingsPath := filepath.Join(outputDir, "security", "findings.jsonl")
 
@@ -7131,10 +7139,14 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 		// JSONL and NDJSON are sanitized record by record so one record never
 		// rewrites another (#5705).
 		if ext == ".jsonl" || ext == ".ndjson" {
-			out, jsonLineFindings, scanErr := security.SanitizeJSONLines(content, pipeline)
+			out, jsonLineFindings, scanErr := sanitizeJSONLines(content, pipeline)
 			if scanErr != nil {
-				return fmt.Errorf("could not sanitize JSONL output %s: %w", relPath, scanErr)
+				writeErrs = append(writeErrs, sanitizeFailure(quiet, path, relPath, scanErr, &unsanitizable))
+				return nil
 			}
+			// A record that was replaced with a marker is not a whole-file
+			// marker, so this is the only place its loss reaches an operator.
+			alertOnRecordRemoval(printer, out)
 			if len(jsonLineFindings) > 0 {
 				findingCount += len(jsonLineFindings)
 				for _, f := range jsonLineFindings {
@@ -7146,7 +7158,6 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 						Phase: "host_output", Finding: f,
 					})
 				}
-				alertOnOutputRemoval(printer, out)
 				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
 					writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
 				}
@@ -7158,9 +7169,10 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 		// syntax and fails closed (#5705). Non-JSON files fall through to the
 		// plain text scan below.
 		if json.Valid(bytes.TrimSpace(content)) {
-			out, jsonFindings, jsonErr := security.SanitizeJSONDocument(content, pipeline)
+			out, jsonFindings, jsonErr := sanitizeJSONDocument(content, pipeline)
 			if jsonErr != nil {
-				return fmt.Errorf("could not sanitize JSON output %s: %w", relPath, jsonErr)
+				writeErrs = append(writeErrs, sanitizeFailure(quiet, path, relPath, jsonErr, &unsanitizable))
+				return nil
 			}
 			if len(jsonFindings) > 0 {
 				findingCount += len(jsonFindings)
@@ -7225,6 +7237,9 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 	if unwritable > 0 {
 		printer.StepWarn(fmt.Sprintf("Could not write %d sanitized output file(s)", unwritable))
 	}
+	if unsanitizable > 0 {
+		printer.StepWarn(fmt.Sprintf("Could not sanitize %d output file(s)", unsanitizable))
+	}
 	if findingCount > 0 {
 		printer.StepWarn(fmt.Sprintf("Sanitized %d finding(s) in output files", findingCount))
 	} else {
@@ -7250,24 +7265,56 @@ func alertOnOutputRemoval(printer *ui.Printer, sanitized []byte) {
 	printer.Raw("::error::Output file replaced with a fail-closed marker: " + reason + "\n")
 }
 
+// alertOnRecordRemoval emits a workflow annotation for each distinct reason a
+// JSONL record was replaced with a fail-closed marker. Such a file keeps its
+// records, so it is never a whole-file marker, and the record's loss would
+// otherwise show up only as one scan line — the silent failure #5705 set out to
+// fix. Only the marker's fixed reason reaches the annotation, never a path or a
+// matched value (ADR 0163).
+func alertOnRecordRemoval(printer *ui.Printer, sanitized []byte) {
+	if os.Getenv("GITHUB_ACTIONS") != "true" {
+		return
+	}
+	for _, reason := range security.OutputRecordRemovals(sanitized) {
+		printer.Raw("::error::Output record replaced with a fail-closed marker: " + reason + "\n")
+	}
+}
+
 // writeFailure records a sanitized-output write error. At the quiet progress
 // level the path is withheld because it can carry an agent-chosen name
 // (ADR 0163); non-quiet callers name it.
 func writeFailure(quiet bool, path, relPath string, writeErr error, unwritable *int) error {
 	*unwritable++
-	// The unredacted bytes must not reach the uploaded artifact, so replace the
-	// file with a valid fail-closed marker; remove it if even that fails.
-	if err := os.WriteFile(path, []byte(unwritableOutputMarker), 0o644); err != nil {
-		_ = os.Remove(path)
-	}
+	quarantineOutput(path)
 	if quiet {
 		return fmt.Errorf("could not write sanitized output file")
 	}
 	return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 }
 
+// sanitizeFailure records a sanitization error and contains the file it could
+// not sanitize, so the walk continues to the remaining files instead of leaving
+// them unredacted. The unredacted bytes must never reach the uploaded artifact,
+// so the file is replaced with the marker as on a write failure (#5705).
+func sanitizeFailure(quiet bool, path, relPath string, scanErr error, unsanitizable *int) error {
+	*unsanitizable++
+	quarantineOutput(path)
+	if quiet {
+		return fmt.Errorf("could not sanitize output file")
+	}
+	return fmt.Errorf("could not sanitize %s: %w", relPath, scanErr)
+}
+
+// quarantineOutput replaces path with the fail-closed marker, removing it if even
+// that write fails, so unredacted bytes never reach the uploaded artifact.
+func quarantineOutput(path string) {
+	if err := os.WriteFile(path, []byte(unwritableOutputMarker), 0o644); err != nil {
+		_ = os.Remove(path)
+	}
+}
+
 // unwritableOutputMarker replaces a file whose sanitized content could not be
-// written. It is valid JSON so downstream parsers keep working.
+// computed or written. It is valid JSON so downstream parsers keep working.
 const unwritableOutputMarker = `{"error":"output removed because it could not be redacted"}`
 
 // downloadSandboxFindings extracts the sandbox-side findings directory. It is a

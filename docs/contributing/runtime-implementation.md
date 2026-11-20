@@ -625,14 +625,17 @@ individually through a token-preserving walk that keeps member order and
 duplicate keys, so an earlier value that map decoding would drop is still
 scanned, and a secret spanning JSON framing stays visible in the rewritten
 bytes. A sanitized key that would collide with a different member is
-disambiguated (`<key>_<N>`). The bytes actually written are scanned as well, so
-a secret that only exists in the serialized form is still caught, and a
-private-key block spanning members is detected in a decoded view of the document
-before masking a member value can hide its BEGIN marker. Such a block is
-neutralized member by member: every key and leaf the match covers becomes
-`[REDACTED PRIVATE KEY]`, so the rest of the document — a review verdict, a
-summary — survives instead of being dropped because one finding quoted the PEM
-header and another quoted the footer.
+disambiguated (`<key>_<N>`). The bytes actually written are scanned as well, but
+only for whole-value secrets — registered runtime values and private-key blocks,
+the two patterns a leaf scan cannot see once a member value is masked. Every
+other pattern has already been applied to the decoded key or leaf, so a match on
+the serialized bytes would be a redaction placeholder plus JSON escape
+characters, not a secret. A private-key block spanning members is detected in a
+decoded view of the document before masking a member value can hide its BEGIN
+marker. Such a block is neutralized member by member: every key and leaf the
+match covers becomes `[REDACTED PRIVATE KEY]`, so the rest of the document — a
+review verdict, a summary — survives instead of being dropped because one
+finding quoted the PEM header and another quoted the footer.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
 rewriting that framing, so only the records it covers are replaced. A
@@ -650,16 +653,18 @@ replaced with a valid fail-closed marker instead — never with corrupted
 syntax — when a private-key block cannot be localized to members, when a match
 spans record boundaries, or when a text redaction would leave the document
 invalid. Markers look like `{"error":"output removed because …"}` and are logged
-as findings in `security/findings.jsonl`. Because a replaced file loses
-everything the agent wrote into it, and because the run still exits 0, the
-reason a marker states is also emitted as a `::error::` workflow annotation
-whenever the file is written under GitHub Actions.
+as findings in `security/findings.jsonl`. Because a replaced file or record loses
+everything the agent wrote into it, and because the run still exits 0, the reason
+a marker states is also emitted as a `::error::` workflow annotation whenever the
+file is written under GitHub Actions: one annotation for a file replaced whole,
+and one per distinct reason for a JSONL file whose records were replaced.
 
-A sanitized file that cannot be written does not stop the walk: every
-remaining file is still scanned and redacted, and the run fails closed
-afterwards with all write errors joined. The file itself is replaced with a
-fail-closed marker so the unredacted bytes never reach the uploaded artifact. In `quiet` mode the affected paths
-are counted, not named (ADR 0163).
+A sanitized file that cannot be written, and a file that cannot be sanitized at
+all, do not stop the walk: every remaining file is still scanned and redacted,
+and the run fails closed afterwards with all failures joined. The file itself is
+replaced with a fail-closed marker so the unredacted bytes never reach the
+uploaded artifact. In `quiet` mode the affected paths are counted, not named
+(ADR 0163).
 
 ## Agent rule layering
 

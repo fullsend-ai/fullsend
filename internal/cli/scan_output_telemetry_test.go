@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -406,6 +407,81 @@ func TestScanOutputFiles_ReturnsErrorWhenSanitizedWriteFails(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not write sanitized secret.txt")
+}
+
+// TestScanOutputFiles_SanitizerErrorContainsFileAndContinues pins that a
+// sanitizer error is contained the way a write failure is: the file it could not
+// sanitize is replaced with the marker, the walk continues to the remaining
+// files, and the run still fails closed. The sanitizers only fail on a decoder
+// limit, so the failure is injected.
+func TestScanOutputFiles_SanitizerErrorContainsFileAndContinues(t *testing.T) {
+	original := sanitizeJSONDocument
+	t.Cleanup(func() { sanitizeJSONDocument = original })
+	sanitizeJSONDocument = func([]byte, *security.Pipeline) ([]byte, []security.Finding, error) {
+		return nil, nil, errors.New("decoder limit")
+	}
+
+	dir := t.TempDir()
+	failing := filepath.Join(dir, "a-result.json")
+	require.NoError(t, os.WriteFile(failing, []byte(`{"body":"ghp_FAKEtesttoken000000000000000000000000"}`), 0o644))
+	later := filepath.Join(dir, "b-notes.txt")
+	require.NoError(t, os.WriteFile(later, []byte("Token: ghp_FAKEtesttoken000000000000000000000000"), 0o644))
+
+	err := scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not sanitize a-result.json")
+
+	got, readErr := os.ReadFile(failing)
+	require.NoError(t, readErr)
+	assert.Equal(t, unwritableOutputMarker, string(got), "an unsanitizable file must be contained")
+	assert.NotContains(t, string(got), "ghp_FAKEtesttoken")
+
+	got, readErr = os.ReadFile(later)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(got), "ghp_FAKEtesttoken",
+		"the walk must continue past a sanitizer error and redact the remaining files")
+}
+
+// TestScanOutputFiles_EmitsAnnotationForJSONLRecordRemoval pins that a replaced
+// JSONL record is announced too. The file keeps its record framing, so it is
+// never a whole-file marker, and without the annotation a lost record would only
+// show up as one scan line (#5705).
+func TestScanOutputFiles_EmitsAnnotationForJSONLRecordRemoval(t *testing.T) {
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	content := "{\"event\":\"start\",\"text\":\"" + begin + "\"}\n" +
+		"{\"event\":\"body\",\"text\":\"MIIEpAIBAAKCAQEA0123456789abcdef\"}\n" +
+		"{\"event\":\"end\",\"text\":\"" + end + "\"}\n"
+
+	for name, tc := range map[string]struct {
+		actions string
+		want    string
+	}{
+		"github actions": {
+			actions: "true",
+			want:    "::error::Output record replaced with a fail-closed marker: a secret spanned multiple records",
+		},
+		"local run": {actions: "", want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("GITHUB_ACTIONS", tc.actions)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "transcript.jsonl")
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+			var output bytes.Buffer
+			require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&output)))
+
+			got, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.NotContains(t, string(got), "MIIEpAIBAAKCAQEA")
+			if tc.want == "" {
+				assert.NotContains(t, output.String(), "::error::")
+				return
+			}
+			assert.Contains(t, output.String(), tc.want)
+		})
+	}
 }
 
 func TestScanOutputFiles_QuietJSONWriteFailureIsFatal(t *testing.T) {
