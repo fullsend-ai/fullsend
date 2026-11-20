@@ -227,6 +227,14 @@ PRINT_CONFIG=false
 FORCE_BUSY=false
 ALLOW_TPM_CHANGE=false
 ALLOW_FROZEN_CHANGE=false
+# Local-render overrides (--print-config only): a gateway run inside a test
+# VM against a GitHub emulator trusts the emulator's issuer, pins the
+# emulator's org ids and reads its stub key from a local directory. They
+# never reach a deployed gateway: every other mode refuses them.
+LOCAL_ISSUER=""
+LOCAL_JWKS_URL=""
+LOCAL_ORG_IDS=()
+LOCAL_KEY_DIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project|--region)
@@ -242,6 +250,18 @@ while [[ $# -gt 0 ]]; do
     --without-vertex) VERTEX=without; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --print-config) PRINT_CONFIG=true; shift ;;
+    --issuer|--jwks-url|--pool-org-id|--upstream-key-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: $1 needs a value." >&2
+        exit 1
+      fi
+      case "$1" in
+        --issuer) LOCAL_ISSUER="$2" ;;
+        --jwks-url) LOCAL_JWKS_URL="$2" ;;
+        --pool-org-id) LOCAL_ORG_IDS+=("$2") ;;
+        --upstream-key-dir) LOCAL_KEY_DIR="$2" ;;
+      esac
+      shift 2 ;;
     --delete) DELETE=true; shift ;;
     --yes) YES=true; shift ;;
     --include-unlabelled) INCLUDE_UNLABELLED=true; shift ;;
@@ -253,6 +273,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+LOCAL_RENDER=false
+if [[ -n "${LOCAL_ISSUER}${LOCAL_JWKS_URL}${LOCAL_KEY_DIR}" || ${#LOCAL_ORG_IDS[@]} -gt 0 ]]; then
+  LOCAL_RENDER=true
+  if [[ "${PRINT_CONFIG}" != "true" ]]; then
+    echo "Error: --issuer, --jwks-url, --pool-org-id and --upstream-key-dir only apply to --print-config." >&2
+    exit 1
+  fi
+fi
+# A render without Vertex never names the project, so it needs none.
+if [[ -z "${PROJECT}" && "${PRINT_CONFIG}" == "true" && "${VERTEX}" == "without" ]]; then
+  PROJECT="print-config-only"
+fi
 if [[ -z "${PROJECT}" ]]; then
   echo "Error: no project. Pass --project <id> or set E2E_GCP_PROJECT_ID." >&2
   exit 1
@@ -277,6 +309,35 @@ fi
 if [[ "${DRY_RUN}" == "true" && "${PRINT_CONFIG}" == "true" ]]; then
   echo "Error: --dry-run and --print-config cannot be combined." >&2
   exit 1
+fi
+
+# Apply the local-render overrides (validated here, used by render_config).
+JWKS_URL="${GITHUB_ISSUER}/.well-known/jwks"
+if [[ "${LOCAL_RENDER}" == "true" ]]; then
+  if [[ -n "${LOCAL_ISSUER}" ]]; then
+    [[ "${LOCAL_ISSUER}" =~ ^https?://[^[:space:]\'\"]+$ ]] || { echo "Error: --issuer must be an http(s) URL." >&2; exit 1; }
+    GITHUB_ISSUER="${LOCAL_ISSUER%/}"
+    JWKS_URL="${GITHUB_ISSUER}/.well-known/jwks"
+  fi
+  if [[ -n "${LOCAL_JWKS_URL}" ]]; then
+    [[ "${LOCAL_JWKS_URL}" =~ ^https?://[^[:space:]\'\"]+$ ]] || { echo "Error: --jwks-url must be an http(s) URL." >&2; exit 1; }
+    JWKS_URL="${LOCAL_JWKS_URL}"
+  fi
+  if [[ -n "${LOCAL_KEY_DIR}" ]]; then
+    [[ "${LOCAL_KEY_DIR}" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "Error: --upstream-key-dir must be an absolute path." >&2; exit 1; }
+    KEY_DIR="${LOCAL_KEY_DIR%/}"
+  fi
+  for o in "${LOCAL_ORG_IDS[@]}"; do
+    [[ "${o}" =~ ^[A-Za-z0-9-]+=[0-9]+$ ]] || { echo "Error: --pool-org-id takes ORG=ID, got '${o}'." >&2; exit 1; }
+    found=false
+    for i in "${!POOL_ORG_IDS[@]}"; do
+      if [[ "${POOL_ORG_IDS[$i]%%=*}" == "${o%%=*}" ]]; then
+        POOL_ORG_IDS[i]="${o}"
+        found=true
+      fi
+    done
+    [[ "${found}" == "true" ]] || { echo "Error: --pool-org-id names '${o%%=*}', which is not a pool org." >&2; exit 1; }
+  done
 fi
 
 SA_EMAIL="${NAME}@${PROJECT}.iam.gserviceaccount.com"
@@ -515,7 +576,7 @@ llm:
       providers:
       - issuer: ${GITHUB_ISSUER}
         audiences: [${AUDIENCE}]
-        jwks: { url: ${GITHUB_ISSUER}/.well-known/jwks }
+        jwks: { url: ${JWKS_URL} }
 EOF
   api_key_policy
   rate_limit_policy

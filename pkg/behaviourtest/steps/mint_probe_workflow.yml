@@ -128,7 +128,12 @@ jobs:
           # the mint does: RS256 signature against GitHub's published signing
           # key, issuer, audience and time claims. It prints the failing
           # check on stderr and succeeds only for a fully verified token.
+          # github.com's issuer; a GitHub server other than github.com (such
+          # as an emulator) issues the tokens from its own URL.
           oidc_issuer='https://token.actions.githubusercontent.com'
+          if [[ "${GITHUB_SERVER_URL:-https://github.com}" != https://github.com ]]; then
+            oidc_issuer="${GITHUB_SERVER_URL%/}"
+          fi
           oidc_audience='fullsend-mint'
           verify_oidc_token() {
             local h p s header kid cert dir now jwks
@@ -192,7 +197,7 @@ jobs:
               code="$(curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w '%{http_code}' -X DELETE \
                 -H "Authorization: Bearer ${token}" \
                 -H "Accept: application/vnd.github+json" \
-                https://api.github.com/installation/token)" || code=000
+                "${GITHUB_API_URL:-https://api.github.com}/installation/token")" || code=000
               if [[ "${code}" == 204 ]]; then
                 token=''
                 return 0
