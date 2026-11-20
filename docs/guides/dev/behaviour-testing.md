@@ -566,13 +566,19 @@ The script does these steps:
    creates the human-like test actors and their tokens.
 7. It builds a supervisor image that trusts the run's CA
    (`supervisor-ca-image.sh`) and samples VM load (`sample-vm.sh`).
-8. It runs the given features, or the playback suite when
-   `BT_SUITE=playback`.
+8. It runs the given features, the playback suite when
+   `BT_SUITE=playback`, or the agents repository's `make behaviour-test`
+   when `BT_SUITE=agents`. The agents suite needs `AGENTS_DIR`, an agents
+   checkout: its `HEAD` is pushed into the emulator as `fullsend-ai/agents`
+   main, and its suite is built against this checkout through a modfile in
+   the state directory, so the checkout's `go.mod` and `go.sum` are not
+   changed.
 
 The script header lists every setting. The main ones are `EMULATOR_DIR` and
 `EMULATOR_PY` (required), `STATE_DIR` (logs; default
 `$RUNNER_TEMP/bt-github-emulator`, or `/tmp/bt-github-emulator`), `BT_SUITE`,
-`AGENTS_SEED`, `AGENTS_REF`, `AGENTS_PRS` and `BEHAVIOUR_CAPABILITIES`. When
+`AGENTS_DIR`, `AGENTS_SEED`, `AGENTS_REF`, `AGENTS_PRS` and
+`BEHAVIOUR_CAPABILITIES`. When
 the run passes, the suite's summary line shows the passed scenarios. The
 state directory holds the logs, `phases.tsv` (time per phase) and the
 suite's artifacts.
@@ -592,6 +598,12 @@ listed more than once. A scenario that cannot run on the emulator, such as one
 gated on a `@requires:capability:` tag, goes in
 `e2e/behaviour/github-emulator/not-sharded.txt` instead, one
 `<feature[:line]>` per line with a `#` comment giving the reason.
+
+On pull requests, `behaviour-github-emulator.yml` also runs the agents
+repository's suite (`BT_SUITE=agents`) against the PR and fullsend-ai/agents
+`main`, as the `behaviour-github-emulator (agents)` job. It is not part of the
+required `behaviour-github-emulator` check: it shows a fullsend change that
+breaks the agents suite before it merges.
 
 ### Failure classification and infrastructure retry
 

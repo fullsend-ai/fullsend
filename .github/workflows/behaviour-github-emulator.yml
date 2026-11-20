@@ -204,6 +204,91 @@ jobs:
             !${{ runner.temp }}/bt-github-emulator/stack/runner-*/_work/**
           if-no-files-found: warn
 
+  # The agents repository's behaviour suite (BT_SUITE=agents) against this
+  # checkout and fullsend-ai/agents main, so a fullsend change that breaks
+  # the agents suite shows here before it merges. Not required: it is not in
+  # the result job's needs. Pull requests only; a dispatch with explicit
+  # features skips it.
+  behaviour-github-emulator-agents:
+    name: behaviour-github-emulator (agents)
+    if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.features) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout fullsend
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout agents
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fullsend-ai/agents
+          ref: main
+          path: .agents
+          # Full history: run-job.sh pushes this checkout into the emulator
+          # as fullsend-ai/agents main, and a shallow clone cannot be pushed.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout github-emulator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.EMULATOR_REPO }}
+          ref: ${{ env.EMULATOR_REF }}
+          path: .emulator
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        with:
+          enable-cache: false
+
+      # The emulator's locked dependencies, installed with hashes, as its
+      # own smoke workflow does.
+      - name: Install emulator dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/emu-venv"
+          uv export -q --frozen --no-dev --no-emit-project --format requirements-txt --project .emulator -o "$RUNNER_TEMP/emu-requirements.txt"
+          uv pip install -q --python "$RUNNER_TEMP/emu-venv/bin/python" --require-hashes -r "$RUNNER_TEMP/emu-requirements.txt"
+
+      - name: Run the agents suite
+        env:
+          EMULATOR_DIR: ${{ github.workspace }}/.emulator
+          EMULATOR_PY: ${{ runner.temp }}/emu-venv/bin/python
+          STATE_DIR: ${{ runner.temp }}/bt-github-emulator
+          # Read-only job token, only so the emulator can fetch public
+          # github.com actions without the anonymous rate limit.
+          UPSTREAM_TOKEN: ${{ github.token }}
+          BT_SUITE: agents
+          AGENTS_DIR: ${{ github.workspace }}/.agents
+          EMULATOR_RUNNERS: "12"
+          BEHAVIOUR_POOL_SIZE: "6"
+          GODOG_CONCURRENCY: "6"
+          SUITE_TIMEOUT: 45m
+          # Not review-skill-overrides: its custom-persona scenario needs a
+          # real model, so it stays in the agents repository's live job.
+          BEHAVIOUR_CAPABILITIES: applier-branch-namespace
+        run: e2e/behaviour/github-emulator/run-job.sh
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: behaviour-github-emulator-logs-agents
+          path: |
+            ${{ runner.temp }}/bt-github-emulator/**/*.log
+            ${{ runner.temp }}/bt-github-emulator/phases.tsv
+            ${{ runner.temp }}/bt-github-emulator/bt-artifacts/
+            ${{ runner.temp }}/bt-github-emulator/openshell-logs/
+            !${{ runner.temp }}/bt-github-emulator/stack/runner-*/_work/**
+          if-no-files-found: warn
+
   # The one check to require: green only when every shard and playback passed.
   behaviour-github-emulator-result:
     name: behaviour-github-emulator
