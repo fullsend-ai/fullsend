@@ -223,12 +223,13 @@ func TestConverge_GitLabPipelineVarOptInSeedsContext(t *testing.T) {
 
 // TestStatus_GitLabPipelineVarOptInSeedsContext covers the Status entry
 // point's context wiring: Status seeds the ADR 0175 opt-in from the
-// manifest it resolves (status.go), so the webhook fast-path diagnosis
-// for an installed repo whose pipeline-variable role is weaker than
-// no_one_allowed carries the opt-in note — and stops at the plain
-// deferral without the manifest opt-in.
+// manifest it resolves (status.go). For a repo whose pipeline-variable
+// role is weaker than no_one_allowed and whose fast path is not
+// provisioned, the opt-in makes the deferred fast path expected (no
+// drift, ADR 0175 health-check requirement), while without the opt-in
+// the same weak role is drift.
 func TestStatus_GitLabPipelineVarOptInSeedsContext(t *testing.T) {
-	diagnose := func(t *testing.T, optIn bool) GitLabWebhookStatus {
+	status := func(t *testing.T, optIn bool) RepoStatus {
 		t.Helper()
 		fc := newUnstampedGitLabRepo(t)
 		fc.PipelineVarOverrideRoles["acme/api"] = forge.PipelineVarOverrideDeveloper
@@ -243,17 +244,49 @@ func TestStatus_GitLabPipelineVarOptInSeedsContext(t *testing.T) {
 		require.Len(t, res.Repos, 1)
 		require.Empty(t, res.Repos[0].Error)
 		require.NotNil(t, res.Repos[0].GitLabWebhook, "a client exposing a base URL gets the webhook fast-path diagnosis")
-		return *res.Repos[0].GitLabWebhook
+		return res.Repos[0]
 	}
 
-	optedIn := diagnose(t, true)
-	assert.Equal(t, GitLabWebhookStateDrifted, optedIn.State, "the weaker role still drifts the webhook fast path")
-	assert.Contains(t, strings.Join(optedIn.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
+	optedIn := status(t, true)
+	assert.Equal(t, GitLabWebhookStateDeferred, optedIn.GitLabWebhook.State, "the opt-in keeps the fast path off by design")
+	assert.Contains(t, strings.Join(optedIn.GitLabWebhook.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
+	_, drifted := webhookDrift(optedIn)
+	assert.False(t, drifted, "status treats the opted-in deferral as expected, not drift")
 
-	strict := diagnose(t, false)
-	assert.Equal(t, GitLabWebhookStateDrifted, strict.State, "the weaker role still drifts without the opt-in")
-	assert.Contains(t, strings.Join(strict.Reasons, "\n"), "webhook fast-path deferred", "the deferral is still reported")
-	assert.NotContains(t, strings.Join(strict.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
+	strict := status(t, false)
+	assert.Equal(t, GitLabWebhookStateDrifted, strict.GitLabWebhook.State, "the weaker role drifts without the opt-in")
+	assert.Contains(t, strings.Join(strict.GitLabWebhook.Reasons, "\n"), "webhook fast-path deferred")
+	assert.NotContains(t, strings.Join(strict.GitLabWebhook.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
+	_, drifted = webhookDrift(strict)
+	assert.True(t, drifted, "without the opt-in the weak role is actionable drift")
+}
+
+// TestDiagnoseGitLabWebhook_OptInDeferredOnlyWithoutLiveCredentials pins
+// the boundary of the ADR 0175 status exception: with nothing provisioned
+// the opted-in weak role is an informational deferral, but live fast-path
+// credentials on such a project are still drift, because repos install
+// revokes them.
+func TestDiagnoseGitLabWebhook_OptInDeferredOnlyWithoutLiveCredentials(t *testing.T) {
+	key := webhookTestOwner + "/" + webhookTestRepo
+	ctx := WithGitLabPipelineVarOptIns(context.Background(), optInManifest(key))
+
+	c := newWebhookFake()
+	c.PipelineVarOverrideRoles[key] = forge.PipelineVarOverrideDeveloper
+	diag := DiagnoseGitLabWebhook(ctx, c, webhookTestOwner, webhookTestRepo)
+	assert.Equal(t, GitLabWebhookStateDeferred, diag.State)
+	assert.Contains(t, strings.Join(diag.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
+	rs := RepoStatus{}
+	ApplyGitLabWebhookStatus(&rs, diag)
+	_, drifted := webhookDrift(rs)
+	assert.False(t, drifted)
+
+	c = newWebhookFake()
+	ensureWebhook(t, c, false, false)
+	c.PipelineVarOverrideRoles[key] = forge.PipelineVarOverrideDeveloper
+	diag = DiagnoseGitLabWebhook(ctx, c, webhookTestOwner, webhookTestRepo)
+	assert.Equal(t, GitLabWebhookStateDrifted, diag.State, "live credentials on an opted-in project are still drift")
+	assert.Contains(t, strings.Join(diag.Reasons, "\n"), "revokes the managed webhook and trigger credential")
+	assertWebhookStatusHidesCredentials(t, c, diag)
 }
 
 func newFakeClientWithRoleFor(role string) *forge.FakeClient {
