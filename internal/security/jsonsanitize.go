@@ -29,8 +29,9 @@ const (
 	OutputRemovalTextJSONMarker = `{"error":"output removed because text redaction would invalidate JSON"}`
 )
 
-// privateKeyMask replaces each JSON key and string leaf that carries part of a
-// private-key block spanning JSON framing.
+// privateKeyMask replaces each JSON string value that carries part of a
+// private-key block spanning JSON framing, and any key name that carries a
+// block marker itself.
 const privateKeyMask = "[REDACTED PRIVATE KEY]"
 
 // outputRemovalMarkers lists every whole-file removal marker with the reason it
@@ -114,7 +115,7 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 		return preserveTrailingNewline([]byte(failClosedSpansMembersJSON), doc),
 			[]Finding{privateKeySpanFinding(spans.unmappable, false)}, nil
 	}
-	rebuilt, findings, err := rewriteJSONTokens(trimmed, p, spans.covered)
+	rebuilt, findings, err := rewriteJSONTokens(trimmed, p, spans)
 	if err != nil {
 		// json.Valid accepted the text and the walk uses the same scanner, so
 		// this is a decoder limit rather than a syntax error. Return the error
@@ -140,7 +141,7 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 // localized says whether they were masked in the members that carried them or
 // the whole document had to be dropped.
 func privateKeySpanFinding(blocks int, localized bool) Finding {
-	detail := fmt.Sprintf("%d private key block(s) span JSON framing; masked the members carrying them", blocks)
+	detail := fmt.Sprintf("%d private key block(s) span JSON framing; masked the string values carrying them", blocks)
 	if !localized {
 		detail = "Private key block spans JSON framing and cannot be localized; output removed"
 	}
@@ -164,6 +165,12 @@ var privateKeyRe = func() *regexp.Regexp {
 	panic("private_key structural pattern is missing")
 }()
 
+// privateKeyMarkerRe matches either boundary line of a private-key block. It
+// marks the key names that carry block text instead of JSON structure, so a key
+// whose name holds a marker is masked with the values rather than kept. The
+// quoted markers are the ones privateKeyRe delimits a block with.
+var privateKeyMarkerRe = regexp.MustCompile(`-----BEGIN\s|-----END\s`)
+
 // jsonProvenance accumulates an order-preserving view of the decoded strings
 // in a document so a private-key block that spans members can be detected after
 // JSON decoding. The raw bytes are not usable for this: a member may encode a
@@ -172,6 +179,10 @@ var privateKeyRe = func() *regexp.Regexp {
 type jsonProvenance struct {
 	decoded bytes.Buffer
 	ranges  []recordSpan
+	// keys marks the entries in ranges that are object keys rather than string
+	// values. Key names are the document's structure, so a block that spans
+	// them is neutralized differently from a block that spans values.
+	keys []bool
 }
 
 // decodedViewNormalizer normalizes decoded JSON text before it is matched for
@@ -179,22 +190,26 @@ type jsonProvenance struct {
 // characters is normalized exactly as the per-leaf scan normalizes it.
 var decodedViewNormalizer = NewUnicodeNormalizer()
 
-// addString appends one decoded key or string leaf to the view and records its
+// addString appends one decoded key or string value to the view and records its
 // byte range so a match can be mapped back to the leaves that carry it.
-func (v *jsonProvenance) addString(s string) {
+func (v *jsonProvenance) addString(s string, isKey bool) {
 	s = decodedViewNormalizer.Scan(s).Sanitized
 	start := v.decoded.Len()
 	v.decoded.WriteString(s)
 	v.decoded.WriteByte('\n')
 	v.ranges = append(v.ranges, recordSpan{start: start, end: v.decoded.Len() - 1})
+	v.keys = append(v.keys, isKey)
 }
 
 // privateKeySpans is the result of looking for private-key blocks that span the
-// keys and leaves of one document.
+// keys and values of one document.
 type privateKeySpans struct {
-	// covered holds the indexes of the keys and leaves that carry part of a
-	// block spanning more than one of them.
+	// covered holds the indexes of the string values that carry part of a block
+	// spanning more than one leaf. Every covered value is replaced whole.
 	covered map[int]bool
+	// maskedKeys holds the indexes of the object keys whose own name carries a
+	// block marker and is therefore block content rather than structure.
+	maskedKeys map[int]bool
 	// localized counts the blocks that were mapped onto leaves.
 	localized int
 	// unmappable counts the blocks that no leaf range covers.
@@ -202,17 +217,21 @@ type privateKeySpans struct {
 }
 
 // spanningPrivateKeys finds the private-key blocks in the decoded view that are
-// not contained in a single key or leaf, and maps each one onto the leaves it
+// not contained in a single key or value, and maps each one onto the leaves it
 // covers. Containment is checked per match: a lazy pattern can start at one
 // leaf's BEGIN and end at another leaf's END, and counting differences would let
 // that match cancel out a complete leaf block.
 //
 // A block whose markers sit in different members is not proof that key material
 // spans them — a review that quotes the header in one finding and the footer in
-// another matches too — so the callers mask only the members the match covers
-// and leave the rest of the document (a verdict, a summary) intact.
+// another matches too — so only the members the match covers are touched. String
+// values are masked whole, because a value is where an agent writes key
+// material. An object key keeps its name unless the name itself carries a block
+// marker: key names are the document's structure, and masking them would drop a
+// required field such as a finding's severity, category or file and make the
+// document fail schema validation.
 func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
-	spans := privateKeySpans{covered: map[int]bool{}}
+	spans := privateKeySpans{covered: map[int]bool{}, maskedKeys: map[int]bool{}}
 	for _, match := range privateKeyRe.FindAllIndex(v.decoded.Bytes(), -1) {
 		if v.leafContaining(match[0], match[1]) >= 0 {
 			// A block inside one leaf is that leaf's own scan.
@@ -230,7 +249,13 @@ func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 		}
 		spans.localized++
 		for _, i := range hit {
-			spans.covered[i] = true
+			if !v.keys[i] {
+				spans.covered[i] = true
+				continue
+			}
+			if privateKeyMarkerRe.Match(v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end]) {
+				spans.maskedKeys[i] = true
+			}
 		}
 	}
 	return spans
@@ -451,32 +476,47 @@ func writeDecodedJSONView(buf *bytes.Buffer, doc []byte) {
 }
 
 // collectJSONLeaves walks doc and records every decoded object key and string
-// leaf, in document order, in a view where a value split across members reads as
+// value, in document order, in a view where a value split across members reads as
 // one contiguous run of text. Each leaf's range in that view is kept so a match
 // can be mapped back to the members that carry it.
 func collectJSONLeaves(doc []byte) *jsonProvenance {
 	prov := &jsonProvenance{}
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	dec.UseNumber()
-	var walk func()
-	walk = func() {
+	var walkValue func()
+	walkValue = func() {
 		tok, err := dec.Token()
 		if err != nil {
 			return
 		}
 		switch t := tok.(type) {
 		case json.Delim:
-			if t == '{' || t == '[' {
+			switch t {
+			case '{':
 				for dec.More() {
-					walk()
+					keyTok, err := dec.Token()
+					if err != nil {
+						return
+					}
+					key, ok := keyTok.(string)
+					if !ok {
+						return
+					}
+					prov.addString(key, true)
+					walkValue()
+				}
+				_, _ = dec.Token() // consume the closing delimiter
+			case '[':
+				for dec.More() {
+					walkValue()
 				}
 				_, _ = dec.Token() // consume the closing delimiter
 			}
 		case string:
-			prov.addString(t)
+			prov.addString(t, false)
 		}
 	}
-	walk()
+	walkValue()
 	return prov
 }
 
@@ -597,14 +637,15 @@ func lineBounded(data []byte, start, end int) bool {
 // scalar value, and renders a valid JSON document. Unlike map decoding it
 // keeps member order and duplicate keys, so a secret in an earlier, overwritten
 // value is still found, and a secret spanning JSON framing stays visible in the
-// rewritten bytes. Keys and leaves whose index is in masked are replaced whole,
-// which is how a framing-spanning private key is neutralized member by member.
-func rewriteJSONTokens(doc []byte, p *Pipeline, masked map[int]bool) ([]byte, []Finding, error) {
+// rewritten bytes. String values and key names that a framing-spanning private
+// key covers are replaced whole, which is how such a block is neutralized member
+// by member.
+func rewriteJSONTokens(doc []byte, p *Pipeline, spans privateKeySpans) ([]byte, []Finding, error) {
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	dec.UseNumber()
 	var (
 		buf bytes.Buffer
-		w   = &jsonRewrite{pipeline: p, masked: masked}
+		w   = &jsonRewrite{pipeline: p, spans: spans}
 	)
 	if err := w.writeValue(dec, &buf, ""); err != nil {
 		return nil, nil, fmt.Errorf("could not tokenize JSON: %w", err)
@@ -616,23 +657,32 @@ func rewriteJSONTokens(doc []byte, p *Pipeline, masked map[int]bool) ([]byte, []
 }
 
 // jsonRewrite is the state one token walk carries: the pipeline, the findings it
-// has collected, and the keys and leaves a framing-spanning private key covers.
+// has collected, and the keys and string values a framing-spanning private key
+// covers.
 type jsonRewrite struct {
 	pipeline *Pipeline
 	findings []Finding
-	masked   map[int]bool
-	// index counts the keys and leaves already walked, in document order, so it
-	// lines up with the ranges in jsonProvenance.
+	spans    privateKeySpans
+	// index counts the keys and string values already walked, in document
+	// order, so it lines up with the ranges in jsonProvenance.
 	index int
 }
 
-// nextLeaf advances the leaf cursor and reports whether the key or leaf reached
-// must be replaced whole because a framing-spanning private key covers it.
-func (w *jsonRewrite) nextLeaf() bool {
-	masked := w.masked[w.index]
+// nextIndex advances the leaf cursor past the next key or string value and
+// returns that leaf's index in the provenance view.
+func (w *jsonRewrite) nextIndex() int {
+	i := w.index
 	w.index++
-	return masked
+	return i
 }
+
+// valueMasked reports whether the string value at index i carries part of a
+// framing-spanning private key and must be replaced whole.
+func (w *jsonRewrite) valueMasked(i int) bool { return w.spans.covered[i] }
+
+// keyMasked reports whether the object key at index i carries a block marker and
+// must be replaced whole.
+func (w *jsonRewrite) keyMasked(i int) bool { return w.spans.maskedKeys[i] }
 
 // writeValue writes one JSON value to buf, sanitizing object keys and scalar
 // leaves as it goes. memberKey is the enclosing object key when the value is an
@@ -647,7 +697,7 @@ func (w *jsonRewrite) writeValue(dec *json.Decoder, buf *bytes.Buffer, memberKey
 	case json.Delim:
 		return w.writeContainer(dec, buf, t)
 	case string:
-		if w.nextLeaf() {
+		if w.valueMasked(w.nextIndex()) {
 			return writeJSONString(buf, privateKeyMask)
 		}
 		sanitized, stringFindings := sanitizeJSONString(t, memberKey, w.pipeline)
@@ -699,11 +749,11 @@ func (w *jsonRewrite) writeContainer(dec *json.Decoder, buf *bytes.Buffer, delim
 			if !ok {
 				return fmt.Errorf("JSON object key is %T, want string", keyTok)
 			}
-			masked := w.nextLeaf()
+			masked := w.keyMasked(w.nextIndex())
 			sanitizedKey, keyFindings := sanitizeJSONKey(key, w.pipeline)
 			if masked {
-				// The whole key goes: it carried part of a private-key block
-				// that spans members.
+				// The key name carried a private-key block marker, so it is
+				// block content rather than structure and cannot be kept.
 				sanitizedKey, keyFindings = privateKeyMask, nil
 			}
 			w.findings = append(w.findings, keyFindings...)

@@ -348,8 +348,12 @@ literals; it does not remove personal data, customer names or other private
 business text. When a secret cannot be masked without breaking a file's JSON
 structure, the affected JSON document or JSONL record is replaced with a JSON
 error marker; a file whose redacted content cannot be written or computed is
-replaced by such a marker and fails the run. Either way the job log carries an
-error annotation, because a run that only lost content still exits 0.
+replaced by such a marker and fails the run. A marked document or record leaves
+its keys in place but masks the string values inside the matched span. When a
+replacement happens in a run that still exits 0, the job log carries an error
+annotation to say so — on GitHub Actions only; on GitLab and Forgejo the run's
+log and exit status are the signal. A write or sanitize failure needs no
+annotation because the run itself fails.
 
 `fullsend run` leaves `output/` untouched. At the end of the job,
 `fullsend prepare-artifacts` builds a filtered copy at the level you set, and

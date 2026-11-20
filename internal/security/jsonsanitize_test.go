@@ -66,19 +66,27 @@ func TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersMasksCoveredMembers(t 
 	assert.NotContains(t, string(out), "MIIEpAIBAAKCAQEA")
 	assert.NotContains(t, string(out), "output removed", "the document must be kept, not dropped")
 	assert.Contains(t, string(out), `"verdict":"approve"`, "a member outside the block must survive")
+	assert.Contains(t, string(out), `"z_begin":`, "key names are structure and must survive")
+	assert.Contains(t, string(out), `"m_body":`)
+	assert.Contains(t, string(out), `"a_end":`)
 }
 
 // TestSanitizeJSONDocument_MarkersInSeparateFindingsKeepReview pins the
 // regression a reviewer found: a review result that quotes the PEM header in one
 // finding and the footer in another matches the lazy private-key pattern across
 // members, but nothing is hidden and the review still has to be posted. Only the
-// members the match covers are masked, so the verdict survives (#5705).
+// string values the match covers are masked, so the document keeps its shape:
+// every required finding key (severity, category, file, description) survives, and
+// the fields outside the matched span keep their content (#5705).
 func TestSanitizeJSONDocument_MarkersInSeparateFindingsKeepReview(t *testing.T) {
 	p := OutputPipeline()
 	begin := "-----BEGIN" + " PRIVATE KEY-----"
 	end := "-----END" + " PRIVATE KEY-----"
-	doc := []byte(`{"findings":[{"body":"checks for the ` + begin + ` header"},` +
-		`{"body":"stops at the ` + end + ` footer"}],"verdict":"approve"}`)
+	doc := []byte(`{"action":"comment","pr_number":12,"repo":"acme/widgets","findings":[` +
+		`{"severity":"high","category":"logic-error","file":"a.go","description":"quotes the ` + begin + ` header"},` +
+		`{"severity":"medium","category":"missing-test","file":"b.go","description":"a finding between the markers"},` +
+		`{"severity":"low","category":"stale-doc","file":"c.go","description":"quotes the ` + end + ` footer"},` +
+		`{"severity":"info","category":"doc-style","file":"d.go","description":"a finding after the block"}],"body":"summary"}`)
 
 	out, findings, err := SanitizeJSONDocument(doc, p)
 	require.NoError(t, err)
@@ -88,12 +96,81 @@ func TestSanitizeJSONDocument_MarkersInSeparateFindingsKeepReview(t *testing.T) 
 	assert.NotContains(t, string(out), "PRIVATE KEY-----")
 
 	var result struct {
-		Findings []map[string]string `json:"findings"`
-		Verdict  string              `json:"verdict"`
+		Action   string `json:"action"`
+		PRNumber int    `json:"pr_number"`
+		Repo     string `json:"repo"`
+		Body     string `json:"body"`
+		Findings []struct {
+			Severity    string `json:"severity"`
+			Category    string `json:"category"`
+			File        string `json:"file"`
+			Description string `json:"description"`
+		} `json:"findings"`
 	}
 	require.NoError(t, json.Unmarshal(out, &result), "the sanitized review must still decode: %s", out)
-	assert.Equal(t, "approve", result.Verdict, "the verdict must survive")
-	assert.Len(t, result.Findings, 2, "every finding must survive")
+	assert.Equal(t, "comment", result.Action, "the action must survive")
+	assert.Equal(t, 12, result.PRNumber)
+	assert.Equal(t, "acme/widgets", result.Repo)
+	assert.Equal(t, "summary", result.Body, "a field outside the matched span keeps its content")
+	require.Len(t, result.Findings, 4, "every finding must survive")
+
+	// The blocking requirement is that the required finding keys still exist in
+	// every finding: review-result.schema.json declares additionalProperties false
+	// and requires severity, category, file and description.
+	for i, finding := range result.Findings {
+		assert.NotEmpty(t, finding.Severity, "finding %d must keep its severity key", i)
+		assert.NotEmpty(t, finding.Category, "finding %d must keep its category key", i)
+		assert.NotEmpty(t, finding.File, "finding %d must keep its file key", i)
+		assert.NotEmpty(t, finding.Description, "finding %d must keep its description key", i)
+	}
+	// Nothing can tell a quoted marker pair from key material fragments, so every
+	// string value inside the matched span is masked.
+	assert.Equal(t, "a.go", result.Findings[0].File, "a value before the match keeps its content")
+	assert.Equal(t, privateKeyMask, result.Findings[0].Description, "the value carrying the marker is masked")
+	for i := 1; i < 3; i++ {
+		assert.Equal(t, privateKeyMask, result.Findings[i].File, "finding %d is inside the matched span", i)
+	}
+	// A finding after the footer is outside the span and keeps its content.
+	assert.Equal(t, "d.go", result.Findings[3].File)
+	assert.Equal(t, "a finding after the block", result.Findings[3].Description)
+}
+
+// TestSanitizeJSONDocument_KeyNameCarryingMarkerIsMasked pins the other half of
+// the key rule: a key name is structure and keeps its name, unless the name itself
+// carries a block marker. Then the name is block content and cannot be written
+// back, while a sibling key between the markers still keeps its name (#5705).
+func TestSanitizeJSONDocument_KeyNameCarryingMarkerIsMasked(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := []byte(`{"` + begin + `":"x","severity":"high","` + end + `":"y"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "BEGIN RSA")
+	assert.NotContains(t, string(out), "END RSA")
+	assert.Contains(t, string(out), `"severity":`, "a key name between the markers keeps its name")
+}
+
+// TestJSONProvenance_KeysAreStructure pins that the decoded view records which
+// leaves are object keys and that a spanning block only covers string values, so
+// the rewrite never renames a key unless its own text carries a marker.
+func TestJSONProvenance_KeysAreStructure(t *testing.T) {
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := []byte(`{"severity":"` + begin + `","category":"MIIEkeymaterial","file":"` + end + `"}`)
+
+	prov := collectJSONLeaves(doc)
+	require.Equal(t, len(prov.ranges), len(prov.keys), "every recorded leaf must carry a kind")
+	spans := prov.spanningPrivateKeys()
+	require.Equal(t, 1, spans.localized)
+	assert.Empty(t, spans.maskedKeys, "no key name carries a marker")
+	require.Len(t, spans.covered, 3, "every string value in the span is masked")
+	for i := range spans.covered {
+		assert.False(t, prov.keys[i], "only string values are covered")
+	}
 }
 
 // TestSanitizeJSONDocument_FramingSecretInCleanDocumentFailsClosed pins that a
@@ -365,13 +442,15 @@ func TestJSONProvenance_UnmappableBlock(t *testing.T) {
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	v := &jsonProvenance{}
 	v.decoded.WriteString(begin + "\n" + "MIIEkeymaterial" + "\n" + end + "\n")
-	// One empty leaf, which can never overlap a match.
+	// One empty string value, which can never overlap a match.
 	v.ranges = []recordSpan{{start: 0, end: 0}}
+	v.keys = []bool{false}
 
 	spans := v.spanningPrivateKeys()
 	assert.Equal(t, 1, spans.unmappable)
 	assert.Zero(t, spans.localized)
 	assert.Empty(t, spans.covered)
+	assert.Empty(t, spans.maskedKeys)
 }
 
 // TestSanitizeJSONDocument_AlreadyMaskedValueNotRemasked pins that rescanning a

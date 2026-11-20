@@ -632,10 +632,15 @@ other pattern has already been applied to the decoded key or leaf, so a match on
 the serialized bytes would be a redaction placeholder plus JSON escape
 characters, not a secret. A private-key block spanning members is detected in a
 decoded view of the document before masking a member value can hide its BEGIN
-marker. Such a block is neutralized member by member: every key and leaf the
-match covers becomes `[REDACTED PRIVATE KEY]`, so the rest of the document — a
-review verdict, a summary — survives instead of being dropped because one
-finding quoted the PEM header and another quoted the footer.
+marker. Such a block is neutralized member by member: every string value the
+match covers becomes `[REDACTED PRIVATE KEY]`, while object keys keep their
+names, so a document that merely quotes the PEM header in one finding and the
+footer in another keeps its shape — every required field of a review result is
+still present — instead of being dropped whole. A key name is treated as block
+content only when the name itself carries a marker; then it is masked too,
+because it cannot be written back as structure. Every string value inside the
+matched span is masked, since nothing distinguishes a quoted marker pair from
+fragments of real key material.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
 rewriting that framing, so only the records it covers are replaced. A
