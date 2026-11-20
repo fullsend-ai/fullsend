@@ -7,7 +7,6 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	fjci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/forgejoactions"
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
@@ -45,20 +44,18 @@ func installFactoryFor(environment string) (install.Factory, error) {
 // install factory needs: the environment's layout (derived DEV orgs
 // halfsend-01 … halfsend-22, or the unsuffixed STAGE org halfsend; see
 // install.PoolLayoutForEnvironment), one installation token per org via
-// e2etest.TokenForOrg, and live forge clients.
+// e2etest.TokenForOrg, and live forge clients. Only the install driver
+// uses the layout and token source; the suite runner gets its
+// concurrency, log description and default org from the driver
+// (install.BootstrapFor).
 //
-// For forgejo-dev, no Forgejo credentials or forge client exist yet:
-// TokenFor returns a not-implemented error and NewClient returns nil
-// (the Forgejo stub drivers do not use a client), so the suite never
-// mints GitHub tokens or builds GitHub clients for a Forgejo run.
+// forgejo-dev has no GitHub pool: the config carries only the binary,
+// GCP project and logger, with no layout, token source or client
+// constructor, so a Forgejo run never enumerates the GitHub pool, mints
+// GitHub tokens or builds GitHub clients.
 func poolConfigFor(environment string, e2eCfg e2etest.EnvConfig, binary string, logf func(string, ...any)) install.PoolConfig {
 	if environment == env.EnvironmentForgejoDev {
 		return install.PoolConfig{
-			Layout: install.PoolLayoutForEnvironment(environment, logf),
-			TokenFor: func(context.Context, string) (string, error) {
-				return "", drivers.NotImplemented("forgejo-dev pool", "TokenFor")
-			},
-			NewClient:    func(string) forge.Client { return nil },
 			Binary:       binary,
 			GCPProjectID: e2eCfg.GCPProjectID,
 			Logf:         logf,
