@@ -15,3 +15,4 @@ features/runtime/pi-openai.feature:19 # @requires:capability:runtime-pi-openai
 features/runtime/pi.feature:17 # @requires:capability:runtime-pi
 features/runtime/playback.feature:29 # @playback, run by the playback job
 # Scratch change to exercise the e2e authorization gate; not for merge.
+# Second scratch line, so the first commit is no longer the head.
