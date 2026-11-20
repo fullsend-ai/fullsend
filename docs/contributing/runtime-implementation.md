@@ -628,7 +628,11 @@ bytes. A sanitized key that would collide with a different member is
 disambiguated (`<key>_<N>`). The bytes actually written are scanned as well, so
 a secret that only exists in the serialized form is still caught, and a
 private-key block spanning members is detected in a decoded view of the document
-before masking a member value can hide its BEGIN marker.
+before masking a member value can hide its BEGIN marker. Such a block is
+neutralized member by member: every key and leaf the match covers becomes
+`[REDACTED PRIVATE KEY]`, so the rest of the document — a review verdict, a
+summary — survives instead of being dropped because one finding quoted the PEM
+header and another quoted the footer.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
 rewriting that framing, so only the records it covers are replaced. A
@@ -643,11 +647,13 @@ unchanged.
 
 Some content cannot be redacted in place. A JSON document or JSONL record is
 replaced with a valid fail-closed marker instead — never with corrupted
-syntax — when a secret spans JSON framing (such as a private-key block split
-across members), when a match spans record boundaries, or when a text
-redaction would leave the document invalid. Markers look
-like `{"error":"output removed because …"}` and are logged as findings in
-`security/findings.jsonl`.
+syntax — when a private-key block cannot be localized to members, when a match
+spans record boundaries, or when a text redaction would leave the document
+invalid. Markers look like `{"error":"output removed because …"}` and are logged
+as findings in `security/findings.jsonl`. Because a replaced file loses
+everything the agent wrote into it, and because the run still exits 0, the
+reason a marker states is also emitted as a `::error::` workflow annotation
+whenever the file is written under GitHub Actions.
 
 A sanitized file that cannot be written does not stop the walk: every
 remaining file is still scanned and redacted, and the run fails closed
