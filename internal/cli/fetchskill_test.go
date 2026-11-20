@@ -306,6 +306,30 @@ func TestNewFetchSkillCmd_ExecutesThroughRunE(t *testing.T) {
 	}
 }
 
+func TestNewFetchSkillCmd_SuccessWithoutLocalPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(fetchsvc.FetchResponse{})
+	}))
+	defer srv.Close()
+
+	t.Setenv("FULLSEND_FETCH_URL", srv.URL)
+	t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
+
+	var stdout bytes.Buffer
+	cmd := newFetchSkillCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "local_path") {
+		t.Errorf("error = %v, want an error mentioning local_path", err)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty output", stdout.String())
+	}
+}
+
 func TestNewFetchSkillCmd_CanceledContext(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("canceled command sent an HTTP request")
