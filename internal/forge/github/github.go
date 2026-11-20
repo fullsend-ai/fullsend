@@ -1756,6 +1756,84 @@ func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branc
 	return c.commitFilesWithRetry(ctx, owner, repo, branch, message, files)
 }
 
+// treeEntryInfo is the blob SHA and file mode of one tree entry.
+type treeEntryInfo struct {
+	sha  string
+	mode string
+}
+
+// resolveTreePaths looks up each of paths in the tree rootSHA by listing
+// one directory level at a time along the path, for use when the
+// recursive listing of the whole tree is truncated. Each directory is
+// listed at most once. A path absent from the tree is omitted from the
+// result. When a directory listing along a path is itself truncated, it
+// returns an error rather than treat the path as absent.
+func (c *LiveClient) resolveTreePaths(ctx context.Context, owner, repo, rootSHA string, paths []string) (map[string]treeEntryInfo, error) {
+	type dirEntry struct {
+		typ  string
+		sha  string
+		mode string
+	}
+	listings := make(map[string]map[string]dirEntry) // directory path -> entry name -> entry
+	list := func(dir, sha string) (map[string]dirEntry, error) {
+		if entries, ok := listings[dir]; ok {
+			return entries, nil
+		}
+		var tree struct {
+			Tree []struct {
+				Path string `json:"path"`
+				Mode string `json:"mode"`
+				Type string `json:"type"`
+				SHA  string `json:"sha"`
+			} `json:"tree"`
+			Truncated bool `json:"truncated"`
+		}
+		if err := c.getRepoObjectWithRetry(ctx, "get tree", "decode tree",
+			fmt.Sprintf("/repos/%s/%s/git/trees/%s", owner, repo, sha), &tree); err != nil {
+			return nil, err
+		}
+		if tree.Truncated {
+			return nil, fmt.Errorf("tree listing for %q too large (truncated); cannot diff", "/"+dir)
+		}
+		entries := make(map[string]dirEntry, len(tree.Tree))
+		for _, e := range tree.Tree {
+			entries[e.Path] = dirEntry{typ: e.Type, sha: e.SHA, mode: e.Mode}
+		}
+		listings[dir] = entries
+		return entries, nil
+	}
+
+	resolved := make(map[string]treeEntryInfo, len(paths))
+	for _, p := range paths {
+		parts := strings.Split(p, "/")
+		dir, sha := "", rootSHA
+		found := true
+		for i, name := range parts[:len(parts)-1] {
+			entries, err := list(dir, sha)
+			if err != nil {
+				return nil, err
+			}
+			e, ok := entries[name]
+			if !ok || e.typ != "tree" {
+				found = false
+				break
+			}
+			dir, sha = strings.Join(parts[:i+1], "/"), e.sha
+		}
+		if !found {
+			continue
+		}
+		entries, err := list(dir, sha)
+		if err != nil {
+			return nil, err
+		}
+		if e, ok := entries[parts[len(parts)-1]]; ok {
+			resolved[p] = treeEntryInfo{sha: e.sha, mode: e.mode}
+		}
+	}
+	return resolved, nil
+}
+
 // commitFilesTo is the shared implementation for CommitFiles and
 // CommitFilesToBranch. It commits files to the specified branch using
 // the Git Trees/Blobs/Commits API.
@@ -1804,17 +1882,23 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA), &existingTree); err != nil {
 		return false, err
 	}
+	var existing map[string]treeEntryInfo
 	if existingTree.Truncated {
-		return false, fmt.Errorf("tree too large (truncated); cannot diff")
-	}
-
-	type blobInfo struct {
-		sha  string
-		mode string
-	}
-	existing := make(map[string]blobInfo, len(existingTree.Tree))
-	for _, entry := range existingTree.Tree {
-		existing[entry.Path] = blobInfo{sha: entry.SHA, mode: entry.Mode}
+		// The recursive listing is incomplete, so absence from it proves
+		// nothing. Resolve only the requested paths instead (#9672).
+		paths := make([]string, 0, len(files))
+		for _, f := range files {
+			paths = append(paths, f.Path)
+		}
+		existing, err = c.resolveTreePaths(ctx, owner, repo, baseTreeSHA, paths)
+		if err != nil {
+			return false, err
+		}
+	} else {
+		existing = make(map[string]treeEntryInfo, len(existingTree.Tree))
+		for _, entry := range existingTree.Tree {
+			existing[entry.Path] = treeEntryInfo{sha: entry.SHA, mode: entry.Mode}
+		}
 	}
 
 	// 4. Diff the requested files against the tree.

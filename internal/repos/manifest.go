@@ -24,6 +24,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/netutil"
+	"github.com/fullsend-ai/fullsend/internal/urlutil"
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -282,6 +283,12 @@ type ResolvedRepo struct {
 	Repo  string
 	Forge string
 	Entry RepoEntry
+	// glob names the glob entry that selected the repository in glob
+	// expansion, such as "acme/api*", and is empty otherwise. For a concrete
+	// selection that expansion missed, lookupManifestEntry finds the
+	// covering glob the way carveOutForForge does: ignoring case, the first
+	// in its forge section.
+	glob string
 }
 
 // ResolvedConfig is the fully resolved configuration for a single
@@ -319,7 +326,9 @@ type ResolvedConfig struct {
 	// InferenceAuth is the resolved inference authentication method
 	// (entry, then forge section, then defaults). Empty means no level
 	// declared one; RequireInferenceAuth turns that into an actionable
-	// error for install, convergence, and status.
+	// error for install, convergence, and status unless the effective
+	// configuration routes inference through the inference gateway
+	// (gateway-only: no provider credentials are provisioned).
 	InferenceAuth string
 	// Vendor is true when the fullsend binary and content should be
 	// vendored into the repo for offline CI.
@@ -841,11 +850,8 @@ func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) er
 		if mintURL == "" && mintMode == MintModePublic {
 			mintURL = DefaultPublicMintURL
 		}
-		if mintURL != "" {
-			mu, err := url.Parse(mintURL)
-			if err != nil || mu.Scheme != "https" || mu.Host == "" {
-				return fmt.Errorf("github.mint_url must be a valid HTTPS URL, got %q", mintURL)
-			}
+		if mintURL != "" && !urlutil.IsMintURL(mintURL) {
+			return fmt.Errorf("github.mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1, got %q", mintURL)
 		}
 		if m.GitHub.FullsendRef != "" && !IsValidRef(m.GitHub.FullsendRef) {
 			return fmt.Errorf("github.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.GitHub.FullsendRef)
@@ -972,11 +978,8 @@ func (m *Manifest) validatePlatformRepos(forgeName string, platform *PlatformCon
 		}
 
 		// Validate per-repo mint_url override.
-		if entry.MintURL != "" && entry.MintURL != NoneSentinel {
-			mu, muErr := url.Parse(entry.MintURL)
-			if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
-				return fmt.Errorf("%s.repos[%d]: per-repo mint_url must be a valid HTTPS URL, got %q", forgeName, i, entry.MintURL)
-			}
+		if entry.MintURL != "" && entry.MintURL != NoneSentinel && !urlutil.IsMintURL(entry.MintURL) {
+			return fmt.Errorf("%s.repos[%d]: per-repo mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1, got %q", forgeName, i, entry.MintURL)
 		}
 
 		// Validate per-repo mint_mode override.
@@ -1203,6 +1206,7 @@ func (m *Manifest) ExpandGlobsFor(ctx context.Context, clients ForgeClientFactor
 					Repo:  repo.Name,
 					Forge: p.name,
 					Entry: entry,
+					glob:  g.entry.Name,
 				}
 			}
 		}
@@ -1369,10 +1373,20 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 
 // RequireInferenceAuth returns an actionable configuration error when no
 // manifest level (entry, forge section, defaults) selects an inference
-// authentication method for this repository, or when the effective
-// selection is not a valid method. Install, convergence, and status call
-// it before any dependent forge reads or writes; uninstall deliberately
-// does not, so incomplete or older installations can still be cleaned up.
+// authentication method for this repository and its effective
+// configuration does not route inference through the inference gateway,
+// or when the effective selection is not a valid method. Install,
+// convergence, and status call it before any dependent forge reads or
+// writes; uninstall deliberately does not, so incomplete or older
+// installations can still be cleaned up.
+//
+// A complete inference.gateway block (ADR 0137) in the effective
+// configuration — the managed configuration layered over the declared
+// preset in ProposedBase — authenticates on its own, so with no
+// inference.auth the repository is gateway-only: an empty InferenceAuth
+// past this check means convergence provisions no provider credentials.
+// Callers load the declared preset into ProposedBase first, so a gateway
+// the preset supplies counts too.
 func (c ResolvedConfig) RequireInferenceAuth() error {
 	if c.InferenceAuth != "" {
 		if err := ValidateInferenceAuth("inference.auth", c.InferenceAuth); err != nil {
@@ -1383,8 +1397,45 @@ func (c ResolvedConfig) RequireInferenceAuth() error {
 		}
 		return nil
 	}
+	gateway := c.effectiveInferenceGateway()
+	if !gateway.IsZero() {
+		if missing := gateway.Missing(); len(missing) > 0 {
+			return fmt.Errorf("no inference authentication selected for %s/%s: the effective inference.gateway is partial (missing %s), so it cannot route inference; complete it, or set inference.auth (%s) on the repository entry, in the %s section, or under defaults in repos.yaml",
+				c.Owner, c.Repo, strings.Join(missing, " and "), strings.Join(ValidInferenceAuths(), " or "), c.Forge)
+		}
+		if err := gateway.ValidateEffective(); err != nil {
+			return fmt.Errorf("no inference authentication selected for %s/%s: the effective inference.gateway is invalid, so it cannot route inference: %w", c.Owner, c.Repo, err)
+		}
+		if c.Forge == ForgeGitLab && !gateway.IsAPIKey() {
+			return fmt.Errorf("no inference authentication selected for %s/%s: an oidc inference.gateway route is supported on GitHub only (the runtime fetches its assertion from the GitHub Actions OIDC endpoint, so no route applies on GitLab); set inference.gateway.auth to %s, or set inference.auth (%s) on the repository entry, in the %s section, or under defaults in repos.yaml",
+				c.Owner, c.Repo, config.GatewayAuthAPIKey, strings.Join(ValidInferenceAuths(), " or "), c.Forge)
+		}
+		return nil
+	}
 	return fmt.Errorf("no inference authentication selected for %s/%s: set inference.auth (%s) on the repository entry, in the %s section, or under defaults in repos.yaml (for example: fullsend repos set defaults.inference.auth %s)",
 		c.Owner, c.Repo, strings.Join(ValidInferenceAuths(), " or "), c.Forge, InferenceAuthVertexWIF)
+}
+
+// requiresGatewayAPIKey reports whether the repository is gateway-only
+// (no inference.auth) and its effective inference.gateway block uses the
+// api-key mode, so FULLSEND_INFERENCE_GATEWAY_API_KEY must exist for its
+// runs to authenticate. Setup never writes that secret; the repository
+// admin sets it, so install and status only check that it is present.
+func (c ResolvedConfig) requiresGatewayAPIKey() bool {
+	return c.InferenceAuth == "" && c.effectiveInferenceGateway().IsAPIKey()
+}
+
+// effectiveInferenceGateway returns the inference.gateway block of the
+// effective configuration: the managed configuration layered over the
+// declared preset in ProposedBase. It is zero when no layer declares one
+// or when the layers cannot be read (the callers that read them report
+// that error).
+func (c ResolvedConfig) effectiveInferenceGateway() config.InferenceGatewayConfig {
+	declared, err := config.DeclaredInfrastructureValues(c.Managed, c.ProposedBase)
+	if err != nil {
+		return config.InferenceGatewayConfig{}
+	}
+	return declared.InferenceGateway
 }
 
 // ValidateInferenceAuthForForge rejects an inference.auth selection the
@@ -1699,7 +1750,28 @@ func (m *Manifest) VendorSelected(filter []string) (bool, error) {
 // up needing a trailer. Even so, a glob entry that an earlier glob entry
 // fully covers can never win resolution, so it is ignored (see
 // globShadowedByEarlier).
-func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
+//
+// skip names repositories (owner/repo, any case) that get no scaffold
+// commit, such as those install skips: an explicit entry or a concrete
+// filter pattern in skip needs no trailer. A glob entry still counts, as it
+// may select other repositories.
+func (m *Manifest) SignoffForgesFor(filter, skip []string) ([]string, error) {
+	skipped := make(map[string]bool, len(skip))
+	for _, name := range skip {
+		skipped[strings.ToLower(name)] = true
+	}
+	if len(filter) > 0 {
+		var kept []string
+		for _, pattern := range filter {
+			if isGlob(pattern) || !skipped[strings.ToLower(pattern)] {
+				kept = append(kept, pattern)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, nil
+		}
+		filter = kept
+	}
 	var forges []string
 	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
 		platform := m.PlatformFor(forgeName)
@@ -1707,7 +1779,7 @@ func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
 			continue
 		}
 		for i, e := range platform.Repos {
-			if globShadowedByEarlier(platform.Repos[:i], e) {
+			if globShadowedByEarlier(platform.Repos[:i], e) || (!isGlob(e.Name) && skipped[strings.ToLower(e.Name)]) {
 				continue
 			}
 			needed, err := m.entryNeedsSignoff(forgeName, e, filter)

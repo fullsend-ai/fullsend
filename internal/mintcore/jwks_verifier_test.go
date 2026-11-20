@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -526,4 +527,36 @@ func TestParseRSAPublicKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, key.N, pub.N)
 	assert.Equal(t, 65537, pub.E)
+}
+
+// An issuer whose identity ends in "/" is compared exactly; only the
+// discovery URL drops the slash.
+func TestJWKSVerifier_IssuerWithTrailingSlash(t *testing.T) {
+	s := newTestOIDCServer(t)
+	mux := http.NewServeMux()
+	var slashServer *httptest.Server
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"issuer":   slashServer.URL + "/",
+			"jwks_uri": slashServer.URL + "/.well-known/jwks",
+		})
+	})
+	mux.HandleFunc("/.well-known/jwks", func(w http.ResponseWriter, r *http.Request) {
+		resp, err := http.Get(s.server.URL + "/.well-known/jwks")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(w, resp.Body)
+	})
+	slashServer = httptest.NewServer(mux)
+	t.Cleanup(slashServer.Close)
+
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: slashServer.URL + "/"})
+	require.NoError(t, err)
+	_, err = v.Verify(t.Context(), s.signJWT(t, nil, map[string]interface{}{"iss": slashServer.URL + "/"}))
+	require.NoError(t, err)
+	_, err = v.Verify(t.Context(), s.signJWT(t, nil, map[string]interface{}{"iss": slashServer.URL}))
+	assert.Error(t, err, "an iss without the configured trailing slash is a different issuer")
 }

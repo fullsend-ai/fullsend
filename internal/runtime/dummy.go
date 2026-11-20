@@ -294,7 +294,7 @@ func (r DummyRuntime) ClearIterationArtifacts(sandboxName string) error {
 	return nil
 }
 
-func (DummyRuntime) ExtractTranscripts(_ string, _ string, _ string) error { return nil }
+func (DummyRuntime) ExtractTranscripts(_, _, _, _ string) error { return nil }
 
 func (DummyRuntime) ExtractDebugLog(_ string, _ string, _ string) error { return nil }
 

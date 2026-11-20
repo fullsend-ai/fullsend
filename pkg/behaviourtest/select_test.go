@@ -1,6 +1,8 @@
 package behaviourtest
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -9,34 +11,71 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers"
+	fjci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/forgejoactions"
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
 	glci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/gitlabci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	scmfj "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/forgejo"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	scmgl "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/gitlab"
 )
 
 func TestInstallFactoryFor(t *testing.T) {
-	t.Parallel()
+	// The GitHub pool factories require a GitHub token before they check
+	// the layout; give them one so this test does not depend on the
+	// developer's gh login. t.Setenv forbids t.Parallel.
+	t.Setenv("GH_TOKEN", "test-token")
 
-	assert.Equal(t,
-		reflect.ValueOf(install.NewRepoPoolCFMintStage).Pointer(),
-		reflect.ValueOf(installFactoryFor("stage")).Pointer(),
-	)
-	assert.Equal(t,
-		reflect.ValueOf(install.NewRepoPoolCFMintPreviews).Pointer(),
-		reflect.ValueOf(installFactoryFor("dev")).Pointer(),
-	)
-	assert.Equal(t,
-		reflect.ValueOf(install.NewRepoPoolCFMintPreviews).Pointer(),
-		reflect.ValueOf(installFactoryFor("")).Pointer(),
-	)
+	for _, tc := range []struct {
+		environment string
+		want        install.Factory
+	}{
+		{"stage", install.NewRepoPoolCFMintStage},
+		{"dev", install.NewRepoPoolCFMintPreviews},
+		{"", install.NewRepoPoolCFMintPreviews},
+		{"github-emulator", install.NewRepoPoolGitHubEmulator},
+		{"forgejo-dev", install.NewForgejoDev},
+	} {
+		factory, err := installFactoryFor(tc.environment)
+		require.NoError(t, err, "environment %q", tc.environment)
+		assert.Equal(t,
+			reflect.ValueOf(tc.want).Pointer(),
+			reflect.ValueOf(factory).Pointer(),
+			"environment %q", tc.environment,
+		)
+	}
 
 	// The STAGE factory refuses a DEV layout.
 	pool := poolConfigFor("dev", e2etest.EnvConfig{}, "", func(string, ...any) {})
-	_, err := installFactoryFor("stage")(pool)
+	stage, err := installFactoryFor("stage")
+	require.NoError(t, err)
+	_, err = stage(pool)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), install.StageOrg)
+}
+
+func TestInstallFactoryFor_UnknownEnvironmentFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	for _, environment := range []string{"prod", "forgejo-ext", "forgejo"} {
+		factory, err := installFactoryFor(environment)
+		require.Error(t, err, "environment %q", environment)
+		assert.Nil(t, factory, "environment %q must not fall back to a GitHub factory", environment)
+		assert.Contains(t, err.Error(), fmt.Sprintf("ENVIRONMENT %q", environment))
+	}
+}
+
+func TestInstallFactoryFor_ForgejoDevSelectsStub(t *testing.T) {
+	t.Parallel()
+
+	factory, err := installFactoryFor("forgejo-dev")
+	require.NoError(t, err)
+	driver, err := factory(poolConfigFor("forgejo-dev", e2etest.EnvConfig{}, "", nil))
+	require.NoError(t, err)
+	assert.NotImplements(t, (*install.LeaseDriver)(nil), driver, "forgejo-dev must not be the GitHub slot pool driver")
+	_, err = driver.AllocateRepo(context.Background())
+	require.ErrorIs(t, err, drivers.ErrNotImplemented)
 }
 
 func TestPoolConfigFor(t *testing.T) {
@@ -56,6 +95,17 @@ func TestPoolConfigFor(t *testing.T) {
 	assert.Equal(t, dev.Layout, poolConfigFor("", e2etest.EnvConfig{}, "", nil).Layout)
 }
 
+func TestPoolConfigFor_ForgejoDevNeverUsesGitHub(t *testing.T) {
+	t.Parallel()
+
+	pool := poolConfigFor("forgejo-dev", e2etest.EnvConfig{GCPProjectID: "proj"}, "/bin/fullsend", nil)
+	assert.Equal(t, install.PoolLayout{}, pool.Layout, "forgejo-dev must not carry the GitHub pool layout")
+	assert.Nil(t, pool.TokenFor, "forgejo-dev must not mint GitHub tokens")
+	assert.Nil(t, pool.NewClient, "forgejo-dev must not build GitHub clients")
+	assert.Equal(t, "proj", pool.GCPProjectID)
+	assert.Equal(t, "/bin/fullsend", pool.Binary)
+}
+
 func TestOrgDriversFor(t *testing.T) {
 	t.Parallel()
 
@@ -64,6 +114,11 @@ func TestOrgDriversFor(t *testing.T) {
 	require.NoError(t, err)
 	assert.IsType(t, &scmgh.Driver{}, scmDriver)
 	assert.IsType(t, &gaci.Driver{}, ciDriver)
+
+	scmDriver, ciDriver, err = orgDriversFor("forgejo", "forgejoactions")(client, "tok")
+	require.NoError(t, err)
+	assert.IsType(t, &scmfj.Driver{}, scmDriver)
+	assert.IsType(t, &fjci.Driver{}, ciDriver)
 
 	_, _, err = orgDriversFor("svn", "githubactions")(client, "tok")
 	require.Error(t, err)
@@ -84,9 +139,13 @@ func TestNewSCMDriver(t *testing.T) {
 	require.NoError(t, err)
 	assert.IsType(t, &scmgl.Driver{}, gl)
 
-	_, err = newSCMDriver("forgejo", client)
+	fj, err := newSCMDriver("forgejo", client)
+	require.NoError(t, err)
+	assert.IsType(t, &scmfj.Driver{}, fj)
+
+	_, err = newSCMDriver("svn", client)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `unsupported BEHAVIOUR_SCM "forgejo"`)
+	assert.Contains(t, err.Error(), `unsupported BEHAVIOUR_SCM "svn"`)
 }
 
 func TestNewCIDriver(t *testing.T) {
@@ -101,6 +160,10 @@ func TestNewCIDriver(t *testing.T) {
 	gl, err := newCIDriver("gitlabci", client, "tok")
 	require.NoError(t, err)
 	assert.IsType(t, &glci.Driver{}, gl)
+
+	fj, err := newCIDriver("forgejoactions", client, "tok")
+	require.NoError(t, err)
+	assert.IsType(t, &fjci.Driver{}, fj)
 
 	_, err = newCIDriver("tekton", client, "tok")
 	require.Error(t, err)

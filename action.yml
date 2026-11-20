@@ -41,6 +41,26 @@ inputs:
   status-number:
     description: Issue/PR number for status comments (optional).
     default: ""
+  failure-repo:
+    description: Repository (owner/repo) for startup-failure comments (optional).
+    default: ""
+  failure-number:
+    description: Issue/PR number for startup-failure comments (optional).
+    default: ""
+  failure-trusted-bots:
+    description: Comma-separated custom app-set prefixes used to derive trusted startup-failure bot identities (optional).
+    default: ""
+  failure-token:
+    description: >-
+      Optional token used only for startup-failure reporting. Keep github_token
+      as the workflow token so installation, cloning, provider credentials, and
+      fullsend run do not receive a reporting-only App token.
+    default: ""
+  source-system:
+    description: >-
+      Originating tracker for the event (github, gitlab, or jira). GitHub
+      startup-failure comments are not posted for non-GitHub-originated events.
+    default: github
   status-comment-id:
     description: >-
       ID of the comment that triggered this run via a slash command
@@ -276,6 +296,7 @@ runs:
         fi
 
     - name: Install vendored binary
+      id: install-vendored
       if: steps.detect.outputs.install-method == 'vendored'
       shell: bash
       env:
@@ -348,6 +369,7 @@ runs:
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
     - name: Clone fullsend at ref for source build
+      id: clone-source
       if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
       shell: bash
       env:
@@ -418,6 +440,7 @@ runs:
         cache-dependency-path: ${{ runner.temp }}/fullsend-src/go.sum
 
     - name: Build fullsend from source
+      id: build-source
       if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
       shell: bash
       run: |
@@ -429,6 +452,7 @@ runs:
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
     - name: Print fullsend version
+      id: print-version
       shell: bash
       run: fullsend --version
 
@@ -458,11 +482,13 @@ runs:
 
     - name: Install Podman
       if: steps.sandbox-host.outputs.local == 'true'
+      id: install-podman
       shell: bash
       run: "$GITHUB_ACTION_PATH/.github/scripts/install-podman.sh"
 
     - name: Configure rootless Podman
       if: steps.sandbox-host.outputs.local == 'true'
+      id: configure-podman
       shell: bash
       run: |
         test -f /sys/fs/cgroup/cgroup.controllers || { echo "::error::cgroups v2 required"; exit 1; }
@@ -497,6 +523,7 @@ runs:
     # a remote-gateway runner that already has the CLI skips it.
     - name: Install OpenShell CLI
       if: steps.sandbox-host.outputs.install-openshell == 'true'
+      id: install-openshell
       shell: bash
       run: "$GITHUB_ACTION_PATH/.github/scripts/install-openshell.sh"
 
@@ -729,6 +756,61 @@ runs:
         name: ${{ inputs.artifact-name || format('fullsend-{0}', inputs.agent) }}
         path: ${{ steps.prepare-artifacts.outputs.dir }}
 
+    - name: Report pre-agent startup failure
+      if: >-
+        failure() && !cancelled() && steps.run.outcome == 'skipped' &&
+        inputs.agent != '__install_only__' && inputs.source-system == 'github' &&
+        ((inputs.failure-repo != '' && inputs.failure-number != '') ||
+        (inputs.status-repo != '' && inputs.status-number != ''))
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.failure-token || inputs.github_token }}
+        AGENT: ${{ inputs.agent }}
+        ROLE: ${{ inputs.role || inputs.agent }}
+        FAILURE_REPO: ${{ inputs.failure-repo != '' && inputs.failure-number != '' && inputs.failure-repo || inputs.status-repo }}
+        FAILURE_NUMBER: ${{ inputs.failure-repo != '' && inputs.failure-number != '' && inputs.failure-number || inputs.status-number }}
+        FULLSEND_FAILURE_TRUSTED_BOTS: ${{ inputs.failure-trusted-bots }}
+        RUN_URL: ${{ inputs.run-url }}
+        INSTALL_CLI_OUTCOME: ${{ steps.detect.outcome }}
+        VENDORED_OUTCOME: ${{ steps.install-vendored.outcome }}
+        DOWNLOAD_RELEASE_OUTCOME: ${{ steps.download-release.outcome }}
+        CLONE_SOURCE_OUTCOME: ${{ steps.clone-source.outcome }}
+        BUILD_SOURCE_OUTCOME: ${{ steps.build-source.outcome }}
+        PRINT_VERSION_OUTCOME: ${{ steps.print-version.outcome }}
+        PODMAN_OUTCOME: ${{ steps.install-podman.outcome }}
+        CONFIGURE_PODMAN_OUTCOME: ${{ steps.configure-podman.outcome }}
+        OPENSHELL_OUTCOME: ${{ steps.install-openshell.outcome }}
+      run: |
+        set -euo pipefail
+        FAILURE_CATEGORY="workflow setup"
+        if [[ "${PODMAN_OUTCOME}" == "failure" \
+            || "${CONFIGURE_PODMAN_OUTCOME}" == "failure" \
+            || "${OPENSHELL_OUTCOME}" == "failure" ]]; then
+          FAILURE_CATEGORY="runtime setup"
+        elif [[ "${INSTALL_CLI_OUTCOME}" == "failure" \
+            || "${VENDORED_OUTCOME}" == "failure" \
+            || ("${DOWNLOAD_RELEASE_OUTCOME}" == "failure" && "${BUILD_SOURCE_OUTCOME}" != "success") \
+            || "${CLONE_SOURCE_OUTCOME}" == "failure" \
+            || "${BUILD_SOURCE_OUTCOME}" == "failure" \
+            || "${PRINT_VERSION_OUTCOME}" == "failure" ]]; then
+          FAILURE_CATEGORY="CLI setup"
+        fi
+
+        FULLSEND_FAILURE_REPOSITORY="${FAILURE_REPO}"
+        FULLSEND_FAILURE_NUMBER="${FAILURE_NUMBER}"
+        FULLSEND_FAILURE_AGENT="${AGENT}"
+        FULLSEND_FAILURE_ROLE="${ROLE}"
+        FULLSEND_FAILURE_RUN_URL="${RUN_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
+        FULLSEND_FAILURE_CATEGORY="${FAILURE_CATEGORY}"
+        export FULLSEND_FAILURE_REPOSITORY FULLSEND_FAILURE_NUMBER \
+          FULLSEND_FAILURE_AGENT FULLSEND_FAILURE_ROLE FULLSEND_FAILURE_RUN_URL \
+          FULLSEND_FAILURE_CATEGORY
+        if "$GITHUB_ACTION_PATH/.github/scripts/report-agent-startup-failure.sh"; then
+          echo "FULLSEND_STARTUP_FAILURE_REPORTED=true" >> "${GITHUB_ENV}"
+        else
+          echo "::warning::Could not post pre-agent failure comment"
+        fi
+
     - name: Finalize orphaned status comment
       # Runs last (after all other always() steps) so job.status reflects
       # the job's true final outcome, not just the fullsend run outcome.
@@ -771,6 +853,11 @@ runs:
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:
         # always()) to detect and finalize orphaned comments. See #2149.
+
+        if [[ "${FULLSEND_STARTUP_FAILURE_REPORTED:-}" == "true" ]]; then
+          echo "Startup failure was reported; skipping orphaned status reconciliation"
+          exit 0
+        fi
 
         # Resolve the correct commit SHA. Priority order:
         # 1. Explicit pr-head-sha input (per-repo workflow_call callers)

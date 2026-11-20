@@ -155,9 +155,10 @@ The helper functions `agentSpanStartAttrs()` and `agentSpanEndAttrs()`
 build the attribute slices. Start attributes: `iteration`,
 `gen_ai.operation.name`, `gen_ai.agent.name`. End attributes: `iteration`,
 `exit_code`, `gen_ai.system` and `gen_ai.provider.name` (same serving-endpoint
-value), model, token counts, `fullsend.cost_usd`, `fullsend.runtime`,
-`fullsend.tool_calls`. Multi-provider runtimes resolve the provider from the
-effective model via `runtime.GenAISystemFor`; `System()` is only the fallback.
+value), model, token counts, `fullsend.usage.input_includes_cache`,
+`fullsend.cost_usd`, `fullsend.runtime`, `fullsend.tool_calls`.
+Multi-provider runtimes resolve the provider from the effective model via
+`runtime.GenAISystemFor`; `System()` is only the fallback.
 
 ### execute_tool spans
 

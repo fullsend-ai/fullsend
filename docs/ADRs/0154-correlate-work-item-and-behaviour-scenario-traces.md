@@ -22,8 +22,12 @@ Accepted
 This records the chosen topology. The identity, fallback, envelope, and
 admission foundation is implemented; the
 [trace-context v1 specification](../normative/trace-context/v1/README.md)
-defines its contract. Carrier publication, key provisioning, and runtime
-integration are pending.
+defines its contract. `fullsend repos install` provisions the signing keys of
+GitHub repositories (see the
+[key lifecycle](../reference/trace-context.md#key-lifecycle)). Carrier
+publication, key provisioning on GitLab, the flags through which the
+behaviour-test suite supplies its own keys, delivery of the signing key to
+runs, and runtime integration are pending.
 
 ## Context
 

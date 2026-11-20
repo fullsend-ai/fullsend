@@ -161,7 +161,7 @@ jobs:
           # is executed, and credentials are not persisted. Pin to base branch
           # SHA for PR-scoped events so kill-switch / role gating always reads
           # trusted config — PR authors cannot self-authorize.
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
@@ -203,6 +203,8 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
+          EVENT_ACTOR: ${{ github.actor }}
+          REPO_VISIBILITY: ${{ github.event.repository.visibility }}
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           GH_TOKEN: ${{ github.token }}
@@ -408,7 +410,37 @@ jobs:
               fi
               ;;
 
-            pull_request_target)
+            pull_request_target|pull_request)
+              # pull_request is the shim trigger from #9221 on (GitHub blocks
+              # pull_request_target by default in public repos from
+              # 2026-12-02). pull_request_target stays routed the same way so
+              # shims that have not upgraded keep working until they do.
+              # GitHub blocks pull_request_target by default only in public
+              # repositories, so only those get the upgrade warning.
+              if [[ "${EVENT_NAME}" == "pull_request_target" && "${REPO_VISIBILITY:-}" == "public" ]]; then
+                echo "::warning::This repository's fullsend shim still triggers on pull_request_target, which GitHub blocks by default in public repositories from its announced enforcement date. Re-run 'fullsend repos install' to move the shim to pull_request."
+              fi
+              # The shim skips fork PRs on pull_request with a same-repo guard,
+              # but a pull_request run uses the PR's own copy of the shim, so a
+              # fork can drop that guard. Upstream installs call this file from
+              # fullsend, which a fork cannot edit, so this re-check holds there
+              # (vendored installs run their own copy, and depend on GitHub not
+              # sending secrets to fork PR runs). A fork PR is never routed on
+              # pull_request; a maintainer comments /fs-review instead. Missing
+              # repo names also skip.
+              if [[ "${EVENT_NAME}" == "pull_request" ]] && [[ -z "${PR_HEAD_REPO:-}" || "${PR_HEAD_REPO:-}" != "${PR_BASE_REPO:-}" ]]; then
+                echo "::notice::Fork pull request on pull_request: not routed. A maintainer can comment /fs-review to review it."
+                echo "stage=" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              # GitHub gives pull_request runs triggered by Dependabot only
+              # Dependabot secrets, so an agent run would fail. Skip it; a
+              # maintainer's /fs-review runs with the repository's secrets.
+              if [[ "${EVENT_NAME}" == "pull_request" && "${EVENT_ACTOR:-}" == "dependabot[bot]" ]]; then
+                echo "::notice::Dependabot pull request on pull_request: not routed. A maintainer can comment /fs-review to review it."
+                echo "stage=" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
                   if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
@@ -474,7 +506,7 @@ jobs:
       # still enforce the same policy for the final routed stage.
       - name: Check review deduplication guards
         id: review-dedup-guard
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]'))
         shell: bash
         run: |
           set -euo pipefail
@@ -525,13 +557,13 @@ jobs:
       # runs. Vendored callers already provide it in the caller checkout;
       # fetch only this script for callers using upstream defaults.
       - name: Checkout review diff canonicalizer
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .review-diff-defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -544,7 +576,7 @@ jobs:
       # Missing or incomplete metadata deliberately fails open.
       - name: Check unchanged review diff
         id: review-diff
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) && steps.review-dedup-guard.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
@@ -741,7 +773,9 @@ jobs:
       # entry "Finalize stage" passes the authorized bash stage through.
       - name: Detect CEL route opt-in
         id: cel-opt-in
-        if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' || github.event_name == 'issues' }}
+        # A fork or Dependabot PR on pull_request is never routed (see
+        # "Determine stage"), by CEL either: a maintainer comments /fs-review.
+        if: ${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' }}
         continue-on-error: true
         shell: bash
         env:
@@ -772,14 +806,18 @@ jobs:
             # Same parsing as "Determine stage".
             COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
           fi
+          IS_PR_EVENT=false
+          if [[ "${EVENT_NAME}" == "pull_request_target" || "${EVENT_NAME}" == "pull_request" ]]; then
+            IS_PR_EVENT=true
+          fi
           PR_CLOSED=false
-          if [[ "${EVENT_NAME}" == "pull_request_target" && "${EVENT_ACTION:-}" == "closed" ]]; then
+          if [[ "${IS_PR_EVENT}" == "true" && "${EVENT_ACTION:-}" == "closed" ]]; then
             PR_CLOSED=true
           fi
           fits=""
           # review: pull request events other than closed, and comments on a
           # pull request.
-          if [[ ( "${EVENT_NAME}" == "pull_request_target" && "${PR_CLOSED}" == "false" ) || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]]; then
+          if [[ ( "${IS_PR_EVENT}" == "true" && "${PR_CLOSED}" == "false" ) || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]]; then
             fits+=" review"
           fi
           # retro: a closed pull request, and comments on an issue or a pull
@@ -817,7 +855,7 @@ jobs:
             agent="triage"
           elif [[ "${PR_CLOSED}" == "true" ]]; then
             agent="retro"
-          elif [[ "${EVENT_NAME}" == "pull_request_target" ]]; then
+          elif [[ "${IS_PR_EVENT}" == "true" ]]; then
             agent="review"
           fi
 
@@ -880,7 +918,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Same trusted ref as the checkout above: the base branch for PR events.
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           path: cel-route
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
@@ -913,7 +951,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       # Vendored installs copy the committed binary directly, so the step does
       # not depend on where the vendored defaults (.defaults/ or
@@ -939,7 +977,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .workflow-actions
           fetch-depth: 1
           sparse-checkout: |
@@ -957,7 +995,7 @@ jobs:
         with:
           mode: upstream
           workflow_repository: ${{ job.workflow_repository }}
-          workflow_sha: ${{ job.workflow_sha }}
+          workflow_sha: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for CEL route
@@ -987,7 +1025,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Evaluate CEL route
         id: cel-route
@@ -1041,7 +1079,7 @@ jobs:
         env:
           BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
           BASH_TRIGGER_SOURCE: ${{ steps.bash-route.outputs.trigger_source }}
-          CLOSED_PULL_REQUEST: ${{ github.event_name == 'pull_request_target' && inputs.event_action == 'closed' }}
+          CLOSED_PULL_REQUEST: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'closed' }}
           ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
           CEL_OPT_IN_OUTCOME: ${{ steps.cel-opt-in.outcome }}
           CEL_CONFIG_OUTCOME: ${{ steps.cel-config.outcome }}
@@ -1120,13 +1158,13 @@ jobs:
       # Only obtain a write-capable review token after final routing has
       # authorized the review stage. The diff check above remains read-only.
       - name: Checkout upstream defaults for review skip note
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1135,7 +1173,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Prepare workspace for review skip note
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
         id: review-token-workspace
         continue-on-error: true
         timeout-minutes: 2
@@ -1147,12 +1185,12 @@ jobs:
       # .defaults path internally. Provide that compatibility path while
       # the action's defaults_root input is adopted by existing callers.
       - name: Stage nested defaults compatibility path
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
         shell: bash
         run: ln -s .fullsend/.defaults .defaults
 
       - name: Prepare workspace for review skip note (nested vendor)
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
         id: review-token-workspace-nested
         continue-on-error: true
         timeout-minutes: 2
@@ -1162,7 +1200,7 @@ jobs:
           source_repo: ${{ github.repository }}
 
       - name: Mint review token for review skip note
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
         id: review-token
         continue-on-error: true
         timeout-minutes: 2
@@ -1174,7 +1212,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Mint review token for review skip note (nested vendor)
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
         id: review-token-nested
         continue-on-error: true
         timeout-minutes: 2
@@ -1187,7 +1225,7 @@ jobs:
 
       - name: Publish review skip note
         id: review-skip-publish
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
@@ -1322,13 +1360,48 @@ jobs:
           fi
           # An enabled entry may omit source when it only tunes a built-in
           # agent by name (runtime/model/effort/subagents, ADR 0091; trigger,
-          # #8726), the settings config.AgentEntry.HasSettings counts. A blank
-          # trigger counts as unset, as on the Go side. trigger is checked for
-          # null explicitly: `//` would also replace an unquoted false, which
-          # Go reads as the CEL expression "false".
-          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null and .subagents == null and ((.trigger == null) or (.trigger | tostring | test("^\\s*$"))))) | line' .fullsend/config.yaml 2>/dev/null || echo "")
-          if [[ -n "$BAD_SOURCE" ]]; then
-            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model, effort, subagents or trigger to tune a built-in agent)"
+          # #8726; a non-empty harness: block, ADR 0162), the settings
+          # config.AgentEntry.HasSettings counts. A blank trigger counts as
+          # unset, as on the Go side. trigger is checked for null explicitly:
+          # `//` would also replace an unquoted false, which Go reads as the
+          # CEL expression "false". explode(.) resolves each entry's YAML
+          # aliases, as the Go side does; without it `harness: *anchor`
+          # counts as unset. It runs per entry, so a bad merge key elsewhere
+          # in the file does not fail this check. A yq failure is reported;
+          # fullsend run validates the entries again.
+          YQ_ERR=$(mktemp)
+          BAD_SOURCE=$(yq '.agents[] | explode(.) | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null and .subagents == null and ((.trigger == null) or (.trigger | tostring | test("^\\s*$"))) and (((.harness | type) != "!!map") or ((.harness | length) == 0)))) | ((.enabled // "unset") | tostring) + " " + ((.name // "") | downcase)' .fullsend/config.yaml 2>"$YQ_ERR") || {
+            echo "::warning::yq failed checking agent entries without a source — see logs"
+            cat "$YQ_ERR" >&2
+            BAD_SOURCE=""
+          }
+          # The Go keyed merge (perRepoConfig.AgentEntries) completes such an
+          # entry from the config.base.yaml entry of the same name: one with
+          # a source or a setting, or one that turns the agent off when this
+          # entry does not turn it on. Names compare without case, and a base
+          # entry without a name is named after its source file.
+          BASE_ENTRIES=""
+          if [[ -n "$BAD_SOURCE" && -f .fullsend/config.base.yaml ]]; then
+            BASE_ENTRIES=$(yq '.agents[] | explode(.) | ((select(type == "!!str") | "complete " + (sub("#[^#]*$", "") | sub("^.*/", "") | sub("\\.[^.]*$", "") | downcase)), (select(type == "!!map") | select(((.source // "") != "") or .runtime != null or .model != null or .effort != null or .subagents != null or ((.trigger != null) and ((.trigger | tostring | test("^\\s*$")) | not)) or (((.harness | type) == "!!map") and ((.harness | length) > 0))) | "complete " + ((.name // .source) | sub("#[^#]*$", "") | sub("^.*/", "") | sub("\\.[^.]*$", "") | downcase)), (select(type == "!!map") | select(.enabled == false) | "off " + ((.name // "") | downcase)))' .fullsend/config.base.yaml 2>"$YQ_ERR") || {
+              echo "::warning::yq failed reading agent entries from config.base.yaml — see logs"
+              cat "$YQ_ERR" >&2
+              BAD_SOURCE=""
+            }
+          fi
+          rm -f "$YQ_ERR"
+          UNRESOLVED=""
+          while read -r enabled name; do
+            [[ -z "$enabled" ]] && continue
+            if [[ -n "$name" ]] && grep -qxF -- "complete $name" <<<"$BASE_ENTRIES"; then
+              continue
+            fi
+            if [[ -n "$name" && "$enabled" == "unset" ]] && grep -qxF -- "off $name" <<<"$BASE_ENTRIES"; then
+              continue
+            fi
+            UNRESOLVED=1
+          done <<<"$BAD_SOURCE"
+          if [[ -n "$UNRESOLVED" ]]; then
+            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model, effort, subagents, trigger or harness to tune a built-in agent)"
             exit 1
           fi
           DUPES_ENABLED=$(yq '.agents[] | select(type == "!!map" and .enabled != false) | (.name // "") | select(. != "") | downcase' .fullsend/config.yaml 2>/dev/null | sort | uniq -d)
@@ -1459,7 +1532,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1468,7 +1541,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1499,6 +1572,10 @@ jobs:
           path: target-repo
           fetch-depth: 1
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Setup agent environment
         env:
@@ -1512,11 +1589,13 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run triage agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           REPO_FULL_NAME: ${{ github.repository }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
@@ -1546,13 +1625,46 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report triage launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="triage"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   code:
     name: Code
@@ -1574,7 +1686,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1583,7 +1695,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1614,6 +1726,10 @@ jobs:
           path: target-repo
           fetch-depth: 0
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Resolve bot identity
         env:
@@ -1643,6 +1759,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run code agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -1674,6 +1791,7 @@ jobs:
           FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: code
+          role: coder
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
@@ -1682,13 +1800,47 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report code launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="code"
+          export FULLSEND_FAILURE_ROLE="coder"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   review:
     name: Review
@@ -1709,7 +1861,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1718,7 +1870,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1749,6 +1901,10 @@ jobs:
           path: target-repo
           fetch-depth: 1
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Pre-fetch prior review context
         id: prior-review
@@ -1819,6 +1975,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run review agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -1859,13 +2016,46 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report review launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="review"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   fix:
     name: Fix
@@ -1887,7 +2077,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1896,7 +2086,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1935,16 +2125,19 @@ jobs:
           git config --global user.name "${BOT_LOGIN}"
 
       - name: Block fork PRs
+        id: fork_guard
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUM_INPUT: ''
         run: |
+          echo "policy_skip=false" >> "${GITHUB_OUTPUT}"
           HEAD_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.head.repo.full_name // empty')"
           BASE_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.base.repo.full_name // empty')"
           if [[ -n "${HEAD_REPO}" && -n "${BASE_REPO}" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
             echo "::error::Fork PRs are not allowed to trigger the fix agent"
+            echo "policy_skip=true" >> "${GITHUB_OUTPUT}"
             exit 1
           fi
           if [[ -z "${HEAD_REPO}" && -z "${BASE_REPO}" ]]; then
@@ -1959,6 +2152,7 @@ jobs:
               fi
               if [[ "${IS_FORK}" == "true" ]]; then
                 echo "::error::Fork PRs are not allowed to trigger the fix agent"
+                echo "policy_skip=true" >> "${GITHUB_OUTPUT}"
                 exit 1
               fi
             fi
@@ -2034,6 +2228,7 @@ jobs:
           echo "iteration=${ITERATION}" >> "${GITHUB_OUTPUT}"
 
       - name: Check fix eligibility
+        id: eligibility
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
@@ -2088,6 +2283,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run fix agent
+        id: run-agent
         uses: ./.defaults/
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
@@ -2119,6 +2315,7 @@ jobs:
           FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: fix
+          role: coder
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
@@ -2127,13 +2324,47 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ steps.context.outputs.pr_number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report fix launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && steps.fork_guard.outputs.policy_skip != 'true' && steps.eligibility.outputs.policy_skip != 'true' && steps.review-body.outputs.policy_skip != 'true' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="fix"
+          export FULLSEND_FAILURE_ROLE="coder"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   retro:
     name: Retro
@@ -2153,7 +2384,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -2162,7 +2393,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -2193,6 +2424,10 @@ jobs:
           path: target-repo
           fetch-depth: 1
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Setup agent environment
         env:
@@ -2206,6 +2441,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run retro agent
+        id: run-agent
         uses: ./.defaults/
         env:
           ORIGINATING_URL: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.html_url || fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -2241,13 +2477,46 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+
+      - name: Report retro launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="retro"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
 
   prioritize:
     name: Prioritize
@@ -2267,7 +2536,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -2276,7 +2545,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -2307,6 +2576,7 @@ jobs:
         run: mkdir -p target-repo
 
       - name: Run prioritize agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -2341,20 +2611,56 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
+
+      - name: Report prioritize launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number || fromJSON(needs.route.outputs.event_payload).pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="prioritize"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          export FULLSEND_FAILURE_CATEGORY="workflow setup"
+          bash "${script}"
 
   harness-dispatch:
     name: Harness dispatch
-    if: ${{ inputs.matrix == '' }}
+    # A fork or Dependabot PR on pull_request never dispatches (see
+    # "Determine stage" in the route job, #9221).
+    if: ${{ inputs.matrix == '' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write
       contents: read
       id-token: write
+      # Callers must grant issues: write for startup-failure comments and
+      # pull-requests: read for harness event inspection.
+      issues: write
       pull-requests: read
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
@@ -2368,7 +2674,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
@@ -2377,7 +2683,9 @@ jobs:
             /OWNERS_ALIASES
             .defaults/action.yml
             .defaults/.github/actions/install-fullsend-cli/
+            .defaults/.github/scripts/report-agent-startup-failure.sh
             .fullsend/.defaults/action.yml
+            .fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh
           sparse-checkout-cone-mode: false
 
       - name: Detect registered harness triggers
@@ -2427,7 +2735,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Install fullsend CLI (vendored defaults)
         if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'vendored' && steps.cli-cache.outputs.cache-hit != 'true'
@@ -2442,7 +2750,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .workflow-actions
           fetch-depth: 1
           sparse-checkout: |
@@ -2455,7 +2763,7 @@ jobs:
         with:
           mode: upstream
           workflow_repository: ${{ job.workflow_repository }}
-          workflow_sha: ${{ job.workflow_sha }}
+          workflow_sha: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI
@@ -2482,7 +2790,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Run fullsend dispatch
         id: dispatch
@@ -2510,10 +2818,44 @@ jobs:
             echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Report harness dispatch failure
+        if: ${{ failure() && !cancelled() && steps.dispatch.outcome != 'success' && (github.event.issue.number != '' || github.event.pull_request.number != '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="harness"
+          export FULLSEND_FAILURE_ROLE="harness"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          export FULLSEND_FAILURE_CATEGORY="workflow setup"
+          export FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"
+          export FULLSEND_FAILURE_STABLE_MARKER="true"
+          bash "${script}"
+
   harness-run:
     name: Harness run (${{ matrix.agent }})
     needs: [harness-dispatch]
-    if: ${{ !cancelled() && ((inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null) || (needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null)) }}
+    # A fork or Dependabot PR on pull_request never dispatches (see
+    # "Determine stage" in the route job, #9221).
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) && ((inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null) || (needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null)) }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.matrix != '' && inputs.matrix || (needs.harness-dispatch.outputs.matrix != '' && needs.harness-dispatch.outputs.matrix || '{"include":[]}')) }}
@@ -2531,7 +2873,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -2540,7 +2882,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -2599,6 +2941,10 @@ jobs:
           path: target-repo
           fetch-depth: 1
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && matrix.source_repo == github.repository && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Resolve bot identity
         env:
@@ -2688,6 +3034,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Run harness agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ steps.dispatch-env.outputs.issue_url }}
@@ -2726,12 +3073,53 @@ jobs:
           jira-client-secret: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           role: ${{ matrix.role }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           fullsend-dir: .fullsend
+          github_token: ${{ github.token }}
+          failure-token: ${{ steps.app-token.outputs.token || github.token }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}
+          source-system: ${{ matrix.event_payload._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ matrix.event_payload.comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ matrix.event_payload.pull_request.head.sha || '' }}
           artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}
+      - name: Report harness launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && matrix.status_number != '' && (matrix.event_payload._normalized_event.source.system || 'github') == 'github' && (matrix.status_repo == github.repository || steps.app-token.outcome == 'success') }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ matrix.status_repo }}
+          NUMBER: ${{ matrix.status_number }}
+          AGENT: ${{ matrix.agent }}
+          ROLE: ${{ matrix.role }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="${AGENT}"
+          export FULLSEND_FAILURE_ROLE="${ROLE}"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
+
+      - name: Warn when cross-repository harness failure cannot be reported
+        if: ${{ always() && steps.run-agent.outcome == 'skipped' && matrix.status_number != '' && (matrix.event_payload._normalized_event.source.system || 'github') == 'github' && matrix.status_repo != github.repository && steps.app-token.outcome != 'success' }}
+        run: echo "::warning::Harness startup failure could not be reported because no token authorized for the target repository was available"

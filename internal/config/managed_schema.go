@@ -23,10 +23,13 @@ const (
 	// A ref that declares no schema is treated as legacy unless it contains
 	// the commit that introduced the tracker mapping.
 	ManagedConfigSchemaLegacy = 1
+	// ManagedConfigSchemaTrackerMapping is the schema with the tracker
+	// mapping (#9082) that predates the harness: block of an agents: entry.
+	ManagedConfigSchemaTrackerMapping = 2
 	// ManagedConfigSchemaVersion is the schema this binary reads and
-	// renders: issue tracking is the tracker mapping. It must equal the
-	// value declared in ManagedConfigSchemaDeclarationPath.
-	ManagedConfigSchemaVersion = 2
+	// renders: an agents: entry may carry a harness: block (ADR 0162). It
+	// must equal the value declared in ManagedConfigSchemaDeclarationPath.
+	ManagedConfigSchemaVersion = 3
 )
 
 // ManagedConfigSchemaDeclarationPath is the path, in the fullsend-ai/fullsend
@@ -71,17 +74,25 @@ type legacyCreateIssuesOut struct {
 
 // RenderManagedConfigSchema converts data, a per-repo configuration document
 // rendered in the current schema (ManagedConfigSchemaVersion), into the shape
-// schema version reads. The current schema returns data unchanged. For the
-// legacy schema the tracker mapping is rewritten to the scalar tracker key
-// plus create_issues.allow_targets; settings that schema cannot express
-// (GitLab groups, any Jira setting) return an error rather than being dropped.
-// An unknown version returns an error.
+// schema version reads. The current schema returns data unchanged. An older
+// schema cannot express an agents: entry's harness: block. For the legacy
+// schema the tracker mapping is also rewritten to the scalar tracker key
+// plus create_issues.allow_targets. Settings a schema cannot express (a
+// harness: block, GitLab groups, any Jira setting) return an error rather
+// than being dropped. An unknown version returns an error.
 func RenderManagedConfigSchema(data []byte, version int) ([]byte, error) {
 	switch version {
 	case ManagedConfigSchemaVersion:
 		return data, nil
-	case ManagedConfigSchemaLegacy:
-		return downgradeTrackingYAML(data)
+	case ManagedConfigSchemaTrackerMapping, ManagedConfigSchemaLegacy:
+		if name, ok := harnessBlockEntry(data); ok {
+			return nil, fmt.Errorf("agents entry %q: a harness: block cannot be expressed in the configuration schema of the repository's fullsend_ref: "+
+				"upgrade fullsend_ref to a release that reads harness: blocks, or remove the block", name)
+		}
+		if version == ManagedConfigSchemaLegacy {
+			return downgradeTrackingYAML(data)
+		}
+		return data, nil
 	}
 	return nil, fmt.Errorf("unknown managed configuration schema version %d (this fullsend knows versions %d to %d)",
 		version, ManagedConfigSchemaLegacy, ManagedConfigSchemaVersion)
@@ -161,26 +172,49 @@ func legacyTrackingFor(t *TrackingConfig) (provider string, orgs, repos []string
 	return "", nil, nil, errors.New("tracker must select exactly one provider to be expressed in the legacy configuration schema")
 }
 
+// harnessBlockEntry returns the name of the first agents: entry in data, a
+// per-repo configuration document, that carries a non-empty harness: block
+// (ADR 0162), and whether there is one. Unparseable content has none; the
+// regular parser reports it.
+func harnessBlockEntry(data []byte) (string, bool) {
+	var doc struct {
+		Agents []AgentEntry `yaml:"agents"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return "", false
+	}
+	for _, a := range doc.Agents {
+		if !a.Harness.IsEmpty() {
+			return a.DerivedName(), true
+		}
+	}
+	return "", false
+}
+
 // ManagedConfigSchemaDependent reports whether data, a per-repo
-// configuration document, declares any key whose shape differs between the
-// known schema versions (tracker or create_issues). A document without such
-// keys renders identically, and is read identically, under every known
-// schema. Blank or unparseable content is not schema-dependent.
+// configuration document, declares anything the known schema versions do
+// not all read the same way: tracker, create_issues, or a harness: block on
+// an agents: entry. A document without them renders identically, and is
+// read identically, under every known schema. Blank or unparseable content
+// is not schema-dependent.
 func ManagedConfigSchemaDependent(data []byte) bool {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil || doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {
 		return false
+	}
+	if _, ok := harnessBlockEntry(data); ok {
+		return true
 	}
 	_, kind, _ := ReadLegacyTracking(doc.Content[0], LegacyTracking{})
 	return kind != TrackingLayerUnset
 }
 
 // CheckManagedConfigSchemaCompat reports whether data, an installed per-repo
-// configuration document, uses the issue-tracking shape schema version
-// reads: the legacy schema rejects the tracker mapping, and the current
-// schema rejects the scalar tracker key and the removed create_issues block.
-// Blank or unparseable content is not judged here; the regular parser
-// reports it.
+// configuration document, uses only shapes schema version reads: the legacy
+// schema rejects the tracker mapping, later schemas reject the scalar
+// tracker key and the removed create_issues block, and schemas before the
+// current one do not read an agents: entry's harness: block. Blank or
+// unparseable content is not judged here; the regular parser reports it.
 func CheckManagedConfigSchemaCompat(data []byte, version int) error {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil || doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {
@@ -190,8 +224,11 @@ func CheckManagedConfigSchemaCompat(data []byte, version int) error {
 	switch {
 	case version == ManagedConfigSchemaLegacy && kind == TrackingLayerMapping:
 		return errors.New("uses the tracker mapping, which the legacy configuration schema cannot read")
-	case version == ManagedConfigSchemaVersion && kind == TrackingLayerLegacy:
+	case version > ManagedConfigSchemaLegacy && kind == TrackingLayerLegacy:
 		return errors.New("uses the legacy tracker scalar or create_issues keys, which the current configuration schema cannot read")
+	}
+	if name, ok := harnessBlockEntry(data); ok && version < ManagedConfigSchemaVersion {
+		return fmt.Errorf("has a harness: block on the agents entry %q, which this configuration schema cannot read", name)
 	}
 	return nil
 }

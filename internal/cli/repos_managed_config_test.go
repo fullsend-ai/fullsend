@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -243,15 +244,27 @@ func TestRunReposInstall_ManagedConfigFreshInstallDryRun(t *testing.T) {
 
 // A repository with no config key is still managed: the first install
 // persists the upstream tracking default in its manifest entry and
-// renders exactly that into the marked sparse overlay (#8218).
+// renders exactly that into the marked sparse overlay (#8218), next to
+// the trace_context the fresh install generates (ADR 0154).
 func TestRunReposInstall_NoConfigKeyWritesSparseManagedOverlay(t *testing.T) {
 	manifestPath := writeTestManifest(t, githubUnmanagedManifestYAML)
 	fc := newInstallFakeClient("acme/api")
 
 	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
 
+	manifest := mustReadFile(t, manifestPath)
+	installationID, active := traceValue(traceInstallationIDRe, manifest), traceValue(traceActiveKeyRe, manifest)
+	require.NotEmpty(t, installationID, "the fresh install records trace_context in repos.yaml")
+	require.NotEmpty(t, active)
 	overlay := fc.FileContents[overlayPath("acme/api")]
-	assert.Equal(t, managedConfigMarker+"tracker:\n    github:\n        allowed_targets:\n            repos:\n                - fullsend-ai/fullsend\n                - fullsend-ai/agents\n", string(overlay))
+	// The trace values are random, and YAML quotes an installation ID that
+	// reads as a number, so they are masked in the whole-file comparison;
+	// TestRunReposInstall_TraceKeyOutputShowsIDsNeverSeed checks them against
+	// repos.yaml.
+	masked := regexp.MustCompile(`(?m)^( +(?:installation_id|active): ).+$`).ReplaceAllString(string(overlay), "${1}<generated>")
+	assert.Equal(t, managedConfigMarker+"tracker:\n    github:\n        allowed_targets:\n            repos:\n                - fullsend-ai/fullsend\n                - fullsend-ai/agents\n"+
+		"trace_context:\n    installation_id: <generated>\n    signing_key:\n        secret: "+forge.SecretTraceSigningKey+
+		"\n    verification_keys:\n        active: <generated>\n", masked)
 
 	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)

@@ -16,6 +16,15 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 )
 
+// requireGitHubAccess is called first by every factory that installs
+// into GitHub pool orgs: such drivers need a GitHub token (minted in
+// GitHub Actions, the developer's own locally). The error wraps
+// e2etest.ErrNoLocalGitHubToken when a local run has none, so the suite
+// runner can skip rather than fail.
+func requireGitHubAccess() error {
+	return e2etest.RequireGitHubToken()
+}
+
 // orgCredential is one org's installation token and the forge client
 // built from it.
 type orgCredential struct {
@@ -286,6 +295,9 @@ func newComposedDriver(pool PoolConfig, setup orgSetupFunc) (*composedDriver, er
 	alloc, err := newSlotAllocator(pool.Layout, creds.clientFor, logf)
 	if err != nil {
 		return nil, fmt.Errorf("composed driver: %w", err)
+	}
+	if pool.PrivateOrgs {
+		alloc.orgLock = nil
 	}
 	return &composedDriver{
 		alloc:       alloc,

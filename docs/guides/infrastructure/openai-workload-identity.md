@@ -207,7 +207,8 @@ Two things not to do:
 setting: the mapping trusts **any job in that repository that can request an OIDC token** — not one
 named workflow, and not one ref. The default mapping has no `ref` assertion, matching the Vertex
 path's `attribute.repository` scoping: `issues`, `issue_comment`, and `pull_request_target` events
-carry the default branch ref, while `pull_request_review` events carry `refs/pull/<N>/merge`. A
+carry the default branch ref, while `pull_request` and `pull_request_review` events carry
+`refs/pull/<N>/merge`. A
 repository-only mapping covers all of them.
 
 Anyone with write access can obtain a model token: pushing a branch with a workflow that has

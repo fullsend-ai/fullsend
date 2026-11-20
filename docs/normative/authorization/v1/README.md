@@ -341,10 +341,13 @@ bot and resolves its exact registered `actor.bot_role`; `actor.role` remains
 `none`. The downstream harness CEL trigger may further constrain which bot
 role and review state are accepted.
 
-### Closed pull request retro (pull\_request\_target.closed)
+### Closed pull request retro (pull\_request and pull\_request\_target closed)
 
 A closed pull request may trigger retro only when the closing actor meets the
-standard write-level permission threshold. The bash dispatch path checks the
+standard write-level permission threshold and, for a `pull_request` close, the
+pull request comes from the same repository (head repository id equals the
+base repository id). A fork pull request close on `pull_request` does not
+dispatch retro; a write-authorized user can run `/fs-retro`. The bash dispatch path checks the
 event sender's repository permission; the GitHub CEL route applies a fixed
 write floor before the ordinary event and harness authorization gates. A
 custom retro harness role cannot lower this floor. Merge-queue merges follow

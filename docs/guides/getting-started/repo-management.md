@@ -169,9 +169,15 @@ Federation), `openai-api-key`, or `openai-wif` (OpenAI through Workload
 Identity Federation, GitHub only). There is no implicit default. A
 repo with no selection is reported as a configuration error by
 `repos install` and `repos status`, before any forge change is made for
-that repo. Uninstall does not need the setting: it removes every
-fullsend-managed inference credential whether `inference.auth` is set,
-valid, or missing.
+that repo. The exception is a repo whose effective configuration (for
+example `defaults.config.inference.gateway`, or the `config_base`
+preset) declares a complete `inference.gateway` block. The gateway
+authenticates on its own, so such a repo needs no `inference.auth` and
+install provisions no provider credentials for it (see
+[Inference gateway route](../../cli/repos.md#inference-gateway-route)).
+Uninstall does not need the setting: it removes every fullsend-managed
+inference credential whether `inference.auth` is set, valid, or
+missing.
 
 The selection can be set under `defaults`, in each forge section, and on
 repo or glob entries. It resolves entry → forge section → `defaults`
@@ -303,8 +309,9 @@ preset). If the replacement would implicitly relax a restriction the
 overlay does not declare — `kill_switch`, `roles`,
 `allowed_remote_resources`, agent suppressions,
 `tracker.<provider>.allowed_targets`, `inference.gateway.url`,
-`inference.gateway.audience`, `artifacts.content`, or
-`artifacts.by_source.<source>` — that repository fails before any write and
+`inference.gateway.audience`, `artifacts.content`,
+`artifacts.by_source.<source>`, `progress.verbosity`, or
+`progress.by_source.<source>` — that repository fails before any write and
 the output names the keys. Changing a preset source alone is not an
 explicit declaration of a less-restrictive setting.
 
@@ -381,7 +388,11 @@ non-empty `allowed_remote_resources` list is unioned with the inherited
 prefixes, and an explicit empty list replaces the inherited value. The
 managed file is sparse and cannot record that reset, so validation rejects a
 non-empty `allowed_remote_resources` list declared in a more specific layer
-than an explicit empty one; declare the full list in a single layer. A
+than an explicit empty one; declare the full list in a single layer.
+Validation also rejects an agent's `harness:` block that is set in more than
+one of the `defaults`, forge section and repository `config` layers, because
+they render into one `config.yaml`. Set the block in one layer (see the
+[config reference](../../reference/config-reference.md#agents)). A
 forge section's `config` never affects repositories of the other forge.
 The managed configuration contains only explicitly supplied values —
 code defaults and `config.base.yaml` are not baked into the file.
@@ -477,7 +488,8 @@ configuration without an explicit manifest declaration. That pre-write
 safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
 agent `enabled: false` suppressions, `tracker.<provider>.allowed_targets`,
 `inference.gateway.url`, `inference.gateway.audience`, `artifacts.content`,
-and `artifacts.by_source.<source>` through the full
+`artifacts.by_source.<source>`, `progress.verbosity`, and
+`progress.by_source.<source>` through the full
 overlay → base → code-defaults accessor chain. Omitted
 keys fall through rather than being treated as unset; an explicit empty
 `allowed_remote_resources: []` remains deny-all. A change to either
@@ -507,10 +519,16 @@ replaced. `.fullsend/config.base.yaml` is managed as described under
 [Configuration presets](#configuration-presets).
 
 When the manifest is read-only (an HTTPS URL, a pipe or FIFO such as `<(cmd)`,
-or a local file without write permission), install fails before attempting any
-manifest write and prints the exact entry to add to its source, including for a
-glob-covered repository whose first-install `tracker` default needs an explicit
-entry. `--dry-run`, live install and `repos status` agree.
+or a local file without write permission or on a read-only file system),
+install fails before attempting any manifest write and prints the exact entry
+to add to its source, including for a glob-covered repository whose
+first-install `tracker` default needs an explicit
+entry. `--dry-run`, live install and `repos status` agree. Trace signing keys
+follow their own rule on GitHub: from such a manifest, a fresh install without
+`--rotate-trace-signing-key` goes ahead without keys and says so, any other
+repository that must record a key fails, and `--rotate-trace-signing-key`
+stops the run before it writes a key (see
+[Trace signing keys](../../cli/repos.md#trace-signing-keys)).
 
 ```bash
 fullsend repos status -f repos.yaml --json   # whole-file managed drift
@@ -782,6 +800,13 @@ is not `ready` delays dispatch by up to one poll interval instead of stopping
 it. A fresh install whose scaffold merge request is still open, or whose default
 branch is unprotected, dispatches nothing on either path until then.
 
+For installed GitLab repos, status also scans the default-branch CI
+configuration for unrelated CI work across trigger, agent child
+(`source=pipeline`) and scheduled (`source=schedule`) pipelines, whatever the
+trigger account state. Results appear as a warning section in table output and
+as `gitlab_unrelated_ci_work` in `--json` output, and they add no drift. See
+[`repos status` output](../../cli/repos.md#output).
+
 Use `--json` for machine-readable output:
 
 ```bash
@@ -883,7 +908,14 @@ fullsend repos install acme/new-api acme/new-web --dry-run
 To cover every repository in an org, declare a glob entry such as
 `fullsend repos set 'github.repos["acme/*"]' '{}'`. Naming a concrete
 repository the glob covers (`fullsend repos install acme/new-api`)
-installs it with the glob's settings without adding an explicit entry.
+installs it with the glob's settings. Naming it adds no explicit entry. Any
+install, whether it names the repository, passes `"acme/*"` or selects the
+whole manifest, gives a glob-covered repository its own entry, copied from the
+glob, when it writes that repository's first-install `tracker` default or, on
+GitHub, its `trace_context` block
+([Trace signing keys](../../cli/repos.md#trace-signing-keys)) to `repos.yaml`.
+Edits to the glob entry apply only to repositories that have no entry of their
+own.
 
 Per-repo settings live on the entry, never in install flags:
 `fullsend_ref`, `mint_url`, `app_set`, `inference.auth`, `vendor`,
@@ -978,6 +1010,61 @@ to commit SHAs and uses git ancestry checking via the forge API to
 detect downgrades. If the ancestry check fails (e.g., API error), the
 upgrade proceeds rather than blocking — graceful degradation.
 
+### Required upgrade: shim moves from `pull_request_target` to `pull_request`
+
+GitHub blocks `pull_request_target` by default in public repositories from
+December 2, 2026. Repositories whose `.github/workflows/fullsend.yaml` still
+triggers on it lose automatic review and retro from that date. Triage,
+`/fs-*` commands (including `/fs-review`) and the fix loop keep working.
+
+Upgrade every public repository before that date. Use the route that matches
+how the repository was set up:
+
+- **Repositories declared in a manifest:** run `fullsend repos install`,
+  using the steps in
+  [Rolling out a new fullsend version](#rolling-out-a-new-fullsend-version).
+  It rewrites the trigger and the workflow pin in one commit. If it cannot
+  fetch the templates of the new version, it upgrades only the pin and prints
+  `template fetch at the target ref failed: delivering the pin upgrade only;
+  run install again to deliver template changes`. Run it again once the
+  fetch works to deliver the trigger.
+- **Single repositories set up with `fullsend github setup`** and no manifest:
+  upgrade the CLI, re-run `fullsend github setup "$OWNER/$REPO"` with no
+  flags, and merge the setup PR it opens. Follow
+  [Upgrading a single repository](operations.md#upgrading-a-single-repository):
+  the re-run writes repository variables before the PR merges.
+
+Private and internal repositories are not blocked, and a shim that is not
+upgraded keeps working there (the warning appears only in public
+repositories). Any upgrade to a fullsend version with the new shim installs
+the same `pull_request` shim, with the effects below. After the upgrade:
+
+- **Same-repo PRs** are reviewed automatically, as before, except while the
+  PR has a merge conflict: GitHub does not run `pull_request` workflows until
+  the conflict is resolved. Comment `/fs-review` or `/fs-retro` meanwhile.
+- **Fork PRs** are not reviewed or retro'd automatically, whoever the author
+  is: an org member or maintainer working from a fork loses the automatic
+  review they got before. Someone with triage or higher access (or an OWNERS
+  approver or reviewer, when the `owners_file` provider is on) comments
+  `/fs-review` on the PR to start a review. Contributors who want automatic
+  review push their branch to the repository instead of a fork.
+- **Dependabot PRs**: events Dependabot itself triggers (opening the PR,
+  its own pushes and closes) are not routed, because GitHub gives those
+  `pull_request` runs only Dependabot secrets. A maintainer's push, merge or
+  close is routed as usual. Someone with triage access or higher comments
+  `/fs-review` on the PR to review it.
+- **Private repositories:** before upgrading, check **Settings → Actions →
+  General → Fork pull request workflows** and keep "Send write tokens to
+  workflows from pull requests" and "Send secrets to workflows from pull
+  requests" turned off; `fullsend repos install` does not check them yet
+  ([#9630](https://github.com/fullsend-ai/fullsend/issues/9630)). For vendored
+  installs (`vendor: true`) it is the only control, because a fork PR runs
+  its own copy of the vendored workflows.
+
+Until a repository upgrades, the dispatch still accepts `pull_request_target`
+and logs a warning on each such run (see
+[Troubleshooting](#shim-still-triggers-on-pull_request_target)).
+
 ## Troubleshooting
 
 ### Errors that say "server error text withheld"
@@ -995,6 +1082,17 @@ server message, and a stderr log line for each GitLab API request
 and token-shaped values are redacted; see
 [Verbose output](../../cli/repos.md#verbose-output) for what is shown and
 what is redacted.
+
+### Shim still triggers on pull_request_target
+
+The dispatch run shows:
+
+```
+This repository's fullsend shim still triggers on pull_request_target, which GitHub blocks by default in public repositories from its announced enforcement date. Re-run 'fullsend repos install' to move the shim to pull_request.
+```
+
+The repository runs an old shim. Upgrade it as described in
+[Required upgrade: shim moves from `pull_request_target` to `pull_request`](#required-upgrade-shim-moves-from-pull_request_target-to-pull_request).
 
 ### Unknown field errors in repos.yaml
 
@@ -1046,8 +1144,10 @@ no inference authentication selected for acme/api: set inference.auth (vertex-wi
 ```
 
 The repo resolves no `inference.auth` from its entry, its forge section,
-or `defaults`. This is expected after upgrading from a release without
-the setting. Add the selection at the appropriate level (see
+or `defaults`, and its effective configuration declares no complete
+`inference.gateway` block. If the message says the gateway is partial
+or invalid, complete or fix the block instead. This is expected after
+upgrading from a release without the setting. Add the selection at the appropriate level (see
 [Inference authentication](#inference-authentication)) and re-run.
 `fullsend repos set defaults.inference.auth vertex-wif` restores
 the previous Vertex WIF behaviour for every repo. An unrecognised value

@@ -13,8 +13,15 @@ import (
 const upstreamRefOverrideVar = "github.com/fullsend-ai/fullsend/internal/cli.upstreamRefOverride"
 
 // upstreamRepoURL is where the rendered scaffold fetches fullsend-ai/fullsend
-// scripts and actions from.
-const upstreamRepoURL = "https://github.com/fullsend-ai/fullsend"
+// scripts and actions from: the configured GitHub server (an emulator
+// root, see ConfigureGitHubEmulatorForge), else github.com.
+func upstreamRepoURL() string {
+	server := strings.TrimRight(strings.TrimSpace(os.Getenv("GITHUB_SERVER_URL")), "/")
+	if server == "" {
+		server = "https://github.com"
+	}
+	return server + "/fullsend-ai/fullsend"
+}
 
 var fullCommitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
@@ -34,7 +41,7 @@ func e2eUpstreamRef(modRoot string, published func(sha string) bool) string {
 // publishedUpstream reports whether sha can be fetched from
 // fullsend-ai/fullsend, the same fetch the rendered workflow makes.
 func publishedUpstream(sha string) bool {
-	return fetchable(upstreamRepoURL, sha)
+	return fetchable(upstreamRepoURL(), sha)
 }
 
 // fetchable reports whether sha can be fetched from the repository at url.

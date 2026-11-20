@@ -46,6 +46,22 @@ and update the others as needed.
 > (specificity). Across layers, child values override inherited base
 > values (derivation).
 
+> **Note — `harness:` blocks.** The `harness:` block of an `agents:` entry
+> ([ADR 0162](../ADRs/0162-agent-entries-may-carry-harness-overrides.md)) is
+> one more child layer. `composeAgentBlocks`
+> (`internal/harness/agent_block.go`) resolves the agent's harness with
+> `resolveLayerForgeAndOverlays`, the function behind
+> `resolveBaseForgeAndOverlays`. It then merges the harness into each block
+> with `mergeBaseIntoChild`, so a change to a merge function applies to
+> blocks too. With no forge selected, the harness's `forge:` sections are set
+> aside for those merges, and `restoreUnresolvedForge` puts them back on the
+> result, where a load without a block leaves them. Two block checks depend
+> on the field set. A field that `mergeBaseIntoChild` does not inherit needs
+> a check in `composeAgentBlocks`, so that lint warns when a block drops it:
+> `runtimeFetchFields` lists the runtime fetch fields, and
+> `allow_ci_variable_credential` has its own check. `recordDeclaredEnv`
+> lists every place where a layer can set `env`.
+
 ### Validation and resolution side
 
 | Function | File | Purpose |

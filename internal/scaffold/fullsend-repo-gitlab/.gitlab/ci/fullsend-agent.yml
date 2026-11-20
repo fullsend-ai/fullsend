@@ -116,6 +116,10 @@ stages:
   id_tokens:
     FULLSEND_ID_TOKEN:
       aud: "fullsend"
+    # Vault-backed runner secrets (ADR 0155) authenticate with this token.
+    # Its aud is the default vault_audience (internal/vaultsecrets).
+    FULLSEND_VAULT_ID_TOKEN:
+      aud: "https://fullsend.sh/vault"
   variables:
     FULLSEND_FORGE: "gitlab"
     CODE_ALLOWED_TARGET_BRANCHES: ''

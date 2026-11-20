@@ -275,6 +275,9 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 			// fails and the route's threshold wrongly fails closed.
 			useAgentsRepoHostFetch(&composeOpts, forgeClient)
 		}
+		// A harness: block may set role (ADR 0162).
+		composeOpts.Blocks = config.HarnessBlocksFor(cfg.AgentEntries(), o.agent)
+		composeOpts.Agent = o.agent
 		if h, _, err := harness.LoadWithBase(ctx, path, composeOpts); err == nil {
 			harnessRole = h.Role
 		} else {

@@ -8,31 +8,62 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	fjci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/forgejoactions"
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
 	glci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/gitlabci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
+	scmfj "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/forgejo"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	scmgl "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/gitlab"
 )
 
 // installFactoryFor selects the install driver based on ENVIRONMENT:
 //
-//	dev   → CF preview mint (ephemeral per run)
-//	stage → durable CF mint at stage-mint.fullsend.sh
-func installFactoryFor(environment string) install.Factory {
-	if environment == "stage" {
-		return install.NewRepoPoolCFMintStage
+//	dev (or empty)  → CF preview mint (ephemeral per run)
+//	stage           → durable CF mint at stage-mint.fullsend.sh
+//	github-emulator → GitHub emulator at BEHAVIOUR_GITHUB_URL, mint at FULLSEND_MINT_URL
+//	forgejo-dev     → Forgejo stub driver (provisioning not implemented)
+//
+// Any other environment is an error, so an unrecognised value never
+// falls back to the GitHub pool drivers.
+func installFactoryFor(environment string) (install.Factory, error) {
+	switch environment {
+	case "dev", "":
+		return install.NewRepoPoolCFMintPreviews, nil
+	case "stage":
+		return install.NewRepoPoolCFMintStage, nil
+	case "github-emulator":
+		return install.NewRepoPoolGitHubEmulator, nil
+	case env.EnvironmentForgejoDev:
+		return install.NewForgejoDev, nil
+	default:
+		return nil, fmt.Errorf("no install driver for ENVIRONMENT %q", environment)
 	}
-	return install.NewRepoPoolCFMintPreviews
 }
 
 // poolConfigFor returns the slot pool and runtime dependencies the
 // install factory needs: the environment's layout (derived DEV orgs
 // halfsend-01 … halfsend-22, or the unsuffixed STAGE org halfsend; see
 // install.PoolLayoutForEnvironment), one installation token per org via
-// e2etest.TokenForOrg, and live forge clients.
+// e2etest.TokenForOrg, and live forge clients. Only the install driver
+// uses the layout and token source; the suite runner gets its
+// concurrency, log description and default org from the driver
+// (install.BootstrapFor).
+//
+// forgejo-dev has no GitHub pool: the config carries only the binary,
+// GCP project and logger, with no layout, token source or client
+// constructor, so a Forgejo run never enumerates the GitHub pool, mints
+// GitHub tokens or builds GitHub clients.
 func poolConfigFor(environment string, e2eCfg e2etest.EnvConfig, binary string, logf func(string, ...any)) install.PoolConfig {
+	if environment == env.EnvironmentForgejoDev {
+		return install.PoolConfig{
+			Binary:       binary,
+			GCPProjectID: e2eCfg.GCPProjectID,
+			Logf:         logf,
+		}
+	}
 	return install.PoolConfig{
 		Layout: install.PoolLayoutForEnvironment(environment, logf),
 		TokenFor: func(ctx context.Context, org string) (string, error) {
@@ -71,6 +102,8 @@ func newSCMDriver(name string, client forge.Client) (scm.Driver, error) {
 		// a GitLab-backed forge.Client. Currently latent: no CI job sets
 		// BEHAVIOUR_SCM=gitlab and @skip:gitlab tag removal is still pending.
 		return scmgl.New(client), nil
+	case env.SCMForgejo:
+		return scmfj.New(client), nil
 	default:
 		return nil, fmt.Errorf("unsupported BEHAVIOUR_SCM %q", name)
 	}
@@ -86,6 +119,8 @@ func newCIDriver(name string, client forge.Client, token string) (ci.Driver, err
 		// a GitLab-backed forge.Client. Currently latent: no CI job sets
 		// BEHAVIOUR_CI=gitlabci.
 		return glci.New(client, token), nil
+	case env.CIForgejoActions:
+		return fjci.New(client, token), nil
 	default:
 		return nil, fmt.Errorf("unsupported BEHAVIOUR_CI %q", name)
 	}

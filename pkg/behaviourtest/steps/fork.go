@@ -382,7 +382,8 @@ func openForkPullRequest(w *world.World, opener scm.Driver) error {
 		return fmt.Errorf("no fork created: use 'Given a fork' first")
 	}
 
-	w.ScenarioStart = time.Now()
+	// Run created_at has second precision (#7957).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
 	branch := fmt.Sprintf("behaviour-fork-pr-%d", time.Now().UnixNano())
 
 	ctx := context.Background()
@@ -418,7 +419,8 @@ func whenForkPullRequestLabeled(w *world.World, label string) error {
 	if w.ForkPRNumber == 0 {
 		return fmt.Errorf("no fork pull request opened")
 	}
-	w.ScenarioStart = time.Now()
+	// Run created_at has second precision (#7957).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
 	// Fork PRs are opened against the base repo, so label on the base repo.
 	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.ForkPRNumber, label)
 }
@@ -430,7 +432,8 @@ func whenCommitPushedToForkPR(w *world.World) error {
 		return fmt.Errorf("no fork pull request opened")
 	}
 
-	w.ScenarioStart = time.Now()
+	// Run created_at has second precision (#7957).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
 	ctx := context.Background()
 
 	msg := fmt.Sprintf("behaviour: push to fork PR #%d", w.ForkPRNumber)

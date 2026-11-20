@@ -454,10 +454,12 @@ contract):
 | `project_number` | Not in `NormalizedEvent`; prioritize agent reads `PRIORITIZE_PROJECT_NUMBER` from workflow env |
 | `run-url` | Runtime-only; set by the dispatch workflow, not projected from `NormalizedEvent` |
 
-**`event_type` / `pull_request_target`:** v1 preserves the GitHub Actions event
-name in `source.raw_type`. When the workflow runs on `pull_request_target`,
-adapters emit `raw_type: "pull_request_target"` (not normalized to
-`pull_request`) so downstream routing matches today's dispatch behavior.
+**`event_type` / `pull_request` and `pull_request_target`:** v1 preserves the GitHub Actions event
+name in `source.raw_type`, never normalized. When the workflow runs on
+`pull_request_target`, adapters emit `raw_type: "pull_request_target"`; when it
+runs on `pull_request`, they emit `raw_type: "pull_request"`. Both map to the
+same entity, transition, actor and state, so downstream routing treats them
+alike; only `raw_type` tells them apart.
 
 **`trigger_source` (fix agent only):** this field is emitted only for the fix
 harness execution ref. When `transition.kind == "review_submitted"`, set
@@ -631,8 +633,8 @@ mapped:
 | `merge_request` | `reopen` | `reopened` (or `opened`) | MR exists and `state == "opened"` |
 | `merge_request` | `merge` | `merged` | `state == "merged"` and `merged_at` set |
 | `merge_request` | `close` | `closed` | MR is currently closed (`state == "closed"`), `closed_at` set, and `merged_at` empty |
-| `merge_request` | `update` + `changes.labels` | `label_changed` (one per label diffed) | each named label present (add) / absent (remove) as claimed |
-| `merge_request` | `update` (other) | `synchronized`/`edited`/`marked_ready` | **uncheckable as a unit → MUST fail closed** |
+| `merge_request` | `update` + `changes.labels` | — (ignored, non-routable) | `changes.labels` resolves to discrete label add/remove pairs (else MUST fail closed); the poll dispatch stack has no merge request label transition → MUST then be ignored: no re-fetch, no dispatch, no state write, job succeeds |
+| `merge_request` | `update` (other) | — (ignored, non-routable) | none; `synchronized`/`edited`/`marked_ready` are uncheckable as a unit and claim no transition the poll stack routes → MUST be ignored: no re-fetch, no dispatch, no state write, job succeeds |
 | `note` | create | `comment_added` | referenced note exists in the re-fetch |
 | `note` | update | — (ignored, non-routable) | none; an edited comment claims no new transition → MUST be ignored once the payload identifiers validate: no re-fetch, no dispatch, no state write, job succeeds |
 | `issue` | `open`/`reopen` | `opened`/`reopened` | issue exists and `state == "opened"` |
@@ -652,14 +654,26 @@ comments. An edit is not a new `comment_added`, so the adapter MUST ignore
 it in the same way. The note ID, `noteable_type`, and issue or merge request
 IID are still validated first, and a malformed payload fails closed. Any
 other note action is rejected.
+The two `merge_request`/`update` rows are the same outcome for merge
+requests. A bare merge request update (title, description, draft status, or
+a push, for example) claims no transition the poll dispatch stack can check
+or route; the poller backstop still discovers pushes from the API. A merge
+request label change is a claim, so its `changes.labels` value is validated
+first and a malformed value fails closed. A well-formed claim is then
+ignored, because the poll dispatch stack has no merge request label
+transition and nothing could be dispatched for it. The adapter SHOULD log a
+no-op message that distinguishes the two rows. The MR IID is validated
+before either is ignored.
 A **rejected** event names a transition that the re-fetch contradicts or
-cannot check. This includes every `update` that carries `changes.labels`:
-a diff that does not resolve to discrete add/remove pairs, a label entry
-without a `title`, a claimed end state the re-fetched labels contradict, or
-a failed actor or resource-label-event binding. A rejected event MUST fail
-closed: the job fails and nothing is dispatched. The presence of
-`changes.labels` decides which outcome applies, not whether its contents
-are well formed.
+cannot check. This includes every issue `update` that carries
+`changes.labels`: a diff that does not resolve to discrete add/remove pairs,
+a label entry without a `title`, a claimed end state the re-fetched labels
+contradict, or a failed actor or resource-label-event binding. A merge
+request `update` whose `changes.labels` is malformed (a diff that does not
+resolve, or a label entry without a `title`) is rejected the same way. A
+rejected event MUST fail closed: the job fails and nothing is dispatched.
+For issues, the presence of `changes.labels` decides which outcome applies,
+not whether its contents are well formed.
 
 **Dispatch stack and implementation status.** The webhook event builder
 (`BuildWebhookEvents` in `internal/poll/webhook.go`, [#7770](https://github.com/fullsend-ai/fullsend/issues/7770))
@@ -679,18 +693,21 @@ unset. `fullsend poll --input-driver gitlab-webhook` requires an explicit
 normative: when a pin is unavailable the driver MUST fail closed, never fall
 back to an overridable variable. Shipping did not close snapshot-consistent
 replay, which remains a residual risk (see below). Current builder behavior,
-all of it fail-closed except the ignored bare issue update and note edit:
+all of it fail-closed except the ignored bare issue update, merge request
+update, and note edit:
 
 - A bare issue `update` (no `changes.labels`) is ignored. The builder
   returns no events and no error, and the dispatcher job logs a no-op and
-  succeeds. A bare `merge_request` `update` still fails closed.
+  succeeds.
+- A bare `merge_request` `update` is ignored the same way.
 - A note `update` (an edited comment) is ignored the same way once its
   identifiers validate.
 - Rows whose actor has no event-time evidence in the re-fetch are rejected:
   `merge_request`/`reopen` and `issue`/`reopen`, which need resource state
   events.
-- `merge_request` + `changes.labels` is rejected because the poll stack has
-  no MR label transition.
+- `merge_request` + `changes.labels` is ignored with a distinct no-op
+  message once the diff resolves, because the poll stack has no MR label
+  transition. A malformed `changes.labels` value is rejected.
 - Label removals are validated and then dropped, because the poll stack
   routes only label additions.
 - Every re-fetched event time must fall within a 30-minute window. This
@@ -699,9 +716,10 @@ all of it fail-closed except the ignored bare issue update and note edit:
 The `MUST fail closed` cells above have **no implementer-defined extension
 point**: an `update` action that is not resolved by a row in this table MUST
 fail closed. The `issue`/`update` (other) row resolves the bare issue update
-as ignored, and the `note`/`update` row resolves a note edit as ignored.
-Those are the only ignored rows, and an implementation MUST NOT extend them
-to other actions or object kinds. Any future named sub-check (e.g.
+as ignored, the two `merge_request`/`update` rows resolve merge request
+updates as ignored, and the `note`/`update` row resolves a note edit as
+ignored. Those are the only ignored rows, and an implementation MUST NOT
+extend them to other actions or object kinds. Any future named sub-check (e.g.
 draft→ready for `marked_ready`) MUST be added as an **explicit row in this
 spec**, not invented at implementation time.
 The `merge_request`/`close` row requires the current
@@ -713,9 +731,11 @@ MR.
 
 GitLab emits no dedicated `labeled` action; label changes arrive on both
 merge requests and issues as an `update` with `changes.labels`, so the
-adapter MUST fan that case out to `label_changed` and MUST NOT accept a bare
-`update` (no `changes.labels`) as a routable transition. `changes.labels` is
-a previous/current array that can add and remove several labels in one
+adapter MUST fan the issue case out to `label_changed` and MUST NOT accept a
+bare `update` (no `changes.labels`) as a routable transition. The merge
+request case is ignored (see the table) until the poll dispatch stack gains
+a merge request label transition; adding one MUST add an explicit row here.
+`changes.labels` is a previous/current array that can add and remove several labels in one
 webhook; the adapter MUST emit **one `NormalizedEvent` per label diffed**
 (each carrying its own `transition.label`), or fail closed when the diff
 cannot be resolved to discrete label add/remove pairs.
@@ -923,5 +943,5 @@ gate is tracked in [#8835](https://github.com/fullsend-ai/fullsend/issues/8835).
 | `CI_JOB_TOKEN` running-job identity pin | Open: gated on the restriction | All three job scripts source [`pin-ci-job-identity.sh`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/pin-ci-job-identity.sh). Under `no_one_allowed`, GitLab rejects caller-supplied pipeline variables: the [#7769](https://github.com/fullsend-ai/fullsend/issues/7769) spike on self-managed EE 19.2.7 recorded HTTP 400 for a `CI_JOB_TOKEN` override on `POST /pipeline` and for a variable on a trigger-token `POST /trigger/pipeline`. The pin's own behavior for an invalid override (expected to fail closed) and for a valid foreign job token (would mis-resolve) has not been tested on a target GitLab version. The [maintainer decision on #8871](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453959180) retains the `no_one_allowed` restriction as the gate and makes those invalid and valid-foreign override tests non-blocking. The "sole project-identity source" claim therefore holds only while the restriction is verified before runnable jobs and the webhook are delivered, and the pin is defense in depth: the helper does not independently bind a supplied token to the running job. The restriction does not cover project, group, or instance CI/CD settings variables. The decision accepts that project Maintainers, group Owners, and GitLab instance administrators do not add or change a `CI_JOB_TOKEN` settings-variable override in scopes fullsend cannot read or that change later. If those roles are adversaries, the acceptance does not apply, and the installer must fail closed on unreadable scopes or a separate identity-binding control is needed. |
 | API base-URL trust | Closed: risk accepted | The identity pin bootstraps `GET /api/v4/job` from `CI_API_V4_URL`, rejects any value that is not an https API root or that contains globbing or userinfo characters, and passes that root on as `FULLSEND_PINNED_GITLAB_URL`. `CI_API_V4_URL` is in the overridable class. Its trust rests on `no_one_allowed`, which install verifies before it provisions the webhook, and on the [inherited CI/CD variable trust](../../../guides/getting-started/configuring-gitlab.md#inherited-cicd-variable-trust) assumption. The current deployment meets that restriction-based model. It does not provide the restriction-independent pin that ADR 0125 required before shipping. The [maintainer decision on #8871](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453141351) accepts the restriction-based model with no independent host pin. Within the accepted trust boundary, project Maintainers, group Owners, and GitLab instance administrators are trusted to control project, group, and instance CI/CD variables, including inherited scopes fullsend cannot read. If those roles must be treated as adversaries, the acceptance does not apply, and an independent API-host pin or fail-closed verification of unreadable scopes is required. `run-agent-job.sh` also requires `CI_SERVER_URL` and `CI_SERVER_HOST` to agree with `FULLSEND_PINNED_GITLAB_URL` before the agent runs, as defense in depth against a partial override ([#9465](https://github.com/fullsend-ai/fullsend/issues/9465)). |
 | Snapshot-consistent replay | Closed: risk accepted | The builder rejects re-fetched event-time evidence older than 30 minutes ([`webhookMaxEventAge`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L56)) and shares occurrence-aware dispatch keys with the poller ([ADR 0132](../../../ADRs/0132-occurrence-aware-shared-poller-state.md)). The [residual replay risk](#gitlab-webhook-transition-provenance-gitlab-webhook) above remains. Delivery is also at-least-once: a webhook and a poll cycle that both read state before either persists can each dispatch the same event ([`webhook_dispatch.go`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook_dispatch.go#L74-L84)). The [maintainer decision on #8835](https://github.com/fullsend-ai/fullsend/issues/8835#issuecomment-6452638835) accepts bounded at-least-once replay, not exactly-once dispatch. The accepted residuals are a duplicate dispatch when concurrent webhook and poller runs both read state before either saves, a retry after pipeline creation succeeds but state persistence fails, and a partial stage fan-out that redispatches a stage that succeeded when another stage failed. A replayed event must still pass re-fetch, freshness, actor binding, and authorization, and replay is skipped once its dispatch key is saved. |
-| Actor-to-transition attribution | Closed for the rows the builder accepts | [`bindActor`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L607) requires the payload-named actor to equal the actor the re-fetch records for the transition: the note author; the MR author, merger, or closer; the issue author or closer; or the user on the latest matching resource label event. Both `reopen` rows have no event-time actor evidence and are rejected. MR label changes and other MR updates are rejected as well. Note edits and bare issue updates are ignored without dispatch. Any row added later MUST bind its actor the same way or fail closed. |
+| Actor-to-transition attribution | Closed for the rows the builder accepts | [`bindActor`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L607) requires the payload-named actor to equal the actor the re-fetch records for the transition: the note author; the MR author, merger, or closer; the issue author or closer; or the user on the latest matching resource label event. Both `reopen` rows have no event-time actor evidence and are rejected. MR label changes and other MR updates are ignored without dispatch, as are note edits and bare issue updates; a malformed MR `changes.labels` value is rejected. Any row added later MUST bind its actor the same way or fail closed. |
 | Live validation ([#8245](https://github.com/fullsend-ai/fullsend/issues/8245)) | Closed for GitLab.com Free and self-managed EE | See [Validation status](#gitlab-webhook-validation-status). Self-managed CE is non-gating, and stock agents on custom-port CE remain unverified. |

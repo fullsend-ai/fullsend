@@ -430,9 +430,33 @@ func (c EnvConfig) internal() envConfig {
 	}
 }
 
-// LoadEnvConfig reads and validates required env vars for e2e and behaviour tests.
+// ErrNoLocalGitHubToken is returned by RequireGitHubToken when the
+// process runs outside GitHub Actions and no local GitHub token is
+// available. Callers can detect it with errors.Is and t.Skip instead of
+// failing the test.
+var ErrNoLocalGitHubToken = errors.New("no local GitHub token (gh auth login)")
+
+// RequireGitHubToken reports whether GitHub API access is available:
+// inside GitHub Actions tokens are minted, locally the developer needs
+// their own token. It returns an error wrapping ErrNoLocalGitHubToken
+// otherwise. Drivers that need GitHub access call it, so that runs
+// against other forges are not gated on a GitHub token.
+func RequireGitHubToken() error {
+	if runningInGitHubActions() {
+		return nil
+	}
+	if _, err := resolveLocalToken(); err != nil {
+		return fmt.Errorf("%w: %v", ErrNoLocalGitHubToken, err)
+	}
+	return nil
+}
+
+// LoadEnvConfig reads and validates required env vars for behaviour
+// tests. Unlike the e2e tests' loader it does not require a GitHub
+// token: install drivers that need one check it themselves with
+// RequireGitHubToken.
 func LoadEnvConfig(t *testing.T) EnvConfig {
-	return loadEnvConfig(t).exported()
+	return loadEnvConfigWithoutToken(t).exported()
 }
 
 // loadEnvConfig reads and validates required env vars. Calls t.Skip if
@@ -441,13 +465,31 @@ func LoadEnvConfig(t *testing.T) EnvConfig {
 func loadEnvConfig(t *testing.T) envConfig {
 	t.Helper()
 
-	mintURL := resolveMintURL()
-	useMint := runningInGitHubActions()
-	if !useMint {
+	cfg := loadEnvConfigWithoutToken(t)
+	if !cfg.useMint {
 		if _, err := resolveLocalToken(); err != nil {
 			t.Skip("no local GitHub token (gh auth login), skipping e2e test")
 		}
 	}
+	return cfg
+}
+
+// loadEnvConfigWithoutToken reads and validates the env vars shared by
+// every consumer, without checking for GitHub credentials. With
+// ENVIRONMENT=github-emulator it first points this process at the
+// emulator (setUpGitHubEmulatorMode) and never uses the mint's e2e role.
+func loadEnvConfigWithoutToken(t *testing.T) envConfig {
+	t.Helper()
+
+	emulator, err := setUpGitHubEmulatorMode()
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	mintURL := resolveMintURL()
+	// On an Actions runner the mint's e2e role answers for github.com
+	// orgs, so the emulator uses the token in GH_TOKEN even there.
+	useMint := runningInGitHubActions() && !emulator
 
 	gcpProjectID := os.Getenv("E2E_GCP_PROJECT_ID")
 	wifProvider := os.Getenv("E2E_GCP_WIF_PROVIDER")
@@ -470,16 +512,29 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 }
 
-// newLiveClient creates a GitHub API client from the token.
+// newLiveClient creates a GitHub API client from the token, addressed to
+// githubAPIBaseURL.
 func newLiveClient(token string) *gh.LiveClient {
-	return gh.New(token)
+	return gh.New(token).WithBaseURL(githubAPIBaseURL())
+}
+
+// githubAPIBaseURL is the GitHub REST API root the harness talks to:
+// GITHUB_API_URL when it is set, as it is on every Actions runner and on
+// an enterprise server or emulator, and api.github.com otherwise. The CLI
+// under test resolves its forge the same way, so the harness and the
+// install it drives address one forge.
+func githubAPIBaseURL() string {
+	if base := strings.TrimRight(strings.TrimSpace(os.Getenv("GITHUB_API_URL")), "/"); base != "" {
+		return base
+	}
+	return "https://api.github.com"
 }
 
 // getRepoCreatedAt fetches a repo's created_at timestamp directly from the
 // GitHub REST API. This is intentionally NOT added to forge.Client since it's
 // only needed for e2e lock management.
 func getRepoCreatedAt(ctx context.Context, token, org, repo string) (time.Time, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", org, repo)
+	url := githubAPIBaseURL() + fmt.Sprintf("/repos/%s/%s", org, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("creating request: %w", err)

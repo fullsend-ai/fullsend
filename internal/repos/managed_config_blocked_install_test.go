@@ -30,7 +30,7 @@ func assertNoForgeWrites(t *testing.T, fc *forge.FakeClient) {
 	assert.Empty(t, fc.ForceCommittedFiles, "no forced commits")
 	assert.Empty(t, fc.CreatedBranches, "no branches")
 	assert.Empty(t, fc.CreatedProposals, "no PR/MR")
-	assert.Empty(t, fc.CreatedSecrets, "no secret writes")
+	assert.Zero(t, len(fc.CreatedSecrets), "no secret writes")
 	assert.Empty(t, fc.DeletedSecrets, "no secret deletions")
 	assert.Empty(t, fc.Variables, "no variable writes")
 	assert.Empty(t, fc.UpdatedVariables, "no variable updates")

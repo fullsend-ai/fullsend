@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -139,4 +140,48 @@ func TestReportGitLabTriggerDispatchGate_ReportsUnverifiedInheritedScopes(t *tes
 	assert.Contains(t, out, "Unverified inherited CI/CD variable scopes")
 	assert.Contains(t, out, "instance, acme")
 	assert.Contains(t, out, "before the job verifies its creator")
+}
+
+// A deferred trigger account skips the dispatch gate, but install still
+// reports the gate's unrelated-work scan as a warning (#9708): a branch-only
+// job with no pipeline-source guard runs in the managed scheduled pipelines,
+// and every source's finding is listed. The report changes nothing.
+func TestReportGitLabDeferredDispatchExtraWork_WarnsOnUnguardedJob(t *testing.T) {
+	fc := forge.NewFakeClient()
+	root := []byte("build:\n  script: [./build.sh]\n  rules:\n    - if: $CI_COMMIT_BRANCH == \"main\"\n")
+	fc.FileContents["acme/widgets/.gitlab-ci.yml"] = root
+
+	var buf bytes.Buffer
+	reportGitLabDeferredDispatchExtraWork(context.Background(), fc, ui.New(&buf), "acme", "widgets", "main")
+
+	out := buf.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	require.Len(t, lines, 4, out)
+	assert.Contains(t, lines[0], "[acme/widgets] Unrelated CI work would run in Fullsend pipelines on the protected default branch")
+	assert.Contains(t, lines[0], "Polling stays the dispatch path")
+	assert.Contains(t, lines[1], `[acme/widgets]   - the committed .gitlab-ci.yml has job "build" that a trigger pipeline would run`)
+	assert.Contains(t, lines[2], "agent child pipeline (source=pipeline)")
+	assert.Contains(t, lines[3], "scheduled pipeline (source=schedule)")
+	assert.Equal(t, root, fc.FileContents["acme/widgets/.gitlab-ci.yml"])
+}
+
+// A project whose committed files run no unrelated work prints nothing.
+func TestReportGitLabDeferredDispatchExtraWork_CleanPrintsNothing(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/widgets/.gitlab-ci.yml"] = []byte("lint:\n  script: [./lint.sh]\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"merge_request_event\"\n")
+
+	var buf bytes.Buffer
+	reportGitLabDeferredDispatchExtraWork(context.Background(), fc, ui.New(&buf), "acme", "widgets", "main")
+	assert.Empty(t, buf.String())
+}
+
+// A scan that cannot read the committed files is reported as a warning and
+// does not fail the install.
+func TestReportGitLabDeferredDispatchExtraWork_ReadFailureWarns(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetFileContent"] = errors.New("boom")
+
+	var buf bytes.Buffer
+	reportGitLabDeferredDispatchExtraWork(context.Background(), fc, ui.New(&buf), "acme", "widgets", "main")
+	assert.Contains(t, buf.String(), "[acme/widgets] Could not verify that unrelated CI jobs are excluded")
 }

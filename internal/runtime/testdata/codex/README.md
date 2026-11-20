@@ -62,7 +62,10 @@ The tests lay the rollouts out under a temporary sessions tree as
 and the findings log beside the tree as `.security/findings.jsonl`. `spawn_admissions.jsonl` is
 that log for a run whose spawn guard admitted three spawns and denied one, in the adapter's
 `log_finding` shape, plus one `secret_redact_posttool` finding; `countCodexSpawnAdmissions`
-counts the three `codex_spawn_guard_admit` lines by name.
+counts the three `codex_spawn_guard_admit` lines by name. The V2 child head the
+read-command test writes (`codexV2RolloutLine`) is modelled on a 0.166.0 harness
+capture, with synthetic ids: `parent_thread_id` at the top level and again under
+`source.subagent.thread_spawn`, beside the spawn's `depth` and `agent_path`.
 
 ## Event structs
 
@@ -184,12 +187,14 @@ in `parseCodexStream`:
 - **The usage categories are nested, not disjoint.** Following the OpenAI
   Responses API, `input_tokens` is the whole input *including*
   `cached_input_tokens` and `cache_write_input_tokens`, and `output_tokens` is
-  the whole output *including* `reasoning_output_tokens`. Anthropic's
-  convention — the one fullsend's `RunMetrics` and the renderer's total assume
-  — is the opposite: cache and reasoning are separate from input and output.
+  the whole output *including* `reasoning_output_tokens`. Fullsend's
+  `RunMetrics` keeps cache separate from input, as Anthropic's convention
+  does, and the renderer's total sums the counters.
   `codexUsage.counters()` subtracts the subsets so the five normalized
   counters sum to the tokens actually used. In `basic_run.ndjson` that is
-  57,617; passed through unchanged it would render as 106,662.
+  57,617; passed through unchanged it would render as 106,662. Keeping
+  reasoning out of output is specific to this parser and to OpenCode: Claude
+  Code and pi count reasoning inside output (`OutputExcludesReasoning`).
 - **An `error` item is not a failure.** The processor emits one for config
   warnings, generic warnings, deprecation notices and model reroutes, and keeps
   the status `Running`.

@@ -118,6 +118,16 @@ func (d *perRepoDefaults) ConfigInferenceGateway() InferenceGatewayConfig {
 // defaults are compiled into the runtimes).
 func (d *perRepoDefaults) ConfigModelAliases() map[string]string { return nil }
 
+// ConfigConnections returns the default connections (none).
+func (d *perRepoDefaults) ConfigConnections() map[string]SecretConnection { return nil }
+
+// ConfigSecrets returns the default secret source selections (none: every
+// secret uses its forge-native source).
+func (d *perRepoDefaults) ConfigSecrets() map[string]SecretSource { return nil }
+
+// ValidateSecretSources reports no error: the defaults declare nothing.
+func (d *perRepoDefaults) ValidateSecretSources() error { return nil }
+
 // ConfigArtifactsContent returns the default run artifact level ("all" —
 // the whole output/ directory, as before ADR 0161).
 func (d *perRepoDefaults) ConfigArtifactsContent() string { return ArtifactContentAll }
@@ -128,3 +138,10 @@ func (d *perRepoDefaults) ConfigArtifactsContentSet() bool { return false }
 
 // ConfigArtifactsBySource returns the default per-source levels (none).
 func (d *perRepoDefaults) ConfigArtifactsBySource() map[string]string { return nil }
+
+// ConfigProgressVerbosity returns the default live progress log level
+// ("full" — everything, as before ADR 0163).
+func (d *perRepoDefaults) ConfigProgressVerbosity() string { return ProgressVerbosityFull }
+
+// ConfigProgressBySource returns the default per-source levels (none).
+func (d *perRepoDefaults) ConfigProgressBySource() map[string]string { return nil }

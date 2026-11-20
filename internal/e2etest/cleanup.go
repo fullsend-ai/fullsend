@@ -171,7 +171,7 @@ func listOrgRepoNames(ctx context.Context, token, org string, t *testing.T) []st
 	var names []string
 	page := 1
 	for {
-		url := fmt.Sprintf("https://api.github.com/orgs/%s/repos?per_page=100&page=%d&type=all", org, page)
+		url := githubAPIBaseURL() + fmt.Sprintf("/orgs/%s/repos?per_page=100&page=%d&type=all", org, page)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			t.Logf("[cleanup] Warning: could not list org repos: %v", err)
@@ -217,7 +217,7 @@ func listOrgRepoNames(ctx context.Context, token, org string, t *testing.T) []st
 // Idempotent: 404 is ignored.
 func deleteRepoVariable(ctx context.Context, token, org, repo, name string, t *testing.T) {
 	t.Helper()
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/variables/%s", org, repo, name)
+	url := githubAPIBaseURL() + fmt.Sprintf("/repos/%s/%s/actions/variables/%s", org, repo, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
 		t.Logf("[cleanup] Warning: could not create variable delete request: %v", err)
@@ -248,7 +248,7 @@ func deleteRepoVariable(ctx context.Context, token, org, repo, name string, t *t
 func deleteBranch(ctx context.Context, token, org, repo, branch string, log cleanupLogger) {
 	log.Helper()
 	branchRef := "heads/" + branch
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/%s", org, repo, branchRef)
+	url := githubAPIBaseURL() + fmt.Sprintf("/repos/%s/%s/git/refs/%s", org, repo, branchRef)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
 		log.Logf("[cleanup] Warning: could not create branch delete request: %v", err)
@@ -280,7 +280,7 @@ func deleteShimWorkflow(ctx context.Context, token, org, repo string, log cleanu
 	shimPath := ".github/workflows/fullsend.yaml"
 
 	// Get the file's SHA (required for deletion).
-	getURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", org, repo, shimPath)
+	getURL := githubAPIBaseURL() + fmt.Sprintf("/repos/%s/%s/contents/%s", org, repo, shimPath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getURL, nil)
 	if err != nil {
 		log.Logf("[cleanup] Warning: could not create request to check shim file: %v", err)
@@ -351,7 +351,7 @@ func deleteShimWorkflow(ctx context.Context, token, org, repo string, log cleanu
 // closePR closes a pull request using the GitHub API directly.
 func closePR(ctx context.Context, token, org, repo string, number int, log cleanupLogger) {
 	log.Helper()
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d", org, repo, number)
+	url := githubAPIBaseURL() + fmt.Sprintf("/repos/%s/%s/pulls/%d", org, repo, number)
 	body := strings.NewReader(`{"state":"closed"}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, body)
 	if err != nil {

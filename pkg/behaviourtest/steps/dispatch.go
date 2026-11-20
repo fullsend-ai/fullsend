@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -475,7 +476,9 @@ func thenHarnessWorkflowLogsContain(ctx context.Context, w *world.World, agent, 
 
 // defaultSettleDuration is the maximum time to wait for the dispatch
 // pipeline to settle before asserting artifact absence.
-const defaultSettleDuration = 90 * time.Second
+// BEHAVIOUR_NEGATIVE_SETTLE overrides it (a Go duration), for a local
+// forge that delivers events and starts runs at once.
+var defaultSettleDuration = env.MustDuration("BEHAVIOUR_NEGATIVE_SETTLE", 90*time.Second)
 
 // negativeSettleDuration returns how long to wait before a negative
 // (did-not-run) assertion.  When the scenario already completed a

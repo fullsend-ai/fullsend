@@ -725,7 +725,7 @@ func definesDispatcherJob(content []byte) bool {
 //     rule list means protection is gone.
 //   - Trigger pipelines must run only the dispatcher: any other root job or
 //     include that is not excluded from trigger pipelines defers the fast
-//     path (see triggerExtraWorkProblem), as does inherited global
+//     path (see triggerExtraWorkProblems), as does inherited global
 //     execution configuration (see triggerGlobalExecProblem).
 //   - The project must use the standard .gitlab-ci.yml configuration path:
 //     a custom ci_config_path selects configuration that is never evaluated.

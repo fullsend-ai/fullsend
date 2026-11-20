@@ -32,9 +32,11 @@ func (c *sharedManifestClient) GetFileContent(ctx context.Context, owner, repo, 
 }
 
 // An install whose repos.yaml another install rewrote after this run loaded
-// it does not overwrite the file, so the other install's edit survives: here
-// each records the first-install tracker default of its own repository. A
-// plain retry from the file then records this run's edit as well.
+// it does not overwrite the file, so the other install's edits survive: here
+// each records the first-install tracker default and the trace_context of
+// its own repository. The refused run writes no secret or variable of its
+// repository, and a plain retry from the file records this run's edits as
+// well and provisions its key.
 func TestRunReposInstall_ManifestChangedMeanwhileIsNotOverwritten(t *testing.T) {
 	const target = "- fullsend-ai/fullsend\n"
 	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
@@ -54,13 +56,27 @@ func TestRunReposInstall_ManifestChangedMeanwhileIsNotOverwritten(t *testing.T) 
 
 	err := runReposInstall(context.Background(), opts)
 	require.NoError(t, otherErr)
+	requireTraceKeyWritten(t, fc, "acme/web", otherFile)
 	require.Equal(t, 1, strings.Count(otherFile, target), "the other install recorded the tracker default of acme/web")
+	webInstallation := traceValue(traceInstallationIDRe, otherFile)
+	require.NotEmpty(t, webInstallation, "the other install recorded the trace_context of acme/web")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "changed after this run loaded it")
-	assert.Equal(t, otherFile, mustReadFile(t, manifestPath), "the other install's edit is kept")
+	assert.Equal(t, otherFile, mustReadFile(t, manifestPath), "the other install's edits are kept")
+	for _, s := range fc.CreatedSecrets {
+		assert.NotEqual(t, "acme/api", s.Owner+"/"+s.Repo, "the refused run writes no acme/api secret")
+	}
+	for _, v := range fc.Variables {
+		assert.NotEqual(t, "acme/api", v.Owner+"/"+v.Repo, "the refused run writes no acme/api variable")
+	}
 
 	require.NoError(t, runReposInstall(context.Background(), only("acme/api")), "a plain retry from the file converges")
-	assert.Equal(t, 2, strings.Count(mustReadFile(t, manifestPath), target), "both tracker defaults are recorded")
+	final := mustReadFile(t, manifestPath)
+	requireTraceKeyWritten(t, fc, "acme/api", final)
+	requireTraceKeyWritten(t, fc, "acme/web", final)
+	assert.Equal(t, 2, strings.Count(final, target), "both tracker defaults are recorded")
+	assert.Len(t, traceInstallationIDRe.FindAllString(final, -1), 2, "both entries record trace_context")
+	assert.Contains(t, final, webInstallation, "acme/web's trace_context survives")
 }
 
 // A repos.yaml that cannot be read again just before the write stops install
@@ -122,8 +138,8 @@ func TestRunReposInstall_ManifestFromPipeIsReadOnly(t *testing.T) {
 // An install that would rewrite repos.yaml past the size limit that loading
 // a manifest enforces is refused before it writes the file or anything to the
 // forge, in a dry run as well. This hand-written file loads, but install
-// renders it with deeper indentation, and the only edit is the first-install
-// tracker default of acme/api.
+// renders it with deeper indentation, and the edits are the first-install
+// tracker default and the trace_context of acme/api.
 func TestRunReposInstall_ManifestOverSizeLimitIsRefused(t *testing.T) {
 	const limit = 1 << 20 // LoadManifest's limit
 	var b strings.Builder

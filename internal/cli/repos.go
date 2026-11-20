@@ -18,6 +18,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -352,6 +353,18 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		}
 	}
 
+	// Unrelated CI work in Fullsend pipelines (#9708): informational, adds
+	// no drift. Findings embed repository text, so each is sanitized.
+	for _, s := range result.Repos {
+		if len(s.GitLabUnrelatedCIWork) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "\n%s GitLab unrelated CI work in Fullsend pipelines (warning; polling stays the dispatch path, but the managed polling schedules run it on the protected default branch):\n", scaffold.SanitizeDisplayText(s.Owner+"/"+s.Repo))
+		for _, p := range s.GitLabUnrelatedCIWork {
+			fmt.Fprintf(out, "  %s\n", scaffold.SanitizeDisplayText(p))
+		}
+	}
+
 	for _, w := range result.Warnings {
 		fmt.Fprintf(out, "WARNING: %s\n", w)
 	}
@@ -395,6 +408,13 @@ type reposInstallConfig struct {
 	// Command-line only: never persisted to the manifest and never logged.
 	jiraClientID     string
 	jiraClientSecret string
+
+	// rotateTraceSigningKey writes a new trace signing key pair and keeps
+	// the previous verification key as retained unless the secret cannot
+	// hold it (ADR 0154); on an existing install without trace_context the
+	// first rotation provisions the keys. A one-run control: never
+	// persisted.
+	rotateTraceSigningKey bool
 
 	// GitLab-specific
 	gitlabRoleRegistry string
@@ -517,6 +537,28 @@ two credential sets are mutually exclusive; supplying one removes existing
 secrets of the other. When polling is false or omitted, Fullsend-owned poll
 resources are removed and the Jira secrets are left in place.
 
+Trace signing keys (ADR 0154) are provisioned on GitHub only. A fresh
+install generates a trace installation ID and an Ed25519 key pair,
+records the installation ID and the public key in the repository's
+repos.yaml entry as config.trace_context (a repository that only a glob
+covers gets its own entry, copied from the glob), and writes the private
+seed as the FULLSEND_TRACE_SIGNING_KEY secret and its key ID as the
+FULLSEND_TRACE_SIGNING_KEY_ID variable. A later run writes a new pair,
+keeping the installation ID, when the secret is missing, when that
+variable is missing or names a retained key, and with
+--rotate-trace-signing-key, whose first use gives an existing install
+its keys. It retains the previous public key, or replaces it when the
+secret cannot hold that key: when the variable names a retained key and
+the committed .fullsend/config.yaml does not list the active key, or
+when neither the variable nor the secret exists and no block of the
+installation is committed. From a read-only manifest a fresh
+install without --rotate-trace-signing-key goes ahead without keys, and
+any other key write fails that repository; with
+--rotate-trace-signing-key it stops the run. Output shows installation
+and key IDs, never the seed. Commit the repos.yaml changes install
+makes, and run one install of a repository at a time. GitLab
+repositories get no keys yet.
+
 The persistent-setting flags --roles, --fullsend-ref, --mint-url, --app-set,
 --inference-auth, --vendor, --signoff, --gitlab-url, --vertex-region and
 --forge were removed; using one fails with the repos.yaml key to set instead.
@@ -557,6 +599,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.jiraEmail, "jira-email", "", "Jira account email written as FULLSEND_JIRA_EMAIL to selected repos whose tracker.jira.poll.enabled is true (optional); an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.jiraClientID, "jira-client-id", "", "Atlassian service account OAuth 2.0 client ID written as FULLSEND_JIRA_CLIENT_ID to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.jiraClientSecret, "jira-client-secret", "", "Atlassian service account OAuth 2.0 client secret written as FULLSEND_JIRA_CLIENT_SECRET to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml and never logged")
+	cmd.Flags().BoolVar(&opts.rotateTraceSigningKey, "rotate-trace-signing-key", false, "generate a new trace signing key pair for each selected GitHub repo, written as FULLSEND_TRACE_SIGNING_KEY with its public key recorded in repos.yaml, and keep the previous verification key as retained unless the secret cannot hold it; on an existing install without trace_context, the first rotation provisions the keys; needs a writable repos.yaml; GitLab repos get no key yet")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
@@ -654,19 +697,6 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if err := requireDeclaredSelections(manifest, opts.repoFilter); err != nil {
 		return err
 	}
-	if opts.fullsendBinary != "" || opts.fullsendSource != "" {
-		vendored, vendorErr := manifest.VendorSelected(opts.repoFilter)
-		if vendorErr != nil {
-			return fmt.Errorf("resolving vendor settings: %w", vendorErr)
-		}
-		if !vendored {
-			flag := "--fullsend-binary"
-			if opts.fullsendBinary == "" {
-				flag = "--fullsend-source"
-			}
-			return fmt.Errorf("%s is only used for repositories whose repos.yaml settings resolve vendor: true, and no selected repository does; enable vendoring in repos.yaml, for example:\n  fullsend repos set defaults.vendor true", flag)
-		}
-	}
 
 	var clients repos.ForgeClientFactory
 	switch {
@@ -751,12 +781,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// before any manifest or forge write: a markerless overlay needs
 	// adoption and an undeclared base needs resolution (#8218). A repo that
 	// only needs adoption is skipped and reported as failed, so the other
-	// repos still converge (#8511); every other problem stops the run.
+	// repos still converge (#8511); every other problem it finds stops the
+	// run. The trace signing key preflight below skips a repo it refuses
+	// the same way.
 	adoptionRequired, err := repos.PreflightManagedConfig(ctx, manifest, preflightClients, opts.repoFilter)
 	if err != nil {
 		return fmt.Errorf("configuration preflight: %w", err)
 	}
-	adoptionFailedRepos := make([]repos.ConvergeResult, 0, len(adoptionRequired))
+	skippedRepos := make([]repos.ConvergeResult, 0, len(adoptionRequired))
 	adoptionSkip := make([]string, 0, len(adoptionRequired))
 	for _, a := range adoptionRequired {
 		printer.StepFail(fmt.Sprintf("[%s] skipped: %s", a.Name(), a.Guidance))
@@ -766,21 +798,71 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			// recovery.
 			continue
 		}
-		adoptionFailedRepos = append(adoptionFailedRepos, repos.ConvergeResult{
+		skippedRepos = append(skippedRepos, repos.ConvergeResult{
 			Owner: a.Owner, Repo: a.Repo,
 			Error: fmt.Errorf("adoption required: %s exists without the managed-configuration ownership marker (ADR-0122); see the guidance above; nothing was written", preset.OverlayPath),
 		})
 	}
 
-	// The only manifest edit install still plans is the initial
-	// tracking writeback below. It is planned in memory (DryRun) with
-	// its progress output held in deferredOutput; the layered safety
-	// comparison then runs against the proposed manifest and presets, and
-	// only then is the manifest persisted, so a safety rejection leaves
-	// repos.yaml byte-identical and writes nothing to the forge (#8218).
+	// The token-scope check only reads, so it runs before install plans any
+	// manifest edit: a failure leaves repos.yaml unchanged instead of
+	// recording a trace key whose seed is never written (ADR 0154). The
+	// manifest edits below carve glob-covered repositories into entries
+	// copied from their globs, so they do not change the targeted forges.
+	targetedForges, err := manifest.DistinctForgesFor(opts.repoFilter)
+	if err != nil {
+		return fmt.Errorf("determining targeted forges: %w", err)
+	}
+	if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
+		return err
+	}
+
+	// Install plans its manifest edits below in memory: the initial
+	// tracking writeback and the trace_context of fresh installs,
+	// recoveries and rotations (ADR 0154). Their progress output is held
+	// in deferredOutput; the layered safety comparison then runs against
+	// the proposed manifest and presets, and only then is the manifest
+	// persisted, so a safety rejection leaves repos.yaml byte-identical and
+	// writes nothing to the forge (#8218).
 	var deferredOutput []func()
 	deferOutput := func(f func()) { deferredOutput = append(deferredOutput, f) }
 	manifestChanged := false
+
+	// Plan trace signing key writes (ADR 0154) and record their public keys
+	// in the manifest entries, under the same deferred-persist contract. It
+	// runs before the tracking writeback, so a repo whose keys install
+	// refuses gets no tracking default either. A read error, or
+	// --rotate-trace-signing-key with a read-only manifest, fails here,
+	// before the manifest write and any key write. A fresh install from a
+	// read-only manifest without --rotate-trace-signing-key goes ahead
+	// without keys and says so.
+	traceKeyPlans, traceRefused, traceErr := repos.EnsureTraceSigningKeys(ctx, repos.TraceKeysConfig{
+		Manifest:     manifest,
+		ManifestPath: opts.manifest,
+		Deferred:     !opts.dryRun,
+		RepoFilter:   opts.repoFilter,
+		ExcludeRepos: adoptionSkip,
+		Rotate:       opts.rotateTraceSigningKey,
+	}, preflightClients, func(repo, _, msg string) {
+		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
+	})
+	if traceErr != nil {
+		return fmt.Errorf("planning trace signing keys: %w", traceErr)
+	}
+	// A repo whose trace keys install refuses is skipped and reported as
+	// failed, like one that needs adoption, so the other repos still
+	// converge. Every later preflight and convergence skip it too: its
+	// commit would replace the committed trace_context with the entry's.
+	skipped := append([]string(nil), adoptionSkip...)
+	for _, r := range traceRefused {
+		name := r.Owner + "/" + r.Repo
+		printer.StepFail(fmt.Sprintf("[%s] skipped: %v", name, r.Err))
+		skipped = append(skipped, name)
+		skippedRepos = append(skippedRepos, repos.ConvergeResult{Owner: r.Owner, Repo: r.Repo, Error: r.Err})
+	}
+	if len(traceKeyPlans) > 0 {
+		manifestChanged = true
+	}
 
 	// Persist the install-time choice the generated managed overlay must
 	// reproduce (the upstream tracking default for a no-preset first
@@ -793,7 +875,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		DryRun:       true,
 		Deferred:     !opts.dryRun,
 		RepoFilter:   opts.repoFilter,
-		ExcludeRepos: adoptionSkip,
+		ExcludeRepos: skipped,
 	}, preflightClients, func(repo, _, msg string) {
 		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
 	})
@@ -820,15 +902,41 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// Compare the proposed layered configuration (manifest edits and declared
 	// presets) with each repository's installed layers before anything is
 	// persisted or written to the forge.
-	if err := repos.PreflightProposedManagedSafety(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip); err != nil {
+	if err := repos.PreflightProposedManagedSafety(ctx, manifest, preflightClients, opts.repoFilter, skipped); err != nil {
 		return fmt.Errorf("configuration safety preflight: %w", err)
 	}
 	// Resolve the effective infrastructure and reconcile the Vertex inputs
 	// of every selected repository before the manifest is persisted, so a
 	// mint URL conflict or a flag that contradicts the declared
 	// configuration leaves repos.yaml byte-identical.
-	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
+	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, skipped, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
 		return fmt.Errorf("effective infrastructure preflight: %w", err)
+	}
+	// Whether --fullsend-binary and --fullsend-source apply, and which forges
+	// need a sign-off identity, come from the manifest settings. Both are
+	// resolved here (including dry runs), from the edited manifest, since a
+	// new entry copied from a glob takes that glob's settings, so a refused
+	// flag or a missing identity fails before repos.yaml or any key is
+	// written. Trailers are resolved once per forge before convergence, and
+	// a repository convergence leaves out gets no commit, so it needs no
+	// identity.
+	if opts.fullsendBinary != "" || opts.fullsendSource != "" {
+		vendored, vendorErr := manifest.VendorSelected(opts.repoFilter)
+		if vendorErr != nil {
+			return fmt.Errorf("resolving vendor settings: %w", vendorErr)
+		}
+		if !vendored {
+			flag := "--fullsend-binary"
+			if opts.fullsendBinary == "" {
+				flag = "--fullsend-source"
+			}
+			return fmt.Errorf("%s is only used for repositories whose repos.yaml settings resolve vendor: true, and no selected repository does; enable vendoring in repos.yaml, for example:\n  fullsend repos set defaults.vendor true", flag)
+		}
+	}
+	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
+		opts.repoFilter, append(containFailedKeys(containFailedRepos), skipped...), opts.dryRun)
+	if err != nil {
+		return err
 	}
 	// A dry run reports the size refusal that the write below gives.
 	if manifestChanged && opts.dryRun && opts.manifest != "" {
@@ -839,12 +947,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if manifestChanged && !opts.dryRun && opts.manifest != "" {
 		// Another install that uses the same file may have rewritten it since
 		// this run loaded it; writing now would drop its edits, such as a
-		// first-install tracker default it recorded. manifestChanged is set
-		// only for a writable manifest (each edit above refuses a read-only one
-		// or, like the legacy conversion, leaves it unwritten), so the file
-		// here is a local regular file. The comparison and the write are not
-		// atomic: a write that lands between them is overwritten. Lock the
-		// file if that window matters.
+		// first-install tracker default or the trace_context of a key it
+		// wrote. manifestChanged is set only for a writable manifest (each
+		// edit above refuses a read-only one or, like the legacy conversion,
+		// leaves it unwritten), so the file here is a local regular file. The
+		// comparison and the write are not atomic: a write that lands between
+		// them is overwritten. Lock the file if that window matters.
 		current, readErr := os.ReadFile(opts.manifest)
 		if readErr != nil {
 			return fmt.Errorf("writing manifest: reading %s again before writing it: %w", opts.manifest, readErr)
@@ -859,23 +967,6 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 	for _, flush := range deferredOutput {
 		flush()
-	}
-
-	targetedForges, err := manifest.DistinctForgesFor(opts.repoFilter)
-	if err != nil {
-		return fmt.Errorf("determining targeted forges: %w", err)
-	}
-	if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
-		return err
-	}
-
-	// Signoff comes from the manifest settings. Trailers are resolved once
-	// per forge before convergence (including dry runs) so a missing
-	// identity fails before any scaffold commit is made.
-	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
-		opts.repoFilter, opts.dryRun)
-	if err != nil {
-		return err
 	}
 
 	upstreamRef, upstreamTag := resolveUpstreamRef()
@@ -957,7 +1048,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		Manifest:                manifest,
 		DryRun:                  opts.dryRun,
 		RepoFilter:              opts.repoFilter,
-		ExcludeRepos:            append(containFailedKeys(containFailedRepos), adoptionSkip...),
+		ExcludeRepos:            append(containFailedKeys(containFailedRepos), skipped...),
 		MaxConcurrency:          opts.concurrency,
 		UpstreamRef:             upstreamRef,
 		UpstreamTag:             upstreamTag,
@@ -973,6 +1064,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		JiraEmail:               opts.jiraEmail,
 		JiraClientID:            opts.jiraClientID,
 		JiraClientSecret:        opts.jiraClientSecret,
+		TraceKeyPlans:           traceKeyPlans,
 		ReviewAppClientID:       reviewAppClientID,
 		ReviewAppClientIDAppSet: reviewAppSet,
 		ReadVendoredWorkflow:    readVendoredWorkflow,
@@ -1096,9 +1188,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	for _, r := range containFailedRepos {
 		failedRepoKeys[r.Owner+"/"+r.Repo] = true
 	}
-	// A repo skipped because its overlay needs adoption was excluded the
-	// same way and is likewise counted once and takes no later stage.
-	for _, r := range adoptionFailedRepos {
+	// A repo skipped because its overlay needs adoption or install refused
+	// its trace signing keys was excluded the same way and is likewise
+	// counted once and takes no later stage.
+	for _, r := range skippedRepos {
 		failedRepoKeys[r.Owner+"/"+r.Repo] = true
 	}
 	postInstallRepos := make([]repos.ConvergeResult, 0, len(installed)+len(converged)+len(alreadyCurrent))
@@ -1388,7 +1481,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	printer.Blank()
 	installedCount := len(installed) - installedPostFail - roleFailInstalledCount
-	failedCount := len(failed) + len(postInstallFailedRepos) + len(containFailedRepos) + len(adoptionFailedRepos) + pollStateFail + roleFail
+	failedCount := len(failed) + len(postInstallFailedRepos) + len(containFailedRepos) + len(skippedRepos) + pollStateFail + roleFail
 
 	for _, r := range failed {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
@@ -1402,7 +1495,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	for _, r := range containFailedRepos {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
-	for _, r := range adoptionFailedRepos {
+	for _, r := range skippedRepos {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 	for _, r := range roleFailedRepos {
@@ -1496,7 +1589,7 @@ By default, tears down (removes workflow files via a pull request, deletes
 variables and secrets immediately) and then removes the repo entry from
 repos.yaml. The manifest entry is only removed if teardown succeeds.
 
-File deletions (workflow YAML, .fullsend/config.yaml, and GitLab
+File deletions (workflow YAML, and on GitLab .fullsend/config.yaml and the
 .gitlab-ci.yml unmerge) are delivered as a PR unless --direct is set.
 Variable and secret deletions are API operations and always happen
 immediately. Use --direct to push file deletions to the default branch.
@@ -1804,8 +1897,8 @@ func checkAllForgeScopes(ctx context.Context, clients repos.ForgeClientFactory, 
 // identity is an error. In a dry run the trailer that would be added is
 // reported for each forge.
 func resolveRepoSignOffTrailers(ctx context.Context, clients repos.ForgeClientFactory, printer *ui.Printer,
-	manifest *repos.Manifest, filter []string, dryRun bool) (map[string]string, error) {
-	forges, err := manifest.SignoffForgesFor(filter)
+	manifest *repos.Manifest, filter, skip []string, dryRun bool) (map[string]string, error) {
+	forges, err := manifest.SignoffForgesFor(filter, skip)
 	if err != nil {
 		return nil, fmt.Errorf("determining signoff settings: %w", err)
 	}

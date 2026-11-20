@@ -79,9 +79,13 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 	// driver leases (org, repo) slots across the pool orgs, with no
 	// exclusive org lock and no broad startup cleanup.
 	pool := poolConfigFor(cfg.Environment, e2eCfg, binary, t.Logf)
-	baseDriver, err := installFactoryFor(cfg.Environment)(pool)
+	factory, err := installFactoryFor(cfg.Environment)
 	if err != nil {
-		failRun(t, nil, playbackSuiteName, fmt.Errorf("creating install driver (env=%s): %w", cfg.Environment, err))
+		failRun(t, nil, playbackSuiteName, err)
+	}
+	baseDriver, err := factory(pool)
+	if err != nil {
+		failInstallDriver(t, playbackSuiteName, cfg.Environment, err)
 	}
 	driver := install.NewPlaybackDriver(baseDriver)
 
@@ -94,16 +98,20 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 		}
 	})
 
-	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), pool.Layout.SlotsPerOrg, driver.Capacity())
+	// The driver supplies its own default concurrency and description,
+	// so the runner never reads a pool layout (a non-pool driver such as
+	// forgejo-dev has none).
+	bootstrap := install.BootstrapFor(driver)
+	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), bootstrap.DefaultConcurrency(), driver.Capacity())
 	if err != nil {
 		failRun(t, nil, playbackSuiteName, err)
 	}
 	if overCapacity {
 		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block while allocating", concurrency, driver.Capacity())
 	}
-	t.Logf("leasing repo slots across %d org(s) %v (%d slot(s)), godog concurrency %d", pool.Layout.OrgCount, pool.Layout.Orgs(), driver.Capacity(), concurrency)
+	t.Logf("%s, godog concurrency %d", bootstrap.Describe(), concurrency)
 
-	template := newTemplateWorld(t, playbackSuiteName, ctx, cfg, pool, driver, opts)
+	template := newTemplateWorld(t, playbackSuiteName, ctx, cfg, binary, driver, opts)
 
 	suiteRunner := godog.TestSuite{
 		Name:                playbackSuiteName,
