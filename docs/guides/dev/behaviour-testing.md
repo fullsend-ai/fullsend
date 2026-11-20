@@ -613,13 +613,17 @@ breaks the agents suite before it merges.
    Releases are CalVer tags on fullsend-ai/github-emulator. The
    [release notes](https://github.com/fullsend-ai/github-emulator/releases)
    list behaviour changes.
-2. Before you move the pin, make a branch of current fullsend `main` that
-   changes only `EMULATOR_REF` to the release's commit. Run the whole workflow
-   on it twice. Every shard and the playback job must pass both times, and the
-   `behaviour-github-emulator (agents)` job should pass too.
-3. The agents repository's emulator job reads the pin from the fullsend
-   checkout it builds. It follows this pin with no change of its own.
-4. Changing the pin edits a workflow file, so a maintainer adds it.
+2. Make a branch from current fullsend `main` that changes only
+   `EMULATOR_REF`, to `<release commit sha> # <release tag>`, and open a draft
+   pull request from it: the workflow runs on `pull_request`. Run it a second
+   time with **Re-run all jobs** on the pull request's
+   `behaviour-github-emulator` run. Every shard, the playback job and the
+   `behaviour-github-emulator (agents)` job must pass both times.
+3. A maintainer opens or takes over the pull request that moves the pin, since
+   it edits a workflow file, and links the two validation runs in it.
+
+The agents repository's emulator job reads the pin from the fullsend checkout it
+builds, so it follows this pin with no change in that repository.
 
 ### Failure classification and infrastructure retry
 
