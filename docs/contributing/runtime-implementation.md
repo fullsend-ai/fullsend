@@ -409,7 +409,7 @@ Two traps when reproducing by hand:
 | `analysis_incomplete: Could not resolve wrapped command for sensitive upload analysis` | a variable inside a `-d`, `--data-urlencode`, `-F` or `--data-binary` argument, or an `@` path built from a variable | write the value into the argument as literal text; `-K` does not help |
 | `Tirith blocked command (exit code 1): ... expected a list` / `an object` / `a string` | the installed tirith reports a shape this hook does not know | check `tirith --version` against the pin; a bumped pin needs `tirith_check.py` updated before it ships |
 | `Hook error (fail-closed): <ExceptionName>` | an error with no specific guard | the traceback is on the hook's stderr and a `hook_error` finding is in `findings.jsonl`; file both with the command |
-| Commands block only in the sandbox, never locally | `TIRITH_REQUIRED=1` is set there and the binary is missing or timing out | check the binary is on `PATH` inside the sandbox |
+| Commands block only in the sandbox, never locally | `TIRITH_REQUIRED=1` is set there and the binary is missing or timing out | check the binary is in a `PATH` directory inside the sandbox that the sandbox user neither owns nor can write; the hooks run under a `PATH` without the agent-writable directories, so a `tirith` installed only in one of them is reported as missing |
 | `Tirith requires approval (<rule>)` on a command the defaults allow | the repository's [staged policy](#tirith-staged-repository-policy) has an approval rule for it | expected; the repository owner changes the policy on the trusted ref |
 | `tirith setup failed (...)` with a staged policy | the staged `tirith-repo-policy.yaml` could not be read (replaced by a symlink or a directory) | the launch guard should have refused the iteration; check the hooks directory |
 
@@ -569,7 +569,7 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
     │   (codex's npm launcher and pi). .env puts workspace/bin
     │   last on PATH and restores the runner's PATH in front after .env.d
     │   (what claude and pi run under; codex restores its pre-.env PATH;
-    │   the Claude Code and codex hooks run under the trusted PATH);
+    │   the Claude Code, codex and pi hooks run under the trusted PATH);
     │   host_files may only target /sandbox/ or /tmp/ and not the runner's
     │   paths (harness.ValidateHostFileDest).
     │
