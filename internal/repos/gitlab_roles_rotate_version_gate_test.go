@@ -18,7 +18,8 @@ import (
 // carrying ownership fields that CLIs built with the tolerant reader (#8233)
 // accept at version 1 but do not apply when selecting outgoing tokens or
 // running grace cleanup, so the writer marks it version 2. Since #8246 this
-// binary reads only version 2: these tests prove that a legacy (unversioned
+// binary reads only version 2 and later (version 3 since #9063): these tests
+// prove that a legacy (unversioned
 // or version 1) document is refused before rotation selects, schedules or
 // revokes the administrator-supplied credential, and is never rewritten.
 // Decoding failure alone is not counted; the rotation itself is exercised.
