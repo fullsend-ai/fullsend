@@ -111,20 +111,6 @@ func (r CodexRuntime) codexModelsCachePath() string {
 	return r.ConfigDir() + "/" + codexModelsCacheFile
 }
 
-// codexLastMessageFile is where --output-last-message writes the agent's final
-// message, under the runner-owned config dir.
-//
-// Deliberately not the workspace output directory: that is the agent's own
-// result location (FULLSEND_OUTPUT_DIR), the runner extracts everything there
-// as the run's output files, and nothing creates it up front — codex reported
-// `Failed to write last message file ... No such file or directory` in the
-// first end-to-end smoke. The final message is in the stream as an
-// agent_message either way; this file is a convenience for an operator
-// inspecting a kept sandbox, and ClearIterationArtifacts removes it. At
-// 0.170.0 codex opens it before the first turn and refuses a symlinked or
-// hard-linked path; a failed open or final write ends exec with exit 1.
-const codexLastMessageFile = "last-message.txt"
-
 // Bootstrap prepares the runner-owned codex config directory for one agent
 // run: the agent body as developer_instructions in config.toml, the auth
 // script for the run-scoped OpenAI provider, skills, the hook scripts plus the

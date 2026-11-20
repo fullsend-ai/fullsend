@@ -1148,7 +1148,6 @@ func TestCodexRuntime_ClearIterationArtifacts_KeepsTheFindingsLog(t *testing.T) 
 		filepath.Join(ws, ".security", "findings.jsonl"),
 		filepath.Join(ws, "output", "result.txt"),
 		filepath.Join(cfg, "sessions", "2026", "10", "22", "rollout-x.jsonl"),
-		filepath.Join(cfg, codexLastMessageFile),
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
 		require.NoError(t, os.WriteFile(p, []byte("x\n"), 0o600))
@@ -1158,7 +1157,6 @@ func TestCodexRuntime_ClearIterationArtifacts_KeepsTheFindingsLog(t *testing.T) 
 	assert.FileExists(t, filepath.Join(ws, ".security", "findings.jsonl"), "the admissions of earlier iterations stay")
 	assert.NoFileExists(t, filepath.Join(ws, "output", "result.txt"))
 	assert.NoFileExists(t, filepath.Join(cfg, "sessions", "2026", "10", "22", "rollout-x.jsonl"), "the iteration's rollouts go")
-	assert.NoFileExists(t, filepath.Join(cfg, codexLastMessageFile))
 }
 
 func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {

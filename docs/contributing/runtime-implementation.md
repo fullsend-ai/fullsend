@@ -1324,9 +1324,9 @@ flowchart TB
 - `Run` executes `codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox
   [--dangerously-bypass-hook-trust] -C <repo> --model <id> -c model_provider=fullsend-openai
   -c approval_policy=never -c sandbox_mode=danger-full-access [-c model_reasoning_effort=<effort>]
-  -o $CODEX_HOME/last-message.txt -` with the prompt piped to stdin. At 0.170.0 codex opens the
-  `-o` file before the first turn and refuses a symlinked or hard-linked path; a failed open or
-  final write ends exec with exit 1, and codex writes the file only when a turn completes.
+  -` with the prompt piped to stdin. It passes no `-o` (`--output-last-message`): nothing in the
+  runner reads that file, and at 0.170.0 a failed open or write of it ends exec with exit 1, even
+  after a completed turn.
 - **The prompt is never on argv.** On a retry iteration it carries the previous failure's text
   (#1050/#6494), and argv is world-readable in the sandbox. `-` is codex's explicit
   read-from-stdin sentinel; the pipe closes when `printf` finishes, so there is none of the
