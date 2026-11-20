@@ -638,19 +638,23 @@ decoded view of the document before masking a member value can hide its BEGIN
 marker. Such a block is neutralized member by member. The members the match
 starts and ends in carry marker text, so they are always masked — even when a
 marker is split across two members and neither fragment looks like one alone. A
-string value between them is masked when it carries a block marker or base64 body
-material (PEM body lines are base64, and the floor is longer than any prose word
-or schema enum); object keys keep their names, so a document that merely quotes
-the PEM header in one finding and the footer in another keeps its shape — every
-required field of a review result is still present, and its enum-valued fields
-(`action`, `severity`, `category`) and patterned fields (`head_sha`, finding
-`id`) keep values `review-result.schema.json` accepts — instead of being dropped
-whole or rewritten into a document the schema rejects. A key name is treated as
-block content only when the match starts or ends in it or the name itself carries
-a marker; then it is masked too, because it cannot be written back as structure. A
-value that neither carries a marker nor holds a base64 run long enough to be PEM
-body material keeps its content: nothing distinguishes a quoted marker pair from a
-split block, so the choice is between masking free text and enum values, which
+string value between them is masked when it carries a block marker or a run that
+looks like PEM body material: at least 16 characters of the base64 alphabet that
+mix upper case, lower case and digits and include a character outside the hex
+range. The length floor alone is not enough — a long word such as
+`misconfiguration` and a path such as `internal/security/jsonsanitize` both reach
+it while using only base64 characters — so the case and digit mix is what tells
+body material from free text. Object keys keep their names, so a document that
+merely quotes the PEM header in one finding and the footer in another keeps its
+shape — every required field of a review result is still present, and its
+enum-valued fields (`action`, `severity`, `category`) and patterned fields
+(`head_sha`, finding `id`) keep values `review-result.schema.json` accepts —
+instead of being dropped whole or rewritten into a document the schema rejects. A
+key name is treated as block content only when the match starts or ends in it or
+the name itself carries a marker; then it is masked too, because it cannot be
+written back as structure. A value that neither carries a marker nor holds a run
+of that shape keeps its content: nothing distinguishes a quoted marker pair from
+a split block, so the choice is between masking free text and enum values, which
 loses the review, and keeping a fragment too short to be recognized as key
 material. A hex-only run is kept for the same reason the enum values are: a PEM
 body is base64, while a hex run is more likely a commit SHA or a finding id.

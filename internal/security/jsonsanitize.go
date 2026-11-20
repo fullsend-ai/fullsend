@@ -193,18 +193,21 @@ var privateKeyRe = func() *regexp.Regexp {
 // privateKeyRe delimits a block with.
 var privateKeyMarkerRe = regexp.MustCompile(`-----BEGIN|-----END|PRIVATE KEY-----`)
 
-// privateKeyMaterialRe matches a run of PEM body material: the base64 alphabet
-// (which covers hex) at a length no ordinary prose word or schema enum reaches.
-// A string value covered by a framing-spanning block is masked only when it
-// holds a marker or matches this, because a lazy pattern that runs from one
-// member's BEGIN to another member's END also covers the members between them.
-// Masking those unconditionally replaced structural values — a finding's
-// severity, category, action or repo, all of which the review schema constrains
-// to enums and patterns — so the review failed validation and was not posted,
-// which is the #5705 outcome. Real PEM bodies are 64-character base64 lines (or
-// a partial final line), so a 16-character floor keeps every realistic split
-// while leaving free text and enum values readable. valueCarriesKeyMaterial still
-// has to reject a hex-only run, which is more likely a hash than a PEM line. A
+// privateKeyMaterialRe matches a run of candidate PEM body material: the base64
+// alphabet (which covers hex) at a length no short identifier or enum value
+// reaches. A string value covered by a framing-spanning block is masked only
+// when it holds a marker or a run pemBodyRun accepts, because a lazy pattern that
+// runs from one member's BEGIN to another member's END also covers the members
+// between them. Masking those unconditionally replaced structural values — a
+// finding's severity, category, action or repo, all of which the review schema
+// constrains to enums and patterns — so the review failed validation and was not
+// posted, which is the #5705 outcome.
+//
+// The length floor alone does not separate body material from free text: a long
+// word ("misconfiguration") and a file path ("internal/security/jsonsanitize")
+// both reach 16 characters using only base64 characters, and a path adds a slash
+// that reads as base64 padding or division. pemBodyRun therefore also requires
+// the case and digit mix a base64 body carries and a word or a path does not. A
 // fragment shorter than the floor cannot be recognized as key material, which is
 // the same limit that makes a quoted marker pair indistinguishable from a split
 // block.
@@ -313,33 +316,53 @@ func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 }
 
 // valueCarriesKeyMaterial reports whether the string value at index i has to be
-// replaced whole: it carries a block marker, or it holds base64 body material. A
-// value outside those two shapes is free text or a schema-constrained token that
-// the match only covers because a lazy pattern ran from one member's marker to
-// another's, so it keeps its content.
+// replaced whole: it carries a block marker, or one of its runs holds base64
+// body material. A value outside those two shapes is free text or a
+// schema-constrained token that the match only covers because a lazy pattern ran
+// from one member's marker to another's, so it keeps its content.
 func (v *jsonProvenance) valueCarriesKeyMaterial(i int) bool {
 	text := v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end]
 	if privateKeyMarkerRe.Match(text) {
 		return true
 	}
-	run := privateKeyMaterialRe.Find(text)
-	if run == nil {
-		return false
-	}
-	// A run of hex digits alone is as likely a content hash, a commit SHA or a
-	// stable finding id as it is key material, and those are schema-constrained
-	// values (head_sha, id, file). A PEM body is base64, so a real body run
-	// almost always carries a base64-only character; treating a hex-only run as
-	// key material would mask a required field and lose the review (#5705).
-	for _, b := range run {
-		switch {
-		case b == '+' || b == '/' || b == '=':
-			return true
-		case b >= 'G' && b <= 'Z', b >= 'g' && b <= 'z':
+	// Every run is checked, not only the first. A value can prefix the body with
+	// a hash or an id (a "sha <hex> <body>" note), and stopping at that first
+	// hex-only run wrote the body back after the markers had been masked, where
+	// the written-bytes rescan can no longer see the block (#5705).
+	for _, run := range privateKeyMaterialRe.FindAll(text, -1) {
+		if pemBodyRun(run) {
 			return true
 		}
 	}
 	return false
+}
+
+// pemBodyRun reports whether run looks like a line of PEM body material rather
+// than a hash, an id, a file path or a long word. A base64 body mixes upper case,
+// lower case and digits and carries a character outside the hex range, while a
+// hex run has no base64-only character, a word such as "misconfiguration" has
+// neither an upper-case letter nor a digit, and a path such as
+// "internal/security/jsonsanitize" adds a slash but no upper case or digit.
+// Requiring the full mix keeps a hex-only run from masking a required field
+// (head_sha, id, file) and loses no realistic body: a 64-character line, or a
+// partial final line, almost always has all four.
+func pemBodyRun(run []byte) bool {
+	var upper, lower, digit, base64Only bool
+	for _, b := range run {
+		switch {
+		case b >= 'a' && b <= 'z':
+			lower = true
+			base64Only = base64Only || b > 'f'
+		case b >= 'A' && b <= 'Z':
+			upper = true
+			base64Only = base64Only || b > 'F'
+		case b >= '0' && b <= '9':
+			digit = true
+		case b == '+' || b == '/' || b == '=':
+			base64Only = true
+		}
+	}
+	return upper && lower && digit && base64Only
 }
 
 // leafContaining returns the index of the leaf that fully contains [start, end),

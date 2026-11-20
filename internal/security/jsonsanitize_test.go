@@ -72,6 +72,73 @@ func TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersMasksCoveredMembers(t 
 	assert.Contains(t, string(out), `"a_end":`)
 }
 
+// TestSanitizeJSONDocument_HexPrefixBeforeBodyMaterialMasked pins the regression
+// a reviewer found: only the first material run in a value was examined, so a
+// value that put a hash before the body ("sha <hex> <body>") returned false at
+// the hex run. The markers were masked, the body was written back, and the
+// written-bytes rescan could not catch it because the markers were gone (#5705).
+func TestSanitizeJSONDocument_HexPrefixBeforeBodyMaterialMasked(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	body := "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw"
+	doc := []byte(`{"a":"` + begin + `","b":"sha 0123456789abcdef0123 ` + body + `","c":"` + end + `"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), body, "a body after a hex prefix must not survive")
+	assert.NotContains(t, string(out), "0123456789abcdef0123", "the member carrying the block is replaced whole")
+
+	var result struct {
+		B string `json:"b"`
+	}
+	require.NoError(t, json.Unmarshal(out, &result))
+	assert.Equal(t, privateKeyMask, result.B, "the member carrying the block is masked")
+}
+
+// TestSanitizeJSONDocument_PathsAndProseBetweenMarkersStayReadable pins the other
+// regression a reviewer found: a file path and a long word both reach the
+// material floor, so a path such as "internal/security/jsonsanitize" or a word
+// such as "misconfiguration" was masked as key material. A quoted marker pair
+// carries no secret, and the review has to keep the values its schema requires
+// (#5705).
+func TestSanitizeJSONDocument_PathsAndProseBetweenMarkersStayReadable(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	path := "internal/security/jsonsanitize"
+	prose := "a misconfiguration here"
+	doc := []byte(`{"action":"comment","pr_number":12,"repo":"acme/widgets",` +
+		`"head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[` +
+		`{"severity":"high","category":"logic-error","file":"a.go","description":"quotes the ` + begin + ` header"},` +
+		`{"severity":"medium","category":"missing-test","file":"` + path + `","description":"` + prose + `"},` +
+		`{"severity":"low","category":"stale-doc","file":"c.go","description":"quotes the ` + end + ` footer"}],"body":"summary"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings, "the cross-member marker pair is still reported")
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "PRIVATE KEY-----")
+	assertReviewResultSchemaValid(t, out)
+
+	var result struct {
+		Findings []struct {
+			Severity    string `json:"severity"`
+			File        string `json:"file"`
+			Description string `json:"description"`
+		} `json:"findings"`
+	}
+	require.NoError(t, json.Unmarshal(out, &result), "the sanitized review must still decode: %s", out)
+	require.Len(t, result.Findings, 3)
+	assert.Equal(t, path, result.Findings[1].File, "a path is not PEM body material")
+	assert.Equal(t, prose, result.Findings[1].Description, "a long word is not PEM body material")
+	assert.Equal(t, "medium", result.Findings[1].Severity, "the structural enum keeps its value")
+	assert.Equal(t, privateKeyMask, result.Findings[0].Description, "the value carrying the header is masked")
+	assert.Equal(t, privateKeyMask, result.Findings[2].Description, "the value carrying the footer is masked")
+}
+
 // TestSanitizeJSONDocument_MarkersInSeparateFindingsKeepReview pins the
 // regression a reviewer found: a review result that quotes the PEM header in one
 // finding and the footer in another matches the lazy private-key pattern across
@@ -888,13 +955,13 @@ func TestSanitizeJSONDocument_LeafAndSplitPrivateKeysMasked(t *testing.T) {
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	doc := []byte(`{"note":"` + begin + `\nMIIEleafkeymaterial\n` + end + `",` +
-		`"key_start":"` + begin + `","payload":"MIIEspanningkeymaterial","tail":"` + end + `"}`)
+		`"key_start":"` + begin + `","payload":"MIIEspanningkeymaterial0","tail":"` + end + `"}`)
 
 	out, findings, err := SanitizeJSONDocument(doc, p)
 	require.NoError(t, err)
 	require.NotEmpty(t, findings)
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
-	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial0")
 	assert.NotContains(t, string(out), "MIIEleafkeymaterial")
 }
 
@@ -907,7 +974,7 @@ func TestSanitizeJSONLines_SensitiveBeginRecordFailsClosed(t *testing.T) {
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	records := []string{
 		"{\"key_start\":\"" + begin + "\"}",
-		"{\"payload\":\"MIIEspanningkeymaterial\"}",
+		"{\"payload\":\"MIIEspanningkeymaterial0\"}",
 		"{\"tail\":\"" + end + "\"}",
 	}
 	for name, tc := range map[string]struct {
@@ -924,7 +991,7 @@ func TestSanitizeJSONLines_SensitiveBeginRecordFailsClosed(t *testing.T) {
 			out, findings, err := SanitizeJSONLines(content, p)
 			require.NoError(t, err)
 			require.NotEmpty(t, findings)
-			assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+			assert.NotContains(t, string(out), "MIIEspanningkeymaterial0")
 			assert.NotContains(t, string(out), "END RSA")
 
 			lines := strings.Split(strings.TrimSuffix(strings.TrimSuffix(string(out), "\n"), "\r"), tc.sep)
@@ -947,13 +1014,13 @@ func TestSanitizeJSONDocument_EscapedLeafBlockDoesNotExemptSplitBlock(t *testing
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	escapedBegin := `\u002d` + "----BEGIN RSA" + " PRIVATE KEY-----"
 	doc := []byte(`{"note":"` + escapedBegin + `\nMIIEleafkeymaterial\n` + end + `",` +
-		`"key_start":"` + begin + `","payload":"MIIEspanningkeymaterial","tail":"` + end + `"}`)
+		`"key_start":"` + begin + `","payload":"MIIEspanningkeymaterial0","tail":"` + end + `"}`)
 
 	out, findings, err := SanitizeJSONDocument(doc, p)
 	require.NoError(t, err)
 	require.NotEmpty(t, findings)
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
-	assert.NotContains(t, string(out), "MIIEspanningkeymaterial", "the spanning block must not survive")
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial0", "the spanning block must not survive")
 	assert.NotContains(t, string(out), "MIIEleafkeymaterial", "the escaped leaf block must be redacted")
 }
 
@@ -964,13 +1031,13 @@ func TestSanitizeJSONLines_EscapedBeginRecordFailsClosed(t *testing.T) {
 	p := OutputPipeline()
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	content := []byte(`{"key_start":"\u002d` + "----BEGIN RSA" + " PRIVATE KEY-----" + `"}` + "\n" +
-		`{"payload":"MIIEspanningkeymaterial"}` + "\n" +
+		`{"payload":"MIIEspanningkeymaterial0"}` + "\n" +
 		`{"tail":"` + end + `"}` + "\n")
 
 	out, findings, err := SanitizeJSONLines(content, p)
 	require.NoError(t, err)
 	require.NotEmpty(t, findings)
-	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial0")
 	assert.NotContains(t, string(out), "END RSA")
 
 	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
@@ -1006,13 +1073,13 @@ func TestSanitizeJSONDocument_EscapedMarkersAcrossMembersMasked(t *testing.T) {
 	p := OutputPipeline()
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	doc := []byte(`["\u002d` + "----BEGIN RSA" + " PRIVATE KEY-----" +
-		`","MIIEspanningkeymaterial","` + end + `"]`)
+		`","MIIEspanningkeymaterial0","` + end + `"]`)
 
 	out, findings, err := SanitizeJSONDocument(doc, p)
 	require.NoError(t, err)
 	require.NotEmpty(t, findings)
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
-	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial0")
 }
 
 // TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersMasked pins that the
@@ -1023,13 +1090,13 @@ func TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersMasked(t *testing.T)
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	// U+200B inside the BEGIN marker: not a PEM block in any single form.
 	doc := []byte(`{"begin":"-----\u200bBEGIN RSA` + " PRIVATE KEY-----\"" +
-		`,"payload":"MIIEspanningkeymaterial","end":"` + end + `"}`)
+		`,"payload":"MIIEspanningkeymaterial0","end":"` + end + `"}`)
 
 	out, findings, err := SanitizeJSONDocument(doc, p)
 	require.NoError(t, err)
 	require.NotEmpty(t, findings)
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
-	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial0")
 }
 
 // TestSanitizeJSONDocument_UnterminatedBeginBeforeCompleteBlockMasksBoth pins
