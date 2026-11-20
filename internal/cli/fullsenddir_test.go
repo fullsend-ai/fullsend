@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/spf13/cobra"
 )
@@ -151,12 +152,13 @@ func TestShellQuoteArg(t *testing.T) {
 	}
 }
 
-// assertNoControlChars fails when s carries a control character that could
-// forge log lines or alter how a printed hint looks.
+// assertNoControlChars fails when s carries a control, format or separator
+// character that could forge log lines or alter how a printed hint looks.
 func assertNoControlChars(t *testing.T, s string) {
 	t.Helper()
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) ||
+			unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
 			t.Errorf("printed hint %q carries control character %q", s, r)
 		}
 	}
@@ -215,6 +217,39 @@ func TestFullsendDirArgEscapesControlCharacters(t *testing.T) {
 		t.Errorf("fullsendDirArg() = %q, want %q", got, want)
 	}
 	assertNoControlChars(t, got)
+}
+
+// TestHintEscapingNeutralisesUnicodeFormatAndSeparators: Unicode format
+// characters (bidi overrides, isolates, zero-width, BOM) and the line and
+// paragraph separators are not C0/C1 controls but can still reorder how a
+// printed hint looks or fake a log line in viewers that break on them, so
+// the hint escaping renders them as visible \u{XXXX} backslash sequences —
+// in an agent name, in a --fullsend-dir value and in the warning prose.
+func TestHintEscapingNeutralisesUnicodeFormatAndSeparators(t *testing.T) {
+	names := map[string]string{
+		"a\u202Eb": `'a\u{202e}b'`, // bidi override
+		"a\u2066b": `'a\u{2066}b'`, // isolate start
+		"a\u200bb": `'a\u{200b}b'`, // zero-width space
+		"a\ufeffb": `'a\u{feff}b'`, // BOM
+		"a\u2028b": `'a\u{2028}b'`, // line separator
+		"a\u2029b": `'a\u{2029}b'`, // paragraph separator
+		"a\u00adb": `'a\xadb'`,     // soft hyphen (Cf below U+0100)
+		"café":     `'café'`,       // letters stay literal
+	}
+	for in, want := range names {
+		if got := shellQuoteArg(in); got != want {
+			t.Errorf("shellQuoteArg(%q) = %q, want %q", in, got, want)
+		}
+		assertNoControlChars(t, shellQuoteArg(in))
+	}
+	got := fullsendDirArg("/dir\u202Esub\u2028end/.fullsend")
+	if want := " --fullsend-dir '/dir\\u{202e}sub\\u{2028}end/.fullsend'"; got != want {
+		t.Errorf("fullsendDirArg() = %q, want %q", got, want)
+	}
+	assertNoControlChars(t, got)
+	if got := escapeHintDisplay("agent\u202E and dep\u2028"); got != "agent\\u{202e} and dep\\u{2028}" {
+		t.Errorf("escapeHintDisplay() = %q, want the format and separator runes escaped", got)
+	}
 }
 
 // TestLockUpdateHintGuardsLeadingDashName: a name that starts with '-' is
