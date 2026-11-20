@@ -52,6 +52,9 @@ make playback-test    # @playback scenarios on the dummy-playback runtime
 
 The obsolete admin install/uninstall suite and `make e2e-test` target have
 been removed. CI keeps both the regular behaviour and playback suites.
+Pull requests run them on a GitHub emulator
+([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml)),
+and `e2e.yml` runs them live in the merge queue and on push to `main`.
 
 To run playback manually, select **E2E Tests → Run workflow**, choose the branch,
 and leave **Run the playback behaviour suite** enabled. From the CLI:
@@ -109,7 +112,7 @@ Mint URL uses the hosted public endpoint by default (same as `fullsend github se
 
 ### Behaviour test GitHub Environments
 
-The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). It skips `workflow_dispatch` and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
+The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (the merge queue) and `stage` (push to `main`). It skips pull requests, `workflow_dispatch`, and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
 
 The non-required `forgejo-behaviour` job uses the GitHub Environment `forgejo-stage` on pushes to `main` and `forgejo-dev` for authorized pull requests, the merge queue, and `/ok-to-test` runs for authorized fork pull requests. This separates mainline deployments in the Environments view; the job still sets `ENVIRONMENT=forgejo-dev` for every event because there is only one Forgejo driver target. It also sets `BEHAVIOUR_SCM=forgejo`, `BEHAVIOUR_CI=forgejoactions`, and `GODOG_TAGS=@forgejo`. The current job needs no GCP, Cloudflare, or actor credentials. GitHub creates each environment on first use. If future Forgejo-specific secrets are needed, configure them in both environments (or use appropriately scoped repository secrets) and add them to the artifact-redaction step before passing them to the test process.
 
@@ -756,15 +759,12 @@ script changes no workflow files; the wiring is:
 2. `e2e.yml` passes both secrets in the env of the `behaviour` job's "Run
    behaviour tests" step, next to the `E2E_GCP_*` secrets, and to the
    artifact redaction step. The gateway scenarios skip when these variables
-   are unset. Pull requests that the
-   `gate` job does not authorize never run the `behaviour` job, so they
-   receive neither secret. Authorized pull requests, including forks, do
-   receive them, and the `behaviour` job runs the pull request's head code
-   with those secrets in its environment. Authorizing a pull request
-   therefore lets its head code read both values, as it can already read
-   the `E2E_GCP_*` secrets. The echo-only key scope limits what the key can
-   call, not whether it can be read. To keep fork pull requests away from
-   these secrets, add an explicit condition in the base workflow.
+   are unset. The `behaviour` job does not run on pull requests, so pull
+   requests receive neither secret. In the merge queue the job runs the
+   queued change's code with those secrets in its environment, so a change
+   that reaches the merge queue can read both values, as it can already
+   read the `E2E_GCP_*` secrets. The echo-only key scope limits what the
+   key can call, not whether it can be read.
 
 Of the gateway capabilities, CI declares only the ones that reach no real
 model. They are part of the `BEHAVIOUR_CAPABILITIES` default in the
@@ -823,16 +823,23 @@ Pull requests trigger e2e through
 `pull_request_target`, which GitHub
 [blocks by default](https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2/)
 on public repositories from 2026-12-02
-([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)). The behaviour and playback suites run PR-head code
-with repository secrets, so a **gate job** authorizes every PR run first (see
-workflow comments for why it is a separate job).
+([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)).
+Pull requests from any author, forks included, get the required `behaviour`
+and `playback` checks from the GitHub emulator
+([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml))
+with no authorization. The live `behaviour` and `playback` jobs in `e2e.yml`,
+which use repository secrets, run only in the merge queue and on push to
+`main`; on a pull request they skip. The only `e2e.yml` suite that runs PR-head
+code on a pull request is the optional `forgejo-behaviour` job, so a
+**gate job** authorizes every PR run of it first (see workflow comments for
+why it is a separate job).
 
 | Path | Trigger | What runs |
 |---|---|---|
-| Same-repository PR | `pull_request` (opened, synchronize, reopened) | The gate authorizes the author, then `behaviour` and `playback` run on the PR head with secrets |
-| Fork PR | `pull_request` | Nothing with secrets: fork `pull_request` runs get no secrets, so `behaviour` and `playback` are skipped |
-| Fork PR after `/ok-to-test <sha>` | `issue_comment` | The gate authorizes the commenter and the sha the comment names, then the suites run on that sha and report checks named `behaviour` and `playback` on it |
-| Merge queue, push to `main`, `workflow_dispatch` | unchanged | No gate |
+| Same-repository PR | `pull_request` (opened, synchronize, reopened) | The gate authorizes the author, then `forgejo-behaviour` runs on the PR head; `behaviour` and `playback` skip |
+| Fork PR | `pull_request` | Nothing from `e2e.yml`: fork `pull_request` runs get no secrets, so all suites are skipped |
+| Fork PR after `/ok-to-test <sha>` | `issue_comment` | The gate authorizes the commenter and the sha the comment names, then `forgejo-behaviour` runs on that sha and reports a check named `forgejo-behaviour` on it |
+| Merge queue, push to `main`, `workflow_dispatch` | unchanged | No gate; `behaviour` and `playback` run live |
 
 A same-repository `pull_request` run takes `e2e.yml` from the PR merge ref, not
 from `main`. That widens nothing: only users with write access can push a
@@ -840,7 +847,8 @@ branch to this repository.
 
 ### Who runs automatically
 
-E2E tests run without maintainer action for **same-repository** PRs whose
+The gated `forgejo-behaviour` job runs without maintainer action for
+**same-repository** PRs whose
 author has **write access or higher** (`write`, `maintain`, or `admin` on the
 base repo) or is an allowed trusted bot. The gate verifies this using the
 collaborator permission API rather than `author_association`, ensuring
@@ -849,12 +857,16 @@ automatically.
 
 ### Who needs `/ok-to-test`
 
-Every PR from a fork needs a user with write access (Write role or above) to
-review the latest push and comment **`/ok-to-test <sha>`** on the PR, where
-`<sha>` is the commit you reviewed. This includes fork authors who have write
-access themselves: fork `pull_request` runs get no secrets, so the gate can no
-longer authorize them automatically. A user with write access may comment
-`/ok-to-test <sha>` on their own fork PR.
+`/ok-to-test` is needed only for the optional `forgejo-behaviour` suite. The
+required `behaviour` and `playback` checks come from the GitHub emulator on
+every PR, forks included, without it.
+
+To run `forgejo-behaviour` on a PR from a fork, a user with write access (Write
+role or above) reviews the latest push and comments **`/ok-to-test <sha>`** on
+the PR, where `<sha>` is the commit you reviewed. This includes fork authors
+who have write access themselves: fork `pull_request` runs get no secrets, so
+the gate can no longer authorize them automatically. A user with write access
+may comment `/ok-to-test <sha>` on their own fork PR.
 
 `/ok-to-test` from anyone without write access (for example a triage-role
 user) does not authorize the run. The `ok-to-test` label no longer starts e2e.
@@ -874,9 +886,9 @@ Put the command on the first line of the comment, for example
 40-character sha: a short prefix is refused, because the author could prepare
 another commit with the same prefix and push it after your review.
 
-When the workflow runs, the gate reads the PR head. It runs the suites only
-if the head is the commit you named. The suites check out that sha, and the
-`behaviour` and `playback` checks are reported on it. If the head is another
+When the workflow runs, the gate reads the PR head. It runs
+`forgejo-behaviour` only if the head is the commit you named. The job checks
+out that sha, and the `forgejo-behaviour` check is reported on it. If the head is another
 commit, for example because the author pushed after your review, nothing
 runs. A bare `/ok-to-test` with no sha runs nothing either.
 
@@ -887,8 +899,7 @@ after reviewing the new changes.
 
 When the gate **runs** and denies authorization, a sticky PR comment (marker
 `<!-- e2e-gate -->`) explains why and what to do. A fork PR without
-`/ok-to-test <sha>` gets no comment: its `behaviour` and `playback` checks are
-skipped.
+`/ok-to-test <sha>` gets no comment: its `forgejo-behaviour` job is skipped.
 
 The comment names a reason. What to do next:
 
@@ -908,18 +919,20 @@ the "How to check" links in [LADDER.md](../../../LADDER.md).
 
 1. **PR open/sync** — **E2E Tests** runs on `pull_request`. For a
    same-repository PR the gate authorizes a write+ / trusted-bot author, then
-   the suite jobs run. For a fork PR the gate and suites are skipped.
+   `forgejo-behaviour` runs. For a fork PR the gate and suites are skipped.
+   `behaviour` and `playback` skip on every PR; the GitHub emulator
+   workflow reports those checks instead.
 2. **`/ok-to-test <sha>` comment** — the **E2E ok-to-test** workflow runs on
    `issue_comment`. Its authorize job checks the commenter's permission and
    that the PR head is the named sha, then calls the same suite via `workflow_call` for
    that sha. Only the authorize/report job holds `checks: write` and
-   `pull-requests: write`; it creates the `behaviour` and `playback` check runs
-   on the head sha and completes them from the suite results, so they match
-   the required checks on `main`.
+   `pull-requests: write`; it creates the `forgejo-behaviour` check run on the
+   head sha and completes it from the suite result.
 3. **Gate** — base checkout only; never checks out PR head
    ([`scripts/check-e2e-authorization.sh`](../../../scripts/check-e2e-authorization.sh)).
-4. **Behaviour / playback** — `contents: read` and `id-token: write` only;
-   checkout the authorized PR head SHA, authenticate to GCP via WIF, mint
+4. **Behaviour / playback** — never on a pull request;
+   `contents: read` and `id-token: write` only;
+   checkout the commit under test, authenticate to GCP via WIF, mint
    cross-org tokens per pool org, `make behaviour-test` (or
    `make playback-test` for the playback job)
 
