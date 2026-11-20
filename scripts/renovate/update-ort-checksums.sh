@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# Called by Renovate postUpgradeTasks after a microsoft/onnxruntime bump.
-# ONNX Runtime ships no checksum file, so the linux CPU release tarballs are
-# checked against the sha256 digest GitHub records for each release asset.
-# Updates ORT_SHA256_{AMD64,ARM64} in the runner Containerfile.
+# Called by Renovate postUpgradeTasks after a Microsoft.ML.OnnxRuntime bump.
+# The runner image takes libonnxruntime.so from Microsoft's official NuGet
+# package (github.com/microsoft/onnxruntime answers 404, #9759). One .nupkg
+# carries both architectures, so this updates the single ORT_SHA256 in the
+# runner Containerfile.
+#
+# NuGet publishes no sha256 for a package (its catalog records only a
+# base64 SHA512 packageHash), so the hash is computed from the HTTPS
+# download from api.nuget.org.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib-checksums.sh"
 
-asset_url() {
-  local arch
-  case "$1" in
-    AMD64) arch="x64" ;;
-    ARM64) arch="aarch64" ;;
-    *) return 1 ;;
-  esac
-  echo "https://github.com/microsoft/onnxruntime/releases/download/v${VERSION}/onnxruntime-linux-${arch}-${VERSION}.tgz"
-}
-published_sha() { github_asset_digest microsoft/onnxruntime "v${VERSION}" "${2##*/}"; }
+# shellcheck disable=SC2034 # read by update_pin in lib-checksums.sh
+ALLOW_UNPUBLISHED=1
 
-update_pin ORT multi images/runner/Containerfile
+asset_url() {
+  echo "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${VERSION}/microsoft.ml.onnxruntime.${VERSION}.nupkg"
+}
+published_sha() { :; }
+
+update_pin ORT single images/runner/Containerfile

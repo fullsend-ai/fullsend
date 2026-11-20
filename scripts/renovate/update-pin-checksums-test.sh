@@ -202,7 +202,7 @@ CASES=(
   "update-gitsign-checksums.sh|GITSIGN|multi|images/code/Containerfile|9.1.0|https://github.com/sigstore/gitsign/releases/download/v9.1.0/gitsign_9.1.0_linux_amd64|https://github.com/sigstore/gitsign/releases/download/v9.1.0/gitsign_9.1.0_linux_arm64|checksums:https://github.com/sigstore/gitsign/releases/download/v9.1.0/checksums.txt"
   "update-lychee-checksums.sh|LYCHEE|multi|images/code/Containerfile|9.1.0|https://github.com/lycheeverse/lychee/releases/download/lychee-v9.1.0/lychee-x86_64-unknown-linux-gnu.tar.gz|https://github.com/lycheeverse/lychee/releases/download/lychee-v9.1.0/lychee-aarch64-unknown-linux-gnu.tar.gz|sha256"
   "update-opencode-checksums.sh|OPENCODE|multi|images/sandbox/Containerfile|9.1.0|https://github.com/anomalyco/opencode/releases/download/v9.1.0/opencode-linux-x64.tar.gz|https://github.com/anomalyco/opencode/releases/download/v9.1.0/opencode-linux-arm64.tar.gz|digest:anomalyco/opencode:v9.1.0"
-  "update-ort-checksums.sh|ORT|multi|images/runner/Containerfile|9.1.0|https://github.com/microsoft/onnxruntime/releases/download/v9.1.0/onnxruntime-linux-x64-9.1.0.tgz|https://github.com/microsoft/onnxruntime/releases/download/v9.1.0/onnxruntime-linux-aarch64-9.1.0.tgz|digest:microsoft/onnxruntime:v9.1.0"
+  "update-ort-checksums.sh|ORT|single|images/runner/Containerfile|9.1.0|https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/9.1.0/microsoft.ml.onnxruntime.9.1.0.nupkg||none"
 )
 
 # publish <source> <override> — serve the published checksums for URLS/SHAS.

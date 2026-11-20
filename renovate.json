@@ -207,8 +207,8 @@
       }
     },
     {
-      "description": "After an ONNX Runtime bump, refresh ORT_SHA256_{AMD64,ARM64} in the runner Containerfile. ONNX Runtime ships no checksum file, so the download is checked against the digest GitHub records for each release asset (#9121)",
-      "matchPackageNames": ["microsoft/onnxruntime"],
+      "description": "After an ONNX Runtime bump, refresh ORT_SHA256 in the runner Containerfile from the sha256 of the Microsoft.ML.OnnxRuntime NuGet package (#9121, #9759)",
+      "matchPackageNames": ["Microsoft.ML.OnnxRuntime"],
       "postUpgradeTasks": {
         "commands": ["bash scripts/renovate/update-ort-checksums.sh"],
         "fileFilters": ["images/runner/Containerfile"],
@@ -488,14 +488,13 @@
     },
     {
       "customType": "regex",
-      "description": "Track the ONNX Runtime pin in the runner image (must stay >= the ORT C API version onnxruntime_go requests; see the Containerfile comment). ORT_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-ort-checksums.sh).",
+      "description": "Track the ONNX Runtime pin in the runner image (must stay >= the ORT C API version onnxruntime_go requests; see the Containerfile comment). The library comes from the Microsoft.ML.OnnxRuntime NuGet package since github.com/microsoft/onnxruntime went 404 (#9759). ORT_SHA256 is updated automatically by postUpgradeTasks (scripts/renovate/update-ort-checksums.sh).",
       "managerFilePatterns": ["/^images/runner/Containerfile$/"],
       "matchStrings": [
         "ARG ORT_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
-      "depNameTemplate": "microsoft/onnxruntime",
-      "datasourceTemplate": "github-releases",
-      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
+      "depNameTemplate": "Microsoft.ML.OnnxRuntime",
+      "datasourceTemplate": "nuget"
     },
     {
       "customType": "regex",

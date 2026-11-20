@@ -147,7 +147,7 @@ Every binary downloaded during the build is **version-pinned** and
 | Tool | Pinning | Verification |
 |------|---------|-------------|
 | OpenShell base image | Manifest list digest (`@sha256:...`) | Immutable OCI content hash |
-| ONNX Runtime (runner) | `ORT_VERSION` + `ORT_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
+| ONNX Runtime (runner) | `ORT_VERSION` + `ORT_SHA256` of the `Microsoft.ML.OnnxRuntime` NuGet package (both arches in one `.nupkg`) | `sha256sum -c` |
 | ProtectAI DeBERTa model (runner) | `PROTECTAI_MODEL_REV` + per-file SHA256 | `sha256sum -c` |
 | libtokenizers (runner) | `TOKENIZERS_VERSION` + `TOKENIZERS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Gitleaks | `GITLEAKS_VERSION` + `GITLEAKS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
