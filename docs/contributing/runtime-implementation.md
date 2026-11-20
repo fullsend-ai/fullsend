@@ -632,20 +632,25 @@ other pattern has already been applied to the decoded key or leaf, so a match on
 the serialized bytes would be a redaction placeholder plus JSON escape
 characters, not a secret. A private-key block spanning members is detected in a
 decoded view of the document before masking a member value can hide its BEGIN
-marker. Such a block is neutralized member by member: every string value that
-carries a block marker or base64 body material becomes
-`[REDACTED PRIVATE KEY]`, while object keys keep their names, so a document that
-merely quotes the PEM header in one finding and the footer in another keeps its
-shape — every required field of a review result is still present, and its
-enum-valued fields (`action`, `severity`, `category`) keep values
-`review-result.schema.json` accepts — instead of being dropped whole or rewritten
-into a document the schema rejects. A key name is treated as block content only
-when the name itself carries a marker; then it is masked too, because it cannot
-be written back as structure. A value that neither carries a marker nor holds a
-base64 run long enough to be PEM body material keeps its content: nothing
-distinguishes a quoted marker pair from a split block, so the choice is between
-masking free text and enum values, which loses the review, and keeping a
-fragment too short to be recognized as key material.
+marker. Such a block is neutralized member by member. The members the match
+starts and ends in carry marker text, so they are always masked — even when a
+marker is split across two members and neither fragment looks like one alone. A
+string value between them is masked when it carries a block marker or base64 body
+material (PEM body lines are base64, and the floor is longer than any prose word
+or schema enum); object keys keep their names, so a document that merely quotes
+the PEM header in one finding and the footer in another keeps its shape — every
+required field of a review result is still present, and its enum-valued fields
+(`action`, `severity`, `category`) and patterned fields (`head_sha`, finding
+`id`) keep values `review-result.schema.json` accepts — instead of being dropped
+whole or rewritten into a document the schema rejects. A key name is treated as
+block content only when the match starts or ends in it or the name itself carries
+a marker; then it is masked too, because it cannot be written back as structure. A
+value that neither carries a marker nor holds a base64 run long enough to be PEM
+body material keeps its content: nothing distinguishes a quoted marker pair from a
+split block, so the choice is between masking free text and enum values, which
+loses the review, and keeping a fragment too short to be recognized as key
+material. A hex-only run is kept for the same reason the enum values are: a PEM
+body is base64, while a hex run is more likely a commit SHA or a finding id.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
 rewriting that framing, so only the records it covers are replaced. A
