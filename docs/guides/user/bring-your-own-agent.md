@@ -971,9 +971,12 @@ esac
 ```
 
 `fullsend run` exports `FULLSEND_BOT_ROLE_URL` and `FULLSEND_BOT_ROLE_TOKEN`
-to every pre- and post-script, and `FULLSEND_ENTITY_ID` on GitHub runs whose
-issue or pull request it resolved; `fullsend bot-role` reads the first two
-and needs nothing else, so scripts never handle a credential themselves. The semantics:
+to the pre- and post-scripts of a run that can answer a lookup (one with a
+mint URL and the Actions OIDC environment), and `FULLSEND_ENTITY_ID` on
+GitHub runs whose issue or pull request it resolved; `fullsend bot-role`
+reads the first two and needs nothing else, so scripts never handle a
+credential themselves. A run that cannot answer a lookup exports none of
+the three, so its scripts fail closed at the first ask. The semantics:
 
 - `--entity` is the canonical ID of the entity the run handles, as the
   [normalized entity spec](../../normative/normalized-entity/v1/README.md#scope-and-identity)
@@ -1002,10 +1005,11 @@ and needs nothing else, so scripts never handle a credential themselves. The sem
   scripts) and the mint's answer carries role names only.
 - The lookup is GitHub-only today: it reads the comment through GitHub
   GraphQL and resolves a bot actor through the mint with the job's Actions
-  OIDC token. On GitLab, on Jira-tracked runs, and on a run whose issue or
-  pull request could not be resolved, `FULLSEND_ENTITY_ID` is not exported
-  and every lookup fails, until signature verification or an equivalent
-  trusted lookup exists there.
+  OIDC token. On GitLab, on Jira-tracked runs, on a run with no mint URL or
+  no Actions OIDC environment, and on a run whose issue or pull request
+  could not be resolved, `FULLSEND_ENTITY_ID` is not exported and every
+  lookup fails, until signature verification or an equivalent trusted
+  lookup exists there.
 
 Host-side pre- and post-scripts can use this to replace their App-name
 lists — the trusted-bot checks in a triage or review pre-script and in
