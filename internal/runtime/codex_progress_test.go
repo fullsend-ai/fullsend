@@ -604,31 +604,87 @@ func codexToolPairs(t *testing.T, events []AgentEvent) ([]ToolUseEvent, []ToolRe
 	return uses, results
 }
 
+// codexLiveCall is one call from a live capture with its result.
+type codexLiveCall struct {
+	use    ToolUseEvent
+	result ToolResultEvent
+}
+
+// codexLiveCalls pairs each call in a live capture with its result by id and
+// keys it by key(use): a test reads a call by what the capture prompt asked
+// for, not by its item id, its position or the capturing host's shell
+// wrapper, so a re-capture needs no edit to the test. Every call must have a
+// non-empty id no other call has, an item.started read during this parse
+// (at or after before), and a key no other call has.
+func codexLiveCalls(t *testing.T, events []AgentEvent, before time.Time, key func(ToolUseEvent) string) map[string]codexLiveCall {
+	t.Helper()
+	uses, results := codexToolPairs(t, events)
+	byID := make(map[string]ToolResultEvent, len(results))
+	for _, r := range results {
+		_, dup := byID[r.ID]
+		require.False(t, dup, "call id %q is used twice", r.ID)
+		byID[r.ID] = r
+	}
+	calls := make(map[string]codexLiveCall, len(uses))
+	for _, u := range uses {
+		require.NotEmpty(t, u.ID, "the item id is the call id")
+		assert.False(t, u.StartedAt.Before(before),
+			"call %q has an item.started, read during this parse", u.ID)
+		r, ok := byID[u.ID]
+		require.True(t, ok, "call %q has a result", u.ID)
+		k := key(u)
+		_, dup := calls[k]
+		require.False(t, dup, "two calls read as %q", k)
+		calls[k] = codexLiveCall{use: u, result: r}
+	}
+	return calls
+}
+
+// codexBasicRunKey names a basic_run.ndjson call by what the capture prompt
+// asks for: the command it ends with, whatever shell wraps it on the
+// capturing host, or the file it writes.
+func codexBasicRunKey(t *testing.T) func(ToolUseEvent) string {
+	return func(u ToolUseEvent) string {
+		var args struct {
+			Command  string `json:"command"`
+			FilePath string `json:"file_path"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(u.Arguments), &args), "call %q", u.ID)
+		cmd := strings.TrimRight(args.Command, `'"`)
+		for _, want := range []string{"ls .", "cat hello.txt"} {
+			if strings.HasSuffix(cmd, want) {
+				return u.Name + " " + want
+			}
+		}
+		return u.Name + " " + args.FilePath
+	}
+}
+
 func TestParseCodexStream_ToolCallsFromLiveCapture(t *testing.T) {
 	t.Parallel()
 
 	before := time.Now()
 	events, _ := collectCodexEvents(t, "basic_run.ndjson")
-	uses, results := codexToolPairs(t, events)
-	require.Len(t, uses, 3, "one use per call: fullsend.tool_calls counts these")
-	require.Len(t, results, 3)
-
-	for i, id := range []string{"item_2", "item_3", "item_4"} {
-		assert.Equal(t, id, uses[i].ID, "the item id is the call id")
-		assert.False(t, uses[i].StartedAt.Before(before),
-			"every call in the capture has an item.started, read during this parse")
-		assert.False(t, results[i].IsError)
-		assert.False(t, results[i].Partial)
+	calls := codexLiveCalls(t, events, before, codexBasicRunKey(t))
+	require.Len(t, calls, 3, "one use per call: fullsend.tool_calls counts these")
+	for _, c := range calls {
+		assert.False(t, c.result.IsError, c.use.ID)
+		assert.False(t, c.result.Partial, c.use.ID)
 	}
 
-	assert.JSONEq(t, `{"command":"/bin/zsh -lc 'ls .'"}`, uses[0].Arguments)
-	assert.Equal(t, "raw.ndjson\n", results[0].Result, "aggregated_output is the result")
-	assert.NotContains(t, uses[0].Summary, "raw.ndjson", "successful output stays out of the summary")
+	ls, ok := calls["Bash ls ."]
+	require.True(t, ok, "the capture lists the directory: %v", calls)
+	assert.Equal(t, "raw.ndjson\n", ls.result.Result, "aggregated_output is the result")
+	assert.NotContains(t, ls.use.Summary, "raw.ndjson", "successful output stays out of the summary")
 
-	assert.JSONEq(t, `{"file_path":"/sandbox/workspace/repo/hello.txt"}`, uses[1].Arguments)
-	assert.Empty(t, results[1].Result, "a file change carries no output: the result only closes the call")
+	write, ok := calls["Write /sandbox/workspace/repo/hello.txt"]
+	require.True(t, ok, "the capture writes hello.txt: %v", calls)
+	assert.JSONEq(t, `{"file_path":"/sandbox/workspace/repo/hello.txt"}`, write.use.Arguments)
+	assert.Empty(t, write.result.Result, "a file change carries no output: the result only closes the call")
 
-	assert.Equal(t, "hi\n", results[2].Result)
+	cat, ok := calls["Bash cat hello.txt"]
+	require.True(t, ok, "the capture reads hello.txt back: %v", calls)
+	assert.Equal(t, "hi\n", cat.result.Result)
 }
 
 func TestParseCodexStream_McpCallsFromLiveCapture(t *testing.T) {
@@ -637,38 +693,38 @@ func TestParseCodexStream_McpCallsFromLiveCapture(t *testing.T) {
 	before := time.Now()
 	events, threadID := collectCodexEvents(t, "mcp_tool_call.ndjson")
 	// Asserted by shape, as in TestParseCodexStream_BasicRun: a re-capture
-	// brings a new thread id.
+	// brings a new thread id, and may bring other item ids and order, so
+	// each call is read by its tool name.
 	assert.Regexp(t, `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`, threadID)
-	uses, results := codexToolPairs(t, events)
-	require.Len(t, uses, 3)
-	require.Len(t, results, 3)
-
-	for i, name := range []string{"lookup", "fail", "broken"} {
-		assert.Equal(t, fmt.Sprintf("item_%d", i+1), uses[i].ID)
-		assert.Equal(t, "mcp__stub__"+name, uses[i].Name)
-		assert.False(t, uses[i].StartedAt.Before(before), "each call has an item.started")
-		assert.False(t, results[i].Partial)
+	calls := codexLiveCalls(t, events, before, func(u ToolUseEvent) string { return u.Name })
+	require.Len(t, calls, 3)
+	for _, c := range calls {
+		assert.False(t, c.result.Partial, c.use.Name)
 	}
-	assert.JSONEq(t, `{"key":"alpha"}`, uses[0].Arguments, "MCP arguments pass through as the wire carried them")
-	assert.JSONEq(t, `{"key":"beta"}`, uses[1].Arguments)
-	assert.JSONEq(t, `{"key":"gamma"}`, uses[2].Arguments)
+	lookup, fail, broken := calls["mcp__stub__lookup"], calls["mcp__stub__fail"], calls["mcp__stub__broken"]
+	require.NotEmpty(t, lookup.use.ID, "the capture calls lookup: %v", calls)
+	require.NotEmpty(t, fail.use.ID, "the capture calls fail: %v", calls)
+	require.NotEmpty(t, broken.use.ID, "the capture calls broken: %v", calls)
+	assert.JSONEq(t, `{"key":"alpha"}`, lookup.use.Arguments, "MCP arguments pass through as the wire carried them")
+	assert.JSONEq(t, `{"key":"beta"}`, fail.use.Arguments)
+	assert.JSONEq(t, `{"key":"gamma"}`, broken.use.Arguments)
 
 	// Success: result.content text, no error.
-	assert.Equal(t, "value for alpha: 42", results[0].Result)
-	assert.False(t, results[0].IsError)
-	assert.Empty(t, uses[0].Summary, "a successful MCP call surfaces no payload")
+	assert.Equal(t, "value for alpha: 42", lookup.result.Result)
+	assert.False(t, lookup.result.IsError)
+	assert.Empty(t, lookup.use.Summary, "a successful MCP call surfaces no payload")
 
 	// A result the tool flagged isError: status failed, the text in result,
 	// error null.
-	assert.Equal(t, "backend unavailable for beta", results[1].Result)
-	assert.True(t, results[1].IsError)
-	assert.Equal(t, "failed", uses[1].Summary,
+	assert.Equal(t, "backend unavailable for beta", fail.result.Result)
+	assert.True(t, fail.result.IsError)
+	assert.Equal(t, "failed", fail.use.Summary,
 		"the tool's own text stays out of the summary, which is cut before full redaction")
 
 	// A JSON-RPC error: result null, the message in error.
-	assert.True(t, results[2].IsError)
-	assert.Contains(t, results[2].Result, "handler crashed on gamma")
-	assert.Contains(t, uses[2].Summary, "tool call failed for `stub/broken`")
+	assert.True(t, broken.result.IsError)
+	assert.Contains(t, broken.result.Result, "handler crashed on gamma")
+	assert.Contains(t, broken.use.Summary, "tool call failed for `stub/broken`")
 
 	result := codexOnlyResult(t, events)
 	assert.False(t, result.IsError, "failed tool calls do not fail the turn")
@@ -860,6 +916,33 @@ func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
 		uses, _ := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":null,"error":null,"status":"completed"}}`)
 		require.Len(t, uses, 1)
 		assert.Empty(t, uses[0].Arguments)
+	})
+
+	t.Run("an MCP result in an unknown shape costs the output, not the call", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name, result, text string
+			isError            bool
+		}{
+			{"a string result", `"unexpected"`, "", false},
+			{"content that is not an array", `{"content":"x"}`, "", false},
+			{"a block that is not an object", `{"content":["x",{"type":"text","text":"ok"}]}`, "ok", false},
+			{"a block whose text is not a string", `{"content":[{"type":"text","text":5},{"type":"text","text":"ok"}]}`, "ok", false},
+			{"an unknown shape on a failed call", `["x"]`, "", true},
+		} {
+			status := "completed"
+			if tc.isError {
+				status = "failed"
+			}
+			uses, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":{"k":"v"},"result":`+tc.result+`,"error":null,"status":"`+status+`"}}`)
+			require.Len(t, uses, 1, tc.name)
+			assert.Equal(t, "mcp__s__t", uses[0].Name, tc.name)
+			assert.JSONEq(t, `{"k":"v"}`, uses[0].Arguments, tc.name)
+			require.Len(t, results, 1, tc.name)
+			assert.Equal(t, tc.text, results[0].Result, tc.name)
+			assert.True(t, results[0].Partial, "%s: what was skipped marks the result partial", tc.name)
+			assert.Equal(t, tc.isError, results[0].IsError, tc.name)
+		}
 	})
 
 	t.Run("a failed patch that names no file still closes its call", func(t *testing.T) {

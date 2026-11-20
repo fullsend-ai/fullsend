@@ -981,10 +981,30 @@ func TestContentCollector_CodexToolCallsCorrelateWithResults(t *testing.T) {
 		}
 	}
 	require.Len(t, calls, 3)
-	assert.JSONEq(t, `{"command":"/bin/zsh -lc 'ls .'"}`, calls["item_2"])
-	assert.JSONEq(t, `{"file_path":"/sandbox/workspace/repo/hello.txt"}`, calls["item_3"])
-	assert.JSONEq(t, `{"command":"/bin/zsh -lc 'cat hello.txt'"}`, calls["item_4"])
-	assert.Equal(t, map[string]any{"item_2": "raw.ndjson\n", "item_4": "hi\n"}, responses,
+
+	// Each call is found by what the capture prompt asks for, not by its
+	// item id or the capturing host's shell wrapper, so a re-capture of
+	// basic_run.ndjson needs no edit here.
+	ids := map[string]string{}
+	for id, args := range calls {
+		require.NotEmpty(t, id, "every tool_call part carries its item id")
+		var a struct {
+			Command  string `json:"command"`
+			FilePath string `json:"file_path"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(args), &a))
+		cmd := strings.TrimRight(a.Command, `'"`)
+		switch {
+		case strings.HasSuffix(cmd, "ls ."):
+			ids["ls"] = id
+		case strings.HasSuffix(cmd, "cat hello.txt"):
+			ids["cat"] = id
+		case a.Command == "" && a.FilePath == "/sandbox/workspace/repo/hello.txt":
+			ids["write"] = id
+		}
+	}
+	require.Len(t, ids, 3, "the capture's two commands and its file write: %v", calls)
+	assert.Equal(t, map[string]any{ids["ls"]: "raw.ndjson\n", ids["cat"]: "hi\n"}, responses,
 		"the file change's empty result closes its span but records no part")
 }
 
