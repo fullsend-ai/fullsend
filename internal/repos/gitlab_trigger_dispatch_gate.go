@@ -930,7 +930,8 @@ func isManagedPipelineSchedule(description string) bool {
 }
 
 // gitlabTriggerDispatchOverrideRoleProblem returns a deferral reason unless
-// the live override role is exactly no_one_allowed.
+// the live override role is no_one_allowed, or a reported weaker role the
+// manifest opted in to (allow_insecure_pipeline_variables).
 func gitlabTriggerDispatchOverrideRoleProblem(ctx context.Context, client forge.Client, owner, repo string) string {
 	role, err := client.GetPipelineVariablesMinimumOverrideRole(ctx, owner, repo)
 	switch {
@@ -938,9 +939,7 @@ func gitlabTriggerDispatchOverrideRoleProblem(ctx context.Context, client forge.
 		return "ci_pipeline_variables_minimum_override_role is not supported on this GitLab instance, so pipeline variable overrides cannot be shown to be disabled"
 	case err != nil:
 		return "could not read ci_pipeline_variables_minimum_override_role: " + safeAPIError("reading the pipeline-variable override role", err).Error()
-	case role != forge.PipelineVarOverrideNoOneAllowed && gitlabPipelineVarOptedIn(ctx, owner, repo):
-		return fmt.Sprintf("ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; %s", displayPipelineVarRole(role), gitlabPipelineVarOptInFastPathNote)
-	case role != forge.PipelineVarOverrideNoOneAllowed:
+	case !gitlabPipelineVarRoleAccepted(ctx, owner, repo, role):
 		return fmt.Sprintf("ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; to apply the restriction, %s", displayPipelineVarRole(role), gitlabPipelineVarRestrictionHint)
 	}
 	return ""

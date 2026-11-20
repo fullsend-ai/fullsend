@@ -99,7 +99,7 @@ gitlab:
 		out, err := runGitLabOptInInstall(t, optIn, fc, tokens)
 		require.NoError(t, err, "install output:\n%s", out)
 		require.NotEmpty(t, tokens.created, "role-credential provisioning ran through the injected token client")
-		assert.Contains(t, out, "group/project sets allow_insecure_pipeline_variables (ADR 0175)")
+		assert.Contains(t, out, "group/project sets allow_insecure_pipeline_variables, so fullsend accepts")
 		assert.Contains(t, out, "BASH_ENV")
 		assert.NotContains(t, out, "refusing to deliver runnable typed GitLab jobs")
 		require.NotEmpty(t, fc.CreatedProposals, "the opt-in lets install deliver the scaffold")
@@ -111,7 +111,7 @@ gitlab:
 		out, err := runGitLabOptInInstall(t, strict, fc, &fakeGitLabRoleTokenClient{})
 		require.Error(t, err, "the delivery gate must fail install without the opt-in")
 		assert.Contains(t, out, "refusing to deliver runnable typed GitLab jobs")
-		assert.NotContains(t, out, "allow_insecure_pipeline_variables (ADR 0175)")
+		assert.NotContains(t, out, "sets allow_insecure_pipeline_variables")
 		assert.Empty(t, fc.CreatedProposals, "without the opt-in the weaker setting still blocks delivery")
 	})
 }

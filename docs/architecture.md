@@ -94,7 +94,11 @@ sole supported installation model
   role who can run a default-branch pipeline can read the Poller and role
   credentials ([ADR
   0175](ADRs/0175-allow-insecure-gitlab-pipeline-variable-restriction-opt-in.md),
-  amending ADR 0131). The opt-in is `allow_insecure_pipeline_variables` on a concrete GitLab manifest entry; it does not enable the webhook fast path or the trigger account, so an opted-in project dispatches from the poll schedules only ([Opting in to a relaxed setting](guides/getting-started/configuring-gitlab.md#opting-in-to-a-relaxed-setting)). Managed schedules carry no
+  amending ADR 0131). The opt-in is `allow_insecure_pipeline_variables` on a
+  concrete GitLab manifest entry, and it also lets the webhook fast path and
+  trigger account provision ([Opting in to a relaxed
+  setting](guides/getting-started/configuring-gitlab.md#opting-in-to-a-relaxed-setting)).
+  Managed schedules carry no
   pipeline variables; job rules select poll mode from the schedule description,
   and typed activation only reads managed schedules and fails while any still
   sets a pipeline variable (including an obsolete `FULLSEND_POLL_MODE` override,
