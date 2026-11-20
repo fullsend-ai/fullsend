@@ -975,8 +975,12 @@ to the pre- and post-scripts of a run that can answer a lookup (one with a
 mint URL and the Actions OIDC environment), and `FULLSEND_ENTITY_ID` on
 GitHub runs whose issue or pull request it resolved; `fullsend bot-role`
 reads the first two and needs nothing else, so scripts never handle a
-credential themselves. A run that cannot answer a lookup exports none of
-the three, so its scripts fail closed at the first ask. The semantics:
+credential themselves. A run with no mint URL or no Actions OIDC
+environment exports none of the three. A run that has both but no
+resolvable GitHub entity — a Jira-tracked GitHub run, or a GitHub run
+whose issue or pull request did not resolve — exports the URL and token
+without `FULLSEND_ENTITY_ID`, and every lookup fails, so its scripts
+still fail closed at the first ask. The semantics:
 
 - `--entity` is the canonical ID of the entity the run handles, as the
   [normalized entity spec](../../normative/normalized-entity/v1/README.md#scope-and-identity)
