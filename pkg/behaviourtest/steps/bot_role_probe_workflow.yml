@@ -107,7 +107,12 @@ jobs:
           # the mint does: RS256 signature against GitHub's published signing
           # key, issuer, audience and time claims. It prints the failing
           # check on stderr and succeeds only for a fully verified token.
+          # github.com's issuer; a GitHub server other than github.com (such
+          # as an emulator) issues the tokens from its own URL.
           oidc_issuer='https://token.actions.githubusercontent.com'
+          if [[ "${GITHUB_SERVER_URL:-https://github.com}" != https://github.com ]]; then
+            oidc_issuer="${GITHUB_SERVER_URL%/}"
+          fi
           oidc_audience='fullsend-mint'
           verify_oidc_token() {
             local h p s header kid n e n_hex e_hex dir now jwks
@@ -173,7 +178,12 @@ jobs:
             emit config ""
             exit 0
           fi
-          if ! [[ "${MINT_URL}" =~ ^https://[^/] ]] \
+          # The mint is https, or plain http on this runner's loopback, as
+          # fullsend's mint client allows.
+          mint_proto='=https'
+          loopback_re='^http://(127\.0\.0\.1|localhost)(:[0-9]+)?(/|$)'
+          [[ "${MINT_URL}" =~ ${loopback_re} ]] && mint_proto='=http'
+          if ! { [[ "${MINT_URL}" =~ ^https://[^/] ]] || [[ "${mint_proto}" == '=http' ]]; } \
             || ! [[ "${ACTOR_LOGIN}" =~ ${login_re} ]] \
             || ! [[ "${REPO}" =~ ${repo_re} ]] \
             || { [[ -n "${CLAIMED_ROLE}" ]] && ! [[ "${CLAIMED_ROLE}" =~ ${role_re} ]]; }; then
@@ -223,7 +233,7 @@ jobs:
 
           body="$(jq -nc --arg login "${ACTOR_LOGIN}" --arg repo "${REPO}" --arg role "${CLAIMED_ROLE}" \
             '{actor_login: $login, repo: $repo} + (if $role == "" then {} else {role: $role} end)')"
-          if ! status="$(curl -sS --proto '=https' --retry 2 --retry-delay 2 -o bot-role-response.json -w '%{http_code}' \
+          if ! status="$(curl -sS --proto "${mint_proto}" --retry 2 --retry-delay 2 -o bot-role-response.json -w '%{http_code}' \
             -H "Authorization: Bearer ${credential}" \
             -H "Content-Type: application/json" \
             -d "${body}" \

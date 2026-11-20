@@ -12,7 +12,8 @@ type RunnerConfig struct {
 	CI          string
 	InstallMode string
 	// Environment is the mint/infra target the suite is talking to
-	// (`dev`, `stage`, or `forgejo-dev`), from ENVIRONMENT. Empty
+	// (`dev`, `stage`, `github-emulator` for a GitHub emulator at
+	// BEHAVIOUR_GITHUB_URL, or `forgejo-dev`), from ENVIRONMENT. Empty
 	// defaults to `dev` so local `make behaviour-test` works without
 	// setting it. CI sets this to match the GitHub Environment on the
 	// behaviour job. `forgejo-dev` selects the Forgejo SCM, CI, and
@@ -88,8 +89,8 @@ func (c RunnerConfig) Validate() error {
 	if c.CI != "githubactions" && c.CI != CIForgejoActions {
 		return fmt.Errorf("unsupported BEHAVIOUR_CI %q", c.CI)
 	}
-	if c.Environment != "dev" && c.Environment != "stage" && c.Environment != EnvironmentForgejoDev {
-		return fmt.Errorf("unsupported ENVIRONMENT %q (want dev, stage, or %s)", c.Environment, EnvironmentForgejoDev)
+	if c.Environment != "dev" && c.Environment != "stage" && c.Environment != "github-emulator" && c.Environment != EnvironmentForgejoDev {
+		return fmt.Errorf("unsupported ENVIRONMENT %q (want dev, stage, github-emulator, or %s)", c.Environment, EnvironmentForgejoDev)
 	}
 	// The Forgejo drivers run only together and only in forgejo-dev, so
 	// a Forgejo selection never mixes with GitHub or GitLab drivers.

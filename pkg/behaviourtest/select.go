@@ -21,9 +21,10 @@ import (
 
 // installFactoryFor selects the install driver based on ENVIRONMENT:
 //
-//	dev (or empty) → CF preview mint (ephemeral per run)
-//	stage          → durable CF mint at stage-mint.fullsend.sh
-//	forgejo-dev    → Forgejo stub driver (provisioning not implemented)
+//	dev (or empty)  → CF preview mint (ephemeral per run)
+//	stage           → durable CF mint at stage-mint.fullsend.sh
+//	github-emulator → GitHub emulator at BEHAVIOUR_GITHUB_URL, mint at FULLSEND_MINT_URL
+//	forgejo-dev     → Forgejo stub driver (provisioning not implemented)
 //
 // Any other environment is an error, so an unrecognised value never
 // falls back to the GitHub pool drivers.
@@ -33,6 +34,8 @@ func installFactoryFor(environment string) (install.Factory, error) {
 		return install.NewRepoPoolCFMintPreviews, nil
 	case "stage":
 		return install.NewRepoPoolCFMintStage, nil
+	case "github-emulator":
+		return install.NewRepoPoolGitHubEmulator, nil
 	case env.EnvironmentForgejoDev:
 		return install.NewForgejoDev, nil
 	default:

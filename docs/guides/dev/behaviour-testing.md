@@ -477,6 +477,114 @@ This runs the branch's workflow and test target in the dev environment. The regu
 
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `github setup`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. A just-provisioned repo can briefly still report `not_provisioned`, so after a provision the driver re-reads `fullsend inference status` with a bounded backoff (up to 60 s of waiting) until the provider is healthy; the re-reads run after the provision lock is released, so a slow repo does not hold up other repos' provisions. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
+### Running against a GitHub emulator
+
+`ENVIRONMENT=github-emulator` runs the suite against
+[fullsend-ai/github-emulator](https://github.com/fullsend-ai/github-emulator)
+instead of github.com. The emulator serves the GitHub REST API and runs
+workflows on the real `actions/runner`. Everything runs on one Linux VM:
+the emulator, its runners, its GitHub Apps, a standalone mint and every token.
+The run creates them all and discards them at the end, so it needs no
+repository secrets, no pool orgs and no cloud OIDC.
+
+In this mode the suite does the following:
+
+- **Forge.** It reads the emulator root from `BEHAVIOUR_GITHUB_URL` and sets
+  `GITHUB_SERVER_URL` to the root and `GITHUB_API_URL` to `<root>/api/v3`
+  (`e2etest.ConfigureGitHubEmulatorForge`). The harness and every fullsend
+  CLI it starts then address the emulator. The harness sets these variables
+  itself because an Actions runner already exports both for github.com.
+- **Token.** It uses only the token in `GH_TOKEN`, even on an Actions runner,
+  and fails at start when `GH_TOKEN` is empty. It never falls back to
+  `GITHUB_TOKEN` or `gh auth token`, because those hold github.com
+  credentials.
+- **Pool.** `install.NewRepoPoolGitHubEmulator` leases slots in one org,
+  `halfsend`, with `BEHAVIOUR_POOL_SIZE` slots. If the org does not exist yet,
+  the factory creates it through `POST /admin/organizations`, owned by the
+  token's user. No other runner uses the emulator's orgs, so the pool leaves
+  out the [shared org lock bridge](#shared-org-lock-bridge-temporary). Slot
+  creation, Actions readiness, slot GC and the rate-limit gate run unchanged.
+  The same factory backs the playback suite.
+- **Mint.** The pool deploys no mint. It uses the mint at `FULLSEND_MINT_URL`
+  and installs each slot vendored with the App set in `BEHAVIOUR_APP_SET`.
+- **Probes.** The bot identity and mint probe workflows call the runner's own
+  GitHub API (`GITHUB_API_URL`). When `GITHUB_SERVER_URL` is not github.com,
+  they verify OIDC tokens against that server's issuer. They accept a plain
+  `http://` mint only on loopback (`127.0.0.1` or `localhost`).
+
+The suite reads these variables:
+
+```
+ENVIRONMENT=github-emulator
+BEHAVIOUR_GITHUB_URL=           # emulator root, no path, e.g. https://ghemu.localhost [required]
+GH_TOKEN=                       # emulator token for the pool org [required]
+FULLSEND_MINT_URL=              # the mint, trusting the emulator's issuer and API [required]
+BEHAVIOUR_APP_SET=fullsend-test # App set the emulator was seeded with
+BEHAVIOUR_POOL_SIZE=            # slots in halfsend
+BEHAVIOUR_FEATURES=             # space-separated feature paths for TestBehaviourSuite; default: every feature
+BEHAVIOUR_RUN_POLL_INTERVAL=15s # how often a harness-run wait polls a detected run
+BEHAVIOUR_NEGATIVE_SETTLE=90s   # how long a negative (did-not-run) assertion waits
+```
+
+`BEHAVIOUR_FEATURES`, `BEHAVIOUR_RUN_POLL_INTERVAL` and
+`BEHAVIOUR_NEGATIVE_SETTLE` work in every environment. The two durations take
+Go duration strings, such as `3s` or `1m30s`. A value that does not parse, or
+is not positive, stops the suite at start. The defaults suit github.com. An
+emulator delivers events and starts runs at once, so the job script shortens
+them.
+
+#### Running the emulator job on a VM
+
+`e2e/behaviour/github-emulator/run-job.sh` runs the whole job on one Linux VM.
+It changes the VM: it installs Podman and OpenShell, sets sysctl and iptables
+rules, and replaces the local copy of the OpenShell supervisor image. Run it
+only on a throwaway VM. It needs Ubuntu 24.04 with sudo, Go and `uv`:
+
+```bash
+git clone https://github.com/fullsend-ai/github-emulator .emulator
+python3 -m venv /tmp/emu-venv
+uv export --frozen --no-dev --no-emit-project --format requirements-txt --project .emulator -o /tmp/emu-req.txt
+uv pip install --python /tmp/emu-venv/bin/python --require-hashes -r /tmp/emu-req.txt
+EMULATOR_DIR=$PWD/.emulator EMULATOR_PY=/tmp/emu-venv/bin/python \
+  e2e/behaviour/github-emulator/run-job.sh features/triage/triage.feature
+```
+
+The script does these steps:
+
+1. It sets the VM up as the sandbox host once (`sandbox-host.sh`), so agent
+   jobs skip their own Podman and OpenShell setup.
+2. It starts the emulator over https on `ghemu.localhost`, with real
+   `actions/runner` processes.
+3. It seeds one App per mint role, plus the harness's e2e App, and a token
+   for the suite.
+4. With `inference-gateway` in `BEHAVIOUR_CAPABILITIES`, it starts a test
+   inference gateway (`gateway-stub.sh`). The gateway serves the echo model
+   only and trusts the emulator's issuer. It renders its config with
+   `hack/setup-e2e-inference-gateway.sh --print-config`.
+5. It builds and starts the standalone mint on loopback port 18502, with
+   `MINT_GITHUB_API_URL` and `MINT_OIDC_ISSUER_URL` pointed at the emulator.
+6. It pushes this checkout into the emulator as `fullsend-ai/fullsend`, and
+   creates the human-like test actors and their tokens.
+7. It builds a supervisor image that trusts the run's CA
+   (`supervisor-ca-image.sh`) and samples VM load (`sample-vm.sh`).
+8. It runs the given features, or the playback suite when
+   `BT_SUITE=playback`.
+
+The script header lists every setting. The main ones are `EMULATOR_DIR` and
+`EMULATOR_PY` (required), `STATE_DIR` (logs; default
+`$RUNNER_TEMP/bt-github-emulator`, or `/tmp/bt-github-emulator`), `BT_SUITE`,
+`AGENTS_SEED`, `AGENTS_REF`, `AGENTS_PRS` and `BEHAVIOUR_CAPABILITIES`. When
+the run passes, the suite's summary line shows the passed scenarios. The
+state directory holds the logs, `phases.tsv` (time per phase) and the
+suite's artifacts.
+
+`e2e/behaviour/github-emulator/shards.txt` splits the scenarios across CI VMs.
+Each line is `<shard> <workers> <runners> <feature[:line]>...`: the godog
+concurrency, the number of emulator runners, and the scenarios. The shards
+are balanced on measured scenario time, not on scenario count. When you add
+or move a scenario, update its line. List a Scenario Outline by its own line
+so all its rows stay on one shard.
+
 ### Failure classification and infrastructure retry
 
 Behaviour tests run against live infrastructure — the GitHub API, Actions
@@ -831,7 +939,7 @@ BEHAVIOUR_TRACE_COLLECTOR=     # job-scoped OTel Collector: unset = on in GitHub
 BEHAVIOUR_OPENBAO=             # feature-scoped OpenBao for Vault scenarios: unset = on in GitHub Actions with Podman, else skipped; true = required; false = off
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
-ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), or forgejo-dev (Forgejo driver stubs)
+ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), github-emulator (a GitHub emulator), or forgejo-dev (Forgejo driver stubs)
 E2E_GCP_PROJECT_ID=...        # inference project; install resolves (and if needed provisions) inference WIF once per pool repo name
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
 TEST_ACTOR_WRITE_PAT=...      # write-level human-like actor PAT (CI: same-named repo secret)
@@ -839,7 +947,7 @@ TEST_ACTOR_TRIAGE_PAT=...     # triage-level human-like actor PAT
 TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on base)
 ```
 
-`ENVIRONMENT` is `dev`, `stage`, or `forgejo-dev`. Local runs default to `dev` when unset. `forgejo-dev` selects the Forgejo SCM, CI, and install drivers, which are not-implemented stubs for now (see [Forgejo driver stubs](behaviour-drivers.md#forgejo-driver-stubs)). The standard `behaviour` job sets it to match its GitHub Environment (`dev` on authorized pull requests and the merge queue, `stage` on push to `main`). The separate, non-required `forgejo-behaviour` job selects only `@forgejo` scenarios and always sets `ENVIRONMENT=forgejo-dev`; its GitHub Environment is `forgejo-stage` on push to `main` and `forgejo-dev` otherwise. Promotion to a required check is tracked in [#9656](https://github.com/fullsend-ai/fullsend/issues/9656).
+`ENVIRONMENT` is `dev`, `stage`, `github-emulator`, or `forgejo-dev`. Local runs default to `dev` when unset. `github-emulator` runs the suite against a GitHub emulator instead of github.com (see [Running against a GitHub emulator](#running-against-a-github-emulator)). `forgejo-dev` selects the Forgejo SCM, CI, and install drivers, which are not-implemented stubs for now (see [Forgejo driver stubs](behaviour-drivers.md#forgejo-driver-stubs)). The standard `behaviour` job sets it to match its GitHub Environment (`dev` on authorized pull requests and the merge queue, `stage` on push to `main`). The separate, non-required `forgejo-behaviour` job selects only `@forgejo` scenarios and always sets `ENVIRONMENT=forgejo-dev`; its GitHub Environment is `forgejo-stage` on push to `main` and `forgejo-dev` otherwise. Promotion to a required check is tracked in [#9656](https://github.com/fullsend-ai/fullsend/issues/9656).
 
 When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
 

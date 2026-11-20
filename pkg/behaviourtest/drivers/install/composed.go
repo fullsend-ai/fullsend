@@ -296,6 +296,9 @@ func newComposedDriver(pool PoolConfig, setup orgSetupFunc) (*composedDriver, er
 	if err != nil {
 		return nil, fmt.Errorf("composed driver: %w", err)
 	}
+	if pool.PrivateOrgs {
+		alloc.orgLock = nil
+	}
 	return &composedDriver{
 		alloc:       alloc,
 		creds:       creds,

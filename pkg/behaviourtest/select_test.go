@@ -34,6 +34,7 @@ func TestInstallFactoryFor(t *testing.T) {
 		{"stage", install.NewRepoPoolCFMintStage},
 		{"dev", install.NewRepoPoolCFMintPreviews},
 		{"", install.NewRepoPoolCFMintPreviews},
+		{"github-emulator", install.NewRepoPoolGitHubEmulator},
 		{"forgejo-dev", install.NewForgejoDev},
 	} {
 		factory, err := installFactoryFor(tc.environment)

@@ -278,6 +278,13 @@ func TestNewComposedDriver_Validation(t *testing.T) {
 	d, err := newComposedDriver(good, setup)
 	require.NoError(t, err)
 	assert.Equal(t, 12, d.Capacity())
+	assert.NotNil(t, d.alloc.orgLock, "a shared pool keeps the e2e-lock bridge")
+
+	private := good
+	private.PrivateOrgs = true
+	d, err = newComposedDriver(private, setup)
+	require.NoError(t, err)
+	assert.Nil(t, d.alloc.orgLock, "a private pool leaves the e2e-lock bridge out")
 }
 
 func TestComposedDriver_NameOnlyMethodsRequireLeases(t *testing.T) {
