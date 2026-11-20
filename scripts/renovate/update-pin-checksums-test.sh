@@ -184,7 +184,7 @@ WRONG_SHA="5555555555555555555555555555555555555555555555555555555555555555"
 # pointing at a catalog entry that records the package's base64 SHA512. Any
 # override publishes the SHA512 of other bytes, to provoke a mismatch.
 publish_nuget_hash() {
-  local id="$1" version="$2" override="$3" reg cat hash catalog_url
+  local id="$1" version="$2" override="$3" reg catalog hash catalog_url
   catalog_url="https://api.nuget.org/v3/catalog0/data/fixture/${id}.${version}.json"
   if [[ -n "${override}" ]]; then
     hash=$(printf '%s' "${override}" | openssl dgst -sha512 -binary | base64 | tr -d '\n')
@@ -192,11 +192,11 @@ publish_nuget_hash() {
     hash=$(openssl dgst -sha512 -binary "$(awk -F '\t' -v u="${URLS[0]}" '$1 == u { print $2; exit }' "${URLMAP}")" | base64 | tr -d '\n')
   fi
   reg="${FIXTURES}/nuget-reg-$RANDOM.json"
-  cat="${FIXTURES}/nuget-cat-$RANDOM.json"
+  catalog="${FIXTURES}/nuget-cat-$RANDOM.json"
   jq -n --arg c "${catalog_url}" '{catalogEntry: $c}' > "${reg}"
-  jq -n --arg h "${hash}" '{packageHashAlgorithm: "SHA512", packageHash: $h}' > "${cat}"
+  jq -n --arg h "${hash}" '{packageHashAlgorithm: "SHA512", packageHash: $h}' > "${catalog}"
   serve "https://api.nuget.org/v3/registration5-semver1/${id}/${version}.json" "${reg}"
-  serve "${catalog_url}" "${cat}"
+  serve "${catalog_url}" "${catalog}"
 }
 
 # --- Case table -------------------------------------------------------------
@@ -334,6 +334,25 @@ done
 WD=$(setup_workdir GITLEAKS 9.1.0 images/sandbox/Containerfile)
 sed -i "s/^ARG GITLEAKS_VERSION=.*/ARG GITLEAKS_VERSION=9.0.0/" "${WD}/images/runner/Containerfile"
 expect_failure "gitleaks: version mismatch between images" "${WD}" update-gitleaks-checksums.sh "GITLEAKS_VERSION mismatch"
+
+# NuGet catalog entries that cannot be trusted fail before anything is written.
+ORT_NUPKG="https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/9.1.0/microsoft.ml.onnxruntime.9.1.0.nupkg"
+ORT_REG="https://api.nuget.org/v3/registration5-semver1/microsoft.ml.onnxruntime/9.1.0.json"
+ORT_CAT="https://api.nuget.org/v3/catalog0/data/fixture/microsoft.ml.onnxruntime.9.1.0.json"
+for nuget_case in \
+  'no catalogEntry|{}|{"packageHashAlgorithm":"SHA512","packageHash":"x"}|no catalogEntry in the NuGet registration' \
+  'wrong algorithm|{"catalogEntry":"'"${ORT_CAT}"'"}|{"packageHashAlgorithm":"SHA256","packageHash":"x"}|uses SHA256, expected SHA512' \
+  'no packageHash|{"catalogEntry":"'"${ORT_CAT}"'"}|{"packageHashAlgorithm":"SHA512"}|no packageHash in the NuGet catalog entry'; do
+  IFS='|' read -r label reg_json cat_json want <<< "${nuget_case}"
+  reset_urls
+  serve "${ORT_NUPKG}" "$(make_artifact "${ORT_NUPKG}")"
+  printf '%s\n' "${reg_json}" > "${FIXTURES}/nuget-reg-case.json"
+  printf '%s\n' "${cat_json}" > "${FIXTURES}/nuget-cat-case.json"
+  serve "${ORT_REG}" "${FIXTURES}/nuget-reg-case.json"
+  serve "${ORT_CAT}" "${FIXTURES}/nuget-cat-case.json"
+  WD=$(setup_workdir ORT 9.1.0 images/runner/Containerfile)
+  expect_failure "ort: ${label}" "${WD}" update-ort-checksums.sh "${want}"
+done
 
 # A missing SHA ARG line fails before anything is written.
 WD=$(setup_workdir RIPGREP 99.1.0 images/sandbox/Containerfile)

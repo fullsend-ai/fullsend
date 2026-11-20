@@ -190,7 +190,10 @@ nuget_package_sha256() {
     return 1
   fi
   artifact=$(fetch_cached "${url}") || return 1
-  got=$(openssl dgst -sha512 -binary "${artifact}" | base64 | tr -d '\n')
+  if ! got=$(openssl dgst -sha512 -binary "${artifact}" | base64 | tr -d '\n') || [[ -z "${got}" ]]; then
+    echo "error: could not compute the SHA512 of ${url}" >&2
+    return 1
+  fi
   if [[ "${got}" != "${want}" ]]; then
     echo "error: checksum mismatch for ${url}: NuGet records SHA512 ${want}, downloaded ${got}" >&2
     return 1

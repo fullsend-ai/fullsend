@@ -305,7 +305,7 @@ RUN case "$TARGETARCH" in \
       "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${ORT_VERSION}/microsoft.ml.onnxruntime.${ORT_VERSION}.nupkg" \
       -o /tmp/ort.nupkg \
     && echo "${ORT_SHA256}  /tmp/ort.nupkg" | sha256sum -c - \
-    && python3 -c 'import shutil, sys, zipfile; src = zipfile.ZipFile(sys.argv[1]).open(sys.argv[2]); shutil.copyfileobj(src, open(sys.argv[3], "wb"))' \
+    && python3 -c 'import shutil, sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); exec("with z.open(sys.argv[2]) as src, open(sys.argv[3], \"wb\") as dst: shutil.copyfileobj(src, dst)")' \
       /tmp/ort.nupkg "runtimes/${ORT_RID}/native/libonnxruntime.so" "/usr/lib/libonnxruntime.so.${ORT_VERSION}" \
     && chmod 0755 "/usr/lib/libonnxruntime.so.${ORT_VERSION}" \
     && ln -sf "/usr/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/libonnxruntime.so \
