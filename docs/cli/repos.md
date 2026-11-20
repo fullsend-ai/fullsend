@@ -1308,7 +1308,9 @@ When the trigger account defers instead, the gate is not reached, but install
 still warns, one line per finding, about every committed CI job or include that
 a trigger, agent child (`source=pipeline`) or scheduled (`source=schedule`)
 pipeline would run besides fullsend's own: the managed polling schedules run on
-the protected default branch whichever route dispatches. The recheck lists every
+the protected default branch whichever route dispatches. `repos status` reports
+the same findings whatever the trigger account's state (see
+`gitlab_unrelated_ci_work` below). The recheck lists every
 unmet prerequisite: managed scheduled polling no longer uses
 pipeline variables (the canonical schedule specs and every live managed
 schedule; a failed schedule read defers), the live
@@ -1497,6 +1499,18 @@ creates a missing webhook and repairs a misconfigured one. When the repair
 needs a replacement trigger token and the Poller generation state blocks it
 (for example, a superseded Poller generation has not finished retiring), the
 reasons include `reconciliation pending:` followed by the blocker.
+
+For an installed GitLab repository, `repos status` also adds a
+`gitlab_unrelated_ci_work` list. Each entry is a committed CI job or include
+on the default branch that a trigger, agent child (`source=pipeline`) or
+scheduled (`source=schedule`) pipeline would run besides fullsend's own. This
+is the same scan the dispatch activation gate runs, and status runs it whatever
+the trigger account's state. If the scan cannot complete, the list holds one
+`could not verify ...` entry instead. The list is informational and adds no
+drift: polling keeps working, but the managed polling schedules run these jobs
+on the protected default branch with its protected variables. The table output
+prints a warning section with one line per entry. To clear an entry, add rules
+to the named job that reject the named `$CI_PIPELINE_SOURCE`.
 
 `repos uninstall` removes the published token, trigger token, push entry,
 deploy key, the managed polling schedules the account owns (deleted without an
