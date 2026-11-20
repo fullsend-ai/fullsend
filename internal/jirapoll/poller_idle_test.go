@@ -16,8 +16,6 @@ import (
 // their lastCheck before the random pick, and a look advances lastCheck to
 // at least the issue's updated value.
 
-const jiraTS = "2006-01-02T15:04:05.000-0700"
-
 // idleTestIssue is a search row for key with the given created and updated
 // times. An empty updated time leaves the field empty.
 func idleTestIssue(n int, created, updated time.Time) jira.Issue {
@@ -27,11 +25,11 @@ func idleTestIssue(n int, created, updated time.Time) jira.Issue {
 		Fields: jira.IssueFields{
 			Labels:   []string{},
 			Reporter: jira.User{AccountID: "reporter-id"},
-			Created:  created.Format(jiraTS),
+			Created:  created.Format(jiraTimeLayout),
 		},
 	}
 	if !updated.IsZero() {
-		issue.Fields.Updated = updated.Format(jiraTS)
+		issue.Fields.Updated = updated.Format(jiraTimeLayout)
 	}
 	return issue
 }
@@ -42,7 +40,7 @@ func addTriageComment(mc *mockClient, key, id string, t time.Time) {
 	mc.comments[key] = append(mc.comments[key], jira.Comment{
 		ID:      id,
 		Body:    "/fs-triage",
-		Created: t.Format(jiraTS),
+		Created: t.Format(jiraTimeLayout),
 		Author:  jira.User{AccountID: "dev-account", AccountType: "atlassian"},
 	})
 }
@@ -102,7 +100,7 @@ func TestRunSkipsIdleCandidates(t *testing.T) {
 		addTriageComment(mc, key, fmt.Sprintf("%d", 500+n), now.Add(-40*time.Minute))
 	}
 	// One idle issue's updated equals its lastCheck exactly.
-	mc.searchResult[3].Fields.Updated = now.Add(-30 * time.Minute).Format(jiraTS)
+	mc.searchResult[3].Fields.Updated = now.Add(-30 * time.Minute).Format(jiraTimeLayout)
 
 	p := idleTestPoller(mc, t)
 	if err := p.Run(context.Background()); err != nil {
@@ -386,22 +384,22 @@ func TestFilterLockedActivityDecision(t *testing.T) {
 		updated string
 		active  bool
 	}{
-		{name: "read fails", readErr: true, updated: now.Add(-time.Hour).Format(jiraTS), active: true},
-		{name: "not JSON", stored: json.RawMessage(`not json`), updated: now.Add(-time.Hour).Format(jiraTS), active: true},
-		{name: "JSON but not a time", stored: json.RawMessage(`"yesterday"`), updated: now.Add(-time.Hour).Format(jiraTS), active: true},
-		{name: "JSON number", stored: json.RawMessage(`42`), updated: now.Add(-time.Hour).Format(jiraTS), active: true},
-		{name: "missing", updated: now.Add(-time.Hour).Format(jiraTS), active: true},
-		{name: "empty", stored: json.RawMessage{}, updated: now.Add(-time.Hour).Format(jiraTS), active: true},
+		{name: "read fails", readErr: true, updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
+		{name: "not JSON", stored: json.RawMessage(`not json`), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
+		{name: "JSON but not a time", stored: json.RawMessage(`"yesterday"`), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
+		{name: "JSON number", stored: json.RawMessage(`42`), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
+		{name: "missing", updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
+		{name: "empty", stored: json.RawMessage{}, updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
 		{name: "missing, updated empty", updated: "", active: true},
-		{name: "48 h ahead", stored: stamp(now.Add(48 * time.Hour)), updated: now.Add(-time.Hour).Format(jiraTS), active: true},
-		{name: "1 min ahead", stored: stamp(now.Add(time.Minute)), updated: now.Add(-time.Hour).Format(jiraTS), active: false},
+		{name: "48 h ahead", stored: stamp(now.Add(48 * time.Hour)), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
+		{name: "1 min ahead", stored: stamp(now.Add(time.Minute)), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: false},
 		{name: "set, updated empty", stored: stamp(now.Add(-time.Hour)), updated: "", active: true},
 		{name: "set, updated unparseable", stored: stamp(now.Add(-time.Hour)), updated: "last tuesday", active: true},
-		{name: "set, updated after", stored: stamp(now.Add(-time.Hour)), updated: now.Add(-time.Minute).Format(jiraTS), active: true},
-		{name: "set, updated equal in another format", stored: stamp(now.Add(-time.Hour)), updated: now.Add(-time.Hour).In(elsewhere).Format(jiraTS), active: false},
-		{name: "set, updated before", stored: stamp(now.Add(-time.Hour)), updated: now.Add(-2 * time.Hour).Format(jiraTS), active: false},
-		{name: "2020, updated 1 h ago", stored: stamp(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)), updated: now.Add(-time.Hour).Format(jiraTS), active: true},
-		{name: "2020, updated 3 days ago", stored: stamp(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)), updated: now.Add(-72 * time.Hour).Format(jiraTS), active: false},
+		{name: "set, updated after", stored: stamp(now.Add(-time.Hour)), updated: now.Add(-time.Minute).Format(jiraTimeLayout), active: true},
+		{name: "set, updated equal in another format", stored: stamp(now.Add(-time.Hour)), updated: now.Add(-time.Hour).In(elsewhere).Format(jiraTimeLayout), active: false},
+		{name: "set, updated before", stored: stamp(now.Add(-time.Hour)), updated: now.Add(-2 * time.Hour).Format(jiraTimeLayout), active: false},
+		{name: "2020, updated 1 h ago", stored: stamp(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
+		{name: "2020, updated 3 days ago", stored: stamp(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)), updated: now.Add(-72 * time.Hour).Format(jiraTimeLayout), active: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -536,7 +534,7 @@ func TestRunSearchRowOlderThanListing(t *testing.T) {
 		t.Errorf("lastCheck after cycle 1 = %v, want the comment's time %v", lc, commentAt)
 	}
 
-	mc.searchResult[0].Fields.Updated = commentAt.Add(3 * time.Millisecond).Format(jiraTS)
+	mc.searchResult[0].Fields.Updated = commentAt.Add(3 * time.Millisecond).Format(jiraTimeLayout)
 	if p := runCycle(t, mc, "cycle 2"); len(p.dispatches) != 0 {
 		t.Errorf("cycle 2 dispatched %d, want 0", len(p.dispatches))
 	}
@@ -565,7 +563,7 @@ func TestRunStaleSearchRowDelaysButDoesNotLose(t *testing.T) {
 		t.Fatalf("cycle 1 on a stale row: dispatched %d, listed %d; want the issue skipped", len(p.dispatches), mc.listCommentsCalls["PROJ-1"])
 	}
 
-	mc.searchResult[0].Fields.Updated = commentAt.Add(3 * time.Millisecond).Format(jiraTS)
+	mc.searchResult[0].Fields.Updated = commentAt.Add(3 * time.Millisecond).Format(jiraTimeLayout)
 	if p := runCycle(t, mc, "cycle 2"); len(p.dispatches) != 1 {
 		t.Errorf("cycle 2 after the row caught up dispatched %d, want the comment once", len(p.dispatches))
 	}
@@ -583,19 +581,19 @@ func TestDetectChangesMaxSeenReachesUpdated(t *testing.T) {
 		updated string
 		want    time.Time // zero: capped below fetch start
 	}{
-		{name: "after", updated: now.Add(-time.Minute).Format(jiraTS), want: now.Add(-time.Minute)},
-		{name: "before", updated: now.Add(-20 * time.Minute).Format(jiraTS), want: commentAt},
-		{name: "equal", updated: commentAt.Format(jiraTS), want: commentAt},
+		{name: "after", updated: now.Add(-time.Minute).Format(jiraTimeLayout), want: now.Add(-time.Minute)},
+		{name: "before", updated: now.Add(-20 * time.Minute).Format(jiraTimeLayout), want: commentAt},
+		{name: "equal", updated: commentAt.Format(jiraTimeLayout), want: commentAt},
 		{name: "unparseable", updated: "soon", want: commentAt},
 		{name: "empty", updated: "", want: commentAt},
-		{name: "inside the margin", updated: now.Add(time.Second).Format(jiraTS)},
+		{name: "inside the margin", updated: now.Add(time.Second).Format(jiraTimeLayout)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mc := newMockClient()
 			addTriageComment(mc, "PROJ-1", "501", commentAt)
 			p := idleTestPoller(mc, t)
-			issue := jira.Issue{ID: "10001", Key: "PROJ-1", Fields: jira.IssueFields{Created: now.Add(-48 * time.Hour).Format(jiraTS), Updated: tc.updated}}
+			issue := jira.Issue{ID: "10001", Key: "PROJ-1", Fields: jira.IssueFields{Created: now.Add(-48 * time.Hour).Format(jiraTimeLayout), Updated: tc.updated}}
 			res, err := p.detectChanges(context.Background(), issue, lastCheck)
 			if err != nil {
 				t.Fatalf("detectChanges() error: %v", err)
