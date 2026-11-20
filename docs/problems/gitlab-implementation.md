@@ -27,7 +27,7 @@ This document contains implementation details for GitLab support in fullsend. Fo
 
 ## Shim Pipeline Security
 
-**GitHub**: `pull_request_target` ensures the shim workflow runs the base branch version, preventing untrusted PR code from modifying the workflow to exfiltrate secrets. *(Superseded by [ADR 0164](../ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md), target state: the shim moves to `pull_request` for same-repo PRs only, because GitHub blocks `pull_request_target` by default on public repositories.)*
+**GitHub**: the shim runs on `pull_request` for same-repo PRs only, because GitHub blocks `pull_request_target` by default on public repositories ([ADR 0164](../ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md)). Same-repo authors already have write access; fork PRs get no automatic run, and the dispatch workflow takes the base side for every checkout. Before ADR 0164, `pull_request_target` ran the base-branch version of the shim so PR code could not modify it.
 
 **GitLab**: No `pull_request_target` equivalent. The protected-branch pipeline approach (using `CI_COMMIT_REF_PROTECTED == "true"`) conflicts with MR-event triggering (which runs on unprotected MR source branches), so a different architecture is required.
 

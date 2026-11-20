@@ -138,7 +138,10 @@ func TestRenderBotActorWorkflow(t *testing.T) {
 		fetchOIDC := strings.Index(job.Steps[0].Run, `${ACTIONS_ID_TOKEN_REQUEST_URL}`)
 		require.GreaterOrEqual(t, guardURL, 0, "no https check on the mint URL")
 		assert.Less(t, guardURL, fetchOIDC, "the https check runs before the OIDC token is requested")
-		assert.Contains(t, job.Steps[0].Run, `--proto '=https'`)
+		assert.Contains(t, job.Steps[0].Run, `mint_proto='=https'`)
+		assert.Contains(t, job.Steps[0].Run, `--proto "${mint_proto}"`)
+		assert.Contains(t, job.Steps[0].Run, `"${GITHUB_API_URL}/installation/token"`)
+		assert.NotContains(t, job.Steps[0].Run, "api.github.com", "the runner's GitHub API, not github.com's")
 		assert.Contains(t, job.Steps[0].Run, tc.apiPath)
 
 		// Each value is checked against the token allowlist before it is

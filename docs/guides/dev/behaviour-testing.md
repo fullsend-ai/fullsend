@@ -141,9 +141,8 @@ Every scenario runs the stage under the dummy runtime selected at install time (
   `runner-secret-overlay-guard` by default (the two gateway capabilities and
   `runner-secret-overlay-guard` reach no real model; see [Wiring it into the
   behaviour tests](e2e-testing.md#wiring-it-into-the-behaviour-tests)) (a
-  `Makefile` variable, so a PR adding a gated scenario exercises it on its own
-  run — a fork PR's `/ok-to-test <sha>` run takes `e2e.yml` from `main`, while
-  the `Makefile` always comes from the PR head); `BEHAVIOUR_CAPABILITIES= make
+  `Makefile` variable, so a change adding a gated scenario exercises it on its
+  own `e2e.yml` run in the merge queue); `BEHAVIOUR_CAPABILITIES= make
   behaviour-test` skips them. See `features/runtime/pi.feature`.
   `features/runtime/pi-openai.feature` is the same shape on
   `openai/gpt-5.6-luna` with the `openai` provider instead of Vertex host files;
@@ -459,7 +458,7 @@ The target runs `go test -tags playback -race -v -count=1 -timeout 45m ./e2e/beh
 The `playback` job mirrors the `behaviour` job in [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml), with these specifics:
 
 - **Target and environment.** Run `make playback-test` with `shell: bash`, teeing output (for example to `playback-test.log`) so `pipefail` propagates failures. Pass the same `env:` block as the behaviour job: `BEHAVIOUR_SCM=github`, `BEHAVIOUR_CI=githubactions`, `BEHAVIOUR_INSTALL_MODE=per-repo`, `E2E_GCP_*`, `TEST_*_PEM`, and the `TEST_CLOUDFLARE_*` credentials. Point `BEHAVIOUR_ARTIFACT_DIR` at a playback-specific directory (for example `${{ runner.temp }}/playback-artifacts`). You do not need to set `GODOG_TAGS` or `PLAYBACK_RUNTIME`, because `RunPlaybackSuite` sets them itself.
-- **Triggers, gate, and environment binding.** Use `needs: gate` with `!cancelled()` and run for an authorized same-repo `pull_request`, an `issue_comment` call from `e2e-ok-to-test.yml` (a fork PR's `/ok-to-test <sha>`, which passes the sha as `inputs.head_sha`), `merge_group`, and push to `main`; manual dispatch runs playback when `run_playback=true`. Bind to the same GitHub Environment (`stage` on push, `dev` otherwise) and set `ENVIRONMENT` to match. The job checks out and runs PR-head code with secrets, so the [CI Workflows security rules](../../contributing/ci-workflows.md#review-checklist-for-secrets-in-behaviourplayback-jobs) apply.
+- **Triggers, gate, and environment binding.** Use `needs: gate` with `!cancelled()` and run for `merge_group` and push to `main`; manual dispatch runs playback when `run_playback=true`. Skip pull requests, including the `issue_comment` call from `e2e-ok-to-test.yml`: they get playback from the GitHub emulator ([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml)), and a skipped job satisfies the required `playback` check. Bind to the same GitHub Environment (`stage` on push, `dev` otherwise) and set `ENVIRONMENT` to match. The job checks out and runs the code under test with secrets, so the [CI Workflows security rules](../../contributing/ci-workflows.md#review-checklist-for-secrets-in-behaviourplayback-jobs) apply.
 - **Slot leasing.** Neither suite reserves a whole org. `RunPlaybackSuite` and `RunSuite` lease individual `(org, test-repo-NN)` slots through the same shared install driver and allocator (see [Repo allocation via the shared slot driver](#repo-allocation-via-the-shared-slot-driver)), so the two suites and other concurrent runs can share an org without resetting each other's repos. Neither suite takes the exclusive `e2e-lock` (`e2etest.AcquireOrg`) or runs the broad startup `e2etest.CleanupStaleResources`. Abandoned slot repos are reclaimed by the allocator's [repo-slot GC](#repo-slot-gc). The playback and behaviour jobs still share a job concurrency group within each stage workflow run, because the STAGE pool is the single `halfsend` org with only 12 slots. Dev jobs use distinct groups and run concurrently across the numbered orgs.
 - **Change detection.** Reuse the behaviour job's file filter (its `grep -qE` path list and the `push.paths` entries under the same `SYNC-WITH` comment). It already covers `e2e/behaviour/` (playback features, fixtures and results), `pkg/behaviourtest/`, `internal/runtime/` (the `dummy-playback` runtime), and `Makefile`. Keep the two filters in sync, and keep the behaviour job's fallback of running the tests when the file list cannot be fetched or may be truncated.
 - **Cancellation.** The job inherits the workflow-level `concurrency` group and `cancel-in-progress` expression. A cancelled or killed run cannot run `t.Cleanup`, so its slot repos stay occupied until the [repo-slot GC](#repo-slot-gc) reclaims them, exactly as for the behaviour job. Gate post-test steps on `always()` rather than `success()` so that redaction still runs after a failure.
@@ -476,6 +475,114 @@ gh workflow run e2e.yml --repo fullsend-ai/fullsend \
 This runs the branch's workflow and test target in the dev environment. The regular `behaviour` job is skipped for this playback dispatch. Artifact redaction uses the default-branch script.
 
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `github setup`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. A just-provisioned repo can briefly still report `not_provisioned`, so after a provision the driver re-reads `fullsend inference status` with a bounded backoff (up to 60 s of waiting) until the provider is healthy; the re-reads run after the provision lock is released, so a slow repo does not hold up other repos' provisions. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+
+### Running against a GitHub emulator
+
+`ENVIRONMENT=github-emulator` runs the suite against
+[fullsend-ai/github-emulator](https://github.com/fullsend-ai/github-emulator)
+instead of github.com. The emulator serves the GitHub REST API and runs
+workflows on the real `actions/runner`. Everything runs on one Linux VM:
+the emulator, its runners, its GitHub Apps, a standalone mint and every token.
+The run creates them all and discards them at the end, so it needs no
+repository secrets, no pool orgs and no cloud OIDC.
+
+In this mode the suite does the following:
+
+- **Forge.** It reads the emulator root from `BEHAVIOUR_GITHUB_URL` and sets
+  `GITHUB_SERVER_URL` to the root and `GITHUB_API_URL` to `<root>/api/v3`
+  (`e2etest.ConfigureGitHubEmulatorForge`). The harness and every fullsend
+  CLI it starts then address the emulator. The harness sets these variables
+  itself because an Actions runner already exports both for github.com.
+- **Token.** It uses only the token in `GH_TOKEN`, even on an Actions runner,
+  and fails at start when `GH_TOKEN` is empty. It never falls back to
+  `GITHUB_TOKEN` or `gh auth token`, because those hold github.com
+  credentials.
+- **Pool.** `install.NewRepoPoolGitHubEmulator` leases slots in one org,
+  `halfsend`, with `BEHAVIOUR_POOL_SIZE` slots. If the org does not exist yet,
+  the factory creates it through `POST /admin/organizations`, owned by the
+  token's user. No other runner uses the emulator's orgs, so the pool leaves
+  out the [shared org lock bridge](#shared-org-lock-bridge-temporary). Slot
+  creation, Actions readiness, slot GC and the rate-limit gate run unchanged.
+  The same factory backs the playback suite.
+- **Mint.** The pool deploys no mint. It uses the mint at `FULLSEND_MINT_URL`
+  and installs each slot vendored with the App set in `BEHAVIOUR_APP_SET`.
+- **Probes.** The bot identity and mint probe workflows call the runner's own
+  GitHub API (`GITHUB_API_URL`). When `GITHUB_SERVER_URL` is not github.com,
+  they verify OIDC tokens against that server's issuer. They accept a plain
+  `http://` mint only on loopback (`127.0.0.1` or `localhost`).
+
+The suite reads these variables:
+
+```
+ENVIRONMENT=github-emulator
+BEHAVIOUR_GITHUB_URL=           # emulator root, no path, e.g. https://ghemu.localhost [required]
+GH_TOKEN=                       # emulator token for the pool org [required]
+FULLSEND_MINT_URL=              # the mint, trusting the emulator's issuer and API [required]
+BEHAVIOUR_APP_SET=fullsend-test # App set the emulator was seeded with
+BEHAVIOUR_POOL_SIZE=            # slots in halfsend
+BEHAVIOUR_FEATURES=             # space-separated feature paths for TestBehaviourSuite; default: every feature
+BEHAVIOUR_RUN_POLL_INTERVAL=15s # how often a harness-run wait polls a detected run
+BEHAVIOUR_NEGATIVE_SETTLE=90s   # how long a negative (did-not-run) assertion waits
+```
+
+`BEHAVIOUR_FEATURES`, `BEHAVIOUR_RUN_POLL_INTERVAL` and
+`BEHAVIOUR_NEGATIVE_SETTLE` work in every environment. The two durations take
+Go duration strings, such as `3s` or `1m30s`. A value that does not parse, or
+is not positive, stops the suite at start. The defaults suit github.com. An
+emulator delivers events and starts runs at once, so the job script shortens
+them.
+
+#### Running the emulator job on a VM
+
+`e2e/behaviour/github-emulator/run-job.sh` runs the whole job on one Linux VM.
+It changes the VM: it installs Podman and OpenShell, sets sysctl and iptables
+rules, and replaces the local copy of the OpenShell supervisor image. Run it
+only on a throwaway VM. It needs Ubuntu 24.04 with sudo, Go and `uv`:
+
+```bash
+git clone https://github.com/fullsend-ai/github-emulator .emulator
+python3 -m venv /tmp/emu-venv
+uv export --frozen --no-dev --no-emit-project --format requirements-txt --project .emulator -o /tmp/emu-req.txt
+uv pip install --python /tmp/emu-venv/bin/python --require-hashes -r /tmp/emu-req.txt
+EMULATOR_DIR=$PWD/.emulator EMULATOR_PY=/tmp/emu-venv/bin/python \
+  e2e/behaviour/github-emulator/run-job.sh features/triage/triage.feature
+```
+
+The script does these steps:
+
+1. It sets the VM up as the sandbox host once (`sandbox-host.sh`), so agent
+   jobs skip their own Podman and OpenShell setup.
+2. It starts the emulator over https on `ghemu.localhost`, with real
+   `actions/runner` processes.
+3. It seeds one App per mint role, plus the harness's e2e App, and a token
+   for the suite.
+4. With `inference-gateway` in `BEHAVIOUR_CAPABILITIES`, it starts a test
+   inference gateway (`gateway-stub.sh`). The gateway serves the echo model
+   only and trusts the emulator's issuer. It renders its config with
+   `hack/setup-e2e-inference-gateway.sh --print-config`.
+5. It builds and starts the standalone mint on loopback port 18502, with
+   `MINT_GITHUB_API_URL` and `MINT_OIDC_ISSUER_URL` pointed at the emulator.
+6. It pushes this checkout into the emulator as `fullsend-ai/fullsend`, and
+   creates the human-like test actors and their tokens.
+7. It builds a supervisor image that trusts the run's CA
+   (`supervisor-ca-image.sh`) and samples VM load (`sample-vm.sh`).
+8. It runs the given features, or the playback suite when
+   `BT_SUITE=playback`.
+
+The script header lists every setting. The main ones are `EMULATOR_DIR` and
+`EMULATOR_PY` (required), `STATE_DIR` (logs; default
+`$RUNNER_TEMP/bt-github-emulator`, or `/tmp/bt-github-emulator`), `BT_SUITE`,
+`AGENTS_SEED`, `AGENTS_REF`, `AGENTS_PRS` and `BEHAVIOUR_CAPABILITIES`. When
+the run passes, the suite's summary line shows the passed scenarios. The
+state directory holds the logs, `phases.tsv` (time per phase) and the
+suite's artifacts.
+
+`e2e/behaviour/github-emulator/shards.txt` splits the scenarios across CI VMs.
+Each line is `<shard> <workers> <runners> <feature[:line]>...`: the godog
+concurrency, the number of emulator runners, and the scenarios. The shards
+are balanced on measured scenario time, not on scenario count. When you add
+or move a scenario, update its line. List a Scenario Outline by its own line
+so all its rows stay on one shard.
 
 ### Failure classification and infrastructure retry
 
@@ -828,9 +935,10 @@ BEHAVIOUR_APP_SET=fullsend-test # app identities for both mint deployment and gi
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
 BEHAVIOUR_FAILURE_CLASS_FILE=  # extra direct path for failure-class.json; the retry wrapper sets it to a private temp file when BEHAVIOUR_ARTIFACT_DIR is unset
 BEHAVIOUR_TRACE_COLLECTOR=     # job-scoped OTel Collector: unset = on in GitHub Actions when BEHAVIOUR_ARTIFACT_DIR is set; true/false to force
+BEHAVIOUR_OPENBAO=             # feature-scoped OpenBao for Vault scenarios: unset = on in GitHub Actions with Podman, else skipped; true = required; false = off
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
-ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), or forgejo-dev (Forgejo driver stubs)
+ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), github-emulator (a GitHub emulator), or forgejo-dev (Forgejo driver stubs)
 E2E_GCP_PROJECT_ID=...        # inference project; install resolves (and if needed provisions) inference WIF once per pool repo name
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
 TEST_ACTOR_WRITE_PAT=...      # write-level human-like actor PAT (CI: same-named repo secret)
@@ -838,7 +946,7 @@ TEST_ACTOR_TRIAGE_PAT=...     # triage-level human-like actor PAT
 TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on base)
 ```
 
-`ENVIRONMENT` is `dev`, `stage`, or `forgejo-dev`. Local runs default to `dev` when unset. `forgejo-dev` selects the Forgejo SCM, CI, and install drivers, which are not-implemented stubs for now (see [Forgejo driver stubs](behaviour-drivers.md#forgejo-driver-stubs)). The standard `behaviour` job sets it to match its GitHub Environment (`dev` on authorized pull requests and the merge queue, `stage` on push to `main`). The separate, non-required `forgejo-behaviour` job selects only `@forgejo` scenarios and always sets `ENVIRONMENT=forgejo-dev`; its GitHub Environment is `forgejo-stage` on push to `main` and `forgejo-dev` otherwise. Promotion to a required check is tracked in [#9656](https://github.com/fullsend-ai/fullsend/issues/9656).
+`ENVIRONMENT` is `dev`, `stage`, `github-emulator`, or `forgejo-dev`. Local runs default to `dev` when unset. `github-emulator` runs the suite against a GitHub emulator instead of github.com (see [Running against a GitHub emulator](#running-against-a-github-emulator)). `forgejo-dev` selects the Forgejo SCM, CI, and install drivers, which are not-implemented stubs for now (see [Forgejo driver stubs](behaviour-drivers.md#forgejo-driver-stubs)). The standard `behaviour` job sets it to match its GitHub Environment (`dev` in the merge queue, `stage` on push to `main`). The separate, non-required `forgejo-behaviour` job selects only `@forgejo` scenarios and always sets `ENVIRONMENT=forgejo-dev`; its GitHub Environment is `forgejo-stage` on push to `main` and `forgejo-dev` otherwise. Promotion to a required check is tracked in [#9656](https://github.com/fullsend-ai/fullsend/issues/9656).
 
 When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
 
@@ -983,6 +1091,51 @@ The tested fullsend workflows run on separate GitHub-hosted runners, so the suit
 `BEHAVIOUR_TRACE_COLLECTOR` controls the collector. When unset, it runs only in GitHub Actions and only when `BEHAVIOUR_ARTIFACT_DIR` is set. Set it to `true` to run the collector locally (requires Podman and `BEHAVIOUR_ARTIFACT_DIR`), or `false` to turn it off. Trace collection is diagnostic: if the collector cannot start (no Podman, image pull or tunnel failure), the suite logs a warning and runs without it. If a repository cannot be configured, the suite logs that and continues. A suite killed by the `go test` timeout skips `t.Cleanup`, so no trace files are saved for that run.
 
 To check the per-trace routing against the pinned Collector image, run `BT_OTELCOL_INTEGRATION=1 go test ./pkg/behaviourtest/drivers/install -run PerTraceFilesWithRealCollector` (requires Podman). The test sends interleaved spans of two trace IDs across several export requests and verifies that every span is preserved and each trace ID has its own file. The test is skipped otherwise.
+
+### Vault (OpenBao) server
+
+Behaviour scenarios for Vault-backed runner secrets
+([ADR 0155](../../ADRs/0155-configure-vault-backed-runner-secrets.md)) need a
+Vault server that the tested workflows can reach.
+`install.StartVaultServer` in `pkg/behaviourtest/drivers/install` provides one.
+A Vault feature starts the server once, reuses it across its scenarios and
+stops it at feature or job cleanup. Features that do not exercise Vault never
+start it.
+
+1. Generate a random root token. It is registered with the process secret
+   redactor and reaches the container only through Podman's environment, never
+   a command line. It stays on the CI worker.
+2. Start an OpenBao dev-mode server with Podman, published on `127.0.0.1` of
+   the CI worker. Dev mode keeps everything in memory and mounts KV v2 at
+   `secret/`.
+3. Enable JWT auth at the default `jwt` mount, bound to the GitHub Actions OIDC
+   issuer. OpenBao fetches the issuer's signing keys through OIDC discovery.
+   Then write a policy that grants `read` on `secret/data/fullsend-bt/*` and
+   nothing else.
+4. Start a Cloudflare quick tunnel to give the server a public HTTPS address,
+   as Vault connections require. The address goes into trusted base
+   configuration as the connection's `vault_address`.
+5. Log the startup time and the server container's memory use
+   (`podman stats`), so the cost on the behaviour-test runner is visible in
+   the job log.
+
+`AllowRepo` writes the default `fullsend-runner` role. The role binds the
+default Fullsend Vault audience (`https://fullsend.sh/vault`) and the job
+token's `repository` claim to every allowed leased repository, and attaches
+only the read policy. `PutSecret` writes a synthetic scenario secret under
+`secret/data/fullsend-bt/` and returns the KV v2 read path for a
+`vault_secrets` entry. `Stop` stops the tunnel, then the server, and removes
+both containers, which discards the root token and every secret. If removing
+a container fails, the next `Stop` call retries it. If a failed startup cannot
+remove its own containers, `StartVaultServer` returns the partially started
+server together with the error, so the caller can still retry `Stop` at feature
+or job cleanup.
+
+`BEHAVIOUR_OPENBAO` controls the server. When unset, Vault scenarios run only
+in GitHub Actions with Podman available, because the tested workflows need a
+job-issued OIDC token. Otherwise `StartVaultServer` returns a skip reason, so
+local runs skip them. Set it to `true` to make a missing prerequisite an error
+instead of a skip, or `false` to turn the scenarios off.
 
 ### Rate-limit observability
 
@@ -1216,7 +1369,7 @@ See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [A
 
 ## Fork PR scenarios
 
-Fork dispatch scenarios test `pull_request_target` harness triggering from cross-fork pull requests.
+Fork dispatch scenarios test harness dispatch on cross-fork pull requests. The shim runs on `pull_request` and skips fork pull requests ([ADR 0164](../../ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md)), so fork pull request events (open, label, push) never dispatch; each scenario dispatches through a maintainer's slash command on the fork pull request (`the <actor> posts "..." on the fork pull request`).
 
 ### Logical fork name → leased base
 
@@ -1269,12 +1422,12 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 
 | Scenario | Expected | How tested |
 |----------|----------|------------|
-| Fork PR matches CEL trigger; authorized actor | Agent runs via `harness-dispatch`; workflow completes | Positive dispatch + artifact assertion |
+| Fork PR label is skipped; a write actor's comment matches the CEL trigger | Label: agent did not run. Comment: agent runs via `harness-dispatch`; workflow completes | Negative check after the label, then positive dispatch + artifact assertion |
 | Kill switch active (`kill_switch: true`) on fork event | Empty matrix, exit 0 | Separate scenario; `the kill switch is active` step + assert agent did not run |
 | Disabled harness (`enabled: false`) on fork event | Empty matrix, exit 0 | Disabled harness in positive scenario; assert agent did not run |
-| Fork PR `synchronize` + label dispatches harness | Harness dispatched exactly 1 time; workflow completes | Separate scenario with sync commit + label |
+| Fork PR `synchronize` does not dispatch; a later comment does | Push: agent did not run. Comment: harness dispatched exactly 1 time; workflow completes | Separate scenario with sync commit, then a comment |
 | CEL `is_fork` exclusion (`!event.state.change_proposal.is_fork`) | Empty matrix, exit 0 | Harness with `is_fork` guard in positive scenario; assert agent did not run |
-| Fork PR matches CEL `trigger` on `pull_request_target`; unauthorized actor ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) | Empty matrix, exit 0 — no agent run | `platform/actor-authorization.feature`. The outsider opens a PR from its own fork; assert the harness dispatch completed with an empty matrix, the agent did not run, and it was dispatched exactly 0 times, then a label as the positive control |
+| Comment on a fork PR matches the CEL `trigger`; unauthorized actor ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) | Empty matrix, exit 0 — no agent run | `platform/actor-authorization.feature`. The outsider opens a PR from its own fork and comments on it; assert the harness dispatch completed with an empty matrix and was dispatched exactly 0 times, then the write actor's comment as the positive control |
 | Human actors at each permission level comment `/fs-do` and add a label | Each harness is dispatched or not by the actor's role: the write actor starts the triage-level and write-level harnesses, the triage actor only the triage-level one, the outsider none; the label harness runs for both labelers | `platform/actor-authorization.feature`, the `<actor> comments "/fs-do" and labels the issue` outline |
 | Bot actors (review, coder and triage role bots, the e2e bot) and the write actor as a control comment `/fs-do` and add a label | One harness per bot role triggers on `/fs-do` with `event.actor.bot_role == "<role>"`; one harness triggers on the label. The shim forwards `/fs-` comments from bots, so a comment reaches the bot-role lookup. Each registered role bot dispatches only the harness of its own role. The write actor (a human, so no bot role) and the unregistered e2e bot (denied by the lookup before CEL) dispatch no role harness. Every actor's label dispatches the label harness, because label-added events skip the lookup. The matrix counts the dispatches of each harness per actor | `platform/bot-actor-authorization.feature`, the `registered <actor> posts "/fs-do" and labels the issue "do-it"` outline and the `<actor> posts "/fs-do" and labels the issue "do-it" without a bot role` outline. See [Bot actor steps](#bot-actor-steps) |
 | The three role bots and the e2e bot submit a review comment on a pull request, with the write actor's review as a control | A pull request review is a bot transition the shim forwards, so it reaches the dispatch-time bot-role lookup. Each registered role bot dispatches the harness of its own role (`event.actor.bot_role`) and the unrestricted `on-review` harness. The unregistered e2e bot dispatches nothing, not even `on-review`, until the write actor's review dispatches it. A failed lookup cannot be induced against the deployed mint; the unit tests of the gate cover it | `platform/bot-actor-authorization.feature`, the `registered <actor> submits a review comment on a pull request` outline and the `unregistered e2e bot submits a review comment on a pull request` scenario |
@@ -1283,10 +1436,10 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 
 **Consolidation pattern:** To conserve parallel execution slots, add negative-path harnesses (disabled agent, CEL exclusion) alongside the positive-path harness in a single scenario rather than creating separate scenarios. The positive harness wait acts as the settle window for negative assertions (piggyback pattern — see `negativeSettleDuration` in `dispatch.go`). The kill switch scenario cannot be consolidated because it blocks all harnesses.
 
-**Unauthorized-actor denial:** The row lives in `e2e/behaviour/features/platform/actor-authorization.feature`, the canonical default platform actor authorization matrix, rather than in `fork-dispatch.feature`. The dispatch gate (`harnessdispatch.IsEventAuthorized`, then the per-harness `role:` threshold from `IsHarnessAuthorized`) authorizes label-added events without any role. So the denial can only be exercised through a transition that needs one — for the `fork-auth-probe` harness (`role: triage`), the `triage` threshold: the PR `opened` event, sent by the outsider when it opens the PR from its own fork. The harness trigger matches both `opened` and a label, and the scenario orders its steps as follows:
+**Unauthorized-actor denial:** The row lives in `e2e/behaviour/features/platform/actor-authorization.feature`, the canonical default platform actor authorization matrix, rather than in `fork-dispatch.feature`. Fork pull request events never dispatch on `pull_request` (ADR 0164), and GitHub holds a first-time contributor's run for approval, so the denial is exercised through a comment on the fork pull request. The dispatch gate (`harnessdispatch.IsEventAuthorized`, then the per-harness `role:` threshold from `IsHarnessAuthorized`) applies the `fork-auth-probe` harness's `role: triage` threshold to the comment, and the scenario orders its steps as follows:
 
-1. The denial assertions (`the harness dispatch completes with an empty matrix`, then `agent did not run`, then `dispatched exactly 0 times`) run before the label is added. The first is the one that checks the required outcome: the other two also pass when the dispatch job errored or when no run was created, because neither counts a run without an agent job. `harness-run` uses a `cancel-in-progress` concurrency group per agent and PR, and the dispatch count excludes cancelled jobs. A leaked `opened` dispatch that the label run cancelled would therefore not be counted.
-2. The label, added afterwards by the e2e identity, must dispatch. This positive control shows that the harness is registered and its trigger matches the PR, so the denial cannot pass just because the harness never loaded.
+1. The outsider comments `/fs-fork-auth` on its own fork pull request. The denial assertions (`the harness dispatch completes with an empty matrix`, then `dispatched exactly 0 times`) follow. The first is the one that checks the required outcome: the count also passes when the dispatch job errored or when no run was created, because it does not count a run without an agent job.
+2. The write actor then comments `/fs-fork-auth`, which must dispatch. This positive control shows that the harness is registered and its trigger matches the comment, so the denial cannot pass just because the harness never loaded.
 
 ### Dispatch step reference
 
@@ -1712,6 +1865,8 @@ suiteRunner := godog.TestSuite{
 **`world.World.MintProbe` addition:** The new `MintProbe *world.MintProbe` field (with the `world.MintProbe` and `world.MintProbeResult` types) holds the state of the [GitHub mint scope scenarios](#github-mint-scope-scenarios). It is a non-breaking addition. The mint probe steps need a CI driver that implements the optional `ci.RunLister` interface, as the GitHub Actions driver does.
 
 **`install.MintProbeHostRepoSuffix` addition:** The suffix (`-mint-host`) of each pool slot's mint-probe host repository. The CF mint drivers add those names to the mint's `--workflow-host-repos`.
+
+**`install.SuiteBootstrap` optional interface ([#9724](https://github.com/fullsend-ai/fullsend/issues/9724)):** `DefaultConcurrency() int`, `Describe() string` and `DefaultOrg(ctx) (install.OrgAccess, error)` let the install driver supply the suite runner's default godog concurrency, log line and template-`World` org, token and client. `install.BootstrapFor(driver)` returns a fallback for drivers without it (concurrency `Capacity()`, no default org), so external `install.Driver` implementations keep compiling. The shared slot driver and `install.PlaybackDriver` implement it. `RunSuite` and `RunPlaybackSuite` no longer read `PoolConfig.Layout` or call `PoolConfig.TokenFor`, so a non-pool driver such as `forgejo-dev` never touches the GitHub test pool.
 
 **`install.MintURLReporter` optional interface and `install.MintStatusTeamSlug`:** `MintURL() string` reports the suite's mint URL. The [CLI mint status scenarios](#cli-mint-status-scenarios) use it to get the mint address. It is a separate interface, not an `install.Driver` method, so external `install.Driver` implementations keep compiling. The mint status steps fail with a `deployment` error on a driver without it. `MintStatusTeamSlug` (`mint-status`) names the team the CF mint drivers pass as `--status-github-group <org>/mint-status`.
 

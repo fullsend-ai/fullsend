@@ -1,9 +1,12 @@
 name: E2E Tests
 
-# Same-repo PRs run behaviour, playback, and Forgejo behaviour on pull_request
-# (the gate job authorizes the author before a suite checks out PR head).
-# Fork PRs get no secrets on pull_request: the suites skip until a maintainer
-# comments /ok-to-test, and e2e-ok-to-test.yml calls this workflow for the
+# Pull requests run behaviour and playback on a GitHub emulator
+# (behaviour-github-emulator.yml), with no secrets. Here they run live only in the
+# merge queue and on push to main; on a pull request their jobs skip.
+# Same-repo PRs run Forgejo behaviour on pull_request (the gate job
+# authorizes the author before the suite checks out PR head). Fork PRs get
+# no secrets on pull_request: it skips until a maintainer comments
+# /ok-to-test, and e2e-ok-to-test.yml calls this workflow for the
 # authorized head sha (event_name issue_comment, inputs.head_sha) (#9245).
 # No pull_request_target: GitHub blocks it by default from 2026-12-02.
 
@@ -134,8 +137,10 @@ jobs:
       group: ${{ github.workflow }}-${{ github.run_id }}-${{ github.event_name == 'push' && 'stage-org' || 'behaviour-dev' }}
       cancel-in-progress: false
     # Gate authorization protects checkout of untrusted PR-head code with secrets.
-    # Runs only on authorized PRs, merge_group (required check; treated as
-    # PR-class / dev), and push to main (stage). Skip workflow_dispatch.
+    # Runs only on merge_group (required check; treated as PR-class / dev)
+    # and push to main (stage). Pull requests run behaviour-github-emulator.yml
+    # instead; this job skips there, which the required check accepts.
+    # Skip workflow_dispatch.
     # Environment uses event_name, not github.ref: pull_request sets
     # github.ref to refs/pull/N/merge and issue_comment to the default branch.
     needs: gate
@@ -143,9 +148,7 @@ jobs:
       !cancelled() &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'merge_group') ||
-        (github.event_name == 'pull_request' && needs.gate.outputs.authorized == 'true') ||
-        (github.event_name == 'issue_comment' && inputs.head_sha != '')
+        (github.event_name == 'merge_group')
       )
     # Scalar form keeps default deployment: true so runs list under Environments.
     environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
@@ -453,9 +456,7 @@ jobs:
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'merge_group') ||
-        (github.event_name == 'workflow_dispatch' && inputs.run_playback) ||
-        (github.event_name == 'pull_request' && needs.gate.outputs.authorized == 'true') ||
-        (github.event_name == 'issue_comment' && inputs.head_sha != '')
+        (github.event_name == 'workflow_dispatch' && inputs.run_playback)
       )
     # Scalar form keeps default deployment: true so runs list under Environments.
     environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}

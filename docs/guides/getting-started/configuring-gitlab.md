@@ -1056,7 +1056,14 @@ reason and resource IDs.
   prerequisites for the child-pipeline route that uses the account's job token and
   reports either `GitLab trigger dispatch activation deferred`, followed by
   one line per unmet prerequisite, or
-  `GitLab trigger dispatch prerequisites verified`. The check only reads:
+  `GitLab trigger dispatch prerequisites verified`. When the trigger account
+  defers instead, the gate is not reached, but install still warns, one line
+  per finding, about every committed CI job or include that a trigger, agent
+  child (`source=pipeline`) or scheduled (`source=schedule`) pipeline would run
+  besides fullsend's own, because the managed polling schedules run on the
+  protected default branch whichever route dispatches. `repos status` lists
+  the same findings under `gitlab_unrelated_ci_work` whatever the trigger
+  account's state. They are a warning and add no drift. The check only reads:
   every managed polling schedule (`fullsend slash poll`, `fullsend event poll`)
   must carry no pipeline variables (legacy schedules still set
   `FULLSEND_POLL_MODE`), and the live

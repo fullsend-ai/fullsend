@@ -696,8 +696,12 @@ systemctl list-timers fullsend-os-update.timer
    started finish. It never uses `systemctl stop`. A hold file
    (`/var/lib/fullsend-gitlab-runner/os-update.hold`) together with the
    drop-in `gitlab-runner.service.d/os-update-hold.conf`
-   (`ConditionPathExists=!<hold file>`) keeps `Restart=always` from starting
-   the runner again. If the drain takes longer than 6 hours, the job is
+   (`ConditionPathExists=!<hold file>` and
+   `ExecCondition=/usr/bin/test ! -e <hold file>`) keeps `Restart=always`
+   from starting the runner again. systemd does not re-check unit conditions
+   for an automatic restart, so `ExecCondition=` is what blocks it. If the
+   runner comes back with a new process anyway, the script sends `SIGQUIT`
+   to that process too. If the drain takes longer than 6 hours, the job is
    left running, the hold is removed, and the update is deferred. Starting
    the unit again does not cancel a graceful shutdown already under way, so
    `shutdown_timeout` is raised to the drain cap plus

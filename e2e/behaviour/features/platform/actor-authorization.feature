@@ -77,6 +77,8 @@ Feature: Platform actor authorization
     When the write actor posts "/fs-do" on the issue
     Then the harness "do-needs-triage" workflow completes successfully
 
+  # GitHub only: fork pull request dispatch follows the GitHub shim (#9221).
+  @skip:gitlab
   Scenario: outsider opens a pull request from a fork
     Given a fork "test-repo-fork" of the enrolled test repository owned by the outsider
     And a custom harness "fork-auth-probe" with:
@@ -88,15 +90,18 @@ Feature: Platform actor authorization
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
       policy: policies/base.yaml
       trigger: |
-        event.entity.kind == "change_proposal"
-        && (event.transition.kind == "opened"
-            || (event.transition.kind == "label_changed"
-                && event.transition.label.name == "ready-for-fork-auth"))
+        event.transition.kind == "comment_added"
+        && has(event.transition.comment.command)
+        && event.transition.comment.command == "/fs-fork-auth"
+        && has(event.entity.linked_change_proposal)
       """
+    # Fork pull request events never dispatch on pull_request (#9221), and
+    # GitHub holds a first-time contributor's run for approval; a comment on
+    # the pull request is the way in, so the role threshold decides there.
     When a fork pull request is opened by the outsider
+    And the outsider posts "/fs-fork-auth" on the fork pull request
     Then the harness dispatch completes with an empty matrix
-    And the harness "fork-auth-probe" agent did not run
     And the harness "fork-auth-probe" was dispatched exactly 0 times
-    When the fork pull request is labeled "ready-for-fork-auth"
+    When the write actor posts "/fs-fork-auth" on the fork pull request
     Then the harness "fork-auth-probe" workflow completes successfully
     And the agent will succeed to Prove run

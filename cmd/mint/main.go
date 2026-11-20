@@ -33,8 +33,12 @@ func buildHandlerAndTracer() (http.Handler, *mintcore.Tracer, error) {
 		log.Printf("warning: ALLOWED_WORKFLOW_FILES is not set; all token requests will be rejected")
 	}
 
+	issuerURL, err := oidcIssuerURL()
+	if err != nil {
+		return nil, nil, err
+	}
 	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL: "https://token.actions.githubusercontent.com",
+		IssuerURL: issuerURL,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating OIDC verifier: %w", err)

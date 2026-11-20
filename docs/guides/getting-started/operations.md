@@ -116,13 +116,66 @@ To upgrade the fullsend CLI, download the latest release from
 [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases), or run
 [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
 
-After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo:
+### Upgrading a single repository
 
-```bash
-fullsend github setup "$OWNER/$REPO" \
-  --inference-project "<GCP_PROJECT>" \
-  --inference-wif-provider "<WIF_PROVIDER>"
+Use this route for a repository set up with `fullsend github setup` and not declared in a `repos.yaml` manifest. `fullsend repos install` needs a manifest; manifest repositories follow [Upgrading manifest-managed repositories](#upgrading-manifest-managed-repositories) below.
+
+**You need:** admin access to the repository, and GitHub CLI authentication (`gh auth login`, or `GH_TOKEN` set) with the `repo` and `workflow` scopes.
+
+1. Upgrade the CLI:
+
+   ```bash
+   fullsend self-update        # or download the release
+   ```
+
+2. Preview the re-run. It changes nothing:
+
+   ```bash
+   fullsend github setup "$OWNER/$REPO" --dry-run
+   ```
+
+   Check the repository variables it lists. Variables and secrets are written as soon as step 3 runs, before you merge anything. A `FULLSEND_MINT_URL` or `FULLSEND_GCP_REGION` that you set only as a repository variable goes back to the configuration value or the default; put it in `.fullsend/config.yaml` first. If the install is vendored (the repository has `.fullsend/bin/`), add `--vendor` in step 3; without it the vendored assets are deleted from the default branch right away.
+
+3. Re-run setup with no flags (add `--vendor` for a vendored install):
+
+   ```bash
+   fullsend github setup "$OWNER/$REPO"
+   ```
+
+4. Review and merge the setup PR it prints. The default branch keeps the old shim until you merge.
+
+**What success looks like.** Output from upgrading a v0.56.1 install (shortened, repository name replaced):
+
 ```
+→ Setting up per-repo fullsend for owner/repo
+
+    Keeping existing .fullsend/config.yaml unchanged (pass --runtime, --agents, --mint-url or --inference-* to change a key)
+  • Checking token permissions
+  ✓ Token permissions verified
+
+  • Creating scaffold PR for owner/repo (target: main)
+  ✓ Created PR #2: https://github.com/owner/repo/pull/2
+    Merge the PR to apply these changes
+  • Configuring repository variables
+  ✓ Set 5 repository variables
+  • Configuring repository secrets
+  ✓ Set 2 repository secrets
+
+  ✓ Per-repo setup complete for owner/repo
+```
+
+The PR has one commit. It moves the shim trigger and the workflow pins, and leaves `.fullsend/config.yaml` alone:
+
+```diff
+-  pull_request_target:
++  pull_request:
+-    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@27c1d6ce1d384fa8b85b6789653fb3505d93c9d3  # v0.56.1
++    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@f24e7d3bb03c44371e58653f0fd051ed9c445b0f  # v0.57.0
+```
+
+Add other flags only if the install used `--config` or `--fullsend-ref`, or to change a configuration key; see [Re-running per-repo setup](../../cli/github.md#re-running-per-repo-setup).
+
+### Upgrading manifest-managed repositories
 
 For manifest-managed installations (including GitLab repos), use `repos install` to converge all repos (including workflow ref upgrades):
 
@@ -315,6 +368,18 @@ gcloud services enable \
 
 See [`status_notifications`](../../reference/config-reference.md#status_notifications) for configuring start/completion comments and reactions.
 
+If an agent cannot start because workflow setup fails, the GitHub fallback posts or
+updates a separate startup-failure comment with the failure category and workflow
+run link. Retries of the same workflow run update that comment, while a later
+workflow run posts a new historical comment. Harness-dispatch failures are the
+exception: repeated pre-dispatch failures update one stable comment per issue
+or PR to avoid comment spam. A later successful run does not remove the
+historical failure comment. This fallback applies only to GitHub-originated events; pre-agent
+failures from Jira- and GitLab-originated events are currently not reported by
+this path. It is independent of `status_notifications`; after it posts
+successfully, orphaned status reconciliation is skipped to avoid a duplicate
+notification.
+
 The composite action accepts optional inputs for status notifications and
 review reconciliation:
 
@@ -323,6 +388,11 @@ review reconciliation:
 | `run-url` | URL of the CI/CD run shown in the status comment |
 | `status-repo` | Repository (`owner/repo`) to post status comments on |
 | `status-number` | Issue or PR number for status comments |
+| `failure-repo` | Repository (`owner/repo`) for startup-failure comments; falls back to `status-repo` when unset |
+| `failure-number` | Issue or PR number for startup-failure comments; falls back to `status-number` when unset |
+| `failure-trusted-bots` | Comma-separated GitHub App set names (as in `FULLSEND_APP_SET`); each is expanded to the `<set>-<role>` bot identity for startup-failure comment deduplication (optional) |
+| `failure-token` | Optional token used only for startup-failure reporting; the normal `github_token` remains the workflow token |
+| `source-system` | Originating tracker (`github`, `gitlab`, or `jira`); startup-failure comments are GitHub-only (default: `github`) |
 | `status-comment-id` | ID of the comment that triggered a slash-command run; when set, reactions target that comment instead of the issue/PR |
 | `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
 | `role` | Mint role selected by dispatch, used to reconcile an interrupted run before the agent reports its resolved role (default: empty) |

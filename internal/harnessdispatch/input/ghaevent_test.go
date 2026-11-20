@@ -763,6 +763,78 @@ func TestLoadGHAEvent_PRAssignee(t *testing.T) {
 	})
 }
 
+// TestLoadGHAEvent_PullRequestMatchesPullRequestTarget pins that the same
+// payload delivered as pull_request (the per-repo shim's same-repo trigger)
+// or pull_request_target (older shims) normalizes identically, except that
+// source.raw_type keeps the exact GitHub Actions event name.
+func TestLoadGHAEvent_PullRequestMatchesPullRequestTarget(t *testing.T) {
+	pr := func(author string, merged bool, labels ...string) map[string]any {
+		labelList := []any{}
+		for _, l := range labels {
+			labelList = append(labelList, map[string]any{"name": l})
+		}
+		return map[string]any{
+			"number":    float64(100),
+			"html_url":  "https://github.com/o/r/pull/100",
+			"user":      map[string]any{"login": author},
+			"labels":    labelList,
+			"merged":    merged,
+			"assignees": []any{map[string]any{"login": "alice"}},
+			"head": map[string]any{
+				"ref":  "feature",
+				"sha":  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				"repo": map[string]any{"full_name": "o/r"},
+			},
+			"base": map[string]any{
+				"ref":  "main",
+				"repo": map[string]any{"full_name": "o/r"},
+			},
+		}
+	}
+	human := map[string]any{"login": "alice", "type": "User"}
+	bot := map[string]any{"login": "myapp-coder[bot]", "type": "Bot"}
+
+	payloads := map[string]map[string]any{
+		"opened":            {"action": "opened", "pull_request": pr("alice", false), "sender": human},
+		"opened by bot":     {"action": "opened", "pull_request": pr("myapp-coder[bot]", false), "sender": bot},
+		"synchronize":       {"action": "synchronize", "pull_request": pr("alice", false), "sender": human},
+		"edited":            {"action": "edited", "pull_request": pr("alice", false), "sender": human},
+		"closed (merged)":   {"action": "closed", "pull_request": pr("alice", true), "sender": human},
+		"closed (unmerged)": {"action": "closed", "pull_request": pr("alice", false), "sender": human},
+		"labeled": {
+			"action": "labeled", "pull_request": pr("alice", false, "ready-for-review"),
+			"label": map[string]any{"name": "ready-for-review"}, "sender": human,
+		},
+	}
+
+	load := func(t *testing.T, raw map[string]any, eventName string) *normevent.Event {
+		t.Helper()
+		client := forge.NewFakeClient()
+		client.CollaboratorPermissions = map[string]string{"o/r/alice": "write"}
+		ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+			EventPath:  writeEventFile(t, raw),
+			EventName:  eventName,
+			Repository: "o/r",
+			Forge:      client,
+		})
+		require.NoError(t, err)
+		return ev
+	}
+
+	for name, raw := range payloads {
+		t.Run(name, func(t *testing.T) {
+			target := load(t, raw, "pull_request_target")
+			plain := load(t, raw, "pull_request")
+
+			assert.Equal(t, "pull_request_target", target.Source.RawType)
+			assert.Equal(t, "pull_request", plain.Source.RawType, "raw_type is the exact event name, never normalized")
+
+			plain.Source.RawType = target.Source.RawType
+			assert.Equal(t, target, plain)
+		})
+	}
+}
+
 func copyMap(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {

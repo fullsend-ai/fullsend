@@ -31,7 +31,9 @@ CALLS="${SHIM_DIR}/calls.log"
 SVC_STATE="${SHIM_DIR}/svc-state"
 CONTAINERS_FILE="${SHIM_DIR}/containers"
 BUSY_COUNT_FILE="${SHIM_DIR}/busy-count"
-export CALLS SVC_STATE CONTAINERS_FILE BUSY_COUNT_FILE HOLD_FILE
+MAIN_PID_FILE="${SHIM_DIR}/main-pid"
+RESTART_COUNT_FILE="${SHIM_DIR}/restart-count"
+export CALLS SVC_STATE CONTAINERS_FILE BUSY_COUNT_FILE HOLD_FILE MAIN_PID_FILE RESTART_COUNT_FILE
 
 # --- stubs ---------------------------------------------------------------
 # dnf: exit codes come from DNF_CHECK_RC / DNF_UPGRADE_RC / DNF_RESTART_RC.
@@ -48,8 +50,13 @@ done
 exit 0
 STUB
 
-# systemctl: gitlab-runner state lives in SVC_STATE. QUIT stops the runner
-# unless QUIT_KEEPS_RUNNING=1; start honours the hold-file condition.
+# systemctl: gitlab-runner state lives in SVC_STATE, its MainPID in
+# MAIN_PID_FILE (default MAIN_PID or 4242). QUIT stops the runner unless
+# QUIT_KEEPS_RUNNING=1. QUIT_STATE=<state> leaves it in that state with no
+# main process (e.g. activating: waiting to auto-restart). The first
+# RESTARTS_ON_QUIT QUITs simulate Restart=always bringing the runner back
+# with a new MainPID; with RESTART_TAKES_JOB=1 the new process picks up a
+# job (a runner-* container). start honours the hold-file condition.
 cat > "${SHIM_DIR}/systemctl" <<'STUB'
 #!/bin/sh
 echo "systemctl $*" >> "${CALLS}"
@@ -62,14 +69,27 @@ case "$1" in
     [ "${state}" = "active" ]
     exit $?
     ;;
-  show) echo "${MAIN_PID:-4242}" ;;
+  show)
+    if [ "${SHOW_FAILS:-0}" = "1" ]; then exit 1; fi
+    if [ -s "${MAIN_PID_FILE}" ]; then cat "${MAIN_PID_FILE}"; else echo "${MAIN_PID:-4242}"; fi
+    ;;
   kill)
     case "$*" in
       *"-s HUP"*)
         if [ "${HUP_FAILS:-0}" = "1" ]; then exit 1; fi
         ;;
       *"-s QUIT"*)
-        if [ "${STATE_EMPTY_AFTER_QUIT:-0}" = "1" ]; then echo empty > "${SVC_STATE}"
+        restarts=$(cat "${RESTART_COUNT_FILE}" 2>/dev/null || echo 0)
+        if [ "${restarts}" -lt "${RESTARTS_ON_QUIT:-0}" ]; then
+          restarts=$((restarts + 1))
+          echo "${restarts}" > "${RESTART_COUNT_FILE}"
+          echo $((5000 + restarts)) > "${MAIN_PID_FILE}"
+          echo active > "${SVC_STATE}"
+          if [ "${RESTART_TAKES_JOB:-0}" = "1" ]; then echo runner-9 > "${CONTAINERS_FILE}"; fi
+        elif [ -n "${QUIT_STATE:-}" ]; then
+          echo "${QUIT_STATE}" > "${SVC_STATE}"
+          echo 0 > "${MAIN_PID_FILE}"
+        elif [ "${STATE_EMPTY_AFTER_QUIT:-0}" = "1" ]; then echo empty > "${SVC_STATE}"
         elif [ "${QUIT_KEEPS_RUNNING:-0}" != "1" ]; then echo inactive > "${SVC_STATE}"; fi
         ;;
     esac
@@ -149,6 +169,7 @@ reset_fixtures() {
   : > "${CALLS}"
   : > "${CONTAINERS_FILE}"
   echo 0 > "${BUSY_COUNT_FILE}"
+  rm -f "${MAIN_PID_FILE}" "${RESTART_COUNT_FILE}"
   echo active > "${SVC_STATE}"
   printf 'concurrent = 1\ncheck_interval = 0\n\n[[runners]]\n  name = "r"\n' > "${CONFIG_TOML}"
 }
@@ -512,6 +533,71 @@ else
   fail "empty state output mismatch (rc=${RUN_RC}): ${RUN_OUT}"
 fi
 
+echo "== runner restarted during the drain (#9690) =="
+reset_fixtures
+DNF_CHECK_RC=100 RESTARTS_ON_QUIT=1 run_update
+if [ "${RUN_RC}" -ne 0 ]; then
+  fail "restarted idle runner should still drain and update (rc=${RUN_RC}): ${RUN_OUT}"
+elif [ "$(grep -c 's QUIT gitlab-runner.service' "${CALLS}")" -ne 2 ]; then
+  fail "restarted runner did not get exactly one more SIGQUIT: $(calls)"
+elif ! called 'dnf -y upgrade'; then
+  fail "upgrade did not run after the restarted runner drained: $(calls)"
+elif [ -e "${HOLD_FILE}" ] || [ "$(cat "${SVC_STATE}")" != "active" ]; then
+  fail "runner not released after the update (state=$(cat "${SVC_STATE}"))"
+elif called 'systemctl stop'; then
+  fail "restarted runner was stopped forcibly: $(calls)"
+elif ! printf '%s' "${RUN_OUT}" | grep -Fq 'restarted during the drain (pid 4242 -> 5001)'; then
+  fail "restart during the drain not logged: ${RUN_OUT}"
+else
+  pass "an idle runner restarted mid-drain gets SIGQUIT again, then is updated and released"
+fi
+
+reset_fixtures
+DNF_CHECK_RC=100 RESTARTS_ON_QUIT=1 RESTART_TAKES_JOB=1 FULLSEND_OS_UPDATE_DRAIN_TIMEOUT_SEC=0 run_update
+if [ "${RUN_RC}" -ne 0 ]; then
+  fail "restarted runner with a job should defer with rc=0 (rc=${RUN_RC}): ${RUN_OUT}"
+elif called 'dnf -y upgrade'; then
+  fail "upgrade ran while the restarted runner's job was running: $(calls)"
+elif called 'systemctl stop' || called 'podman stop' || called 'podman kill'; then
+  fail "restarted runner or its job was stopped forcibly: $(calls)"
+elif [ -e "${HOLD_FILE}" ]; then
+  fail "hold file left behind after a deferred drain"
+elif printf '%s' "${RUN_OUT}" | grep -Fq 'update deferred, job left running'; then
+  pass "a restarted runner with a running job defers at the drain cap without stopping it"
+else
+  fail "restarted runner with job output mismatch: ${RUN_OUT}"
+fi
+
+reset_fixtures
+DNF_CHECK_RC=100 QUIT_STATE=activating FULLSEND_OS_UPDATE_DRAIN_TIMEOUT_SEC=0 run_update
+if called 'dnf -y upgrade'; then
+  fail "upgrade ran while the runner was waiting to auto-restart: $(calls)"
+elif [ "$(grep -c 's QUIT gitlab-runner.service' "${CALLS}")" -ne 1 ]; then
+  fail "a pending auto-restart (no main process) should not be signalled again: $(calls)"
+elif ! printf '%s' "${RUN_OUT}" | grep -Fq 'waiting for gitlab-runner to drain (state activating, MainPID 0)'; then
+  fail "drain wait state not logged: ${RUN_OUT}"
+else
+  pass "a pending auto-restart is logged and not treated as drained"
+fi
+
+for bad_pid in "failed query" "zero"; do
+  reset_fixtures
+  if [ "${bad_pid}" = "zero" ]; then
+    DNF_CHECK_RC=100 MAIN_PID=0 run_update
+  else
+    DNF_CHECK_RC=100 SHOW_FAILS=1 run_update
+  fi
+  if [ "${RUN_RC}" -eq 0 ]; then
+    fail "unusable baseline MainPID (${bad_pid}) should fail the unit: ${RUN_OUT}"
+  elif called 'QUIT' || called 'dnf -y upgrade'; then
+    fail "QUIT or upgrade ran without a usable baseline MainPID (${bad_pid}): $(calls)"
+  elif [ -e "${HOLD_FILE}" ] || [ "$(cat "${SVC_STATE}")" != "active" ]; then
+    fail "runner not left available after an unusable baseline MainPID (${bad_pid})"
+  else
+    pass "an unusable baseline MainPID (${bad_pid}) aborts the drain before QUIT"
+  fi
+done
+
 echo "== other guards =="
 reset_fixtures
 echo inactive > "${SVC_STATE}"
@@ -608,7 +694,9 @@ elif ! grep -Fxq "ExecStart=${LIBEXEC} --resume" "${RESUME}" \
   || ! grep -Fxq "ConditionPathExists=${INSTALL_STATE}/os-update.hold" "${RESUME}" \
   || ! grep -Fxq 'WantedBy=multi-user.target' "${RESUME}"; then
   fail "resume unit mismatch: $(cat "${RESUME}")"
-elif ! grep -Fxq "ConditionPathExists=!${INSTALL_STATE}/os-update.hold" "${DROPIN}"; then
+elif ! grep -Fxq "ConditionPathExists=!${INSTALL_STATE}/os-update.hold" "${DROPIN}" \
+  || ! grep -Fxq '[Service]' "${DROPIN}" \
+  || ! grep -Fxq "ExecCondition=/usr/bin/test ! -e ${INSTALL_STATE}/os-update.hold" "${DROPIN}"; then
   fail "gitlab-runner hold drop-in mismatch: $(cat "${DROPIN}" 2>/dev/null)"
 elif ! called 'systemctl daemon-reload' \
   || ! called 'systemctl enable --now fullsend-os-update.timer' \

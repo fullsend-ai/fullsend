@@ -24,6 +24,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/netutil"
+	"github.com/fullsend-ai/fullsend/internal/urlutil"
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -849,11 +850,8 @@ func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) er
 		if mintURL == "" && mintMode == MintModePublic {
 			mintURL = DefaultPublicMintURL
 		}
-		if mintURL != "" {
-			mu, err := url.Parse(mintURL)
-			if err != nil || mu.Scheme != "https" || mu.Host == "" {
-				return fmt.Errorf("github.mint_url must be a valid HTTPS URL, got %q", mintURL)
-			}
+		if mintURL != "" && !urlutil.IsMintURL(mintURL) {
+			return fmt.Errorf("github.mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1, got %q", mintURL)
 		}
 		if m.GitHub.FullsendRef != "" && !IsValidRef(m.GitHub.FullsendRef) {
 			return fmt.Errorf("github.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.GitHub.FullsendRef)
@@ -980,11 +978,8 @@ func (m *Manifest) validatePlatformRepos(forgeName string, platform *PlatformCon
 		}
 
 		// Validate per-repo mint_url override.
-		if entry.MintURL != "" && entry.MintURL != NoneSentinel {
-			mu, muErr := url.Parse(entry.MintURL)
-			if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
-				return fmt.Errorf("%s.repos[%d]: per-repo mint_url must be a valid HTTPS URL, got %q", forgeName, i, entry.MintURL)
-			}
+		if entry.MintURL != "" && entry.MintURL != NoneSentinel && !urlutil.IsMintURL(entry.MintURL) {
+			return fmt.Errorf("%s.repos[%d]: per-repo mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1, got %q", forgeName, i, entry.MintURL)
 		}
 
 		// Validate per-repo mint_mode override.

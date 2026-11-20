@@ -18,6 +18,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -349,6 +350,18 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		fmt.Fprintf(out, "\n%s GitLab webhook fast path: %s\n", s.Owner+"/"+s.Repo, w.State)
 		for _, r := range w.Reasons {
 			fmt.Fprintf(out, "  %s\n", r)
+		}
+	}
+
+	// Unrelated CI work in Fullsend pipelines (#9708): informational, adds
+	// no drift. Findings embed repository text, so each is sanitized.
+	for _, s := range result.Repos {
+		if len(s.GitLabUnrelatedCIWork) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "\n%s GitLab unrelated CI work in Fullsend pipelines (warning; polling stays the dispatch path, but the managed polling schedules run it on the protected default branch):\n", scaffold.SanitizeDisplayText(s.Owner+"/"+s.Repo))
+		for _, p := range s.GitLabUnrelatedCIWork {
+			fmt.Fprintf(out, "  %s\n", scaffold.SanitizeDisplayText(p))
 		}
 	}
 

@@ -34,6 +34,7 @@ func TestInstallFactoryFor(t *testing.T) {
 		{"stage", install.NewRepoPoolCFMintStage},
 		{"dev", install.NewRepoPoolCFMintPreviews},
 		{"", install.NewRepoPoolCFMintPreviews},
+		{"github-emulator", install.NewRepoPoolGitHubEmulator},
 		{"forgejo-dev", install.NewForgejoDev},
 	} {
 		factory, err := installFactoryFor(tc.environment)
@@ -98,13 +99,9 @@ func TestPoolConfigFor_ForgejoDevNeverUsesGitHub(t *testing.T) {
 	t.Parallel()
 
 	pool := poolConfigFor("forgejo-dev", e2etest.EnvConfig{GCPProjectID: "proj"}, "/bin/fullsend", nil)
-	require.NotNil(t, pool.TokenFor)
-	require.NotNil(t, pool.NewClient)
-	tok, err := pool.TokenFor(context.Background(), "halfsend-01")
-	require.ErrorIs(t, err, drivers.ErrNotImplemented)
-	assert.Contains(t, err.Error(), "TokenFor")
-	assert.Empty(t, tok)
-	assert.Nil(t, pool.NewClient("tok"), "forgejo-dev must not build a GitHub client")
+	assert.Equal(t, install.PoolLayout{}, pool.Layout, "forgejo-dev must not carry the GitHub pool layout")
+	assert.Nil(t, pool.TokenFor, "forgejo-dev must not mint GitHub tokens")
+	assert.Nil(t, pool.NewClient, "forgejo-dev must not build GitHub clients")
 	assert.Equal(t, "proj", pool.GCPProjectID)
 	assert.Equal(t, "/bin/fullsend", pool.Binary)
 }

@@ -177,6 +177,31 @@ func TestValidate_InvalidMintURL_GitHubRepos(t *testing.T) {
 	assert.ErrorContains(t, err, "github.mint_url must be a valid HTTPS URL")
 }
 
+func TestValidate_LoopbackHTTPMintURL_GitHubRepos(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		GitHub:  &PlatformConfig{MintURL: "http://127.0.0.1:18502", Repos: []RepoEntry{{Name: "acme/repo"}}},
+	}
+	require.NoError(t, m.Validate())
+
+	m.GitHub.MintURL = "http://10.0.0.1:18502"
+	assert.ErrorContains(t, m.Validate(), "github.mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1")
+}
+
+func TestValidate_PerRepoLoopbackHTTPMintURL(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/api", MintURL: "http://localhost:18502"}},
+		},
+	}
+	require.NoError(t, m.Validate())
+
+	m.GitHub.Repos[0].MintURL = "http://example.com:18502"
+	assert.ErrorContains(t, m.Validate(), "per-repo mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1")
+}
+
 func TestValidate_GitLabOnly_NoMintRequired(t *testing.T) {
 	m := Manifest{
 		Version: 1,

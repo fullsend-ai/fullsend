@@ -1,0 +1,23 @@
+# Behaviour shards for behaviour-github-emulator.yml: <shard> <workers> <runners> <feature[:line]>...
+# One VM each. A 4-vCPU VM is CPU-bound above about two scenarios at once,
+# and a scenario takes two to three times longer under that load, so most
+# shards run two at a time. Balanced on measured scenario time, not count.
+# A Scenario Outline is listed by its own line, so its rows stay on one shard:
+# o holds mint-scope's 18 short rows, p bot-actor-authorization's three
+# registered-bot rows.
+a 2 4 features/dispatch/fix-authorization.feature:47
+b 2 4 features/dispatch/fix-authorization.feature:16 features/dispatch/fork-dispatch.feature:114 features/platform/bot-role-lookup.feature:28
+c 2 4 features/dispatch/owners-auth.feature:18 features/platform/bot-actor-authorization.feature:141
+d 2 4 features/dispatch/review-cel-route.feature:13 features/runtime/skill-overrides.feature:34 features/dispatch/base-dispatch.feature:65 features/actors/actor-identities.feature:15 features/platform/mint-status.feature:25
+e 2 4 features/dispatch/fork-bash-routing.feature:17 features/dispatch/dispatch.feature:68 features/platform/actor-authorization.feature:82 features/dispatch/fetch-allowlist-gate.feature:25
+f 2 4 features/dispatch/owners-auth.feature:43 features/dispatch/base-dispatch.feature:7 features/dispatch/reaction-notifications.feature:10 features/dispatch/runner-secret-overlay-guard.feature:54
+g 2 4 features/platform/bot-actor-authorization.feature:163 features/dispatch/fork-dispatch.feature:134 features/dispatch/url-dispatch.feature:64 features/dispatch/runner-secret-overlay-guard.feature:23
+h 2 4 features/code/branch-namespace.feature:31 features/triage/triage.feature:6 features/runtime/agent-settings.feature:13 features/dispatch/owners-auth.feature:55
+i 2 4 features/dispatch/triage-prioritize-cel-route.feature:13 features/platform/actor-authorization.feature:55 features/platform/mint-status.feature:32
+j 2 4 features/dispatch/retro-cel-route.feature:13 features/dispatch/dispatch.feature:31 features/dispatch/triage-prioritize-cel-route.feature:36 features/dispatch/retro-cel-route.feature:57 features/dispatch/jira-transport-bounds.feature:48
+k 2 4 features/dispatch/fork-dispatch.feature:17 features/dispatch/dispatch.feature:6 features/dispatch/url-dispatch.feature:7 features/dispatch/retro-cel-route.feature:38 features/dispatch/jira-transport-bounds.feature:34 features/dispatch/jira-poll-dispatch.feature:40
+l 2 4 features/platform/bot-actor-authorization.feature:115 features/dispatch/fork-dispatch.feature:94 features/dispatch/owners-auth.feature:73 features/dispatch/jira-poll-dispatch.feature:31 features/dispatch/jira-poll-dispatch.feature:24
+m 2 4 features/code/branch-namespace.feature:46 features/dispatch/url-dispatch.feature:29 features/dispatch/dispatch.feature:105 features/dispatch/url-dispatch.feature:100 features/dispatch/jira-poll-dispatch.feature:18
+n 2 4 features/dispatch/owners-auth.feature:30 features/dispatch/owners-auth.feature:62 features/platform/actor-authorization.feature:71 features/dispatch/hooks-loaded.feature:12 features/dispatch/jira-poll-dispatch.feature:51
+o 6 8 features/platform/mint-scope.feature:33
+p 3 5 features/platform/bot-actor-authorization.feature:92

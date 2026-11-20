@@ -157,6 +157,14 @@ type RepoStatus struct {
 	// GitLabWebhook is the webhook fast path's readiness (ADR 0125): names,
 	// IDs and booleans only, never the trigger token, webhook secret or URL.
 	GitLabWebhook *GitLabWebhookStatus `json:"gitlab_webhook,omitempty"`
+
+	// GitLabUnrelatedCIWork lists the committed CI jobs and includes that a
+	// Fullsend trigger, agent child (source=pipeline) or scheduled
+	// (source=schedule) pipeline would run besides Fullsend's own, or why
+	// that could not be verified (#9708). It is informational and adds no
+	// drift: polling keeps working, but the managed polling schedules run
+	// these jobs on the protected default branch.
+	GitLabUnrelatedCIWork []string `json:"gitlab_unrelated_ci_work,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.
@@ -541,9 +549,34 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		if GitLabBaseURL(client) != "" {
 			ApplyGitLabWebhookStatus(&status, DiagnoseGitLabWebhook(ctx, client, owner, repo))
 		}
+		status.GitLabUnrelatedCIWork = DiagnoseGitLabUnrelatedCIWork(ctx, client, owner, repo)
 	}
 
 	return status
+}
+
+// DiagnoseGitLabUnrelatedCIWork runs the dispatch gate's unrelated-work scan
+// (GitLabDispatchExtraWorkProblems) on the default branch for repos status,
+// whatever the trigger account's state (#9708). The scan needs neither the
+// account nor the activation, and the managed polling schedules run on the
+// protected default branch on every dispatch route, so its findings matter
+// while polling stays the dispatch path. It returns the findings, a single
+// reason when the scan cannot complete, or nil when nothing unrelated runs.
+// It only reads.
+func DiagnoseGitLabUnrelatedCIWork(ctx context.Context, client forge.Client, owner, repo string) []string {
+	const unverified = "could not verify that unrelated CI jobs are excluded from Fullsend's scheduled, trigger and agent child pipelines: "
+	info, err := client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return []string{unverified + safeAPIError("reading the repository", err).Error()}
+	}
+	if info == nil || info.DefaultBranch == "" {
+		return []string{unverified + "the default branch is unknown"}
+	}
+	problems, err := GitLabDispatchExtraWorkProblems(ctx, client, owner, repo, info.DefaultBranch)
+	if err != nil {
+		return []string{unverified + err.Error()}
+	}
+	return problems
 }
 
 // ApplyGitLabTriggerAccountStatus records the trigger account's diagnosis on
