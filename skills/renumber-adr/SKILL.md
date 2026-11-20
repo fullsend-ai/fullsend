@@ -75,8 +75,9 @@ bash skills/renumber-adr/scripts/inflight-adr-numbers.sh <target-branch> <curren
 
    Pass the current PR number so the script excludes it (avoiding
    self-collision). The script prints one four-digit number per line.
-   If it produces no output, there are no in-flight ADR numbers to
-   worry about.
+   Empty output means either no in-flight ADR numbers were found or `gh`
+   could not list open PRs (the script suppresses listing errors and always
+   exits 0). Before declaring numbers clear, check `gh auth status`.
 
 Combine all three sets of taken numbers. For each new ADR in this branch,
 check whether its number appears in the combined set. If none of the new ADR
