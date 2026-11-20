@@ -227,6 +227,9 @@ jobs:
           repository: fullsend-ai/agents
           ref: main
           path: .agents
+          # Full history: run-job.sh pushes this checkout into the emulator
+          # as fullsend-ai/agents main, and a shallow clone cannot be pushed.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Checkout github-emulator
