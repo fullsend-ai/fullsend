@@ -504,8 +504,18 @@ Record every applicable item in the PR description as `verified`, `blocked`, or 
 
 The inference profiles (`profiles/fullsend-vertex-ai.yaml` in this repo and in fullsend-ai/agents; `profiles/fullsend-openai.yaml`, which has no fleet copy — the runner imports the embedded scaffold) carry a `binaries:` list. OpenShell's OPA (`sandbox-policy.rego`, `binary_allowed`) matches each glob against the kernel-resolved `/proc/<pid>/exe` of the process that opens the connection **or of any of its ancestors**. That gives two kinds of runtime:
 
-- **Wrapped by node** (pi): `**/node` admits it, so a pin bump cannot take it off the allowlist unless the wrapper disappears.
-- **Exec'd directly** (Claude Code, OpenCode, Codex): `claude` on PATH is a symlink to the npm package's `bin/claude.exe`, OpenCode is the native `/usr/local/bin/opencode` binary, and Codex's npm launcher `bin/codex.js` replaces node with the native binary (`process.execve`). None has a wrapper ancestor, so only a glob on the real file name admits it. A renamed native binary breaks every run of that runtime on its first model call (Claude Code reports `API Error: Error code policy_denied`, 0 tokens), and the only explanation is the gateway's `NET:OPEN … DENIED … binary '…' not allowed in policy '_provider_<name>'` line (#6971).
+- **Wrapped by node** (pi): `**/node` admits it, so a pin bump cannot take it
+  off the allowlist unless the wrapper disappears.
+- **Exec'd directly** (Claude Code, OpenCode, Codex): `claude` on PATH is a
+  symlink to the npm package's `bin/claude.exe`, OpenCode is the native
+  `/usr/local/bin/opencode` binary, and Codex's npm launcher `bin/codex.js`
+  replaces node with the native binary (`process.execve`). None has a wrapper
+  ancestor, so only a glob on the real file name admits it. A renamed native
+  binary breaks every run of that runtime on its first model call (Claude Code
+  reports `API Error: Error code policy_denied`, 0 tokens), and the only
+  explanation is the gateway's
+  `NET:OPEN … DENIED … binary '…' not allowed in policy '_provider_<name>'`
+  line (#6971).
 
 `TestScaffoldProfilesAllowRuntimeBinaries` (`internal/cli/runtime_binaries_test.go`) fails for any selectable runtime without a mapping and pins the ones below.
 
@@ -1250,7 +1260,8 @@ re-checked on a `CODEX_VERSION` bump. The decisions are
 
 Everything below was read at tag `rust-v0.152.1`; the rows of
 [Re-check on a `CODEX_VERSION` bump](#re-check-on-a-codex_version-bump) were
-re-verified at `rust-v0.157.0`, at `rust-v0.159.3`, at `rust-v0.166.0` and again at `rust-v0.170.0`.
+re-verified at `rust-v0.157.0`, at `rust-v0.159.3`, at `rust-v0.166.0` and
+again at `rust-v0.170.0`.
 Two of the findings are the reason the hook adapter exists at all, because
 forwarding the scripts' own convention would fail **open**.
 
