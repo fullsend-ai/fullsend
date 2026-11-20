@@ -132,6 +132,23 @@ func TestResolveRunOverrides_Precedence(t *testing.T) {
 			runtime: "pi",
 			want:    runOverrides{model: "opus", modelSource: envPiModel},
 		},
+		{
+			name: "FULLSEND_SYNC_TARGET_REPO enables sync when flags absent",
+			env:  map[string]string{envSyncTargetRepo: "true"},
+			want: runOverrides{syncTargetRepo: true, syncTargetRepoSource: envSyncTargetRepo},
+		},
+		{
+			name:  "--sync-target-repo flag beats FULLSEND_SYNC_TARGET_REPO",
+			flags: runOverrideFlags{syncTargetRepo: false, syncTargetRepoSet: true},
+			env:   map[string]string{envSyncTargetRepo: "true"},
+			want:  runOverrides{syncTargetRepo: false, syncTargetRepoSource: sourceFlagSyncTargetRepo},
+		},
+		{
+			name:  "--sync-target-repo=true beats FULLSEND_SYNC_TARGET_REPO=false",
+			flags: runOverrideFlags{syncTargetRepo: true, syncTargetRepoSet: true},
+			env:   map[string]string{envSyncTargetRepo: "false"},
+			want:  runOverrides{syncTargetRepo: true, syncTargetRepoSource: sourceFlagSyncTargetRepo},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

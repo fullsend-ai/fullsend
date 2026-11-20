@@ -277,6 +277,8 @@ variables (`GITHUB_ACTIONS`, `GITLAB_CI`).
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
+**Tip**: use `--sync-target-repo` (or `FULLSEND_SYNC_TARGET_REPO=true`) if you want modified files from the sandbox synchronized back into your local repository upon successful agent completion.
+
 **Tip**: `fullsend run` uses multiple tools on your system. Instead of
 installing them all, you can use a container image fullsend publishes —
 see [Run from a container](#run-from-a-container) below.
@@ -368,6 +370,35 @@ fullsend run code \
   --env-file fullsend-code.env \
   --forge github
 ```
+
+### Synchronizing changes back to your local repository
+
+By default, `fullsend run` operates in an isolated sandbox and leaves your local target repository untouched. When developing, testing, or inspecting changes locally, you can automatically synchronize modified, added, and deleted files back to your local checkout upon success:
+
+1. **Run with `--sync-target-repo`**:
+   ```bash
+   fullsend run code \
+     --fullsend-dir /tmp/fullsend-agents/ \
+     --target-repo /tmp/target-repo/ \
+     --forge github \
+     --env-file fullsend-code.env \
+     --env-file fullsend-gcp.env \
+     --sync-target-repo
+   ```
+   Or enable it via environment variable (`FULLSEND_SYNC_TARGET_REPO=true` in your shell or dotenv file).
+
+2. **Inspect synchronized changes**:
+   Once the agent finishes and validation passes, file additions, modifications, and deletions from the sandbox are mirrored into `/tmp/target-repo/`, and every synced path (including gitignored files) is recorded in `<run-dir>/synced-files.txt` (printed under `Synced files` in `Results`):
+   ```bash
+   cat <run-dir>/synced-files.txt
+   cd /tmp/target-repo
+   git status --ignored
+   git diff
+   ```
+
+*Note*: Synchronization is gated on a clean outcome without timeouts or transcript/system errors: if a validation loop (`validation_loop`) is configured, inline validation (with `TARGET_REPO_DIR`) must pass on the final downloaded iteration (post-loop validation sweeps run without `TARGET_REPO_DIR` and do not trigger sync); if no validation loop is configured, a clean exit or an allowed behavioral exit subtype (`error_max_turns`, `error_max_budget_usd`) still synchronizes partial changes. Critical paths like `.git/` (at any depth, matched case-insensitively after stripping HFS+-ignorable Unicode code points) and configured output directories are excluded from synchronization and protected against pruning. Files written inside `TARGET_REPO_DIR` by a validation script are also synchronized back (while unsafe symlinks stripped by `SafeDownload` rules are skipped, preserving any existing host entries rather than pruning them). Concurrent host edits on files untouched by the sandbox are preserved (host edit wins), while a pre-flight conflict check runs on both copy and prune passes before mutating `/tmp/target-repo` so true conflicts (both host and sandbox changed the same entry, host modified an entry the sandbox deleted, unreadable host entries awaiting deletion, or host-only children under replaced directories) leave your checkout untouched, retain the download directory (printing its path in `Results`), and exit non-zero (while still running configured `post_script` hooks). If a mid-mutation I/O error aborts sync partway, any already-applied partial changes are recorded in `<run-dir>/synced-files.txt` with an abort header. When harness security scanning is enabled, every added or modified context file in the downloaded change set is scanned before syncing (with no depth limit or skip-dir exclusions); under `fail_mode: closed`, new critical injection findings as well as oversized (> 1 MB) or unreadable new/modified context files block sync before writing to `/tmp/target-repo`, retain the download directory for inspection, and exit non-zero. Runner-injected files (`AGENTS.md`, `CLAUDE.md`) and uncommitted agent working directories (`.agentready/`, `.fullsend-workspace/`) are also excluded when they did not exist on the host prior to the run. Atomic file writes break hardlinks on modified files and mode-only updates so shared inodes outside the target repository are not mutated in place.
+
+*Security warning*: Synchronized files are **untrusted agent output** (`SafeDownload` strips unsafe symlinks, `.git/hooks`, and AppleDouble `._*` files — and `--sync-target-repo` warns and skips non-regular files such as FIFOs, sockets, and device nodes — not arbitrary code or config edits). Writes to gitignored paths (such as `.env`, `.envrc`, `node_modules/.bin/*`, or `.venv/bin/activate`) will not appear in plain `git status` or `git diff`. Always inspect `<run-dir>/synced-files.txt`, `git status --ignored`, and `git diff` in `/tmp/target-repo` before running builds/tests, loading `.envrc`, opening the checkout in an IDE, or pointing another agent runtime at it.
 
 ### Choosing the runtime
 
