@@ -293,6 +293,10 @@ operator responsibilities. It does not eliminate information disclosure:
 a public hold can reveal a private decision, and repeated proposals may
 reveal more about the hidden policy.
 
+Sensitive deployment details, such as trust boundaries and accepted risks,
+raise the same question for review findings. See
+[review finding evidence](review-finding-evidence.md#a-deployment-context-document).
+
 These options can be combined. A project might use public requirements for
 technical review, private execution for planning checks and private evidence
 storage for the latter. The choice depends on the permitted disclosures and
