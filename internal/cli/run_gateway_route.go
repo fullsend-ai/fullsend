@@ -473,9 +473,7 @@ func rotateGatewayTokenOnce(ctx context.Context, h gatewayProviderHandle) (*acti
 	if !security.RegisterRuntimeSecret(a.Value) {
 		return nil, errors.New("inference gateway: the refreshed token is too short to redact reliably; refusing to use it")
 	}
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", a.Value)
-	}
+	maskActionsValue(a.Value)
 	creds := map[string]string{gatewayCredentialKey: a.Value}
 	// The update creates the new generation, so this is its creation-time
 	// expiry (gatewayRunDeadline), not a later update.

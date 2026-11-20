@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
 )
 
 func TestParseTranscriptFile_ErrorResult(t *testing.T) {
@@ -216,6 +218,17 @@ func TestEmitTranscriptErrors(t *testing.T) {
 	}
 	if !strings.Contains(output, "Agent reached maximum turns") {
 		t.Errorf("expected error message in output, got: %q", output)
+	}
+}
+
+func TestEmitTranscriptErrors_WorkflowCommandsSuppressed(t *testing.T) {
+	workflowcmd.SetSuppressed(true)
+	defer workflowcmd.SetSuppressed(false)
+
+	var buf bytes.Buffer
+	emitTranscriptErrors(&buf, []TranscriptError{{Source: "x.jsonl", IsError: true, ErrorMessage: "synthetic failure"}})
+	if buf.Len() != 0 {
+		t.Errorf("expected no ::error:: annotation while suppressed, got: %q", buf.String())
 	}
 }
 
