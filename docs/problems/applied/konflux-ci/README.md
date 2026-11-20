@@ -100,6 +100,8 @@ The Security review sub-agent covers two Konflux-specific concerns within a sing
 - Release policy — can release gates be bypassed?
 - Artifact integrity — can artifacts be tampered with?
 
+**Intent-coherence grounding (Konflux-specific observation).** On [konflux-ci/konflux-test#867](https://github.com/konflux-ci/konflux-test/pull/867), a CODEOWNERS add-and-remove whose body listed both changes, the intent-coherence sub-agent claimed the body omitted the removal. That instance is recorded in [review autonomy evidence](../../review-autonomy-evidence.md#counter-evidence-fabricated-discrepancy); the general failure mode and options live in the core [code-review grounding problem](../../code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description), not here. Konflux CODEOWNERS and OWNERS-style PRs often have narrow titles and comprehensive bodies, so this framing error is more likely to show up here than in repos whose PR titles already enumerate every change.
+
 ### Repo readiness
 
 Data from the [coverage dashboard](https://konflux-ci.dev/coverage-dashboard/) (as of March 2026):
