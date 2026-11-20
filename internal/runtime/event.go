@@ -124,6 +124,14 @@ type ResultEvent struct {
 	// Only the claude parser fills it (from the result's modelUsage); it is
 	// nil otherwise.
 	PerModelUsage map[string]ModelUsage
+	// StopReason and TerminalReason are the result's stop_reason and
+	// terminal_reason as the stream carried them. EndedAfterToolResult
+	// reports that the last conversation record before the result was a
+	// tool result, with no assistant message after it. Only the claude
+	// parser fills them; they are zero otherwise.
+	StopReason           string
+	TerminalReason       string
+	EndedAfterToolResult bool
 }
 
 func (ResultEvent) agentEvent() {}

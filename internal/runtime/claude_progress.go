@@ -165,13 +165,15 @@ type contentItem struct {
 // resultEvent represents the final NDJSON event from Claude Code's stream-json
 // output, containing execution metrics.
 type resultEvent struct {
-	Type         string  `json:"type"`
-	Subtype      string  `json:"subtype"`
-	IsError      bool    `json:"is_error"`
-	Result       string  `json:"result"`
-	NumTurns     int     `json:"num_turns"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	Usage        struct {
+	Type           string  `json:"type"`
+	Subtype        string  `json:"subtype"`
+	IsError        bool    `json:"is_error"`
+	Result         string  `json:"result"`
+	StopReason     string  `json:"stop_reason"`
+	TerminalReason string  `json:"terminal_reason"`
+	NumTurns       int     `json:"num_turns"`
+	TotalCostUSD   float64 `json:"total_cost_usd"`
+	Usage          struct {
 		InputTokens              int `json:"input_tokens"`
 		OutputTokens             int `json:"output_tokens"`
 		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
@@ -207,6 +209,8 @@ func newClaudeResultEvent(re resultEvent, reasoningTokens int) ResultEvent {
 		IsError:                  re.IsError,
 		ErrorMessage:             re.Result,
 		Subtype:                  re.Subtype,
+		StopReason:               re.StopReason,
+		TerminalReason:           re.TerminalReason,
 		InputTokens:              re.Usage.InputTokens,
 		OutputTokens:             re.Usage.OutputTokens,
 		ReasoningTokens:          reasoningTokens,
@@ -267,6 +271,10 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 		cumulativeCacheWrite int
 		seenResult           bool
 		totalReasoning       int // accumulated thinking tokens across all messages (for ResultEvent)
+		// afterToolResult is set by a user line carrying a tool result and
+		// cleared by the next assistant message, so at a result it reports
+		// whether the conversation ended on a tool result (#9744).
+		afterToolResult bool
 	)
 
 	// Emit a final cumulative TokensEvent when the stream ends without
@@ -317,6 +325,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				_, isPrefix, err = br.ReadLine()
 			}
 			if lostID != "" {
+				afterToolResult = true
 				onEvent(ToolResultEvent{ID: lostID, Oversized: true})
 			}
 			continue
@@ -457,6 +466,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 						} `json:"usage"`
 					} `json:"message"`
 				}
+				afterToolResult = false
 				if err := json.Unmarshal(wrapper.Event, &msg); err == nil {
 					// Fold the previous message's final tokens into the
 					// cumulative counters before resetting for the new message.
@@ -506,9 +516,12 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				continue
 			}
 			seenResult = true
-			onEvent(newClaudeResultEvent(re, totalReasoning))
+			res := newClaudeResultEvent(re, totalReasoning)
+			res.EndedAfterToolResult = afterToolResult
+			onEvent(res)
 
 		case "assistant":
+			afterToolResult = false
 			if seenStreamEvent {
 				// When stream_events are active, the assistant message
 				// is a duplicate — skip it to avoid double-counting.
@@ -573,6 +586,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				if item.Type != "tool_result" {
 					continue
 				}
+				afterToolResult = true
 				text, partial := toolResultText(item.Content)
 				onEvent(ToolResultEvent{
 					ID:      item.ToolUseID,
