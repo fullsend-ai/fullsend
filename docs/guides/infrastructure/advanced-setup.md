@@ -106,13 +106,79 @@ configuration, and installs the OpenShell CLI. That suits GitHub-hosted
 runners, which start empty.
 
 A self-hosted runner can instead use an OpenShell gateway that runs
-elsewhere. Set `OPENSHELL_GATEWAY_ENDPOINT` in the runner's environment to
-that gateway's `https://` endpoint. When it is set, the action skips the
-Podman installation, the rootless Podman configuration, and the local gateway
-configuration, and sandboxes are created on the remote gateway. If the
-`openshell` CLI is already on the runner's `PATH`, the action also skips the
-OpenShell CLI installer, which needs `sudo` and starts a local gateway
-service. Install the CLI version pinned in
+elsewhere. Configure the endpoint in one of these ways:
+
+1. Set the `OPENSHELL_GATEWAY_ENDPOINT` repository (or organization)
+   variable to the gateway's `https://` endpoint, on the repository where
+   the workflow run is triggered (the one whose Actions tab shows the
+   run); the dispatch workflow passes it to the agent action. In a
+   reusable workflow, `vars` is read from that calling repository, not
+   from the repository holding the issue or pull request. For the
+   standard per-repo install the calling repository is the work-item
+   repository itself; for a custom poller or other external repository
+   calling the reusable workflow, it is that calling repository. An
+   organization variable visible to the calling repository also works.
+   When the run starts from a different repository than the work item, a
+   variable set only on the work-item repository is not read.
+2. As a fallback, for fleet-managed runner images, set
+   `OPENSHELL_GATEWAY_ENDPOINT` in the runner's own process environment;
+   it applies whenever the variable from step 1 is unset, and always
+   when the runner's endpoint is locked (below). The same rule
+   holds on this channel: the value must be a single `https://` URL with
+   no whitespace. Earlier releases accepted any non-empty value here, so
+   plaintext, scheme-less or uppercase-scheme runner values must be
+   migrated to lowercase `https://` URLs.
+
+When an endpoint is configured, the action skips the Podman installation,
+the rootless Podman configuration, and the local gateway configuration,
+and sandboxes are created on the remote gateway.
+
+**Registration.** The gateway must already be registered on the runner:
+`openshell gateway add` stores the gateway's mTLS or authentication
+material, and the action never registers a gateway itself. Set the
+variable to the endpoint exactly as it was registered, as an `https://`
+URL — plaintext `http://` gateways are rejected. The runner operator who
+registered the gateway can confirm the exact registered value.
+
+**Endpoint matching.** When `OPENSHELL_GATEWAY` is not set on the
+runner, OpenShell matches the configured endpoint against the registered
+gateways. A value that does not match (for example `https://gw:443`
+where `https://gw` is registered) is used as a gateway name instead, and
+the sandbox fails with `failed to read TLS CA` under a
+`gateways/https___gw_443/mtls` path — an error that does not point at
+the mismatch. When a fleet image sets `OPENSHELL_GATEWAY`, no endpoint
+matching happens: the named gateway's registered material is used with
+whatever endpoint the variable holds.
+
+**Precedence and validation.** A non-empty repository or organization
+variable deliberately takes precedence over a value configured in the
+runner's process environment: repository administrators choose the
+gateway for their runs. The exception is a locked runner (below).
+Whatever the source, the value must be a single `https://` URL with no
+whitespace.
+
+**Shared runner pools.** When a fleet image sets `OPENSHELL_GATEWAY` on
+a runner pool shared across repositories, each repository's variable
+decides which endpoint receives that gateway's registered credentials
+for its runs. On a bearer-auth gateway (OIDC or Cloudflare edge, without
+pinned-CA mTLS), that means anyone who can write Actions variables in
+one repository can send the gateway's reusable bearer token to any host
+with a public certificate. Runner operators who need to prevent this can
+set `FULLSEND_OPENSHELL_GATEWAY_ENDPOINT_LOCKED=1` in the runner's
+process environment, together with the runner's own
+`OPENSHELL_GATEWAY_ENDPOINT`: the runner value then wins, a repository
+variable naming a different endpoint fails the job, and a repository
+variable set on a runner with no endpoint of its own fails too — the
+lock is fail-closed, and it requires the runner endpoint to pin to. The
+lock defends against variable-only writers; anyone who can write
+workflows that run on the pool can still set step `env:` overrides, so
+limiting which repositories can use the runner group remains the control
+against workflow writers.
+
+**CLI preinstall (remote gateway only).** On a remote-gateway runner,
+if the `openshell` CLI is already on the runner's `PATH`, the action
+also skips the OpenShell CLI installer, which needs `sudo` and starts a
+local gateway service. Install the CLI version pinned in
 `.github/scripts/openshell-version.sh` in the runner image.
 
 The action also needs the Python `jsonschema` package to validate agent

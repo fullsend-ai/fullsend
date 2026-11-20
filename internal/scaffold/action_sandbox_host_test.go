@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,9 +40,14 @@ func loadRootActionSteps(t *testing.T) map[string]actionStep {
 }
 
 // runDetectSandboxHost runs the "Detect sandbox host" step script with only
-// pathDir on PATH and returns the outputs it wrote to GITHUB_OUTPUT. When
-// endpoint is nil, OPENSHELL_GATEWAY_ENDPOINT is left unset.
-func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir string) map[string]string {
+// pathDir on PATH and returns its combined output, the values it wrote to
+// GITHUB_OUTPUT and GITHUB_ENV, and the command error. The maps are returned
+// on failure too, so rejection cases can assert what the step did and did
+// not write. When endpoint is nil, OPENSHELL_GATEWAY_ENDPOINT is left unset;
+// when workflowEndpoint is non-nil, FULLSEND_OPENSHELL_GATEWAY_ENDPOINT is
+// set to it (the channel the dispatch workflow passes from repository
+// variables).
+func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir string, workflowEndpoint *string, lockValue *string) (string, map[string]string, map[string]string, error) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	require.NoError(t, err)
@@ -51,25 +57,39 @@ func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o600))
 	outputPath := filepath.Join(dir, "github_output")
 	require.NoError(t, os.WriteFile(outputPath, nil, 0o600))
+	envPath := filepath.Join(dir, "github_env")
+	require.NoError(t, os.WriteFile(envPath, nil, 0o600))
 
-	env := []string{"PATH=" + pathDir, "GITHUB_OUTPUT=" + outputPath}
+	env := []string{"PATH=" + pathDir, "GITHUB_OUTPUT=" + outputPath, "GITHUB_ENV=" + envPath}
 	if endpoint != nil {
 		env = append(env, "OPENSHELL_GATEWAY_ENDPOINT="+*endpoint)
+	}
+	if workflowEndpoint != nil {
+		env = append(env, "FULLSEND_OPENSHELL_GATEWAY_ENDPOINT="+*workflowEndpoint)
+	}
+	if lockValue != nil {
+		env = append(env, "FULLSEND_OPENSHELL_GATEWAY_ENDPOINT_LOCKED="+*lockValue)
 	}
 	cmd := exec.Command(bash, scriptPath)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
 
-	raw, err := os.ReadFile(outputPath)
-	require.NoError(t, err)
-	outputs := map[string]string{}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
-		if k, v, ok := strings.Cut(line, "="); ok {
-			outputs[k] = v
+	parse := func(path string) map[string]string {
+		raw, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		parsed := map[string]string{}
+		for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok {
+				parsed[k] = v
+			}
 		}
+		return parsed
 	}
-	return outputs
+	outputs, envWrites := parse(outputPath), parse(envPath)
+	if err != nil {
+		return string(out), outputs, envWrites, fmt.Errorf("%w: %s", err, out)
+	}
+	return string(out), outputs, envWrites, nil
 }
 
 func TestActionDetectSandboxHostStep(t *testing.T) {
@@ -85,24 +105,109 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 
 	empty := ""
 	remote := "https://gateway.example:8080"
+	other := "https://other-gateway.example:8080"
+	whitespace := "   "
+	injected := "https://gateway.example\nBASH_ENV=/tmp/x"
+	httpEndpoint := "http://gateway.example:8080"
 
+	lockTrue := "1"
+	lockTrueWord := "true"
 	cases := []struct {
 		name             string
 		endpoint         *string
+		workflowEndpoint *string
+		lockValue        *string
 		pathDir          string
 		wantLocal        string
 		wantInstallShell string
+		wantEndpoint     string
+		wantErr          bool
 	}{
 		{name: "endpoint unset sets up a local sandbox host", pathDir: withCLI, wantLocal: "true", wantInstallShell: "true"},
 		{name: "empty endpoint sets up a local sandbox host", endpoint: &empty, pathDir: withCLI, wantLocal: "true", wantInstallShell: "true"},
-		{name: "endpoint set with preinstalled CLI skips all local setup", endpoint: &remote, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false"},
-		{name: "endpoint set without CLI still installs the CLI", endpoint: &remote, pathDir: emptyPath, wantLocal: "false", wantInstallShell: "true"},
+		{name: "endpoint set with preinstalled CLI skips all local setup", endpoint: &remote, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "endpoint set without CLI still installs the CLI", endpoint: &remote, pathDir: emptyPath, wantLocal: "false", wantInstallShell: "true", wantEndpoint: remote},
+		{name: "workflow channel wins over the runner environment", endpoint: &remote, workflowEndpoint: &other, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: other},
+		{name: "empty workflow channel falls back to the runner environment", endpoint: &remote, workflowEndpoint: &empty, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "workflow channel alone skips local setup", workflowEndpoint: &remote, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "empty workflow channel and no runner endpoint sets up locally", workflowEndpoint: &empty, pathDir: withCLI, wantLocal: "true", wantInstallShell: "true"},
+		{name: "whitespace-only workflow endpoint is rejected", workflowEndpoint: &whitespace, pathDir: withCLI, wantErr: true},
+		{name: "newline-injected workflow endpoint is rejected", workflowEndpoint: &injected, pathDir: withCLI, wantErr: true},
+		{name: "non-https workflow endpoint is rejected", workflowEndpoint: &httpEndpoint, pathDir: withCLI, wantErr: true},
+		{name: "whitespace-only runner endpoint is rejected", endpoint: &whitespace, pathDir: withCLI, wantErr: true},
+		{name: "newline-injected runner endpoint is rejected", endpoint: &injected, pathDir: withCLI, wantErr: true},
+		{name: "non-https runner endpoint is rejected", endpoint: &httpEndpoint, pathDir: withCLI, wantErr: true},
+		// Operator lock: the runner value wins, and a repository variable
+		// naming a different endpoint fails the job instead of redirecting
+		// the gateway's credentials.
+		{name: "locked runner value agrees with the repository variable", endpoint: &remote, workflowEndpoint: &remote, lockValue: &lockTrue, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "locked with only the runner value", endpoint: &remote, lockValue: &lockTrue, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "locked with no runner value and a repository variable fails the job", workflowEndpoint: &remote, lockValue: &lockTrue, pathDir: withCLI, wantErr: true},
+		{name: "locked with a near-miss lock value fails the job", endpoint: &remote, workflowEndpoint: &other, lockValue: &lockTrueWord, pathDir: withCLI, wantErr: true},
+		{name: "locked with a differing repository variable fails the job", endpoint: &remote, workflowEndpoint: &other, lockValue: &lockTrue, pathDir: withCLI, wantErr: true},
+		{name: "locked with no runner value and no repository variable sets up locally", lockValue: &lockTrue, pathDir: withCLI, wantLocal: "true", wantInstallShell: "true"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			outputs := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir)
+			out, outputs, envWrites, err := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir, tc.workflowEndpoint, tc.lockValue)
+			// The endpoint value is never logged: the step prints its source
+			// and, on rejection, its length, but not the value itself, which
+			// can carry credentials or internal addresses into public logs.
+			// Every value the case supplied is checked, including the losing
+			// channel's value in the precedence case, and each line of a
+			// newline-injected value, so a partial leak is caught too.
+			for _, supplied := range []*string{tc.endpoint, tc.workflowEndpoint} {
+				if supplied == nil || *supplied == "" {
+					continue
+				}
+				for _, line := range strings.Split(*supplied, "\n") {
+					if line != "" {
+						assert.NotContains(t, out, line, "the endpoint value must never appear in the run log")
+					}
+				}
+			}
+			if tc.wantErr {
+				// A rejection must be the step's own validation failing, not
+				// any non-zero exit: the error annotation is printed, and
+				// nothing is published to GITHUB_ENV or GITHUB_OUTPUT.
+				require.Error(t, err)
+				if tc.lockValue != nil && *tc.lockValue != "1" && *tc.lockValue != "0" {
+					assert.Contains(t, out, "::error::FULLSEND_OPENSHELL_GATEWAY_ENDPOINT_LOCKED must be 1, 0 or empty")
+				} else if tc.lockValue != nil && *tc.lockValue == "1" && tc.endpoint == nil && tc.workflowEndpoint != nil {
+					assert.Contains(t, out, "::error::This runner's gateway endpoint is locked")
+					assert.Contains(t, out, "no OPENSHELL_GATEWAY_ENDPOINT to pin to")
+				} else if tc.lockValue != nil && *tc.lockValue == "1" {
+					assert.Contains(t, out, "::error::This runner's gateway endpoint is locked")
+				} else {
+					assert.Contains(t, out, "::error::OPENSHELL_GATEWAY_ENDPOINT must be a single https:// URL")
+				}
+				_, wrote := envWrites["OPENSHELL_GATEWAY_ENDPOINT"]
+				assert.False(t, wrote, "a rejected endpoint must not be published to GITHUB_ENV")
+				_, decided := outputs["local"]
+				assert.False(t, decided, "a rejected endpoint must not produce a sandbox-host decision")
+				return
+			}
+			// The success log names the channel the endpoint came from.
+			if tc.wantEndpoint != "" {
+				if tc.lockValue != nil && *tc.lockValue == "1" && tc.endpoint != nil {
+					assert.Contains(t, out, "from runner environment (locked)")
+				} else if tc.workflowEndpoint != nil && *tc.workflowEndpoint != "" {
+					assert.Contains(t, out, "from repository variable")
+				} else if tc.endpoint != nil {
+					assert.Contains(t, out, "from runner environment")
+				}
+			}
+			require.NoError(t, err)
 			assert.Equal(t, tc.wantLocal, outputs["local"])
 			assert.Equal(t, tc.wantInstallShell, outputs["install-openshell"])
+			// The propagation is asserted unconditionally: remote cases must
+			// publish the resolved endpoint, local cases must write nothing.
+			if tc.wantEndpoint != "" {
+				assert.Equal(t, tc.wantEndpoint, envWrites["OPENSHELL_GATEWAY_ENDPOINT"])
+			} else {
+				_, wrote := envWrites["OPENSHELL_GATEWAY_ENDPOINT"]
+				assert.False(t, wrote, "local setup must not publish a gateway endpoint")
+			}
 		})
 	}
 }
