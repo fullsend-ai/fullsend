@@ -109,7 +109,7 @@ The review stage runs N independent review agents in parallel. One is randomly s
 - **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](../../agents/fix.md) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins.
 - **Split or conflicting:** Reviewers disagree, or there are conflicting security assessments. Label `requires-manual-review` is applied. A human must decide.
 
-Every push to a PR in the review stage triggers a new review round. This means `ready-for-merge` is never stale — it always reflects the current PR head.
+Every push that changes the effective diff of a GitHub PR in the review stage triggers a new review round. A GitHub synchronize event whose complete effective diff is unchanged from the previous approved review is skipped; use `/fs-review` to force a review. Reviews run normally when the prior hash or review cannot be verified, the file listing or tree metadata is incomplete/truncated, or a file has no representable patch. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
 
 ## The stages in detail
 
@@ -138,11 +138,11 @@ The code agent:
 3. **Tests iteratively.** Runs the test suite, incorporates triage-provided tests if present, writes new tests if needed. Iterates until tests pass.
 4. **Opens a PR.** Links the issue, describes the changes.
 5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a fixed retry cap).
-6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request_target`.
+6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request`.
 
 ### Stage 3: Review
 
-**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` on a PR comment, or applying `ready-for-review` to a PR (per-repo installs enforce PR context for the latter two).
+**Triggered by:** `pull_request` events on same-repo PRs (PR opened, push to PR branch, marked ready for review, or labeled `ready-for-review`), or `/fs-review` on a PR comment. PRs from forks are not reviewed automatically, and labeling a fork PR does not start a review either: someone with triage access or higher (or an OWNERS approver or reviewer) comments `/fs-review` to start one.
 
 The review swarm:
 
@@ -150,7 +150,7 @@ The review swarm:
 2. **One coordinator** (randomly selected) collects verdicts and posts a consolidated comment.
 3. **Outcome** is applied as a label (`ready-for-merge` or `requires-manual-review`) or triggers the [fix agent](../../agents/fix.md) (rework).
 
-Re-review happens automatically on every push to the PR. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
+Re-review happens automatically when a push changes the effective GitHub PR diff. Unchanged, complete synchronize diffs are skipped; `/fs-review` forces a fresh review. GitLab synchronized merge requests continue to use the poller’s existing review behavior. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
 
 ### Stage 4: Fix
 
@@ -191,7 +191,7 @@ actor has Developer access.
 
 ### Stopping automation
 
-- Remove the triggering label (`ready-to-code`) to prevent the next stage from starting. Note: review is triggered automatically by PR events (`pull_request_target`), so closing the PR is the way to stop review dispatch.
+- Remove the triggering label (`ready-to-code`) to prevent the next stage from starting. Note: review is triggered automatically by PR events (`pull_request`), so closing the PR is the way to stop review dispatch.
 - Close the issue. Agents don't act on closed issues (except `/fs-triage` which explicitly reopens).
 
 ### Restarting a stage

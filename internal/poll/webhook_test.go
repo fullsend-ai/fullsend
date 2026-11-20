@@ -1,10 +1,13 @@
 package poll
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -586,8 +589,10 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 		{"open long ago", "open", oldOpen, nil, "older than"},
 		{"open by someone else", "open", sameProjectMR(3, "opened"), nil, ""},
 		{"reopen", "reopen", sameProjectMR(3, "opened"), nil, "no event-time actor evidence"},
-		{"label update", "update", sameProjectMR(3, "opened"), map[string]any{"labels": labelChange(nil, []string{"ready-for-review"})}, "not supported"},
-		{"bare update", "update", sameProjectMR(3, "opened"), nil, "uncheckable"},
+		{"label update with empty diff", "update", sameProjectMR(3, "opened"), map[string]any{"labels": labelChange([]string{"bug"}, []string{"bug"})}, "does not resolve"},
+		{"label update without title", "update", sameProjectMR(3, "opened"), map[string]any{"labels": map[string]any{"previous": []any{}, "current": []any{map[string]any{"name": "bug"}}}}, "no title"},
+		{"label update with null labels", "update", sameProjectMR(3, "opened"), map[string]any{"labels": nil}, "merge request update has an unusable changes.labels"},
+		{"label update with non-object labels", "update", sameProjectMR(3, "opened"), map[string]any{"labels": "bug"}, "merge request update has an unusable changes.labels"},
 		{"unknown action", "approved", sameProjectMR(3, "opened"), nil, "not a checkable transition"},
 	}
 	for _, tt := range failures {
@@ -607,6 +612,43 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 			}
 		})
 	}
+
+	ignored := []struct {
+		name    string
+		changes map[string]any
+		wantLog string
+	}{
+		{"bare update ignored", nil, "ignoring merge request !3 update without changes.labels"},
+		{"bare update with other changes ignored", map[string]any{"title": map[string]any{"previous": "a", "current": "b"}}, "ignoring merge request !3 update without changes.labels"},
+		{"label update ignored", map[string]any{"labels": labelChange(nil, []string{"ready-for-review"})}, "ignoring merge request !3 label change"},
+	}
+	for _, tt := range ignored {
+		t.Run(tt.name, func(t *testing.T) {
+			mc := newMockClient()
+			// A re-fetch would fail: an ignored update must not reach the API.
+			mc.mrErr[3] = fmt.Errorf("re-fetch must not be attempted")
+			var logs bytes.Buffer
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
+			got, err := newWebhookPoller(mc).BuildWebhookEvents(context.Background(), mrPayload(t, "update", alice.ID, 3, tt.changes))
+			if err != nil {
+				t.Fatalf("merge request update must be ignored, got error: %v", err)
+			}
+			if len(got) != 0 {
+				t.Errorf("events = %+v, want none for an ignored merge request update", got)
+			}
+			if !strings.Contains(logs.String(), tt.wantLog) {
+				t.Errorf("log = %q, want containing %q", logs.String(), tt.wantLog)
+			}
+		})
+	}
+	t.Run("update without iid", func(t *testing.T) {
+		p := newWebhookPoller(newMockClient())
+		_, err := p.BuildWebhookEvents(context.Background(), mrPayload(t, "update", alice.ID, 0, nil))
+		if err == nil || !strings.Contains(err.Error(), "no valid iid") {
+			t.Fatalf("err = %v, want iid validation error", err)
+		}
+	})
 
 	t.Run("MR not found", func(t *testing.T) {
 		p := newWebhookPoller(newMockClient())
@@ -844,6 +886,62 @@ func noteEditPayload(t *testing.T, noteableType string, userID, noteID, iid int)
 	}
 	m["object_attributes"].(map[string]any)["action"] = "update"
 	return mustJSON(t, m)
+}
+
+// TestBuildWebhookEvents_LabelsBoundBeforeTriggerMatch verifies the
+// webhook builder bounds state.labels and the attacker-shaped single
+// strings before trigger matching, with the same bounds the dispatch door
+// applies when encoding and the poller's Route applies (poll.go): a
+// trigger keyed on a label past the 1024-byte JSON bound produces no
+// stages, and a trigger keyed on the tail of a single string past the
+// 258-byte JSON bound sees the bounded prefix, so the matcher never runs
+// on a field the transported event drops.
+func TestBuildWebhookEvents_LabelsBoundBeforeTriggerMatch(t *testing.T) {
+	mc := newMockClient()
+	mc.memberLevel[alice.ID] = 30
+	// Twenty-four forty-character pad labels overflow the 1024-byte JSON
+	// bound (2 + 24*42 + 23 = 1033 bytes with quotes and commas), so the
+	// trigger label after them is past the bound and dropped: 23 pads
+	// (990 bytes) are what fit.
+	pad := strings.Repeat("p", 40)
+	overLabels := make([]string, 0, 25)
+	for i := 0; i < 24; i++ {
+		overLabels = append(overLabels, pad)
+	}
+	overLabels = append(overLabels, "ready-to-code")
+	// A 300-character actor login overflows the 258-byte JSON single-string
+	// bound, so the built event must carry only its 256-character prefix.
+	longLogin := strings.Repeat("u", 300)
+	mc.issue[4] = &Issue{IID: 4, State: "opened", Labels: overLabels, Author: bob}
+	mc.notes[4] = []Note{
+		{ID: 12, Body: "/fs-triage please", Author: UserRef{ID: alice.ID, Username: longLogin}, CreatedAt: recent},
+	}
+	router := &labelStubRouter{trigger: "ready-to-code"}
+	p := New(mc, router, "group/project", Options{
+		BotUserID:      100,
+		GitLabURL:      "https://gitlab.example.com",
+		PipelineRef:    "main",
+		DispatchSecret: testDispatchSecret,
+	})
+	p.now = func() time.Time { return webhookTestNow }
+
+	got, err := p.BuildWebhookEvents(context.Background(), notePayload(t, "Issue", alice.ID, 12, 4))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1", len(got))
+	}
+	if len(got[0].Stages) != 0 {
+		t.Errorf("stages = %v, want none: a trigger keyed on a label past the labels bound must not match", got[0].Stages)
+	}
+	if labels := got[0].Normalized.State.Labels; len(labels) != 23 {
+		t.Errorf("normalized labels = %d entries, want the 23-entry bounded prefix", len(labels))
+	}
+	if got, want := got[0].Normalized.Actor.ID, longLogin[:transportStringRefLimit-2]; got != want {
+		t.Errorf("normalized actor.id = %d characters, want the %d-character bounded prefix: the single-string bound must be applied before the matcher runs",
+			len(got), len(want))
+	}
 }
 
 func TestBuildWebhookEvents_InvalidPayloads(t *testing.T) {

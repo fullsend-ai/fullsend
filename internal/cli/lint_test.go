@@ -809,6 +809,38 @@ allowed_remote_resources:
 	assert.Contains(t, err.Error(), `validating allowed remote resources for agent "my-agent"`)
 }
 
+func TestLintCommand_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
+	// A harness with no URL references that opts into runtime fetching
+	// (allow_runtime_fetch + allowed_remote_resources) still starts the
+	// fetch service at run time, so lint must check its allowlist against
+	// config.yaml's — not only when HasURLReferences() is true (#9291).
+	dir := t.TempDir()
+	cfg := `version: "1"
+allowed_remote_resources:
+  - "https://allowed.example.com/"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+allow_runtime_fetch: true
+allowed_remote_resources:
+  - "https://disallowed.example.com/"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	cmd := newLintCmd()
+	_, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--offline"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `validating allowed remote resources for agent "my-agent"`)
+	assert.Contains(t, err.Error(), `"https://disallowed.example.com/" is not covered by the org allowlist`)
+}
+
 func TestLintCommand_MissingLocalProviderFails(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"
@@ -1296,6 +1328,9 @@ func TestLintDiagnosticCodesMatchPattern(t *testing.T) {
 		harness.CodeTriggerInvalid,
 		harness.CodePreflightCheckPath,
 		harness.CodeGithubIssueURLDeprecated,
+		harness.CodeBlockDropsRuntimeFetch,
+		harness.CodeBlockDropsCIVariableCred,
+		harness.CodeBlockTriggerIgnored,
 	}
 	seen := map[string]struct{}{}
 	for _, c := range codes {
@@ -1542,6 +1577,79 @@ func TestLintCommand_ScopedSelectedAgentErrorsFail(t *testing.T) {
 	})
 }
 
+// A scoped lint validates the selected agent's entries on their own; its
+// errors must still name the entries' positions in config.yaml, as a full
+// lint's do.
+func TestLintCommand_ScopedReportsOriginalAgentIndex(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	cases := []struct {
+		name   string
+		agents string
+		want   string
+	}{
+		{
+			name: "invalid agent second",
+			agents: `  - name: triage
+    enabled: false
+  - name: review
+    runtime: made-up-runtime
+`,
+			want: `agents[1] (review): invalid runtime "made-up-runtime"`,
+		},
+		{
+			name: "invalid agent first",
+			agents: `  - name: review
+    runtime: made-up-runtime
+  - name: triage
+    enabled: false
+`,
+			want: `agents[0] (review): invalid runtime "made-up-runtime"`,
+		},
+		{
+			name: "non-adjacent duplicates",
+			agents: `  - name: review
+    source: harness/review.yaml
+  - name: triage
+    enabled: false
+  - name: review
+    source: harness/review.yaml
+`,
+			want: "agents[2] (review): duplicate agent name",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeScopedLintFixture(t, tc.agents, "review")
+
+			out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "--offline"})
+			require.Error(t, err)
+			assert.Contains(t, out+err.Error(), tc.want, "full lint, text")
+
+			out, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "review", "--offline"})
+			require.Error(t, err)
+			assert.Contains(t, out+err.Error(), tc.want, "scoped lint, text")
+
+			for _, scoped := range []struct {
+				args []string
+				code string
+			}{
+				{args: nil, code: lintCodeConfigInvalid},
+				{args: []string{"review"}, code: lintCodeAgentUnavailable},
+			} {
+				args := append([]string{"--fullsend-dir", dir, "--offline", "--format", "json"}, scoped.args...)
+				stdout, _, jsonErr := executeLintStreams(newLintCmd(), args)
+				require.Error(t, jsonErr)
+				report := parseLintJSON(t, stdout)
+				assert.False(t, report.Success)
+				require.Len(t, report.Diagnostics, 1, "args %v", args)
+				assert.Equal(t, "config", report.Diagnostics[0].Agent)
+				assert.Equal(t, scoped.code, report.Diagnostics[0].Code)
+				assert.Contains(t, report.Diagnostics[0].Message, tc.want, "args %v, JSON", args)
+			}
+		})
+	}
+}
+
 func TestLintCommand_ScopedStillValidatesConfig(t *testing.T) {
 	stubLintGitHubToken(t, "test-token")
 
@@ -1589,4 +1697,42 @@ func TestLintCommand_ScopedJSONLintsOnlySelectedAgent(t *testing.T) {
 	assert.Equal(t, "beta", report.Diagnostics[0].Agent)
 	assert.Equal(t, "warning", report.Diagnostics[0].Severity)
 	assert.Equal(t, harness.CodeGithubIssueURLDeprecated, report.Diagnostics[0].Code)
+}
+
+// lint composes an entry's harness: block as run does, with the same name and path checks.
+func TestLintCommand_LintsHarnessBlock(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(`role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+env:
+  sandbox:
+    MY_KNOB: low
+`), 0o644))
+	writeConfig := func(block string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+    harness:
+`+block), 0o644))
+	}
+
+	writeConfig("      env: { sandbox: { MY_KNOB: high } }\n      policy: policies/base.yaml\n")
+	out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+	require.NoError(t, err, out)
+	assert.NotContains(t, out, "error:")
+
+	writeConfig("      env: { sandbox: { NOT_DECLARED: x } }\n")
+	out, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, out+err.Error(), `harness.env.sandbox.NOT_DECLARED`)
+
+	writeConfig("      policy: ../outside.yaml\n")
+	out, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+	require.Error(t, err, "a block path escaping the config directory is rejected, as in a local harness file")
+	assert.Contains(t, out+err.Error(), "resolving paths for agent")
 }

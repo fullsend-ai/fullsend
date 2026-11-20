@@ -37,9 +37,11 @@ import (
 // p.repo plus positive integer IDs; no URL, host, or path_with_namespace
 // in the payload is ever read. Any action the re-fetch contradicts, or
 // that it cannot check, fails closed. The exceptions are a bare issue
-// update (no changes.labels) and a note edit (note action "update"),
-// which claim no transition and are ignored as non-routable (see
-// webhookIssueEvents and webhookNoteEvents).
+// update (no changes.labels), a merge request update, and a note edit
+// (note action "update"), which claim no transition the poll stack can
+// route and are ignored as non-routable (see webhookIssueEvents,
+// webhookMergeRequestEvents and webhookNoteEvents). A merge request
+// update whose changes.labels value is malformed still fails closed.
 //
 // The payload's contents are untrusted and are never logged.
 
@@ -169,6 +171,16 @@ func (p *Poller) BuildWebhookEvents(ctx context.Context, raw []byte) ([]WebhookE
 		}
 		we := WebhookEvent{Event: event, Normalized: ne, ActorID: actorID}
 		if p.router != nil {
+			// Bound state.labels and the attacker-shaped single strings
+			// before trigger matching, the same bounds the dispatch door
+			// applies when encoding and the poller's Route applies
+			// (poll.go): a trigger keyed on a label or string tail past
+			// the bound must not launch an agent whose transported event
+			// lacks it. The bounded event is also the one dispatch
+			// carries, so the matcher and the payload agree.
+			where := fmt.Sprintf("webhook %s event on IID %d", event.Type, event.IID)
+			we.Normalized.State.Labels = dispatch.LogBoundTransportLabels(where, we.Normalized.State.Labels)
+			logBoundTransportEventStrings(where, &we.Normalized)
 			stages, err := p.router.Route(&we.Normalized)
 			if err != nil {
 				err = fmt.Errorf("route webhook %s event on IID %d: %w", event.Type, event.IID, err)
@@ -210,11 +222,7 @@ func (p *Poller) webhookRoutableEvents(ctx context.Context, payload webhookPaylo
 	case "note":
 		return p.webhookNoteEvents(ctx, payload)
 	case "merge_request":
-		ev, err := p.webhookMergeRequestEvent(ctx, payload)
-		if err != nil {
-			return nil, err
-		}
-		return []RoutableEvent{ev}, nil
+		return p.webhookMergeRequestEvents(ctx, payload)
 	case "issue":
 		return p.webhookIssueEvents(ctx, payload)
 	default:
@@ -324,14 +332,25 @@ func (p *Poller) webhookNoteEvents(ctx context.Context, payload webhookPayload) 
 	return []RoutableEvent{ev}, nil
 }
 
-// webhookMergeRequestEvent handles object_kind "merge_request" per the
+// webhookMergeRequestEvents handles object_kind "merge_request" per the
 // normative table. The actor is the user the re-fetched MR records for
 // the transition (author, merge user, closed_by) and must equal the
 // payload-named user.
-func (p *Poller) webhookMergeRequestEvent(ctx context.Context, payload webhookPayload) (RoutableEvent, error) {
+//
+// An update is never routed. A bare update (no changes.labels: a title,
+// description, draft or push update, for example) claims no transition
+// the poll stack can check. It is ignored rather than rejected: no events,
+// no error, no re-fetch, so the dispatcher job succeeds without
+// dispatching. An update with a well-formed changes.labels diff is also
+// ignored, with a distinct message: the poll stack has no merge request
+// label transition (RoutableEvent label events and resolveLabelAuthor are
+// issue-only), so nothing could be dispatched for it. A changes.labels
+// value that does not resolve to discrete label adds and removes still
+// fails closed.
+func (p *Poller) webhookMergeRequestEvents(ctx context.Context, payload webhookPayload) ([]RoutableEvent, error) {
 	attrs := payload.ObjectAttributes
 	if attrs.IID <= 0 {
-		return RoutableEvent{}, errors.New("merge request payload has no valid iid")
+		return nil, errors.New("merge request payload has no valid iid")
 	}
 	// Reject before re-fetching: these cases cannot be validated no matter
 	// what the snapshot says.
@@ -340,21 +359,24 @@ func (p *Poller) webhookMergeRequestEvent(ctx context.Context, payload webhookPa
 	case "reopen":
 		// The MR snapshot records no reopening user; binding the actor
 		// needs resource state events, which the client does not expose.
-		return RoutableEvent{}, errors.New("merge request reopen has no event-time actor evidence")
+		return nil, errors.New("merge request reopen has no event-time actor evidence")
 	case "update":
-		if payload.Changes.Labels != nil {
-			// The poll stack has no MR label transition (RoutableEvent
-			// label events and resolveLabelAuthor are issue-only).
-			return RoutableEvent{}, errors.New("merge request label changes are not supported by the poll dispatch stack")
+		if len(payload.Changes.Labels) == 0 {
+			log.Printf("webhook: ignoring merge request !%d update without changes.labels: not a routable transition, nothing dispatched", attrs.IID)
+			return nil, nil
 		}
-		return RoutableEvent{}, errors.New("merge request update without changes.labels is uncheckable")
+		if _, err := parseWebhookLabelChange(payload.Changes.Labels, "merge request"); err != nil {
+			return nil, err
+		}
+		log.Printf("webhook: ignoring merge request !%d label change: the poll dispatch stack has no merge request label transition, nothing dispatched", attrs.IID)
+		return nil, nil
 	default:
-		return RoutableEvent{}, fmt.Errorf("merge request action %q is not a checkable transition", attrs.Action)
+		return nil, fmt.Errorf("merge request action %q is not a checkable transition", attrs.Action)
 	}
 
 	mr, err := p.client.GetMergeRequest(ctx, p.owner, p.repo, attrs.IID)
 	if err != nil {
-		return RoutableEvent{}, fmt.Errorf("re-fetch merge request !%d: %w", attrs.IID, err)
+		return nil, fmt.Errorf("re-fetch merge request !%d: %w", attrs.IID, err)
 	}
 
 	ev := RoutableEvent{Type: "mr_event", IID: mr.IID}
@@ -362,14 +384,14 @@ func (p *Poller) webhookMergeRequestEvent(ctx context.Context, payload webhookPa
 	switch attrs.Action {
 	case "open":
 		if mr.State != "opened" {
-			return RoutableEvent{}, fmt.Errorf("merge request !%d open: state is %q, not opened", mr.IID, mr.State)
+			return nil, fmt.Errorf("merge request !%d open: state is %q, not opened", mr.IID, mr.State)
 		}
 		ev.Action = "opened"
 		ev.UpdatedAt = mr.CreatedAt
 		actor = mr.Author
 	case "merge":
 		if mr.State != "merged" || mr.MergedAt.IsZero() {
-			return RoutableEvent{}, fmt.Errorf("merge request !%d merge: state is %q or merged_at unset", mr.IID, mr.State)
+			return nil, fmt.Errorf("merge request !%d merge: state is %q or merged_at unset", mr.IID, mr.State)
 		}
 		ev.UpdatedAt = mr.MergedAt
 		actor = mergedByUser(*mr)
@@ -378,23 +400,23 @@ func (p *Poller) webhookMergeRequestEvent(ctx context.Context, payload webhookPa
 		// Current state, not timestamps alone: a reopened MR can keep a
 		// stale closed_at.
 		if mr.State != "closed" || mr.ClosedAt.IsZero() || !mr.MergedAt.IsZero() {
-			return RoutableEvent{}, fmt.Errorf("merge request !%d close: state is %q or timestamps inconsistent", mr.IID, mr.State)
+			return nil, fmt.Errorf("merge request !%d close: state is %q or timestamps inconsistent", mr.IID, mr.State)
 		}
 		ev.Action = "closed"
 		ev.UpdatedAt = mr.ClosedAt
 		actor = mr.ClosedBy
 	}
 	if err := bindActor(payload.User.ID, actor, "merge request "+attrs.Action+" actor"); err != nil {
-		return RoutableEvent{}, err
+		return nil, err
 	}
 	if err := p.checkFresh(ev.UpdatedAt, "merge request "+attrs.Action+" time"); err != nil {
-		return RoutableEvent{}, err
+		return nil, err
 	}
 	ev.NoteAuthorID = actor.ID
 	ev.NoteAuthorLogin = actor.Username
 	ev.IsBot = actor.Bot
 	applyMRFields(&ev, mr)
-	return ev, nil
+	return []RoutableEvent{ev}, nil
 }
 
 // webhookIssueEvents handles object_kind "issue" per the normative
@@ -420,14 +442,8 @@ func (p *Poller) webhookIssueEvents(ctx context.Context, payload webhookPayload)
 			log.Printf("webhook: ignoring issue #%d update without changes.labels: not a routable transition, nothing dispatched", attrs.IID)
 			return nil, nil
 		}
-		// The key is present, so this is a label-change claim: a null or
-		// malformed value is rejected, never ignored.
-		var change *webhookLabelChange
-		if err := json.Unmarshal(payload.Changes.Labels, &change); err != nil || change == nil {
-			return nil, errors.New("issue update has an unusable changes.labels value")
-		}
 		var err error
-		diffs, err = diffWebhookLabels(change.Previous, change.Current)
+		diffs, err = parseWebhookLabelChange(payload.Changes.Labels, "issue")
 		if err != nil {
 			return nil, err
 		}
@@ -543,6 +559,19 @@ func (p *Poller) webhookIssueLabelEvents(ctx context.Context, actorID int, issue
 		})
 	}
 	return events, nil
+}
+
+// parseWebhookLabelChange decodes a present changes.labels value into
+// discrete label adds and removes. The key is present, so this is a
+// label-change claim: a null or malformed value, a label entry without a
+// title, or a diff that resolves to nothing is rejected, never ignored.
+// kind names the resource ("issue", "merge request") in the error.
+func parseWebhookLabelChange(raw json.RawMessage, kind string) ([]labelDiff, error) {
+	var change *webhookLabelChange
+	if err := json.Unmarshal(raw, &change); err != nil || change == nil {
+		return nil, fmt.Errorf("%s update has an unusable changes.labels value", kind)
+	}
+	return diffWebhookLabels(change.Previous, change.Current)
 }
 
 // diffWebhookLabels resolves a changes.labels previous/current pair into

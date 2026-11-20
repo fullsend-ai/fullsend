@@ -132,6 +132,9 @@ func TestEnsureManagedConfigDefaults_ForgeSpecificTargets(t *testing.T) {
 	}
 }
 
+// A repository that only a glob covers gets its own entry, copied from the
+// glob, and progress names that entry and the glob, since later edits to
+// the glob no longer reach it.
 func TestEnsureManagedConfigDefaults_GlobCoveredGetsScopedEntry(t *testing.T) {
 	m := &Manifest{Version: 1, Defaults: testInferenceDefaults(), GitHub: &PlatformConfig{
 		Repos: []RepoEntry{{Name: "acme/*", FullsendRef: "v1.2.3"}},
@@ -139,11 +142,14 @@ func TestEnsureManagedConfigDefaults_GlobCoveredGetsScopedEntry(t *testing.T) {
 	path := writebackManifestFile(t, m)
 	fc := newFakeClientForBatch("acme/api", "acme/web")
 
+	var msgs []string
 	names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{
 		Manifest: m, ManifestPath: path, RepoFilter: []string{"acme/api"},
-	}, newTestClientFactory(fc), nil)
+	}, newTestClientFactory(fc), func(repo, _, msg string) { msgs = append(msgs, repo+": "+msg) })
 	require.NoError(t, err)
 	assert.Equal(t, []string{"acme/api"}, names)
+	assert.Equal(t, []string{"acme/api: Persisted config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents] " +
+		"in the new manifest entry acme/api, copied from the glob entry acme/*"}, msgs)
 
 	require.Len(t, m.GitHub.Repos, 2)
 	assert.False(t, m.GitHub.Repos[0].Config.IsSet(), "the glob entry is unchanged so siblings are unaffected")

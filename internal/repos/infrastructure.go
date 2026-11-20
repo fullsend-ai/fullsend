@@ -31,11 +31,6 @@ func PreflightEffectiveInfrastructure(ctx context.Context, m *Manifest, clients 
 	cfg := ConvergeConfig{InferenceProject: inferenceProject, WIFProvider: wifProvider}
 	for _, rr := range selected {
 		resolved := m.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
-		// Convergence reports a repository with no inference
-		// authentication before anything else; nothing to resolve here.
-		if resolved.RequireInferenceAuth() != nil {
-			continue
-		}
 		if resolved.Config != "" {
 			data, loadErr := store.Load(ctx, resolved.Config, resolved.ConfigHash)
 			if loadErr != nil {
@@ -46,6 +41,13 @@ func PreflightEffectiveInfrastructure(ctx context.Context, m *Manifest, clients 
 				continue
 			}
 			resolved.ProposedBase = data
+		}
+		// Convergence reports a repository with no inference
+		// authentication (and no inference.gateway route, which the
+		// preset may supply) before anything else; nothing to resolve
+		// here.
+		if resolved.RequireInferenceAuth() != nil {
+			continue
 		}
 		if infraErr := resolved.applyEffectiveInfrastructure(); infraErr != nil {
 			errs = append(errs, infraErr)
@@ -70,9 +72,10 @@ func PreflightEffectiveInfrastructure(ctx context.Context, m *Manifest, clients 
 //     replaces the manifest mint_url/mint_mode resolution. A manifest
 //     mint_url that contradicts it is a configuration error: the repository
 //     variable and the committed configuration would disagree.
-//   - InferenceRegion (Vertex-using inference.auth only): the declared
-//     inference.region, else the code default. Only a declared region is
-//     enforced on an existing variable (see expectedInferenceRegion).
+//   - InferenceRegion (Vertex-using inference.auth only, not openai-api-key
+//     or gateway-only): the declared inference.region, else the code
+//     default. Only a declared region is enforced on an existing variable
+//     (see expectedInferenceRegion).
 //   - DeclaredInferenceProject / DeclaredWIFProvider: the declared Vertex
 //     credential values, consumed by vertexCredentialInputs.
 //   - DeclaredWIFAudience / DeclaredServiceAccount: the GitLab vertex-wif
@@ -126,7 +129,7 @@ func (c *ResolvedConfig) applyEffectiveInfrastructure() error {
 	}
 	c.InferenceRegion = ""
 	c.InferenceRegionDeclared = false
-	if c.InferenceAuth != InferenceAuthOpenAIAPIKey {
+	if usesVertexCredentials(c.InferenceAuth) {
 		c.InferenceRegion = firstNonEmpty(declared.InferenceRegion, config.DefaultPerRepoInferenceRegion)
 		c.InferenceRegionDeclared = declared.InferenceRegion != ""
 	}
@@ -160,10 +163,10 @@ func (c ResolvedConfig) expectedInferenceRegion() string {
 // committed configuration. Empty results mean no input supplies the value;
 // a WIF provider without a project is rejected, and a declared WIF provider
 // additionally requires a declared project (--vertex-project alone does not
-// satisfy it) so status and install agree. openai-api-key repositories
-// use no Vertex inputs.
+// satisfy it) so status and install agree. openai-api-key and gateway-only
+// (empty inference.auth) repositories use no Vertex inputs.
 func vertexCredentialInputs(cfg ConvergeConfig, resolved ResolvedConfig) (project, wifProvider string, err error) {
-	if resolved.InferenceAuth == InferenceAuthOpenAIAPIKey {
+	if !usesVertexCredentials(resolved.InferenceAuth) {
 		return "", "", nil
 	}
 	repo := resolved.Owner + "/" + resolved.Repo
@@ -209,4 +212,14 @@ func reconcileVertexInput(repo, flag, flagValue, key, declared string) (string, 
 			repo, flag, flagValue, key, declared, flag)
 	}
 	return firstNonEmpty(flagValue, declared), nil
+}
+
+// usesVertexCredentials reports whether auth provisions the Vertex
+// credentials (FULLSEND_GCP_PROJECT_ID, FULLSEND_GCP_WIF_PROVIDER and
+// FULLSEND_GCP_REGION): vertex-wif, and openai-wif for Vertex sub-agents of
+// an OpenAI parent. openai-api-key does not, nor does a gateway-only
+// repository (empty inference.auth past RequireInferenceAuth), whose
+// inference.gateway route authenticates on its own.
+func usesVertexCredentials(auth string) bool {
+	return auth == InferenceAuthVertexWIF || auth == InferenceAuthOpenAIWIF
 }

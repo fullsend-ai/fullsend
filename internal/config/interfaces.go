@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -61,6 +62,7 @@ type ConfigReader interface {
 // the struct field names (Roles and Runtime).
 type PerRepoConfigReader interface {
 	ConfigReader
+	SecretSourcesReader
 	ConfigRoles() []string
 	ConfigRuntime() string
 	ConfigForge() string
@@ -90,12 +92,33 @@ type PerRepoConfigReader interface {
 	// aliases are configured: every alias resolves through the runtime's
 	// compiled-in table.
 	ConfigModelAliases() map[string]string
+	// ConfigArtifactsContent returns the effective artifacts.content
+	// level (ADR 0161); the code default is "all".
+	ConfigArtifactsContent() string
+	// ConfigArtifactsContentSet reports whether any config layer sets
+	// artifacts.content explicitly (false for the code default).
+	ConfigArtifactsContentSet() bool
+	// ConfigArtifactsBySource returns the effective artifacts.by_source
+	// map, merged per key through the parent chain. nil means no
+	// per-source levels.
+	ConfigArtifactsBySource() map[string]string
+	// ConfigProgressVerbosity returns the effective progress.verbosity
+	// level (ADR 0163); the code default is "full".
+	ConfigProgressVerbosity() string
+	// ConfigProgressBySource returns the effective progress.by_source
+	// map, merged per key through the parent chain. nil means no
+	// per-source levels.
+	ConfigProgressBySource() map[string]string
 	// IsOwnersFileAuthEnabled reports whether the owners_file
 	// authorization provider is listed.
 	IsOwnersFileAuthEnabled() bool
 	// JiraAuthorization returns the jira authorization provider entry,
 	// or nil when none is listed.
 	JiraAuthorization() *AuthorizationProvider
+	// TraceContext returns a copy of this layer's trace_context block, or
+	// nil when it has none. There is no parent fallback: config.base.yaml
+	// never supplies it (ADR 0154).
+	TraceContext() *TraceContextConfig
 }
 
 // --- Write superset interfaces ---
@@ -240,6 +263,16 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 				}
 				merged.Subagents = cloned
 			}
+			// harness: blocks layer like harness inheritance (ADR 0162):
+			// the parent's block stays a layer of its own beneath the
+			// overlay's, and the harness package composes them in order. An
+			// empty block sets nothing, like no block, in either layer.
+			if !oi.entry.Harness.IsEmpty() {
+				if !merged.Harness.IsEmpty() {
+					merged.inheritedHarness = append(slices.Clone(merged.inheritedHarness), merged.Harness)
+				}
+				merged.Harness = oi.entry.Harness
+			}
 		}
 		result = append(result, merged)
 	}
@@ -257,6 +290,18 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 // LocalAgentEntries returns only this layer's own agents: entries (what
 // Marshal writes), as opposed to the merged set from AgentEntries.
 func (c *perRepoConfig) LocalAgentEntries() []AgentEntry { return c.Agents }
+
+// LocalAllowedRemoteResources returns only this layer's own allowlist
+// entries (what Marshal writes), as opposed to the parent-unioned set
+// from AllowedResources: nil means the key is omitted here (the parent
+// chain resolves it), an explicit empty slice is this layer's deny-all,
+// and a non-empty slice is this layer's entries without the parent
+// chain's, fullsend's default prefixes included. The agent add and
+// remove cleanup writes read this, never the union, so parent-chain
+// entries are not baked into the committed overlay; agent remove's
+// deny-all fallback, which writes the default prefixes a remaining
+// agent still uses, is the intentional exception.
+func (c *perRepoConfig) LocalAllowedRemoteResources() []string { return c.AllowedRemoteResources }
 
 // IsKillSwitchActive reports whether the kill switch is engaged.
 // KillSwitch is a *bool: nil falls through to parent, non-nil
@@ -375,6 +420,13 @@ func (c *perRepoConfig) JiraAuthorization() *AuthorizationProvider {
 		}
 	}
 	return nil
+}
+
+// TraceContext returns a deep copy of the trace_context block, or nil when
+// none is set. Like JiraAuthorization it has no parent fallback: the block
+// belongs to one repository and is never inherited from config.base.yaml.
+func (c *perRepoConfig) TraceContext() *TraceContextConfig {
+	return cloneTraceContext(c.TraceContextBlock)
 }
 
 // ConfigRoles returns the configured agent roles. nil (key omitted)

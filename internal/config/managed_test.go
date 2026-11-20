@@ -348,6 +348,25 @@ func TestDeclaredInfrastructureValues_NothingDeclaredIsEmpty(t *testing.T) {
 	assert.Equal(t, DeclaredInfrastructure{}, got)
 }
 
+func TestDeclaredInfrastructureValues_InferenceGatewayLayers(t *testing.T) {
+	var overlay ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+inference:
+  gateway:
+    audience: overlay-aud
+`), &overlay))
+	base := []byte(`
+inference:
+  gateway:
+    url: " https://gateway.example.com "
+    audience: base-aud
+`)
+	got, err := DeclaredInfrastructureValues(overlay.Writer(), base)
+	require.NoError(t, err)
+	assert.Equal(t, InferenceGatewayConfig{URL: "https://gateway.example.com", Audience: "overlay-aud"}, got.InferenceGateway,
+		"url comes from the base, audience from the overlay, trimmed")
+}
+
 func TestDeclaredInfrastructureValues_InvalidBase(t *testing.T) {
 	_, err := DeclaredInfrastructureValues(nil, []byte("mint_url: [unterminated"))
 	require.Error(t, err)
@@ -430,6 +449,42 @@ agents:
 	// register it, isn't layered on until install/converge time.
 	w.SetAllowedRemoteResources([]string{"https://example.com/"})
 	assert.NoError(t, ValidateMergedManaged(w))
+}
+
+// ValidateMergedManaged checks agents against the effective allowlist —
+// the merged managed list with fullsend's default prefixes ensured on a
+// non-empty result — the same list every command family resolves. A
+// managed block that declares its list validates the same for the
+// prefixes the merged managed blocks resolve once written and read
+// through LayeredConfig; a prefix declared only in config.base.yaml or
+// a config_base preset is not visible to merged validation, which is
+// stricter than the read for that shape. A block that omits the key
+// validates against the defaults alone and still inherits a base []
+// (deny-all) at LayeredConfig read time. An explicit [] stays deny-all.
+func TestValidateMergedManaged_EffectiveAllowlist(t *testing.T) {
+	defaultPrefix := DefaultAllowedRemoteResources()[0]
+	integrity := "#sha256=" + strings.Repeat("a", 64)
+	agentYAML := "agents:\n  - name: probe\n    source: \"" + defaultPrefix + "harness/probe.yaml" + integrity + "\"\n"
+
+	t.Run("non-empty merged list admits a default-prefix agent", func(t *testing.T) {
+		var o ManagedConfig
+		require.NoError(t, yaml.Unmarshal([]byte("allowed_remote_resources:\n  - https://overlay.example.com/\n"+agentYAML), &o))
+		assert.NoError(t, ValidateMergedManaged(o.Writer()))
+	})
+
+	t.Run("omitted list resolves the defaults alone", func(t *testing.T) {
+		var o ManagedConfig
+		require.NoError(t, yaml.Unmarshal([]byte(agentYAML), &o))
+		assert.NoError(t, ValidateMergedManaged(o.Writer()))
+	})
+
+	t.Run("explicit [] stays deny-all", func(t *testing.T) {
+		var o ManagedConfig
+		require.NoError(t, yaml.Unmarshal([]byte("allowed_remote_resources: []\n"+agentYAML), &o))
+		err := ValidateMergedManaged(o.Writer())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
+	})
 }
 
 func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
@@ -657,4 +712,49 @@ func TestManagedConfig_CloneIsDeep(t *testing.T) {
 
 	list, _ := orig.ExplicitAllowedRemoteResources()
 	assert.Equal(t, []string{"https://a.example.com/"}, list)
+}
+
+func TestMergeManaged_ConnectionsAndSecretsMergeByName(t *testing.T) {
+	var parent ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+connections:
+  vault-a:
+    kind: vault
+    vault_address: https://vault-a.example.com
+    vault_role: role-a
+    vault_audience: aud-a
+secrets:
+  FULLSEND_GITHUB_RUNNER_SECRETS:
+    connection: vault-a
+    vault_secrets:
+      - secret/data/parent
+`), &parent))
+	var child ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+connections:
+  vault-b:
+    kind: vault
+    vault_address: https://vault-b.example.com
+    vault_role: role-b
+    vault_audience: aud-b
+secrets:
+  FULLSEND_GITHUB_RUNNER_SECRETS:
+    connection: vault-b
+    vault_secrets:
+      - secret/data/child
+`), &child))
+
+	merged := MergeManaged(parent.Writer(), child.Writer())
+	require.NotNil(t, merged)
+	conns := merged.ConfigConnections()
+	assert.Contains(t, conns, "vault-a", "parent connection kept")
+	assert.Contains(t, conns, "vault-b", "child connection added")
+	src := merged.ConfigSecrets()["FULLSEND_GITHUB_RUNNER_SECRETS"]
+	assert.Equal(t, "vault-b", src.Connection, "child replaces the whole entry")
+	assert.Equal(t, []string{"secret/data/child"}, src.VaultSecrets)
+
+	body, err := merged.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "vault-a.example.com")
+	assert.Contains(t, string(body), "vault-b.example.com")
 }

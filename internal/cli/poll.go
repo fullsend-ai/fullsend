@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
+	"github.com/fullsend-ai/fullsend/internal/jiradispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/poll"
@@ -171,7 +172,7 @@ func newPollCmd() *cobra.Command {
 	for _, name := range []string{"jira-url", "jira-project", "jql"} {
 		_ = cmd.Flags().MarkHidden(name)
 	}
-	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub repo slug where agents run (default: $GITHUB_REPOSITORY; jira-poll with --target-forge github only)")
+	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub owner/repo slug where agents run, without '..' (default: $GITHUB_REPOSITORY; jira-poll with --target-forge github only)")
 	cmd.Flags().StringVar(&targetForge, "target-forge", jirapoll.TargetForgeGitHub, "Forge the jira-poll driver dispatches agents to: 'github' (write --output for reusable-dispatch.yml) or 'gitlab' (start the project's protected agent pipelines; uses --project and --gitlab-url)")
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "Poll mode: 'slash' (slash commands only) or 'events' (labels, merges, non-slash notes)")
 	cmd.MarkFlagsOneRequired("forge", "input-driver")
@@ -430,6 +431,12 @@ func validateJiraPollArgs(settings jiraPollSettings, targetRepo, outputPath, ful
 	if !validTargetRepo.MatchString(targetRepo) {
 		return jiraPollArgs{}, fmt.Errorf("--target-repo %q must be an owner/repo slug", targetRepo)
 	}
+	// The repo becomes every event's normalized repo, which may not contain
+	// "..": every event of the cycle would fail validation, so the poll
+	// fails each cycle and never advances a checkpoint.
+	if strings.Contains(targetRepo, "..") {
+		return jiraPollArgs{}, fmt.Errorf("--target-repo %q must not contain '..'", targetRepo)
+	}
 
 	if outputPath == "" {
 		return jiraPollArgs{}, fmt.Errorf("--output is required: without it, a full poll cycle runs and checkpoints advance in Jira, but every dispatch is silently discarded")
@@ -493,14 +500,27 @@ func buildRouter(fullsendDir string) (*dispatch.HarnessRouter, error) {
 }
 
 // celMatcher evaluates events against harness CEL triggers, replacing
-// the hardcoded HarnessRouter for the Jira poll path. Candidates are
-// loaded once at construction and reused for every event in the cycle.
+// the hardcoded HarnessRouter for the Jira poll path: the shared
+// jiradispatch.Matcher over the config directory's triggered harnesses,
+// with the dispatch gate policy the configured jira authorization
+// provider implies. Candidates are loaded once at construction and
+// reused for every event in the cycle.
 type celMatcher struct {
-	candidates []harnessdispatch.TriggeredHarness
+	*jiradispatch.Matcher
 	// jiraAuth is the jira authorization provider from config.yaml, or
 	// nil when none is listed. It configures the poller's actor role
 	// resolution and the gate's Jira label rule.
 	jiraAuth *config.AuthorizationProvider
+}
+
+// Match applies the dispatch gate policy the configured jira
+// authorization provider implies and delegates to the shared
+// jiradispatch.Matcher. The jira poll cycle calls Match serially, so
+// refreshing the policy here keeps a directly-constructed matcher (a
+// test, or a caller with its own provider) consistent with its jiraAuth.
+func (m *celMatcher) Match(ctx context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
+	m.Matcher.Auth = jiraAuthOptions(m.jiraAuth)
+	return m.Matcher.Match(ctx, event)
 }
 
 // newCELMatcher loads harness files with CEL triggers from the config
@@ -520,25 +540,25 @@ func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error)
 	if cfg.IsKillSwitchActive() {
 		// Kill switch active: return a matcher with no candidates so all
 		// events are silently dropped (no dispatches).
-		return &celMatcher{jiraAuth: jiraAuth}, nil
+		return &celMatcher{Matcher: &jiradispatch.Matcher{Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth}, nil
 	}
 	candidates, err := harnessdispatch.ListTriggeredHarnesses(ctx, fullsendDir, cfg, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list triggered harnesses: %w", err)
 	}
-	return &celMatcher{candidates: candidates, jiraAuth: jiraAuth}, nil
+	return &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: candidates, Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth}, nil
 }
 
-// authOptions returns the dispatch gate policy for the configured jira
-// provider: with no jira entry, Jira label-added events take the
+// jiraAuthOptions returns the dispatch gate policy for the configured
+// jira provider: with no jira entry, Jira label-added events take the
 // per-harness role threshold as before; with an entry, they are authorized
 // by Jira's Edit Issues permission under labels: jira_editors (the default)
 // and take the role threshold under allowlist or project_roles, where the
 // poller resolves the label author's role from that source.
-func (m *celMatcher) authOptions() harnessdispatch.AuthOptions {
+func jiraAuthOptions(p *config.AuthorizationProvider) harnessdispatch.AuthOptions {
 	return harnessdispatch.AuthOptions{
-		JiraLabelsByEditPermission: m.jiraAuth != nil &&
-			m.jiraAuth.EffectiveJiraLabels() == config.JiraLabelsEditors,
+		JiraLabelsByEditPermission: p != nil &&
+			p.EffectiveJiraLabels() == config.JiraLabelsEditors,
 	}
 }
 
@@ -578,36 +598,4 @@ func jiraPollAuthorization(p *config.AuthorizationProvider) jirapoll.Authorizati
 		ListsConfigured: p.Write != nil || p.Triage != nil,
 		Labels:          p.EffectiveJiraLabels(),
 	}
-}
-
-// Match evaluates the event against all CEL trigger candidates and returns
-// dispatch records for each matching harness.
-func (m *celMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
-	opts := m.authOptions()
-	if !harnessdispatch.IsEventAuthorizedWith(event, opts) {
-		return nil, nil
-	}
-	candidates := harnessdispatch.FilterAuthorizedHarnessesWith(m.candidates, event, opts)
-	matched, err := harnessdispatch.MatchHarnesses(candidates, event)
-	if err != nil {
-		return nil, err
-	}
-	var records []jirapoll.DispatchRecord
-	for _, h := range matched {
-		ref, err := harnessdispatch.ProjectExecutionRef(h.Name, h.Harness.Role, event)
-		if err != nil {
-			return nil, fmt.Errorf("build execution ref for %s: %w", h.Name, err)
-		}
-		records = append(records, jirapoll.DispatchRecord{
-			Agent:         ref.Agent,
-			Role:          ref.Role,
-			SourceRepo:    ref.SourceRepo,
-			EventType:     ref.EventType,
-			EventPayload:  ref.EventPayload,
-			TriggerSource: ref.TriggerSource,
-			StatusRepo:    ref.StatusRepo,
-			StatusNumber:  ref.StatusNumber,
-		})
-	}
-	return records, nil
 }

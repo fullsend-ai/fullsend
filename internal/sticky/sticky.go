@@ -25,12 +25,13 @@ type Config struct {
 	KeepHistory  bool // when false, updates replace the body in-place with no "Previous run" history
 
 	// TrustedLeadingLine, when set, matches a marker line that the trusted
-	// caller places as the first line of the body. When the first line of
-	// the body matches it in full, that line is posted as is and only the
-	// rest of the body has its marker syntax escaped. A match anywhere else
-	// is escaped like any other marker. The pattern must be anchored with
-	// ^ and $ and must not match a line that could carry a second marker.
-	TrustedLeadingLine *regexp.Regexp
+	// caller places at the start of the body. Matching leading lines are
+	// posted as-is and the rest of the body has its marker syntax escaped.
+	// MaxTrustedLeadingLines limits how many consecutive leading lines may be
+	// preserved; it defaults to one. A match anywhere else is escaped like
+	// any other marker. The pattern must be anchored with ^ and $.
+	TrustedLeadingLine     *regexp.Regexp
+	MaxTrustedLeadingLines int
 }
 
 func (c Config) maxSize() int {
@@ -114,16 +115,25 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 
 // neutralizeBody escapes fullsend marker syntax in body. When
 // cfg.TrustedLeadingLine matches the whole first line of body, that line is
-// kept unescaped and only the text after it is escaped. The kept line ends
-// at the first newline, so escaping the rest cannot join with it.
+// kept unescaped and only the text after the trusted leading lines is escaped.
+// Escaping starts after the last trusted line, so it cannot join with it.
 func neutralizeBody(body string, cfg Config) string {
 	if cfg.TrustedLeadingLine != nil {
-		first, rest, hasRest := strings.Cut(body, "\n")
-		if cfg.TrustedLeadingLine.MatchString(first) {
-			if !hasRest {
-				return first
+		limit := cfg.MaxTrustedLeadingLines
+		if limit <= 0 {
+			limit = 1
+		}
+		lines := strings.Split(body, "\n")
+		trusted := 0
+		for trusted < len(lines) && trusted < limit && cfg.TrustedLeadingLine.MatchString(lines[trusted]) {
+			trusted++
+		}
+		if trusted > 0 {
+			prefix := strings.Join(lines[:trusted], "\n")
+			if trusted == len(lines) {
+				return prefix
 			}
-			return first + "\n" + statuscomment.NeutralizeMarkers(rest)
+			return prefix + "\n" + statuscomment.NeutralizeMarkers(strings.Join(lines[trusted:], "\n"))
 		}
 	}
 	return statuscomment.NeutralizeMarkers(body)

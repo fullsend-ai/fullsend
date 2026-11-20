@@ -207,7 +207,8 @@ Two things not to do:
 setting: the mapping trusts **any job in that repository that can request an OIDC token** — not one
 named workflow, and not one ref. The default mapping has no `ref` assertion, matching the Vertex
 path's `attribute.repository` scoping: `issues`, `issue_comment`, and `pull_request_target` events
-carry the default branch ref, while `pull_request_review` events carry `refs/pull/<N>/merge`. A
+carry the default branch ref, while `pull_request` and `pull_request_review` events carry
+`refs/pull/<N>/merge`. A
 repository-only mapping covers all of them.
 
 Anyone with write access can obtain a model token: pushing a branch with a workflow that has
@@ -350,6 +351,9 @@ with `fullsend repos install <group/project> --openai-api-key <value>` for proje
 `inference.auth` is `openai-api-key`. The fullsend job maps it to `OPENAI_API_KEY` on the runner.
 An unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used, with no fallback. See the
 [upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking).
+In a GitLab CI job the run log does not recommend the WIF variables. It reports the key as a
+CI/CD-variable credential instead; see
+[Provider credentials from CI/CD variables](../../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables).
 
 ## 4. Tell fullsend the three identifiers
 

@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -735,6 +739,57 @@ func TestRunGitHubSet_RejectsOrgOnlyTarget(t *testing.T) {
 	}
 	assert.Empty(t, client.Variables, "no variable may be written for an org-only target")
 	assert.Empty(t, client.CreatedSecrets, "no secret may be written for an org-only target")
+}
+
+// recordingGitHubAPI starts a test server that records request paths and
+// refuses every request, standing in for a GitHub host other than
+// github.com.
+func recordingGitHubAPI(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), paths...)
+	}
+}
+
+func TestGitHubSetCmd_UsesGitHubAPIURL(t *testing.T) {
+	srv, paths := recordingGitHubAPI(t)
+	t.Setenv("GH_TOKEN", "test-token")
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "set", "acme/widget", "FULLSEND_GCP_REGION", "us-east5"})
+	err := cmd.Execute()
+	require.Error(t, err, "the test server refuses every request")
+	assert.NotEmpty(t, paths(), "set must address the host named by GITHUB_API_URL")
+}
+
+func TestGitHubSetupCmd_UsesGitHubAPIURL(t *testing.T) {
+	srv, paths := recordingGitHubAPI(t)
+	t.Setenv("GH_TOKEN", "test-token")
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--runtime", "claude"})
+	err := cmd.Execute()
+	require.Error(t, err, "the test server refuses every request")
+	assert.NotEmpty(t, paths(), "setup must address the host named by GITHUB_API_URL")
 }
 
 func TestGitHubSetCmd_RejectsOrgOnlyTarget(t *testing.T) {
@@ -1535,6 +1590,80 @@ func TestRunGitHubSetupPerRepo_Rerun_KeepsExistingConfigVerbatim(t *testing.T) {
 	assert.NotContains(t, out.String(), "runtime?", "no runtime prompt on a re-run")
 }
 
+// oldPullRequestTargetShim is a shim as releases before the move to
+// pull_request installed it: PR events trigger on pull_request_target and
+// the reusable workflow is pinned to an older release.
+const oldPullRequestTargetShim = `name: fullsend
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, synchronize, ready_for_review, closed, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v0.56.1
+    secrets: inherit
+`
+
+// TestRunGitHubSetupPerRepo_Rerun_UpgradesPullRequestTargetShim covers the
+// documented single-repo upgrade (#9715): a bare re-run of github setup on a
+// repo without a manifest, whose shim still triggers on pull_request_target,
+// opens one setup PR whose single commit carries the pull_request shim pinned
+// to this CLI's release, and leaves .fullsend/config.yaml out. Setup renders
+// the shim from the embedded template and never reads the existing one, so
+// the fixture only models the repository being upgraded; the assertions pin
+// the result.
+func TestRunGitHubSetupPerRepo_Rerun_UpgradesPullRequestTargetShim(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	const releaseSHA = "0123456789abcdef0123456789abcdef01234567"
+	origOverride := upstreamRefOverride
+	upstreamRefOverride = releaseSHA
+	t.Cleanup(func() { upstreamRefOverride = origOverride })
+	client := newRerunSetupClient(t, existingPerRepoConfigForRerun)
+	client.FileContents["acme/widget/.github/workflows/fullsend.yaml"] = []byte(oldPullRequestTargetShim)
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{},
+	})
+	require.NoError(t, err)
+	require.Len(t, client.CommittedFilesToBranch, 1, "the upgrade is delivered in one setup commit")
+	require.Len(t, client.CreatedProposals, 1, "the upgrade opens one setup PR")
+
+	shim, present := committedScaffoldFile(client, ".github/workflows/fullsend.yaml")
+	require.True(t, present, "the setup commit delivers the shim")
+	assert.NotEqual(t, oldPullRequestTargetShim, string(shim), "the old shim is replaced")
+	var wf struct {
+		On   map[string]any `yaml:"on"`
+		Jobs map[string]struct {
+			If   string `yaml:"if"`
+			Uses string `yaml:"uses"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(shim, &wf))
+	assert.Contains(t, wf.On, "pull_request", "the upgraded shim triggers on pull_request")
+	assert.NotContains(t, wf.On, "pull_request_target", "the upgraded shim no longer triggers on pull_request_target")
+	dispatch, ok := wf.Jobs["dispatch"]
+	require.True(t, ok, "dispatch job not found")
+	assert.NotContains(t, dispatch.If, "pull_request_target")
+	assert.True(t, strings.HasSuffix(dispatch.Uses, "/reusable-dispatch.yml@"+releaseSHA),
+		"the workflow pin moves to the CLI's release, got %q", dispatch.Uses)
+
+	_, cfgPresent := committedScaffoldFile(client, ".fullsend/config.yaml")
+	assert.False(t, cfgPresent, "the upgrade does not commit .fullsend/config.yaml")
+}
+
 func TestRunGitHubSetupPerRepo_Rerun_ChangesOnlyTheFlaggedKey(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	client := newRerunSetupClient(t, existingPerRepoConfigForRerun)
@@ -2003,6 +2132,24 @@ func TestValidatePresetLayer(t *testing.T) {
 	err = validatePresetLayer([]byte("version: \"1\"\nmint_url: http://insecure.example.com\n"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preset mint_url")
+
+	// A preset becomes config.base.yaml, which never supplies trace_context
+	// (ADR 0154), so setup refuses a well-formed block as repos install
+	// does. The error shows no value.
+	const traceInstallation = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+	const traceVerificationKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+	err = validatePresetLayer([]byte("version: \"1\"\ntrace_context:\n  installation_id: \"" + traceInstallation +
+		"\"\n  signing_key:\n    secret: FULLSEND_TRACE_SIGNING_KEY\n  verification_keys:\n    active: \"" + traceVerificationKey + "\"\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trace_context belongs to one repository")
+	assert.NotContains(t, err.Error(), traceInstallation)
+	assert.NotContains(t, err.Error(), traceVerificationKey)
+
+	// The refusal comes before Validate, so it also covers a block that
+	// parses but has invalid fields.
+	err = validatePresetLayer([]byte("version: \"1\"\ntrace_context: {}\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trace_context belongs to one repository")
 }
 
 func TestValidateCLISetupValues(t *testing.T) {

@@ -2262,8 +2262,8 @@ func TestMergeHostFiles(t *testing.T) {
 		{Src: "base2", Dest: "/tmp/dest2"},
 	}
 	child := []HostFile{
-		{Src: "child2", Dest: "/tmp/dest2"}, // override
-		{Src: "child3", Dest: "/tmp/dest3"}, // new
+		{Src: "child2", Dest: "/tmp/dest2", AllowDurable: true}, // override
+		{Src: "child3", Dest: "/tmp/dest3"},                     // new
 	}
 
 	result := mergeHostFiles(base, child)
@@ -2273,6 +2273,7 @@ func TestMergeHostFiles(t *testing.T) {
 	assert.Equal(t, "/tmp/dest1", result[0].Dest)
 	assert.Equal(t, "child2", result[1].Src) // overridden
 	assert.Equal(t, "/tmp/dest2", result[1].Dest)
+	assert.True(t, result[1].AllowDurable, "a child re-declaring a dest can opt in")
 	assert.Equal(t, "child3", result[2].Src)
 	assert.Equal(t, "/tmp/dest3", result[2].Dest)
 }
@@ -2888,6 +2889,29 @@ model: opus
 	require.NoError(t, err)
 
 	assert.Equal(t, `event.entity.kind == "work_item"`, h.Trigger)
+}
+
+// A base two levels up that makes the checkout read-only keeps it read-only,
+// unless the child says readonly_repo: false (#7360).
+func TestLoadWithBase_ReadonlyRepoChainedInheritance(t *testing.T) {
+	for _, tc := range []struct {
+		name, child string
+		want        bool
+	}{
+		{"child is silent", "base: parent.yaml\nmodel: opus\n", true},
+		{"child says false", "base: parent.yaml\nreadonly_repo: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestHarness(t, dir, "grandparent.yaml", "agent: agents/base.md\nrole: test\nreadonly_repo: true\n")
+			writeTestHarness(t, dir, "parent.yaml", "base: grandparent.yaml\nmodel: sonnet\n")
+			path := writeTestHarness(t, dir, "child.yaml", tc.child)
+
+			h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, h.RepoReadonly())
+		})
+	}
 }
 
 func TestLoadWithBase_TriggerChildWins(t *testing.T) {
@@ -6182,6 +6206,30 @@ base: base.yaml
 	assert.Empty(t, h.AllowedRemoteResources)
 }
 
+func TestLoadWithBase_AllowCIVariableCredential(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+allow_ci_variable_credential: true
+`)
+	inherit := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+`)
+	h, _, err := LoadWithBase(context.Background(), inherit, ComposeOpts{})
+	require.NoError(t, err)
+	assert.False(t, h.AllowCIVariableCredential, "a base cannot silence the warning for its children")
+
+	own := writeTestHarness(t, dir, "child-own.yaml", `
+base: base.yaml
+allow_ci_variable_credential: true
+`)
+	h, _, err = LoadWithBase(context.Background(), own, ComposeOpts{})
+	require.NoError(t, err)
+	assert.True(t, h.AllowCIVariableCredential)
+}
+
 func TestMergeBaseIntoChild_PanicsOnUnresolvedForge(t *testing.T) {
 	base := &Harness{Forge: map[string]*ForgeConfig{"github": {}}}
 	child := &Harness{}
@@ -6299,6 +6347,25 @@ func TestMergeBaseIntoChild_TriggerEmptyBaseNoEffect(t *testing.T) {
 	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
+}
+
+func TestMergeBaseIntoChild_ReadonlyRepo(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name        string
+		base, child *bool
+		want        bool
+	}{
+		{"inherited", &yes, nil, true},
+		{"child turns it on", nil, &yes, true},
+		{"child turns it off", &yes, &no, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			child := &Harness{ReadonlyRepo: tc.child}
+			require.NoError(t, mergeBaseIntoChild(&Harness{ReadonlyRepo: tc.base}, child))
+			assert.Equal(t, tc.want, child.RepoReadonly())
+		})
+	}
 }
 
 func TestFetchBaseSkill_FullDirectory(t *testing.T) {
@@ -10551,4 +10618,39 @@ plugins:
 	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
 	h.Policy = writeTestPolicy(t, fullsendDir)
 	require.NoError(t, h.ValidateFilesExist())
+}
+
+// TestFetchBaseSkillDir_ConfiguredGitHubHost verifies that a skill directory
+// URL served by the configured GitHub host (GitHub Enterprise Server) is
+// parsed and cloned from that host (#9037), and is refused when the host is
+// not configured.
+func TestFetchBaseSkillDir_ConfiguredGitHubHost(t *testing.T) {
+	skillDirURL := "https://ghe.example.com/org/repo/raw/abc123/skills/triage"
+	skillFileURL := skillDirURL + "/SKILL.md"
+	allowlist := []string{"https://ghe.example.com/org/repo/"}
+
+	var gotCloneURL, gotPath, gotRef string
+	fetcher := func(_ context.Context, cloneURL, path, ref, _ string) (map[string][]byte, error) {
+		gotCloneURL, gotPath, gotRef = cloneURL, path, ref
+		return map[string][]byte{"SKILL.md": []byte("---\nname: triage\n---\n")}, nil
+	}
+
+	_, _, err := fetchBaseSkillDir(context.Background(), "skills", skillDirURL, skillFileURL,
+		"skills/triage", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: t.TempDir(),
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
+
+	_, _, err = fetchBaseSkillDir(context.Background(), "skills", skillDirURL, skillFileURL,
+		"skills/triage", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: t.TempDir(),
+			TreeFetcher:   fetcher,
+			GitHubURL:     "https://ghe.example.com",
+		})
+	require.NoError(t, err)
+	assert.Equal(t, "https://ghe.example.com/org/repo.git", gotCloneURL)
+	assert.Equal(t, "skills/triage", gotPath)
+	assert.Equal(t, "abc123", gotRef)
 }

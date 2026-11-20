@@ -98,7 +98,7 @@ func newJiraTrackerClient(settings *config.JiraTrackingConfig) (*tracker.JiraCli
 	if err != nil {
 		if os.Getenv("JIRA_TOKEN") != "" && os.Getenv(jira.TokenEnvVar) == "" &&
 			os.Getenv(jira.ClientIDEnvVar) == "" && os.Getenv(jira.ClientSecretEnvVar) == "" {
-			return nil, fmt.Errorf("%w (legacy JIRA_TOKEN is no longer read here; set %s and %s, or %s and %s, instead, and set the Jira site URL in tracker.jira.base_url instead of JIRA_BASE_URL)",
+			return nil, fmt.Errorf("%w (JIRA_TOKEN is no longer read; store the same token as %s (and the email as %s), or use %s and %s; set the Jira site URL in tracker.jira.base_url instead of JIRA_BASE_URL)",
 				err, jira.TokenEnvVar, jira.EmailEnvVar, jira.ClientIDEnvVar, jira.ClientSecretEnvVar)
 		}
 		return nil, err
@@ -182,7 +182,7 @@ func resolveIssueProject(trackerName, project, fullsendDir string, testConfigRea
 // checkJiraTargetProject refuses a Jira project that is neither the
 // repository's primary project (tracker.jira.project) nor listed in
 // tracker.jira.allowed_targets.projects. It guards cross-project issue
-// creation only. Jira project keys are case-insensitive, so the
+// creation and transitions. Jira project keys are case-insensitive, so the
 // comparison is too.
 func checkJiraTargetProject(settings *config.JiraTrackingConfig, project string) error {
 	if strings.EqualFold(project, settings.Project) {

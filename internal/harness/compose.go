@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
@@ -47,8 +48,30 @@ type ComposeOpts struct {
 	// FetchPolicy controls SSRF protection, offline mode, and size limits.
 	FetchPolicy fetch.FetchPolicy
 
+	// FetchFile, when non-nil, replaces fetch.FetchURL for the single-file
+	// reads of relative companion resources (agent, policy, scripts, ...)
+	// resolved against SourceURL. The allowlist check, cache, lock pins, and
+	// audit log still apply; only the transport differs. It lets a run on a
+	// GitHub host other than github.com read those files through that host's
+	// authenticated API instead of the default github.com-only fetch policy.
+	FetchFile func(ctx context.Context, rawURL string) ([]byte, error)
+
+	// ParseRawURL, when non-nil, replaces forge.ParseRawContentURLOnHost for the
+	// directory resources (skills, plugins, script directories) resolved
+	// against SourceURL, so a run on a GitHub host other than github.com can
+	// describe its own raw-content URLs. The ForgeURLInfo it returns is handed
+	// to TreeFetcher, which must be able to read that host.
+	ParseRawURL func(rawURL string) (*forge.ForgeURLInfo, error)
+
 	// TraceID is a correlation ID for audit log entries.
 	TraceID string
+
+	// GitHubURL is the URL of the GitHub instance the run is configured for
+	// (e.g. "https://ghe.example.com" on GitHub Enterprise Server). Raw-content
+	// URLs served by that host are accepted for directory fetches in addition
+	// to raw.githubusercontent.com URLs (see forge.ParseRawContentURLOnHost).
+	// Empty or github.com means only raw.githubusercontent.com is accepted.
+	GitHubURL string
 
 	// AuditLogPath is the path to the fetch audit log (JSONL).
 	// If empty, audit logging is skipped.
@@ -107,6 +130,13 @@ type ComposeOpts struct {
 	// records them, never cache paths. Nil disables pinning.
 	LockedPins map[string]LockedPin
 
+	// Blocks are the harness: blocks of the agent's agents: entry, outermost
+	// config layer first (config.AgentEntry.HarnessBlocks). LoadWithBase
+	// composes them on the agent's harness as child layers (ADR 0162).
+	Blocks []*config.AgentHarness
+	// Agent names the agent in errors about Blocks.
+	Agent string
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -116,6 +146,16 @@ type ComposeOpts struct {
 // defaultTreeFetchFn is used when ComposeOpts.TreeFetcher is nil.
 // Override in tests to keep the nil-TreeFetcher path hermetic (see #7723).
 var defaultTreeFetchFn gitfetch.TreeFetchFunc = gitfetch.FetchTree
+
+// parseRawURL describes a directory resource URL, through opts.ParseRawURL
+// when set, else forge.ParseRawContentURLOnHost with opts.GitHubURL, so raw-content
+// URLs on the configured GitHub host parse without a hook.
+func (opts ComposeOpts) parseRawURL(rawURL string) (*forge.ForgeURLInfo, error) {
+	if opts.ParseRawURL != nil {
+		return opts.ParseRawURL(rawURL)
+	}
+	return forge.ParseRawContentURLOnHost(rawURL, opts.GitHubURL)
+}
 
 func resolveTreeFetcher(opts ComposeOpts) gitfetch.TreeFetchFunc {
 	if opts.TreeFetcher != nil {
@@ -184,15 +224,19 @@ func checkLockedHash(field, rawURL, pin, got string) error {
 //
 // Pipeline:
 //  1. LoadRaw(path) — preserves forge map
-//  2. If base absent: resolve URL-sourced resources → ResolveForge → ResolveOverlays → Validate → return
+//  2. If base absent: resolve URL-sourced resources → compose opts.Blocks
+//     (step 5) → ResolveForge → ResolveOverlays → Validate → return
 //  3. If base present: loadBaseChain recursively (each base layer resolves its
 //     own forge/overlays via resolveBaseForgeAndOverlays before merging into
 //     the next layer), then mergeBaseIntoChild with the flat base
 //  4. Resolve remaining URL-sourced resources and scripts (child's own relative paths)
-//  5. ResolveForge and ResolveOverlays on child's own forge/overlay blocks
-//  6. Validate
+//  5. Compose opts.Blocks, the harness: blocks of the agent's agents: entry,
+//     as further child layers (composeAgentBlocks, ADR 0162)
+//  6. ResolveForge and ResolveOverlays on the result's own forge/overlay blocks
+//  7. Validate
 //
-// When base is absent, this behaves identically to LoadWithOpts.
+// When base is absent and opts.Blocks is empty, this behaves identically to
+// LoadWithOpts.
 func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness, []Dependency, error) {
 	childDir := filepath.Dir(path)
 
@@ -200,7 +244,6 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	if err != nil {
 		return nil, nil, err
 	}
-
 	// A local harness's relative skill paths are resolved against the
 	// workspace root now, so every merge below compares declared names;
 	// ResolveRelativeTo later finds them absolute. The root comes from the
@@ -256,6 +299,10 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			deps = append(deps, pluginDeps...)
 		}
 
+		child, err = composeAgentBlocks(child, opts)
+		if err != nil {
+			return nil, nil, err
+		}
 		if err := child.validateForge(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
@@ -267,7 +314,11 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		}
 		// Capture forge presence before ResolveForge nils the map so Lint()
 		// can emit the forge deprecation warning; LoadWithOpts does the same.
-		child.hadForgeBeforeResolve = child.Forge != nil
+		// OR semantics: composeAgentBlocks may have carried the marker from
+		// the agent's harness to a block.
+		if child.Forge != nil {
+			child.hadForgeBeforeResolve = true
+		}
 		if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 			return nil, nil, fmt.Errorf("resolving forge config: %w", err)
 		}
@@ -277,6 +328,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
+		child.restoreUnresolvedForge()
 		return child, deps, nil
 	}
 
@@ -389,6 +441,11 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		deps = append(deps, pluginDeps...)
 	}
 
+	child, err = composeAgentBlocks(child, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// ResolveForge and ResolveOverlays once on the merged result
 	if err := child.validateForge(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
@@ -413,6 +470,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	if err := child.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
 	}
+	child.restoreUnresolvedForge()
 
 	return child, deps, nil
 }
@@ -651,6 +709,21 @@ func loadBaseChain(
 // used by a child that runs on github only). The non-matching platform's
 // config is simply discarded when the forge map is niled.
 func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
+	return resolveLayerForgeAndOverlays(base, opts, true)
+}
+
+// resolveLayerForgeAndOverlays is resolveBaseForgeAndOverlays for any
+// layer a child composes on: a base: ancestor (isBase), or the agent's own
+// harness beneath an agents: entry's harness: block (ADR 0162), whose
+// errors read as they do without a block.
+func resolveLayerForgeAndOverlays(base *Harness, opts ComposeOpts, isBase bool) error {
+	invalid, resolving, forge := "invalid harness", "resolving overlays", "resolving forge config"
+	if isBase {
+		invalid, resolving, forge = "invalid base harness", "resolving base overlays", "invalid base harness"
+	}
+	// Record this layer's declared env names before its non-matching
+	// forge: blocks and overlays are discarded below (ADR 0162).
+	base.recordDeclaredEnv()
 	// Capture forge presence before the map is niled below so the
 	// deprecation marker survives for Lint(); mergeBaseIntoChild propagates
 	// it up the chain. OR semantics: an ancestor's marker may already be
@@ -666,12 +739,12 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// while both are still present so mutual-exclusion checks fire.
 	if base.Forge != nil {
 		if err := base.validateForge(); err != nil {
-			return fmt.Errorf("invalid base harness: %w", err)
+			return fmt.Errorf("%s: %w", invalid, err)
 		}
 	}
 	if len(base.Overlays) > 0 {
 		if err := base.validateOverlays(); err != nil {
-			return fmt.Errorf("invalid base harness: %w", err)
+			return fmt.Errorf("%s: %w", invalid, err)
 		}
 	}
 
@@ -685,9 +758,16 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// ResolveForge("") would also be a no-op, and keeping the base's
 	// forge map around would violate the mergeBaseIntoChild precondition.
 	if base.Forge != nil && opts.ForgePlatform != "" {
+		// Unlike a base, the agent's own harness must configure the
+		// platform, as ResolveForge requires of it without a block.
+		if !isBase {
+			if _, err := base.forgeConfigFor(opts.ForgePlatform); err != nil {
+				return fmt.Errorf("%s: %w", forge, err)
+			}
+		}
 		if fc, ok := base.Forge[opts.ForgePlatform]; ok && fc != nil {
 			if err := mergeForgeConfig(base, fc); err != nil {
-				return fmt.Errorf("invalid base harness: forge.%s: %w", opts.ForgePlatform, err)
+				return fmt.Errorf("%s: forge.%s: %w", forge, opts.ForgePlatform, err)
 			}
 		}
 	}
@@ -697,10 +777,10 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// entries into top-level fields.
 	if len(base.Overlays) > 0 {
 		if err := ValidateOverlayRunnerSecretRefs(base.Overlays, opts.RunnerSecretNames); err != nil {
-			return fmt.Errorf("invalid base harness: %w", err)
+			return fmt.Errorf("%s: %w", invalid, err)
 		}
 		if err := base.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
-			return fmt.Errorf("resolving base overlays: %w", err)
+			return fmt.Errorf("%s: %w", resolving, err)
 		}
 	}
 	base.Overlays = nil
@@ -840,6 +920,7 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	if base.hadForgeBeforeResolve {
 		child.hadForgeBeforeResolve = true
 	}
+	child.mergeDeclaredEnv(base)
 
 	// GITHUB_ISSUE_URL diagnostics (#8742): record the child's own before
 	// base fields are merged into its top level, then append the base's
@@ -894,6 +975,14 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	if child.Trigger == "" {
 		child.Trigger = base.Trigger
 	}
+	// InputSource (#9509) inherits only when the base declares external, so
+	// a base keeps its children external unless they say otherwise, but a
+	// base that declares maintainer cannot override FULLSEND_INPUT_SOURCE
+	// for a child that leaves the field unset. Top level only, not a
+	// ForgeConfig field, so mergeForgeConfig needs no matching slot.
+	if child.InputSource == "" && base.InputSource == InputSourceExternal {
+		child.InputSource = base.InputSource
+	}
 	if child.PreScript == "" {
 		child.PreScript = base.PreScript
 	}
@@ -908,6 +997,12 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	}
 	if child.SandboxTimeoutSeconds == 0 {
 		child.SandboxTimeoutSeconds = base.SandboxTimeoutSeconds
+	}
+	// ReadonlyRepo inherits like the other scalars, so a base that makes the
+	// checkout read-only keeps it read-only (#7360). It is a pointer so that
+	// a child's explicit false is a value that wins, not an unset field.
+	if child.ReadonlyRepo == nil {
+		child.ReadonlyRepo = base.ReadonlyRepo
 	}
 
 	// Skills: base + child with child-overrides-base by skill identity
@@ -946,6 +1041,10 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	// NOT merged from base harnesses to prevent privilege escalation: a base
 	// cannot inject arbitrary URL prefixes or enable runtime fetching in the
 	// child. The child must declare its own allowlist and fetch settings.
+	// AllowForgeWrite (#9509) is not merged for the same reason: a base
+	// cannot grant an external-input child a forge-write provider.
+	// AllowCIVariableCredential is not merged either, so a base cannot
+	// silence the GitLab CI/CD-variable credential warning.
 	if base.APIServers != nil {
 		merged := make([]APIServer, 0, len(base.APIServers)+len(child.APIServers))
 		merged = append(merged, base.APIServers...)
@@ -1814,7 +1913,13 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, fileURL)
 	}
 
-	content, err := fetch.FetchURL(ctx, fileURL, opts.FetchPolicy)
+	fetchFile := opts.FetchFile
+	if fetchFile == nil {
+		fetchFile = func(ctx context.Context, rawURL string) ([]byte, error) {
+			return fetch.FetchURL(ctx, rawURL, opts.FetchPolicy)
+		}
+	}
+	content, err := fetchFile(ctx, fileURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: fetching %s: %w", field, fileURL, err)
 	}
@@ -1882,7 +1987,7 @@ func fetchBaseFileFromPinnedTree(ctx context.Context, field, baseURLDir, relPath
 		if opts.FetchPolicy.Offline {
 			return Dependency{}, "", lockedNotCachedError(field, fileURL, treeHash)
 		}
-		_, parseErr := forge.ParseRawContentURL(baseURLDir + dir)
+		_, parseErr := opts.parseRawURL(baseURLDir + dir)
 		if dir == "." || parseErr != nil {
 			return Dependency{}, "", fmt.Errorf("base %s: URL %s is pinned in the lock file to directory sha256=%s, which cannot be fetched from this URL (run 'fullsend lock --update' to re-pin)", field, fileURL, treeHash)
 		}
@@ -2005,7 +2110,7 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 
 		if !opts.FetchPolicy.Offline && !pinnedFileCached {
 			// Probe whether the URL is parseable for directory-level fetching.
-			if _, parseErr := forge.ParseRawContentURL(scriptDirURL); parseErr == nil {
+			if _, parseErr := opts.parseRawURL(scriptDirURL); parseErr == nil {
 				allowedBy := matchingAllowedPrefix(fileURL, allowlist)
 				if allowedBy == "" {
 					return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, fileURL)
@@ -2051,7 +2156,7 @@ func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFile
 		return Dependency{}, "", fmt.Errorf("base %s: script directory URL %q is not in allowed_remote_resources", field, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(scriptDirURL)
+	forgeInfo, err := opts.parseRawURL(scriptDirURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for script directory fetch: %w", field, err)
 	}
@@ -2229,7 +2334,7 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 		return Dependency{}, "", fmt.Errorf("base %s: skill directory URL %q is not in allowed_remote_resources", field, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(skillDirURL)
+	forgeInfo, err := opts.parseRawURL(skillDirURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for skill directory fetch: %w", field, err)
 	}
@@ -2438,7 +2543,7 @@ func fetchBaseDirTree(ctx context.Context, kind baseDirKind, field, dirURL, keyU
 		return Dependency{}, "", fmt.Errorf("base %s: %s directory URL %q is not in allowed_remote_resources", field, kind.label, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(dirURL)
+	forgeInfo, err := opts.parseRawURL(dirURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for %s directory fetch: %w", field, kind.label, err)
 	}

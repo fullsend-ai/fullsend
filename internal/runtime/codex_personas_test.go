@@ -133,7 +133,7 @@ func TestCodexRoles_BuiltinsAlwaysPresent(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			roles, _ := codexRoles(dirs, "retro")
+			roles, _ := codexRoles(dirs, "retro", "v1")
 			assert.Equal(t, []string{"default", "explore"}, codexRoleNames(roles))
 			for _, r := range roles {
 				assert.NotEmpty(t, r.Description, "%s: the parent sees the description in the spawn tool's role list", r.Name)
@@ -150,7 +150,7 @@ func TestCodexRoles_SkillPersonasSorted(t *testing.T) {
 	writePersonaFile(t, skill, "style", "---\nname: style\ndescription: Style review.\n---\nReview for style.\n")
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
 
-	roles, _ := codexRoles([]string{skill}, "review")
+	roles, _ := codexRoles([]string{skill}, "review", "v1")
 	assert.Equal(t, []string{"correctness", "default", "explore", "style"}, codexRoleNames(roles),
 		"ascending by name, built-ins included; the spawn digest env lists roles in this order")
 	assert.Equal(t, codexRole{
@@ -170,7 +170,7 @@ func TestCodexRoles_DiscoverySkipIsAWarning(t *testing.T) {
 
 	var roles []codexRole
 	var skipped map[string]string
-	out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review") })
+	out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review", "v1") })
 
 	assert.Equal(t, []string{"default", "explore"}, codexRoleNames(roles))
 	assert.Equal(t, filepath.Join(skill, "sub-agents", "default.md")+": name is reserved", skipped["default"],
@@ -212,7 +212,7 @@ func TestCodexRoles_SkipsInvalidPersonas(t *testing.T) {
 
 			var roles []codexRole
 			var skipped map[string]string
-			out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review") })
+			out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review", "v1") })
 
 			assert.Equal(t, []string{"default", "explore"}, codexRoleNames(roles))
 			assert.Contains(t, out, tt.wantWarn)
@@ -231,7 +231,7 @@ func TestCodexRoles_DuplicateAcrossSkillsKeepsTheFirst(t *testing.T) {
 	writePersonaFile(t, second, "correctness", "---\nname: correctness\ndescription: Other.\n---\nOther body.\n")
 
 	var roles []codexRole
-	out := captureStderr(t, func() { roles, _ = codexRoles([]string{first, second}, "review") })
+	out := captureStderr(t, func() { roles, _ = codexRoles([]string{first, second}, "review", "v1") })
 
 	assert.Equal(t, []string{"correctness", "default", "explore"}, codexRoleNames(roles))
 	assert.Equal(t, codexChildNote+"# Correctness\n\nYou are a senior software engineer reviewing for correctness.\n", roles[0].Instructions)
@@ -249,7 +249,7 @@ func TestCodexRoles_ReportsDroppedFrontmatter(t *testing.T) {
 	writePersonaFile(t, skill, "clean", "---\nname: clean\ndescription: d\n---\nbody\n")
 
 	var roles []codexRole
-	out := captureStderr(t, func() { roles, _ = codexRoles([]string{skill}, "review") })
+	out := captureStderr(t, func() { roles, _ = codexRoles([]string{skill}, "review", "v1") })
 
 	assert.Contains(t, out, `Codex persona "all-five": frontmatter model, tools, permissionMode, background, maxTurns dropped`)
 	assert.Contains(t, out, `Codex persona "two": frontmatter model, maxTurns dropped`, "fixed order, not file order")
@@ -276,7 +276,7 @@ func TestCodexRoles_DroppedFrontmatterIsTheRegisteredFile(t *testing.T) {
 			registered := t.TempDir()
 			writePersonaFile(t, registered, "correctness", tc.registered)
 
-			out := captureStderr(t, func() { codexRoles([]string{skipped, registered}, "review") })
+			out := captureStderr(t, func() { codexRoles([]string{skipped, registered}, "review", "v1") })
 
 			assert.Contains(t, out, "skipped: frontmatter name")
 			if tc.want == "" {
@@ -324,11 +324,36 @@ func codexDecodeTOML(t *testing.T, data []byte) map[string]any {
 	return doc
 }
 
+// TestCodexRoles_V2ChildNote: on V2 every role opens with codexChildNoteV2,
+// the V1 note with its no-tool sentence replaced by the denial of every
+// multi-agent call (ADR 0159 decision 3), and differs from its V1 role in
+// nothing else.
+func TestCodexRoles_V2ChildNote(t *testing.T) {
+	t.Parallel()
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "correctness", codexTestPersona)
+
+	v1, _ := codexRoles([]string{skill}, "review", "v1")
+	v2, _ := codexRoles([]string{skill}, "review", "v2")
+	require.Len(t, v2, len(v1))
+	for i := range v1 {
+		assert.True(t, strings.HasPrefix(v1[i].Instructions, codexChildNote), v1[i].Name)
+		assert.True(t, strings.HasPrefix(v2[i].Instructions, codexChildNoteV2), v2[i].Name)
+		assert.Equal(t, v1[i], codexRole{Name: v2[i].Name, Description: v2[i].Description,
+			Instructions: codexChildNote + strings.TrimPrefix(v2[i].Instructions, codexChildNoteV2), Model: v2[i].Model},
+			"%s: the note is the only difference", v2[i].Name)
+	}
+	assert.Equal(t, strings.Replace(codexChildNote,
+		"You have no sub-agent tool of your own and cannot dispatch further work.",
+		"Do not spawn, wait on, list, message or interrupt agents; any such call is denied.", 1), codexChildNoteV2)
+	assert.NotEqual(t, codexChildNote, codexChildNoteV2)
+}
+
 func TestCodexRole_TOMLParsesWithTheThreeKeys(t *testing.T) {
 	skill := t.TempDir()
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
 
-	roles, _ := codexRoles([]string{skill}, "review")
+	roles, _ := codexRoles([]string{skill}, "review", "v1")
 	for _, role := range roles {
 		doc := codexDecodeTOML(t, role.toml())
 		assert.Len(t, doc, 3, "%s: name, description, developer_instructions and nothing else", role.Name)
@@ -339,9 +364,9 @@ func TestCodexRole_TOMLParsesWithTheThreeKeys(t *testing.T) {
 }
 
 // TestCodexCatalog reads the fixture reduced from the pinned CLI's dump and
-// pins the questions Bootstrap asks it: is a model listed, does codex
-// resolve it to collaboration V1, and which efforts a child on it may run
-// at. The reduction keeps only the four fields Bootstrap reads, so a bump
+// pins the questions Bootstrap asks it: is a model listed, which collaboration
+// version the gate takes from its entry, and which efforts a child on it may
+// run at. The reduction keeps only the four fields Bootstrap reads, so a bump
 // that changes other catalog fields (0.166.0 rewrote model_messages for
 // every entry) leaves the fixture untouched; 0.166.0's only visible change
 // is the added gpt-6.1-terra entry. On a CODEX_VERSION bump regenerate it,
@@ -360,23 +385,23 @@ func TestCodexCatalog(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, catalog.has(codexDefaultSubagentModel), "the floor must be listed; a child takes its parent's collaboration version, so the floor's own does not matter")
-	assert.True(t, catalog.resolvesV1("gpt-5.6-luna"), "a luna parent delegates on 0.166.0")
+	assert.Equal(t, "v1", catalog.collabVersion("gpt-5.6-luna"), "a luna parent delegates on 0.166.0")
 	assert.Equal(t, "medium", catalog["gpt-5.6-luna"].DefaultEffort, "children on the floor run at medium when the run sets no effort")
 	assert.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, catalog["gpt-5.6-luna"].Efforts)
 	assert.Equal(t, "low", catalog["gpt-5.6-sol"].DefaultEffort)
 	assert.NotContains(t, catalog["gpt-5.5"].Efforts, "max", "the one fullsend effort a listed model lacks at the pin")
 	assert.True(t, catalog.has("gpt-5.6-sol"))
-	assert.False(t, catalog.resolvesV1("gpt-5.6-sol"), "sol selects V2")
+	assert.Equal(t, "v2", catalog.collabVersion("gpt-5.6-sol"), "sol selects V2")
 	assert.True(t, catalog.has("gpt-5.5"))
-	assert.True(t, catalog.resolvesV1("gpt-5.5"), "an entry without a version takes V1 from the multi_agent feature")
+	assert.Equal(t, "v1", catalog.collabVersion("gpt-5.5"), "an entry without a version takes V1 from the multi_agent feature")
 	assert.False(t, catalog.has("gpt-5.6-nova"))
-	assert.False(t, catalog.resolvesV1("gpt-5.6-nova"))
+	assert.Empty(t, catalog.collabVersion("gpt-5.6-nova"))
 	// Hidden entries count: the fixture keeps no `visibility`, so the hidden
 	// V1 entry resolves to V1 like a listed one and a hidden model is listed.
 	assert.True(t, catalog.has("codex-auto-review"))
-	assert.True(t, catalog.resolvesV1("codex-auto-review"), "a hidden entry that selects V1 resolves to V1")
+	assert.Equal(t, "v1", catalog.collabVersion("codex-auto-review"), "a hidden entry that selects V1 resolves to V1")
 	assert.True(t, catalog.has("gpt-daybreak-blue-latest"), "a hidden model passes the membership check")
-	assert.False(t, catalog.resolvesV1("gpt-daybreak-blue-latest"), "hidden and V2")
+	assert.Equal(t, "v2", catalog.collabVersion("gpt-daybreak-blue-latest"), "hidden and V2")
 
 	_, err = parseCodexCatalog([]byte("not json"))
 	require.Error(t, err)
@@ -384,45 +409,85 @@ func TestCodexCatalog(t *testing.T) {
 	require.Error(t, err, "an empty catalog is a broken binary, not a catalog")
 }
 
-// TestCodexParentResolvesV1 is part two of the ADR 0126 gate: the parent model
-// Run will use (the run-level model, else the definition's) must translate to
-// an OpenAI id codex resolves to V1: its entry selects V1 or carries no
-// version (codex's multi_agent feature, on by default, supplies V1). A V2 or
-// unlisted parent keeps the multi-agent tools off and says why in one line,
-// and so does a gateway/ parent whatever its id.
-func TestCodexParentResolvesV1(t *testing.T) {
+// TestCodexParentCollabVersion is part two of the delegation gate (ADR 0126,
+// extended by ADR 0159): the parent model Run will use (the run-level model,
+// else the definition's) must translate to an OpenAI id, whose catalog entry
+// gives a version: V1 when it selects V1 or carries none (codex's multi_agent
+// feature, on by default, supplies V1), V2 when it selects V2, either with
+// no reason. A disabled, unknown-version or unlisted parent gets no version
+// from the gate and says why in one line, and so does a gateway/ parent
+// whatever its id.
+func TestCodexParentCollabVersion(t *testing.T) {
 	t.Parallel()
-	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-x": "v3"})
+	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-x": "v3", "gpt-d": "disabled"})
 	tests := []struct {
 		name        string
 		parentModel string
 		agentModel  string
-		want        bool
+		wantVersion string
 		wantReason  string
 	}{
-		{"definition model, V1", "", "openai/gpt-5.6-luna", true, ""},
-		{"run-level model wins", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol", true, ""},
-		{"run-level V2 beats a V1 definition", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", false, `parent model "gpt-5.6-sol" selects collaboration "v2"`},
-		{"no multi-agent version (multi_agent supplies V1)", "", "gpt-5.5", true, ""},
-		{"unknown collaboration version", "", "openai/gpt-x", false, `parent model "gpt-x" selects collaboration "v3"`},
-		{"not in the catalog", "", "openai/gpt-5.6-nova", false, `parent model "gpt-5.6-nova" is not in the bundled catalog`},
-		{"gateway route declines a listed V1 id", "", "gateway/gpt-5.6-luna", false, `parent model "gateway/gpt-5.6-luna" takes the inference gateway route`},
-		{"gateway route declines before the catalog", "", "gateway/vendor/org/model", false, `parent model "gateway/vendor/org/model" takes the inference gateway route`},
-		{"run-level OpenAI model beats a gateway definition", "openai/gpt-5.6-luna", "gateway/vendor/org/model", true, ""},
-		{"run-level gateway route beats a V1 definition", "gateway/vendor/org/model", "openai/gpt-5.6-luna", false, `parent model "gateway/vendor/org/model" takes the inference gateway route`},
-		{"claude alias does not translate", "", "opus", false, "codex takes OpenAI model ids or gateway/<model> only"},
-		{"no model at all", "", "", false, "no model was named"},
+		{"definition model, V1", "", "openai/gpt-5.6-luna", "v1", ""},
+		{"run-level model wins", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol", "v1", ""},
+		{"run-level V2 beats a V1 definition", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "v2", ""},
+		{"definition model, V2", "", "openai/gpt-5.6-sol", "v2", ""},
+		{"no multi-agent version (multi_agent supplies V1)", "", "gpt-5.5", "v1", ""},
+		{"catalog says disabled", "", "openai/gpt-d", "", `parent model "gpt-d" has native sub-agents disabled in the bundled catalog`},
+		{"unknown collaboration version", "", "openai/gpt-x", "", `parent model "gpt-x" selects collaboration "v3", which the runner does not support`},
+		{"not in the catalog", "", "openai/gpt-5.6-nova", "", `parent model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
+		{"gateway route declines a listed V1 id", "", "gateway/gpt-5.6-luna", "", `parent model "gateway/gpt-5.6-luna" takes the inference gateway route`},
+		{"gateway route declines before the catalog", "", "gateway/vendor/org/model", "", `parent model "gateway/vendor/org/model" takes the inference gateway route`},
+		{"run-level OpenAI model beats a gateway definition", "openai/gpt-5.6-luna", "gateway/vendor/org/model", "v1", ""},
+		{"run-level gateway route beats a V1 definition", "gateway/vendor/org/model", "openai/gpt-5.6-luna", "", `parent model "gateway/vendor/org/model" takes the inference gateway route`},
+		{"claude alias does not translate", "", "opus", "", "codex takes OpenAI model ids or gateway/<model> only"},
+		{"no model at all", "", "", "", "no model was named"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, reason := codexParentResolvesV1(catalog, tt.parentModel, tt.agentModel)
-			assert.Equal(t, tt.want, got)
-			if tt.want {
+			got, reason := codexParentCollabVersion(catalog, tt.parentModel, tt.agentModel)
+			assert.Equal(t, tt.wantVersion, got)
+			assert.NotContains(t, reason, "need a parent", "no explanation says delegation needs a V1 parent")
+			if tt.wantReason == "" {
 				assert.Empty(t, reason)
 			} else {
 				assert.Contains(t, reason, tt.wantReason)
 			}
+		})
+	}
+}
+
+// TestCodexV2ChildModelReason is the V2 spawn's backstop: a V2 parent
+// delegates only while no child model selects V2, since codex gives a V2
+// child the multi-agent tools exactly when its own model does. The
+// run-level child model serves the default and explore roles and every
+// persona without a model of its own, so it is checked first.
+func TestCodexV2ChildModelReason(t *testing.T) {
+	t.Parallel()
+	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-d": "disabled"})
+	personas := func(models ...string) []codexRole {
+		roles := []codexRole{{Name: "default"}, {Name: "explore"}}
+		for i, model := range models {
+			roles = append(roles, codexRole{Name: fmt.Sprintf("persona%d", i), Model: model})
+		}
+		return roles
+	}
+	for _, tc := range []struct {
+		name         string
+		roles        []codexRole
+		defaultModel string
+		want         string
+	}{
+		{"V1 run-level model, no persona model", personas(), "gpt-5.6-luna", ""},
+		{"persona models without V2", personas("gpt-5.5", "gpt-5.6-luna", "gpt-d"), "gpt-5.5", ""},
+		{"V2 run-level model", personas(), "gpt-5.6-sol",
+			`child model "gpt-5.6-sol" (the run-level child model) selects collaboration "v2", so under a V2 parent its children would keep codex's spawn tool`},
+		{"a persona's own V2 model", personas("gpt-5.6-luna", "gpt-5.6-sol"), "gpt-5.6-luna",
+			`child model "gpt-5.6-sol" (subagents.persona1) selects collaboration "v2", so under a V2 parent that child would keep codex's spawn tool`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, codexV2ChildModelReason(catalog, tc.roles, tc.defaultModel))
 		})
 	}
 }

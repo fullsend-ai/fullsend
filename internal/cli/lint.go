@@ -13,6 +13,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -247,6 +248,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		OrgAllowlist:  cfg.AllowedResources(),
 		Config:        harness.BuildConfigMap(cfg),
 		GitToken:      composeGitToken,
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 	}
 
 	// Always create a GitHub client for the agents-repo fallback —
@@ -338,6 +340,8 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 			agentOpts.SourceURL = fetchDeps[0].URL
 		}
+		agentOpts.Blocks = config.HarnessBlocksFor(entries, agentName)
+		agentOpts.Agent = agentName
 		h, _, err := harness.LoadWithBase(cmd.Context(), harnessPath, agentOpts)
 		if err != nil {
 			wrapped := fmt.Errorf("loading harness for agent %q: %w", agentName, err)
@@ -368,14 +372,20 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		}
 		// Same allowlist checks as fullsend run: the harness allowlist must
 		// be covered by config.yaml's, and every URL reference must match
-		// one of the two. String comparison only, nothing is fetched.
-		if h.HasURLReferences() {
+		// one of the two. String comparison only, nothing is fetched. The
+		// subset check runs for URL-referencing harnesses (as before) and
+		// for every harness whose runtime fetch service can start
+		// (shouldStartFetchService: allow_runtime_fetch, URL-dir resources,
+		// or a bare allowed_remote_resources declaration) (#9291).
+		if h.HasURLReferences() || shouldStartFetchService(h) {
 			if err := h.ValidateAllowedRemoteResources(cfg.AllowedResources()); err != nil {
 				wrapped := fmt.Errorf("validating allowed remote resources for agent %q: %w", agentName, err)
 				errs = append(errs, wrapped)
 				emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 				continue
 			}
+		}
+		if h.HasURLReferences() {
 			if err := validateURLReferencesAllowed(h, cfg.AllowedResources()); err != nil {
 				wrapped := fmt.Errorf("validating allowed remote resources for agent %q: %w", agentName, err)
 				errs = append(errs, wrapped)
@@ -448,21 +458,25 @@ func (c lintScopedConfig) AgentEntries() []config.AgentEntry { return c.entries 
 // check, including duplicate detection, on the entry's name: validating
 // each name's entries on their own reports exactly the errors validating
 // the whole list would, without one agent's error masking the others.
+// Each entry's position in the full list is kept so errors name the same
+// agents[N] a full lint does.
 func selectLintAgent(entries []config.AgentEntry, name string, allowlist []string) ([]config.AgentEntry, int, error) {
 	groups := make(map[string][]config.AgentEntry)
+	positions := make(map[string][]int)
 	var order []string
-	for _, e := range entries {
+	for i, e := range entries {
 		key := strings.ToLower(e.DerivedName())
 		if _, ok := groups[key]; !ok {
 			order = append(order, key)
 		}
 		groups[key] = append(groups[key], e)
+		positions[key] = append(positions[key], i)
 	}
 
 	selectedKey := strings.ToLower(name)
 	siblingErrs := 0
 	for _, key := range order {
-		if key != selectedKey && config.ValidateAgentEntries(groups[key], allowlist) != nil {
+		if key != selectedKey && config.ValidateAgentEntriesAt(groups[key], positions[key], allowlist) != nil {
 			siblingErrs++
 		}
 	}
@@ -482,7 +496,7 @@ func selectLintAgent(entries []config.AgentEntry, name string, allowlist []strin
 		sort.Strings(enabled)
 		return nil, siblingErrs, fmt.Errorf("agent %q is not registered in config.yaml; registered agents that can be linted: %s", name, strings.Join(enabled, ", "))
 	}
-	if err := config.ValidateAgentEntries(selected, allowlist); err != nil {
+	if err := config.ValidateAgentEntriesAt(selected, positions[selectedKey], allowlist); err != nil {
 		return nil, siblingErrs, fmt.Errorf("invalid agent config: %w", err)
 	}
 	if config.IsAgentExplicitlyDisabled(selected, name) {

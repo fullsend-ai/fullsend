@@ -72,7 +72,7 @@ func ordinaryLine(line string) bool {
 	if strings.TrimSpace(logLineBody(line)) == "" {
 		return false
 	}
-	for _, note := range partialLogMarkers {
+	for _, note := range partialLogNotes {
 		if strings.Contains(line, note.marker) {
 			return false
 		}

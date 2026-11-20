@@ -17,6 +17,11 @@ Date: 2026-08-25
 
 Accepted
 
+*Amended by [ADR 0162](0162-agent-entries-may-carry-harness-overrides.md):
+an `agents:` entry may also carry a `harness:` block, a harness layer built
+on the agent's harness, that overrides harness fields without a pinned
+`base:` harness.*
+
 ## Context
 
 `.fullsend/config.yaml` could not express per-agent `model`, `runtime`, or

@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -46,23 +47,16 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		return nil, nil
 	}
 
-	allowlist := cfg.AllowedResources()
-	if allowlist == nil {
-		allowlist = config.DefaultAllowedRemoteResources()
-	}
+	allowlist := config.EffectiveAllowedResources(cfg)
 
 	policy := fetch.DefaultPolicy
 	if fetchPolicy != nil {
 		policy = *fetchPolicy
 	}
 
-	composeOpts := harness.ComposeOpts{
-		WorkspaceRoot: filepath.Dir(configDir),
-		OrgAllowlist:  allowlist,
-		FetchPolicy:   policy,
-		Config:        harness.BuildConfigMap(cfg),
-	}
+	composeOpts := newComposeOpts(configDir, cfg, allowlist, policy)
 
+	entries := cfg.AgentEntries()
 	var out []TriggeredHarness
 	var loadErrs []error
 	loaded := 0
@@ -81,6 +75,9 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		if harness.IsURL(agent.Entry.Source) {
 			loadOpts.SourceURL = agent.Entry.Source
 		}
+		// The entry's harness: blocks may override the trigger (ADR 0162).
+		loadOpts.Blocks = config.HarnessBlocksFor(entries, agent.Name)
+		loadOpts.Agent = agent.Name
 		h, _, err := harness.LoadWithBase(ctx, resolved.Path, loadOpts)
 		if err != nil {
 			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: load failed: %v\n", agent.Name, err)
@@ -104,6 +101,20 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		return nil, fmt.Errorf("no agents could be loaded: %w", errors.Join(loadErrs...))
 	}
 	return out, nil
+}
+
+// newComposeOpts builds the options ListTriggeredHarnesses resolves and loads
+// harnesses with. GitHubURL carries the configured GitHub host, so base
+// skill, plugin and script directories served by a GitHub Enterprise Server
+// instance parse as raw content, as they do for run, lint and lock.
+func newComposeOpts(configDir string, cfg config.ConfigReader, allowlist []string, policy fetch.FetchPolicy) harness.ComposeOpts {
+	return harness.ComposeOpts{
+		WorkspaceRoot: filepath.Dir(configDir),
+		OrgAllowlist:  allowlist,
+		FetchPolicy:   policy,
+		Config:        harness.BuildConfigMap(cfg),
+		GitHubURL:     forge.ConfiguredGitHubURL(),
+	}
 }
 
 // MatchHarnesses evaluates CEL triggers and returns matching harnesses.

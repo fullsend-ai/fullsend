@@ -236,6 +236,12 @@ func validateValidationLoop(prefix string, vl *ValidationLoop, inheritScript boo
 // mutual exclusion with forge, CEL expression compilation, and
 // ForgeConfig field validation per entry.
 func (h *Harness) validateOverlays() error {
+	return h.validateOverlayEntries(h.ValidationLoop != nil && h.ValidationLoop.Script != "")
+}
+
+// validateOverlayEntries is validateOverlays with the caller saying whether
+// an overlay's validation loop may leave its script to the top-level one.
+func (h *Harness) validateOverlayEntries(inheritScript bool) error {
 	if len(h.Overlays) == 0 {
 		return nil
 	}
@@ -264,7 +270,6 @@ func (h *Harness) validateOverlays() error {
 			return fmt.Errorf("overlays[%d].when must evaluate to bool, got %v", i, ast.OutputType())
 		}
 		fc := entry.ForgeConfig
-		inheritScript := h.ValidationLoop != nil && h.ValidationLoop.Script != ""
 		if err := validateOverlayForgeConfigInherit(i, &fc, inheritScript); err != nil {
 			return err
 		}
@@ -345,12 +350,9 @@ func (h *Harness) ResolveForge(platform string) error {
 	if platform == "" || h.Forge == nil {
 		return nil
 	}
-	if !validForgeKeys[platform] {
-		return fmt.Errorf("forge platform %q is not valid (valid: %s)", platform, ForgeKeyList())
-	}
-	fc, ok := h.Forge[platform]
-	if !ok {
-		return fmt.Errorf("forge platform %q not configured (available: %s)", platform, forgeKeyList(h.Forge))
+	fc, err := h.forgeConfigFor(platform)
+	if err != nil {
+		return err
 	}
 	if fc != nil {
 		if err := mergeForgeConfig(h, fc); err != nil {
@@ -359,6 +361,19 @@ func (h *Harness) ResolveForge(platform string) error {
 	}
 	h.Forge = nil
 	return nil
+}
+
+// forgeConfigFor returns the forge: block for platform. The harness a run
+// uses must configure the platform it runs on.
+func (h *Harness) forgeConfigFor(platform string) (*ForgeConfig, error) {
+	if !validForgeKeys[platform] {
+		return nil, fmt.Errorf("forge platform %q is not valid (valid: %s)", platform, ForgeKeyList())
+	}
+	fc, ok := h.Forge[platform]
+	if !ok {
+		return nil, fmt.Errorf("forge platform %q not configured (available: %s)", platform, forgeKeyList(h.Forge))
+	}
+	return fc, nil
 }
 
 // mergeForgeConfig applies forge-specific overrides to the harness.
@@ -519,8 +534,9 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 		m["agents"] = anyAgents
 	}
 
-	// Security policies
-	if arr := pr.AllowedResources(); len(arr) > 0 {
+	// Security policies: the effective command-level allowlist, so
+	// overlay CEL sees the same list regardless of the call path.
+	if arr := config.EffectiveAllowedResources(pr); len(arr) > 0 {
 		anyArr := make([]any, len(arr))
 		for i, r := range arr {
 			anyArr[i] = r

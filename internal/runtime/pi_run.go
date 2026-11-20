@@ -3,11 +3,14 @@ package runtime
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +19,48 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
+
+// Shared with the child dispatcher; the real-pi parity test checks upstream.
+//
+//go:embed pi_extension/mcp-resource-tools.json
+var piMCPResourceJSON []byte
+
+var piMCPResourceTools = func() []string {
+	var names []string
+	if err := json.Unmarshal(piMCPResourceJSON, &names); err != nil {
+		panic(err) // Invalid embedded source data, not runtime input.
+	}
+	return names
+}()
+
+// piMCPResourcePattern accepts resource names and scoped resource patterns,
+// not broad wildcards that could accidentally select unrelated tools.
+func piMCPResourcePattern(pattern string) bool {
+	if !strings.HasPrefix(pattern, "list_mcp_") && !strings.HasPrefix(pattern, "read_mcp_") {
+		return false
+	}
+	matcher := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", ".*") + "$")
+	return slices.ContainsFunc(piMCPResourceTools, matcher.MatchString)
+}
+
+// piMCPExclusions closes pi 1.5.0's implicit MCP retention for explicit
+// non-MCP selections. Keep in sync with childArgs and the pinned-pi tests.
+func piMCPExclusions(tools []string) string {
+	if len(tools) == 0 || slices.ContainsFunc(tools, func(s string) bool { return strings.HasPrefix(s, "mcp__") }) {
+		return ""
+	}
+	excluded := []string{"mcp__*"}
+	for _, name := range piMCPResourceTools {
+		selected := slices.ContainsFunc(tools, func(pattern string) bool {
+			matcher := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", ".*") + "$")
+			return matcher.MatchString(name)
+		})
+		if !selected {
+			excluded = append(excluded, name)
+		}
+	}
+	return strings.Join(excluded, ",")
+}
 
 // Model selection for pi. The fleet's harnesses name Claude-style aliases
 // (opus, sonnet, ...), mapped onto pi's `provider/id` form here; a harness
@@ -653,7 +698,8 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	if agentEnabled {
 		// After the adapter, so its PreToolUse hooks see Agent calls
 		// (Claude Code runs the same hooks on its Agent tool). Children
-		// get their own -e list from the manifest, never this file.
+		// get their -e list from the manifest; they load this file only
+		// in child-only mode to restore inherited active tools.
 		parts = append(parts, "-e "+shellQuote(agentExt))
 	}
 	if editRepair {
@@ -676,6 +722,9 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 			parts = append(parts, "--no-builtin-tools")
 		} else {
 			parts = append(parts, "--tools "+shellQuote(strings.Join(tools, ",")))
+			if excluded := piMCPExclusions(tools); excluded != "" {
+				parts = append(parts, "--exclude-tools "+shellQuote(excluded))
+			}
 		}
 	}
 
@@ -1004,7 +1053,7 @@ type piRunResult struct {
 // selects the successful attempt. timeout is what is left of the run's
 // budget, and mayFallBack holds the attempt's events back (attemptGate)
 // when a later model could still replace it.
-func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManifest, exts []piManifestExtension, manifestSum, modelSpec string, timeout time.Duration, mayFallBack bool, handler func(AgentEvent), printer *ui.Printer) (res piRunResult) {
+func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManifest, exts []piManifestExtension, manifestSum, modelSpec string, timeout time.Duration, mayFallBack bool, agentStderr io.Writer, handler func(AgentEvent), printer *ui.Printer) (res piRunResult) {
 	gate := &attemptGate{next: handler, hold: mayFallBack}
 	defer func() { res.held, res.answered = gate.held, gate.answered }()
 
@@ -1015,7 +1064,7 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 	attemptParams.Model = modelSpec
 	cmd := buildPiRunCommand(attemptParams, m, exts, manifestSum)
 
-	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, timeout, os.Stderr)
+	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, timeout, agentStderr)
 	if err != nil {
 		return piRunResult{exitCode: -1, execErr: err, modelSpec: modelSpec}
 	}
@@ -1187,7 +1236,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 
 	handler := params.OnEvent
 	if handler == nil {
-		renderer := NewEventRenderer(printer)
+		renderer := newEventRendererAt(printer, params.ProgressVerbosity)
 		handler = renderer.Handle
 	}
 
@@ -1228,8 +1277,12 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	// otherwise be extracted with the transcripts and reported as an error
 	// on a run that went on to succeed, so it is removed before the next;
 	// when that fails, the abandoned attempt's error is the run's result.
+	// Every model attempt writes to the same stderr sink, so at quiet a
+	// fallback run keeps one file and prints one count line.
+	agentStderr, endAgentStderr := openAgentStderr(params, printer)
+	defer endAgentStderr()
 	attempt := func(modelSpec string, timeout time.Duration, mayFallBack bool) piRunResult {
-		return r.piExecModel(ctx, params, m, exts, manifestSum, modelSpec, timeout, mayFallBack, metricsHandler, printer)
+		return r.piExecModel(ctx, params, m, exts, manifestSum, modelSpec, timeout, mayFallBack, agentStderr, metricsHandler, printer)
 	}
 	onFallback := func(prev, next string, budget time.Duration) bool {
 		// sandbox.Exec reports a command that ran and failed through its
@@ -1240,7 +1293,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 			cerr = fmt.Errorf("exit %d: %s", code, strings.TrimSpace(stderr))
 		}
 		if cerr != nil {
-			printer.StepWarn(fmt.Sprintf("model %s is not available (%s); not falling back to %s because the abandoned attempt's session files could not be cleared: %s", sanitizeOutput(piBareModelID(prev)), fallbackReasonText(fallbackReasonNotServed), sanitizeOutput(piBareModelID(next)), sanitizeOutput(cerr.Error())))
+			printer.StepWarn(detailWarning(fmt.Sprintf("model %s is not available (%s); not falling back to %s because the abandoned attempt's session files could not be cleared", sanitizeOutput(piBareModelID(prev)), fallbackReasonText(fallbackReasonNotServed), sanitizeOutput(piBareModelID(next))), sanitizeOutput(cerr.Error()), params.ProgressVerbosity))
 			return false
 		}
 		printer.StepWarn(modelFallbackWarning(piBareModelID(prev), piBareModelID(next), fallbackReasonNotServed))
@@ -1283,7 +1336,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		// only record of what they spent. A read failure is not fatal —
 		// losing the breakdown must not fail an iteration that succeeded.
 		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
-			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
+			printer.StepWarn(detailWarning("Could not read the sub-agent usage file", sanitizeOutput(uerr.Error()), params.ProgressVerbosity))
 		} else {
 			// Unconditional: the parent's own entry belongs in the
 			// breakdown even when this iteration dispatched nothing, or
@@ -1303,7 +1356,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		if msg == "" {
 			msg = "stopReason " + result.lastResult.Subtype
 		}
-		printer.StepWarn("pi exited 0 but the stream reports an error: " + sanitizeOutput(msg))
+		printer.StepWarn(exitedZeroStreamError("pi", msg, result.lastResult.Subtype, params.ProgressVerbosity))
 		return 1, nil
 	}
 	return result.exitCode, nil

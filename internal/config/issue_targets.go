@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -112,6 +113,8 @@ type JiraTrackingConfig struct {
 	BaseURL string `yaml:"base_url,omitempty"`
 	// APIURL is the Jira API gateway URL; empty means DefaultJiraAPIURL.
 	APIURL string `yaml:"api_url,omitempty"`
+	// RunLabel is added at the start of Jira-sourced runs. Empty disables it.
+	RunLabel string `yaml:"run_label,omitempty"`
 	// Project is the key of the single Jira project configured for this
 	// repository. Required when any connection or poll setting is present.
 	Project        string             `yaml:"project,omitempty"`
@@ -133,7 +136,7 @@ type JiraPollConfig struct {
 // accepted in tracker.jira, tracker.jira.poll, and
 // tracker.jira.allowed_targets.
 var (
-	jiraTrackingKeys       = map[string]bool{"base_url": true, "api_url": true, "project": true, "allowed_targets": true, "poll": true}
+	jiraTrackingKeys       = map[string]bool{"base_url": true, "api_url": true, "run_label": true, "project": true, "allowed_targets": true, "poll": true}
 	jiraPollKeys           = map[string]bool{"enabled": true, "query": true}
 	jiraAllowedTargetsKeys = map[string]bool{"projects": true}
 )
@@ -211,9 +214,9 @@ func (j *JiraTrackingConfig) PollJQL() string {
 }
 
 // HasConnectionSettings reports whether the mapping sets any setting
-// beyond allowed_targets (base_url, api_url, project, or poll).
+// beyond allowed_targets (base_url, api_url, project, run_label, or poll).
 func (j *JiraTrackingConfig) HasConnectionSettings() bool {
-	return j != nil && (j.BaseURL != "" || j.APIURL != "" || j.Project != "" || j.Poll != nil)
+	return j != nil && (j.BaseURL != "" || j.APIURL != "" || j.Project != "" || j.RunLabel != "" || j.Poll != nil)
 }
 
 // jqlOrderByRe finds a trailing ORDER BY clause, case-insensitively.
@@ -436,9 +439,10 @@ func cloneTracking(src *TrackingConfig) *TrackingConfig {
 	}
 	if src.Jira != nil {
 		out.Jira = &JiraTrackingConfig{
-			BaseURL: src.Jira.BaseURL,
-			APIURL:  src.Jira.APIURL,
-			Project: src.Jira.Project,
+			BaseURL:  src.Jira.BaseURL,
+			APIURL:   src.Jira.APIURL,
+			RunLabel: src.Jira.RunLabel,
+			Project:  src.Jira.Project,
 			AllowedTargets: JiraAllowedTargets{
 				Projects: cloneStringSlice(src.Jira.AllowedTargets.Projects),
 			},
@@ -506,6 +510,9 @@ func validateTracking(cfg *TrackingConfig) error {
 		}
 	}
 	if jira := cfg.Jira; jira != nil {
+		if err := jira.ValidateRunLabel(); err != nil {
+			return err
+		}
 		if err := jira.ValidateConnection(); err != nil {
 			return err
 		}
@@ -514,6 +521,15 @@ func validateTracking(cfg *TrackingConfig) error {
 				return fmt.Errorf("tracker.jira: project %q in allowed_targets.projects must be a Jira project key (for example PROJ)", project)
 			}
 		}
+	}
+	return nil
+}
+
+// ValidateRunLabel checks the optional tracking label independently of Jira
+// connection settings so a malformed label cannot stop runs or polling.
+func (j *JiraTrackingConfig) ValidateRunLabel() error {
+	if j != nil && strings.ContainsFunc(j.RunLabel, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return fmt.Errorf("tracker.jira.run_label must not contain whitespace or control characters")
 	}
 	return nil
 }

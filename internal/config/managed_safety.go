@@ -188,7 +188,7 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 			if IsAgentExplicitlyDisabled(candidateAgents, name) {
 				continue
 			}
-		} else if !isBuiltinAgentName(name) {
+		} else if !IsBuiltinAgentName(name) {
 			// A custom (source-declared, non-built-in) agent that is
 			// entirely absent from the candidate was removed, not
 			// re-enabled. Built-in agents keep resolving through the
@@ -245,6 +245,8 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 			Candidate: formatUnset(candidateGW.Audience),
 		})
 	}
+	out = append(out, artifactsRelaxations(current, candidate, local)...)
+	out = append(out, progressRelaxations(current, candidate, local)...)
 	return out
 }
 
@@ -318,11 +320,12 @@ func agentEntryPresent(agents []AgentEntry, name string) bool {
 	return false
 }
 
-// isBuiltinAgentName reports whether name is one of the built-in agents
-// fullsend dispatches by name (ValidAgentNames). Built-in agents keep
-// resolving through the agents-repo fallback even without a config entry,
-// so their absence from a candidate's agent list is not a removal.
-func isBuiltinAgentName(name string) bool {
+// IsBuiltinAgentName reports whether name is one of the built-in agents
+// fullsend dispatches by name (ValidAgentNames), whether or not its entry
+// has a source. Built-in agents keep resolving through the agents-repo
+// fallback even without a config entry, so their absence from a
+// candidate's agent list is not a removal.
+func IsBuiltinAgentName(name string) bool {
 	return slices.Contains(ValidAgentNames(), strings.ToLower(name))
 }
 

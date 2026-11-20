@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
@@ -70,6 +71,35 @@ func TestClone_SharesDriversByReference(t *testing.T) {
 	// concurrent use.
 	assert.Same(t, original.SCM, clone.SCM)
 	assert.Same(t, original.CI, clone.CI)
+}
+
+// TestClone_SharesFailuresRecorder verifies that the failure recorder
+// is shared by reference through Clone: a failure recorded through one
+// clone is observed through another, because every clone of a template
+// World points at the same run-scoped Recorder (see World.Failures).
+func TestClone_SharesFailuresRecorder(t *testing.T) {
+	template := &World{Failures: &behaviourfail.Recorder{}}
+	first := template.Clone()
+	second := template.Clone()
+
+	// The shallow copy carries the recorder pointer, not a copy.
+	assert.Same(t, template.Failures, first.Failures)
+	assert.Same(t, template.Failures, second.Failures)
+
+	first.Failures.RecordFailure(
+		"scenario", "dispatch hits the rate limit",
+		behaviourfail.Infrastructure, "429 too many requests")
+
+	// The other clone observes the recorded failure.
+	records := second.Failures.Snapshot()
+	if assert.Len(t, records, 1) {
+		assert.Equal(t, "scenario", records[0].Source)
+		assert.Equal(t, "dispatch hits the rate limit", records[0].Scenario)
+		assert.Equal(t, behaviourfail.Infrastructure, records[0].Class)
+	}
+	infra, scenario := second.Failures.Counts()
+	assert.Equal(t, 1, infra)
+	assert.Equal(t, 0, scenario)
 }
 
 // TestClone_ConcurrentFieldIndependence verifies that scenario-specific

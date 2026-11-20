@@ -272,3 +272,21 @@ func TestSkipDisabledJiraPoll_WriteError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write dispatches")
 }
+
+func TestLoadJiraPollSettings_InvalidRunLabelDoesNotBlockPolling(t *testing.T) {
+	dir := writeJiraPollConfig(t, `tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    project: PROJ
+    run_label: "my label"
+    poll:
+      enabled: true
+`)
+	settings, err := loadJiraPollSettings(dir, "", "", "")
+	require.NoError(t, err)
+	require.True(t, settings.enabled)
+	require.Equal(t, "PROJ", settings.project)
+	tracking, err := loadJiraTrackingSettings(dir, nil)
+	require.NoError(t, err)
+	require.Equal(t, "my label", tracking.RunLabel)
+}

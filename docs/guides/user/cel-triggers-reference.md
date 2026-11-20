@@ -83,7 +83,8 @@ The `event` variable has the following top-level fields:
 | `event.actor.role_verified` | boolean | Optional lookup status. For humans, true means `actor.role` is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result |
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
 | `event.actor.is_entity_assignee` | boolean | True when the actor is one of the entity's current assignees on GitHub, GitLab or Jira; false when it is unassigned, the actor is not an assignee, or the assignees are unknown. Reviewers are not assignees |
-| `event.state.labels` | list | Label names on the entity at event time |
+| `event.state.issue_type` | object | Optional current Jira issue type: `id` (string), `name` (string), `is_subtask` (boolean). Guard access with `has(event.state.issue_type)` |
+| `event.state.labels` | list | Label names on the entity at event time. On the GitLab and Jira dispatch transports the carried list is bounded to a 1024-byte JSON prefix (entries past the bound dropped, except fullsend's control labels `fullsend-fix` and `fullsend-no-fix`, which are kept) — see the caveat below |
 | `event.state.change_proposal` | object | Present when a change proposal is involved (includes `is_fork`, `head_ref`, `base_ref`) |
 | `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
 | `event.source.system` | string | `"github"`, `"gitlab"`, `"jira"`, `"manual"`, or `"schedule"` |
@@ -241,6 +242,29 @@ trigger: >
     && "needs-analysis" in event.state.labels
 ```
 
+> **Dispatch-transport bound caveat.** On the GitLab and Jira dispatch
+> transports, `event.state.labels` is bounded to a 1024-byte JSON prefix
+> (entries past the bound are dropped, except fullsend's own control labels,
+> `fullsend-fix` and `fullsend-no-fix`, which the bound keeps), and on the
+> GitLab transport each other
+> attacker-shaped single string the event carries (branch refs, the
+> head_repo/base_repo paths, logins, the label name) is bounded to a
+> 258-byte JSON prefix — a same-project MR carries the project's own path
+> in head_repo/base_repo, and it stays cut there even though `repo`
+> travels whole. The
+> config-derived `repo`, `entity.url` and
+> `entity.linked_change_proposal.url` travel whole, so a trigger keyed on
+> them sees the full value.
+> A trigger keyed on a label past the labels bound — or on the tail of an
+> over-bound ref or login — therefore does not match there, silently. A label
+> past the bound is invisible to the trigger, so a negative-label guard such
+> as `!("hold" in event.state.labels)` is unsafe on these transports: any
+> label the forge returns before the guarded one can push it past the bound
+> and make the guard match. The control labels `fullsend-fix` and
+> `fullsend-no-fix` are never dropped, so guards keyed on them stay safe. See the
+> [GitLab dispatch payload](../../normative/normalized-event/v1/README.md#gitlab-dispatch-payload)
+> section of the normalized-event spec for the bounds and their rationale.
+
 ### Fork safety
 
 Write-capable agents that push commits or open PRs **must** guard against fork PRs. Use `!event.state.change_proposal.is_fork` in your trigger or rely on the platform authorization gate. Read-only agents (analysis, review) may run on fork PRs when policy allows.
@@ -275,8 +299,8 @@ agent, see
 ### Choosing when review runs
 
 By default, the dispatch workflow decides when the review agent runs: when a
-pull request is opened, pushed to or marked ready, when the
-`ready-for-review` label is added, and on a `/fs-review` comment. To decide it
+same-repository pull request is opened, pushed to, marked ready or labeled
+`ready-for-review`, and on a `/fs-review` comment. To decide it
 yourself, give the `review` entry in `.fullsend/config.yaml` a `trigger`: a
 [CEL expression](#writing-cel-triggers) over the event. The review still
 runs in the same `Review` job; the trigger only decides whether that job
@@ -322,12 +346,17 @@ to CEL:
 
 | Your configuration | Who decides |
 |---|---|
-| No `review` entry, or one with only `runtime`, `model`, `effort` or `subagents` | The dispatch workflow, as before |
+| No `review` entry, or one with only `runtime`, `model`, `effort`, `subagents` or a `harness:` block | The dispatch workflow, as before |
 | `trigger` on the `review` entry | The trigger |
 | A `review` entry with `source:` whose harness sets or inherits `trigger:` | The dispatch workflow, as before |
 
+Neither path routes fork or Dependabot pull request events on `pull_request`;
+review on those pull requests starts from a `/fs-review` comment (see
+[Required upgrade](../getting-started/repo-management.md#required-upgrade-shim-moves-from-pull_request_target-to-pull_request)).
+
 A harness `trigger:` field never changes when a built-in agent runs, whether
-your own harness writes it or inherits it through `base:`. To route review by
+your own harness writes it, inherits it through `base:`, or the entry's
+`harness:` block sets it. To route review by
 a trigger you keep in a harness, copy the expression into the `review` entry's
 `trigger` in `config.yaml`. The kill switch and `enabled: false` on the review
 entry keep working as before. The `Route`
@@ -347,7 +376,7 @@ the dispatch workflow's built-in rules:
 | Pull request opened or pushed by a bot without a registered fullsend role | Reviewed | Not reviewed |
 | Pull request pushed by the fix agent | Reviewed | Not reviewed until [#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, so the review → fix → re-review loop stops |
 | Who is checked when a pull request is opened, pushed to or marked ready | The pull request author | The user who sent the event |
-| A maintainer's push to an outside contributor's fork pull request | Not reviewed | Reviewed |
+| A push by a user with triage access or higher to an outside contributor's fork pull request | Not reviewed (the pull request author is checked; with the `pull_request` shim, fork PR events are not routed at all) | Not reviewed with the `pull_request` shim (fork PR events are not routed). Reviewed only by a shim still on `pull_request_target` |
 
 > [!WARNING]
 > Opt in only after
@@ -388,9 +417,9 @@ the review entry is disabled.
 
 ### Choosing when retro runs
 
-By default, the dispatch workflow starts the retro agent when a pull request
-is closed, merged or not, and on a `/fs-retro` comment on an issue or a pull
-request. To decide it yourself, give the `retro` entry in
+By default, the dispatch workflow starts the retro agent when a
+same-repository pull request is closed, merged or not, and on a `/fs-retro`
+comment on an issue or a pull request (a fork pull request needs the comment). To decide it yourself, give the `retro` entry in
 `.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
 job; the trigger only decides whether that job starts. What opts a repository
 in, and how to check the decision, work as for review: see
@@ -426,13 +455,15 @@ and a bot's `/fs-retro` comment never starts a retro.
 
 A trigger decides which events start a retro, not who may start one:
 
-- **Closing a pull request:** the closing actor needs write access. If the
+- **Closing a pull request:** applies to same-repository pull requests (fork
+  pull requests get no automatic retro on close; comment `/fs-retro`). The
+  closing actor needs write access. If the
   permission lookup or CEL routing fails, the close event does not start retro.
   A custom retro harness role cannot lower this write requirement.
   Merge-queue events follow the same rule: the event sender needs write access.
   Other automated senders without write access are denied; a write user can
   run `/fs-retro` afterward. See the
-  [authorization contract](../../normative/authorization/v1/README.md#closed-pull-request-retro-pull_request_targetclosed).
+  [authorization contract](../../normative/authorization/v1/README.md#closed-pull-request-retro-pull_request-and-pull_request_target-closed).
 - **`/fs-retro`:** users with write access or above. A custom retro harness
   role cannot lower this fixed floor, and CEL cannot start retro when the Bash
   route denied the actor.

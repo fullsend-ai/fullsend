@@ -37,6 +37,32 @@ func TestIsURL(t *testing.T) {
 	}
 }
 
+func TestIsMintURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"https", "https://mint.example.com", true},
+		{"https with path", "https://mint.example.com/v1/token", true},
+		{"http loopback ip with port", "http://127.0.0.1:18502", true},
+		{"http localhost", "http://localhost", true},
+		{"http private ip rejected", "http://10.0.0.1", false},
+		{"http public host rejected", "http://example.com", false},
+		{"http userinfo on loopback rejected", "http://user@127.0.0.1", false},
+		{"https userinfo rejected", "https://user:pass@mint.example.com", false},
+		{"empty host rejected", "https://", false},
+		{"empty http host rejected", "http:///path", false},
+		{"ftp rejected", "ftp://127.0.0.1", false},
+		{"empty string rejected", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsMintURL(tt.input))
+		})
+	}
+}
+
 func TestParseIntegrityHash(t *testing.T) {
 	validHash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 

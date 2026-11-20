@@ -1,0 +1,19 @@
+---
+# Read-only Jira access for the sandbox. The sandbox gets this provider's
+# placeholder, never the real token, and the proxy swaps the placeholder in
+# for either auth mode the Jira skills select: Basic (`--user email:token`)
+# when JIRA_USER_EMAIL is set, Bearer (`--oauth2-bearer token`) otherwise.
+#
+# With a static token, JIRA_TOKEN expands from FULLSEND_JIRA_TOKEN, the one
+# Jira secret a provider credential value may expand (#9411). With only a
+# service account's OAuth 2.0 client credentials (FULLSEND_JIRA_CLIENT_ID and
+# FULLSEND_JIRA_CLIENT_SECRET), it expands empty and `fullsend run` mints the
+# access token itself, gives it to a run-scoped copy of this provider,
+# refreshes it before it expires, and keeps the current placeholder in
+# /sandbox/fullsend-jira/token (fullsend#9220). The client secret never
+# reaches a provider value or the sandbox. The key stays JIRA_TOKEN: it is
+# the name the profile and the sandbox skills use for the placeholder.
+name: jira
+type: fullsend-jira
+credentials:
+  JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"

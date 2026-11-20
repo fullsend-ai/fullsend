@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -940,6 +941,24 @@ func TestValidateAgentEntries_Trigger(t *testing.T) {
 	require.ErrorContains(t, err, "agents[0] (harness/lint.yaml): invalid trigger")
 }
 
+func TestValidateAgentEntriesAt_ReportsGivenPositions(t *testing.T) {
+	require.NoError(t, ValidateAgentEntriesAt([]AgentEntry{{Name: "review", Source: "harness/review.yaml"}}, []int{3}, nil))
+
+	err := ValidateAgentEntriesAt([]AgentEntry{{Name: "review", Runtime: "made-up-runtime"}}, []int{1}, nil)
+	require.ErrorContains(t, err, `agents[1] (review): invalid runtime "made-up-runtime"`)
+
+	// Duplicate detection reports the second entry's position, not its
+	// index within the subset.
+	err = ValidateAgentEntriesAt([]AgentEntry{
+		{Name: "review", Source: "harness/a.yaml"},
+		{Name: "review", Source: "harness/b.yaml"},
+	}, []int{0, 2}, nil)
+	require.ErrorContains(t, err, "agents[2] (review): duplicate agent name")
+
+	err = ValidateAgentEntriesAt([]AgentEntry{{Name: "review", Source: "harness/review.yaml"}}, nil, nil)
+	require.ErrorContains(t, err, "0 agent positions for 1 agent entries")
+}
+
 func TestPerRepoConfigValidate_RejectsInvalidAgentTrigger(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nagents:\n  - name: review\n    trigger: event.transition.kind ==\n"), 0o644))
@@ -1372,6 +1391,7 @@ func TestPerRepoConfig_Marshal_WithAgents(t *testing.T) {
 // --- DefaultAllowedRemoteResources tests ---
 
 func TestDefaultAllowedRemoteResources(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	resources := DefaultAllowedRemoteResources()
 	assert.Len(t, resources, 2)
 	assert.Contains(t, resources, "https://raw.githubusercontent.com/fullsend-ai/fullsend/")
@@ -1408,6 +1428,7 @@ func TestPerRepoConfig_RoundTrip_WithAgents(t *testing.T) {
 }
 
 func TestEnsureDefaultAllowedRemoteResources(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	defaults := DefaultAllowedRemoteResources()
 
 	t.Run("nil input returns defaults", func(t *testing.T) {
@@ -1456,6 +1477,156 @@ func TestEnsureDefaultAllowedRemoteResources(t *testing.T) {
 		copy(inputCopy, input)
 		_ = EnsureDefaultAllowedRemoteResources(input)
 		assert.Equal(t, inputCopy, input)
+	})
+}
+
+func TestDefaultAllowedRemoteResources_GitHubServerURL(t *testing.T) {
+	public := []string{
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	hostDefaults := func(base string) []string {
+		return append(slices.Clone(public),
+			base+"/fullsend-ai/fullsend/raw/",
+			base+"/fullsend-ai/agents/raw/",
+		)
+	}
+	for _, tc := range []struct {
+		name      string
+		serverURL string
+		want      []string
+	}{
+		{"unset", "", public},
+		{"github.com", "https://github.com", public},
+		{"github.com trailing slash mixed case", "https://GitHub.com/", public},
+		{"other host", "https://ghe.example.com", hostDefaults("https://ghe.example.com")},
+		{"other host trailing slash", "https://ghe.example.com/", hostDefaults("https://ghe.example.com")},
+		{"other host mixed case", "https://GHE.Example.com", hostDefaults("https://ghe.example.com")},
+		{"other host with port", "https://ghe.example.com:8443", hostDefaults("https://ghe.example.com:8443")},
+		{"surrounding whitespace", " https://ghe.example.com\n", hostDefaults("https://ghe.example.com")},
+		{"http scheme ignored", "http://ghe.example.com", public},
+		{"path ignored", "https://ghe.example.com/sub", public},
+		{"userinfo ignored", "https://user@ghe.example.com", public},
+		{"query ignored", "https://ghe.example.com?x=1", public},
+		{"fragment ignored", "https://ghe.example.com#x", public},
+		{"not a URL ignored", "ghe.example.com", public},
+		{"unparseable ignored", "https://ghe.example.com:port", public},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GITHUB_SERVER_URL", tc.serverURL)
+			assert.Equal(t, tc.want, DefaultAllowedRemoteResources())
+		})
+	}
+}
+
+func TestDefaultAllowedRemoteResources_NonGitHubHostAdmitsFullsendRepos(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "https://ghe.example.com")
+	const (
+		sha  = "0123456789abcdef0123456789abcdef01234567"
+		hash = "#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	)
+
+	allowlists := map[string][]string{
+		"default":          DefaultAllowedRemoteResources(),
+		"ensure nil":       EnsureDefaultAllowedRemoteResources(nil),
+		"ensure custom":    EnsureDefaultAllowedRemoteResources([]string{"https://example.com/foo/"}),
+		"new per-repo cfg": NewPerRepoConfig(nil, "").AllowedResources(),
+		"per-repo default": (&perRepoDefaults{}).AllowedResources(),
+	}
+	admitted := []string{
+		"https://ghe.example.com/fullsend-ai/agents/raw/" + sha + "/harness/triage.yaml",
+		"https://ghe.example.com/fullsend-ai/fullsend/raw/" + sha + "/harness/triage.yaml",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/" + sha + "/harness/triage.yaml",
+	}
+	rejected := []string{
+		"https://ghe.example.com/other-org/agents/raw/" + sha + "/harness/triage.yaml",
+		"https://ghe.example.com/fullsend-ai/agents-evil/raw/" + sha + "/harness/triage.yaml",
+		"https://ghe.example.com/fullsend-ai/agents/blob/" + sha + "/harness/triage.yaml",
+		"https://other.example.com/fullsend-ai/agents/raw/" + sha + "/harness/triage.yaml",
+	}
+	for name, allow := range allowlists {
+		t.Run(name, func(t *testing.T) {
+			for _, src := range admitted {
+				err := ValidateAgentEntries([]AgentEntry{{Name: "triage", Source: src + hash}}, allow)
+				assert.NoError(t, err, src)
+			}
+			for _, src := range rejected {
+				err := ValidateAgentEntries([]AgentEntry{{Name: "triage", Source: src + hash}}, allow)
+				assert.ErrorContains(t, err, "is not covered by allowed_remote_resources", src)
+			}
+		})
+	}
+
+	t.Run("custom list keeps order with host defaults appended", func(t *testing.T) {
+		got := EnsureDefaultAllowedRemoteResources([]string{"https://example.com/foo/"})
+		assert.Equal(t, append([]string{"https://example.com/foo/"}, DefaultAllowedRemoteResources()...), got)
+	})
+
+	t.Run("explicit empty list stays deny-all", func(t *testing.T) {
+		got := EnsureDefaultAllowedRemoteResources([]string{})
+		assert.NotNil(t, got)
+		assert.Empty(t, got)
+	})
+}
+
+// TestEffectiveAllowedResources pins the command-level allowlist every
+// command family resolves through EffectiveAllowedResources, over the
+// layered accessor shapes TestBuildConfigMap_AllowlistShapes exercises
+// end to end: an omitted key falls through to the defaults parent, an
+// explicit [] stays deny-all, and a non-empty list carries the default
+// prefixes on top.
+func TestEffectiveAllowedResources(t *testing.T) {
+	t.Parallel()
+	defaults := DefaultAllowedRemoteResources()
+
+	t.Run("omitted key falls through to defaults", func(t *testing.T) {
+		cfg := &perRepoConfig{Version: "1", parent: &perRepoDefaults{}}
+		assert.Equal(t, defaults, EffectiveAllowedResources(cfg))
+	})
+
+	t.Run("explicit empty over an empty base stays deny-all", func(t *testing.T) {
+		base := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{}, parent: &perRepoDefaults{}}
+		cfg := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{}, parent: base}
+		got := EffectiveAllowedResources(cfg)
+		assert.NotNil(t, got)
+		assert.Empty(t, got)
+	})
+
+	t.Run("non-empty over an empty base carries the default prefixes", func(t *testing.T) {
+		base := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{}, parent: &perRepoDefaults{}}
+		cfg := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{"https://example.com/"}, parent: base}
+		expected := append([]string{"https://example.com/"}, defaults...)
+		assert.Equal(t, expected, EffectiveAllowedResources(cfg))
+	})
+}
+
+// perRepoConfig.Validate resolves agents through the effective allowlist
+// (EffectiveAllowedResources), the same list the command families that
+// run or edit agents use, so the base-[] layered shape `agent add` writes
+// — a non-empty overlay list holding a default-prefix agent over an
+// explicit deny-all base — validates for `github setup`'s re-run of the
+// existing config too, while an explicit [] as the resolved value still
+// denies.
+func TestPerRepoConfigValidate_AllowlistOverBaseEmptyList(t *testing.T) {
+	t.Parallel()
+	defaultPrefix := DefaultAllowedRemoteResources()[0]
+	integrity := "#sha256=" + strings.Repeat("a", 64)
+	agentYAML := "agents:\n  - name: probe\n    source: \"" + defaultPrefix + "harness/probe.yaml" + integrity + "\"\n"
+
+	t.Run("non-empty overlay over a base [] validates", func(t *testing.T) {
+		overlay := []byte("allowed_remote_resources:\n  - https://overlay.example.com/\n" + agentYAML)
+		base := []byte("allowed_remote_resources: []\n")
+		layered, err := ParsePerRepoConfigWriterLayered(overlay, base)
+		require.NoError(t, err)
+		assert.NoError(t, layered.Validate())
+	})
+
+	t.Run("resolved explicit [] stays deny-all", func(t *testing.T) {
+		layered, err := ParsePerRepoConfigWriterLayered([]byte("allowed_remote_resources: []\n"+agentYAML), []byte("version: \"1\"\n"))
+		require.NoError(t, err)
+		err = layered.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
 	})
 }
 

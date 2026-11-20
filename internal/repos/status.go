@@ -127,6 +127,17 @@ type RepoStatus struct {
 	Drifts          []Drift `json:"drifts,omitempty"`
 	Error           string  `json:"error,omitempty"`
 
+	// ConfigCompatibility reports whether the installed
+	// .fullsend/config.yaml is readable at the repository's effective
+	// fullsend_ref (#9292): ConfigCompatible, ConfigIncompatible or
+	// ConfigUnknown; empty when no overlay is installed.
+	// ConfigCompatibilityReason explains an incompatible or unknown result,
+	// and ConfigSchemaRef names the pinned ref it was assessed against
+	// (empty when the repository follows the running release).
+	ConfigCompatibility       string `json:"config_compatibility,omitempty"`
+	ConfigCompatibilityReason string `json:"config_compatibility_reason,omitempty"`
+	ConfigSchemaRef           string `json:"config_schema_ref,omitempty"`
+
 	// ConfigRejected marks a repo whose manifest configuration was rejected
 	// before any forge state was inspected (for example a missing
 	// inference.auth selection). Callers that enrich status with further
@@ -236,8 +247,18 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 			defer func() { <-sem }()
 
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+			// The declared preset may supply the inference.gateway route,
+			// so load it before the check. A load failure is reported by
+			// checkRepoStatus (checkPresetDrift); the check then sees the
+			// managed configuration alone.
+			if cfg.Config != "" {
+				if data, loadErr := store.Load(ctx, cfg.Config, cfg.ConfigHash); loadErr == nil {
+					cfg.ProposedBase = data
+				}
+			}
 			// Status checks the same desired state as install, so a repo
-			// without an inference.auth selection cannot be evaluated.
+			// without an inference.auth selection (or an inference.gateway
+			// route) cannot be evaluated.
 			if authErr := cfg.RequireInferenceAuth(); authErr != nil {
 				results[idx] = RepoStatus{
 					Owner: rr.Owner,
@@ -307,6 +328,14 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			presetLoaded = true
 		}
 	}
+	// Assess managed configuration against the schema of the repository's
+	// effective fullsend_ref, as install renders it (#9292).
+	// The installed overlay is read here only for a pinned ref; a read
+	// error is reported by checkManagedConfigDrift.
+	if cfg.ConfigManaged && pinnedFullsendRef(cfg.FullsendRef, dcfg.UpstreamRef, dcfg.UpstreamTag) {
+		existing, _, _ := readManagedConfigOverlayFile(ctx, cfg)
+		cfg.ConfigSchema = selectManagedConfigSchema(ctx, cfg, existing, dcfg.UpstreamRef, dcfg.UpstreamTag, resolver)
+	}
 	// Resolve the mint URL and region from the effective configuration, as
 	// install and dry run do (#8220). Without the declared preset the
 	// effective values are unknown; checkPresetDrift reports the load error.
@@ -352,7 +381,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)
 		return status
 	}
-	components, probeErr := ProbeComponentsForAuth(ctx, client, owner, repo, cfg.Forge, cfg.InferenceAuth, fc, expectedVars)
+	components, probeErr := ProbeComponentsForConfig(ctx, client, cfg, fc, expectedVars)
 	if probeErr != nil {
 		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status

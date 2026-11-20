@@ -49,6 +49,15 @@ default name and the matching `.matrix-<job-index>` names. Artifacts are
 uploaded even when a run fails, so check the run's conclusion before trusting
 their contents.
 
+The tree below is the default, `all`. A repository that sets the
+[`artifacts`](../../reference/config-reference.md#artifacts) level to
+`metadata` for a run gets only `metrics.json`, `eval-measurements.jsonl` and
+`run-telemetry.jsonl` (without conversation content) in each run directory: no
+`iteration-N/` result, transcripts or security findings. At `none`, the run
+uploads no artifact at all. A follow-up that reads the result needs `all` for
+the runs it consumes. See
+[Run artifacts and private data](run-artifacts-and-private-data.md).
+
 ```text
 fullsend-<agent>[.matrix-<job-index>]/ # suffix on later rows for repeated agents
 └── <run-dir>/                         # generated per run, e.g. fs-rev-09c9f0671390
@@ -56,6 +65,7 @@ fullsend-<agent>[.matrix-<job-index>]/ # suffix on later rows for repeated agent
     │   ├── output/
     │   │   └── agent-result.json    # the validated result (name set by the agent)
     │   ├── output.jsonl             # raw agent stream, not for consumers
+    │   ├── agent-stderr.log         # agent CLI stderr, at progress level quiet only
     │   └── transcripts/             # agent transcripts, not for consumers
     ├── logs/                        # sandbox and gateway logs
     ├── metrics.json                 # model, runtime, turns, tool calls, cost
@@ -333,10 +343,11 @@ What each guard does:
 - **The API lookup** confirms each id is a failed job in this repository, in
   the workflow named by `CI_WORKFLOW`, with a name listed in `CI_JOBS`.
 - **`HEAD_SHA`** comes from the event, not the agent. A job on any other
-  commit is skipped. For pull request events (`pull_request_target`) the shim
-  run's `head_sha` is the pull request head, the same SHA a `pull_request` CI
-  job reports; the job's own `GITHUB_SHA` (the base branch) is a different
-  value. For comment and issue events it is the default branch, so the
+  commit is skipped. For pull request events (`pull_request`, or
+  `pull_request_target` from a shim that has not been upgraded) the shim run's
+  `head_sha` is the pull request head, the same SHA a `pull_request` CI job
+  reports; the job's own `GITHUB_SHA` (the merge commit on `pull_request`, the
+  default branch on `pull_request_target`) is a different value. For comment and issue events it is the default branch, so the
   follow-up skips those runs rather than guessing. The agent can only choose
   among failed, allowlisted jobs on the commit it ran on.
 - **`run_attempt`** bounds repeats without any bookkeeping of your own.

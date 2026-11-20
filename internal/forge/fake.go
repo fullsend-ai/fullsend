@@ -17,6 +17,17 @@ var _ GitHubExtensions = (*FakeClient)(nil)
 var _ GitLabExtensions = (*FakeClient)(nil)
 var _ ProjectLeaser = (*FakeClient)(nil)
 
+// fakeUpstreamAnyRefFiles returns the files NewFakeClient serves at every
+// ref: the upstream fullsend-ai/fullsend repository declares the current
+// per-repo configuration schema unless a test overrides it (#9292). Kept
+// equal to config.ManagedConfigSchemaDeclarationPath and
+// config.ManagedConfigSchemaVersion by a test in internal/repos.
+func fakeUpstreamAnyRefFiles() map[string][]byte {
+	return map[string][]byte{
+		"fullsend-ai/fullsend/internal/config/managed-config-schema": []byte("3\n"),
+	}
+}
+
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
@@ -30,6 +41,7 @@ func NewFakeClient() *FakeClient {
 		Errors:                   make(map[string]error),
 		DirContents:              make(map[string][]DirectoryEntry),
 		FileContentsRef:          make(map[string][]byte),
+		FileContentsAnyRef:       fakeUpstreamAnyRefFiles(),
 		BranchRefs:               make(map[string]string),
 		ExistingBranches:         make(map[string]bool),
 		Refs:                     make(map[string]string),
@@ -257,6 +269,9 @@ type FakeClient struct {
 	IssueLabelEvents map[string][]IssueLabelEvent
 	// RemovedIssueLabels records RemoveIssueLabel calls as "owner/repo/number/label".
 	RemovedIssueLabels []string
+	// RepoLabels maps "owner/repo" → repository label names, in creation
+	// order. EnsureLabel appends to it.
+	RepoLabels map[string][]string
 	// AddedCollaborators records AddCollaborator calls as "owner/repo/username" → permission.
 	AddedCollaborators map[string]string
 	// OrgMemberships maps "org/username" → membership for GetOrgMembership.
@@ -326,6 +341,9 @@ type FakeClient struct {
 
 	// File contents at specific refs for GetFileContentAtRef.
 	FileContentsRef map[string][]byte // key: "owner/repo/path@ref"
+	// FileContentsAnyRef is served by GetFileContentAtRef for a path at any
+	// ref absent from FileContentsRef. key: "owner/repo/path"
+	FileContentsAnyRef map[string][]byte
 
 	// ForceReachableCommits maps "owner/repo/branch" to the number of
 	// commits reachable on that branch after force-re-root writes.
@@ -349,6 +367,11 @@ type FakeClient struct {
 	// CreateBranchErrors injects per-repo errors for CreateBranch.
 	// Key is "owner/repo", checked before the generic Errors map.
 	CreateBranchErrors map[string]error
+
+	// CreateBranchFromSHAErrors injects per-commit errors for
+	// CreateBranchFromSHA. Key is "owner/repo/sha", checked before the
+	// generic Errors map.
+	CreateBranchFromSHAErrors map[string]error
 
 	// DeleteFilesErrors injects per-repo errors for DeleteFiles.
 	// Key is "owner/repo", checked before the generic Errors map.
@@ -398,6 +421,10 @@ type FakeClient struct {
 
 	// Pull request file diffs for ListPullRequestFileDiffs.
 	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
+	// PRFileDiffModes controls whether diff fixtures report verified mode
+	// metadata. When a key is absent, fixtures retain the historical default
+	// of verified metadata; a false value models a forge mode lookup failure.
+	PRFileDiffModes map[string]bool // key: "owner/repo/number"
 
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
@@ -913,6 +940,9 @@ func (f *FakeClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 	key := fmt.Sprintf("%s/%s/%s@%s", owner, repo, path, ref)
 	content, ok := f.FileContentsRef[key]
 	if !ok {
+		content, ok = f.FileContentsAnyRef[fmt.Sprintf("%s/%s/%s", owner, repo, path)]
+	}
+	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
 	return slices.Clone(content), nil
@@ -1132,6 +1162,11 @@ func (f *FakeClient) CreateBranchFromSHA(_ context.Context, owner, repo, branchN
 
 	if f.CreateBranchErrors != nil {
 		if e, ok := f.CreateBranchErrors[owner+"/"+repo]; ok {
+			return e
+		}
+	}
+	if f.CreateBranchFromSHAErrors != nil {
+		if e, ok := f.CreateBranchFromSHAErrors[owner+"/"+repo+"/"+sha]; ok {
 			return e
 		}
 	}
@@ -1674,6 +1709,23 @@ func (f *FakeClient) AddIssueLabels(_ context.Context, owner, repo string, numbe
 	return fmt.Errorf("issue #%d not found", number)
 }
 
+func (f *FakeClient) EnsureLabel(_ context.Context, owner, repo, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("EnsureLabel"); e != nil {
+		return e
+	}
+	key := owner + "/" + repo
+	if slices.Contains(f.RepoLabels[key], name) {
+		return nil
+	}
+	if f.RepoLabels == nil {
+		f.RepoLabels = make(map[string][]string)
+	}
+	f.RepoLabels[key] = append(f.RepoLabels[key], name)
+	return nil
+}
+
 func (f *FakeClient) GetIssue(_ context.Context, owner, repo string, number int) (*Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2068,7 +2120,21 @@ func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo str
 	if f.PRFileDiffs != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if files, ok := f.PRFileDiffs[key]; ok {
-			return slices.Clone(files), nil
+			cloned := slices.Clone(files)
+			if verified, configured := f.PRFileDiffModes[key]; configured {
+				for i := range cloned {
+					cloned[i].ModesVerified = verified
+				}
+			} else {
+				for i := range cloned {
+					// Fake diffs represent complete fixtures unless a test
+					// explicitly models unavailable forge metadata.
+					if !cloned[i].ModesVerified {
+						cloned[i].ModesVerified = true
+					}
+				}
+			}
+			return cloned, nil
 		}
 	}
 	return nil, nil

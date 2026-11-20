@@ -18,8 +18,8 @@ identity components.
 | Installation | 128-bit ID provisioned with the signing key pair | same | same |
 | Forge instance | web base URL (`https://github.com`, or a GHES host) | web base URL (`https://gitlab.com`, or a self-hosted host) | site base URL |
 | Container | repository `id`; for a PR, the base repository, never the fork | project `id`; for an MR, the target project, never the fork | project `id` |
-| Entity kind | `work_item` (issue), `change_proposal` (PR) | `work_item` (issue), `change_proposal` (MR) | `work_item` (issue; Jira has no change proposal) |
-| Entity | `work_item`: issue REST `id`; `change_proposal`: pull-request REST `id` = GraphQL `fullDatabaseId` (`BigInt`), never the issue-space ID | issue or MR database `id` (not the IID) | issue `id` |
+| Entity kind | `work_item` (issue), `change_proposal` (PR), `conversation` (Discussion) | `work_item` (issue), `change_proposal` (MR); no conversation | `work_item` (issue; Jira has no change proposal or conversation) |
+| Entity | `work_item`: issue REST `id`; `change_proposal`: pull-request REST `id` = GraphQL `fullDatabaseId` (`BigInt`), never the issue-space ID; `conversation`: Discussion database `id` = GraphQL `databaseId`, never the node ID | issue or MR database `id` (not the IID) | issue `id` |
 
 A GitHub PR has both a pull-request ID and a different issue-space ID.
 The `change_proposal` identity must use the pull-request ID from
@@ -31,6 +31,16 @@ object, resolve the pull-request ID through a trusted forge-adapter
 `/pulls/{number}` read before declaring the identity resolved. Until that
 read succeeds, keep the identity unresolved rather than substituting the
 issue-space ID or display number.
+
+A GitHub Discussion is a `conversation`, never a `work_item` or
+`change_proposal`, even though Discussions share the repository's display
+number sequence with issues and PRs. Its entity component is the Discussion
+database ID carried as `discussion.id` in `discussion` and
+`discussion_comment` webhook payloads, also exposed as GraphQL `databaseId`;
+its container is the repository `id`. The GraphQL node ID and the Discussion
+number are not identity components. Until a trusted read yields that
+database ID, the conversation identity stays unresolved. GitLab and Jira
+entities never use the `conversation` kind.
 
 The instance string is the normalized, trusted deployment base URL: lowercase
 `scheme://host`, using `http` or `https`, followed by the case-sensitive,
@@ -90,6 +100,9 @@ traces regardless of key state.
   ID — and therefore a new identity. A previously published envelope
   fails the binding check and the moved entity falls back. A move is
   never treated as a rename.
+- Converting a GitHub issue to a Discussion, or a Discussion to an issue,
+  changes the entity kind and is therefore a new binding, even if a
+  database ID were reused; published envelopes fail the binding check.
 - Changing the configured deployment URL (a Jira site rename, a GHES
   hostname change, a GitLab `external_url` change) is also a new binding:
   published envelopes fail the binding check and entities fall back.
@@ -108,7 +121,8 @@ The derivation is:
   `uint16(33) || "fullsend.tracecontext.identity.v1" || uint16(N) ||
   instance[N] || uint64(container) || byte(kind) || uint64(entity)`.
   `N` counts UTF-8 bytes, container/entity are in `[1, 2^63−1]`, and kind
-  is `0x01` (work item) or `0x02` (change proposal).
+  is `0x01` (work item), `0x02` (change proposal), or `0x03`
+  (conversation).
 - TraceID = the first 16 digest bytes; the anchor SpanID = the next 8.
 - An all-zero result (probability 2⁻¹²⁸ for the trace, 2⁻⁶⁴ for the span)
   replaces only that ID's final byte with `0x01`, so derived IDs are valid.
@@ -131,6 +145,9 @@ For `https://github.com`, container `274390431`, kind `0x01`, and entity
 
 Concatenate those hex lines before hashing. The TraceID is
 `c9bdb0e38247ebbe2e0f1039250c32d4`; the anchor is `892a346c55356aca`.
+The same binding with kind `0x03` (a GitHub conversation) changes only that
+kind byte and derives TraceID `bf80a0459b29786a2dfd3f544de477af` and anchor
+`f9428a9e85988c3e`.
 Additional independent GitLab/Jira vectors and an SDK exporter lifecycle
 test are linked from the [implementation reference](../../../reference/trace-context.md).
 
@@ -150,7 +167,7 @@ the magic through the nonce — there are no unsigned fields.
 | 30 | 2 | Instance length N | `1 ≤ N ≤ 253` |
 | 32 | N | Forge instance | normalized form, UTF-8, no NUL |
 | 32+N | 8 | Container ID | `int64 ≥ 1` |
-| 40+N | 1 | Entity kind | `0x01` work item, `0x02` change proposal |
+| 40+N | 1 | Entity kind | `0x01` work item, `0x02` change proposal, `0x03` conversation |
 | 41+N | 8 | Entity ID | `int64 ≥ 1`; bound envelopes only — pending markers omit these 8 bytes, retaining the kind byte |
 | · | 16 | Trace ID | nonzero |
 | · | 8 | Parent/anchor Span ID | nonzero |
@@ -259,7 +276,8 @@ fallback or guess.
 ## Compatibility
 
 The [conformance vectors](../../../reference/trace-context.md#conformance-evidence)
-pin the exact signed bytes of one envelope per domain and provenance kind.
+pin the exact signed bytes of one envelope per domain and provenance kind,
+plus one bound `conversation` envelope.
 
 **v1 is provisional** until the first pull request that publishes carriers
 merges. No production carrier exists yet, so the wire layout, derivation,
@@ -268,3 +286,9 @@ contract gaps surface in review. From the first carrier-publishing pull
 request onward, any such change is a compatibility break that requires a
 new version byte and a reviewed migration path. Unknown versions must
 reject cleanly.
+
+The `conversation` kind (`0x03`) was added to v1 under this provision,
+before any carrier was published. It defines a new kind byte value only: the
+derivation input, wire bytes, and conformance vectors of existing
+`work_item` and `change_proposal` identities are unchanged, so their
+derived and stored contexts stay valid.

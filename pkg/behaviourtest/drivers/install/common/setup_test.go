@@ -3,12 +3,15 @@ package common
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 )
 
 func TestDefaultGitHubSetupOpts_HasVendor(t *testing.T) {
@@ -495,4 +498,198 @@ func TestWaitInferenceHealthy_ContextCancelledDuringBackoff(t *testing.T) {
 	assert.Contains(t, err.Error(), `status="not_provisioned"`, "error keeps the last status")
 	assert.Equal(t, 1, statusCalls, "no status read after cancellation")
 	assert.Less(t, time.Since(start), postProvisionStatusDelays[0], "the real backoff is cut short")
+}
+
+// TestIsGCPWIFQuotaError pins the bounded signature list behind the GCP WIF
+// quota mark (task 2.2 / design D3 of the behaviour-infra-retry change):
+// every known quota/rate-limit text from the inference CLI calls matches,
+// and the errors those call sites can also produce — parse failures and
+// unrelated CLI failures — must not. The realistic messages below mimic the
+// CLI runner's error shape (e2etest.tryRunCLIFromDir embeds the command's
+// combined output, where cobra prints "Error: <message>", in the error
+// string); classification through failclass.Classify is covered in
+// setup_infraclass_ext_test.go because failclass cannot be imported here.
+func TestIsGCPWIFQuotaError(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"iam write retry exhaustion": {
+			err:  fmt.Errorf("inference provision org/repo: [cli] fullsend inference provision org/repo --project proj failed: exit status 1\nError: rate limited (HTTP 429) after 7 attempts"),
+			want: true,
+		},
+		"gcp quota body": {
+			err:  fmt.Errorf("inference provision org/repo: [cli] fullsend inference provision org/repo --project proj failed: exit status 1\nError: Quota exceeded for quota project '123456789' and limit 'CreateWorkloadIdentityPool' of service 'iam.googleapis.com'"),
+			want: true,
+		},
+		"iam read returns 429": {
+			err:  fmt.Errorf("inference status org/repo: [cli] fullsend inference status org/repo --project proj --format json failed: exit status 1\nError: getting WIF provider returned 429: too many requests"),
+			want: true,
+		},
+		"unwrapped 429 status": {
+			err:  fmt.Errorf("unexpected status 429 deleting WIF pool: backend error"),
+			want: true,
+		},
+		"gcp rate limit body": {
+			err:  fmt.Errorf("inference provision org/repo: [cli] fullsend inference provision org/repo --project proj failed: exit status 1\nError: Rate limit exceeded for consumer"),
+			want: true,
+		},
+		"nil error": {
+			err: nil,
+		},
+		"unhealthy status is not quota": {
+			err: fmt.Errorf(`expected healthy status, got "unhealthy"`),
+		},
+		"missing provider is not quota": {
+			err: fmt.Errorf(`missing FULLSEND_GCP_WIF_PROVIDER (status="not_provisioned")`),
+		},
+		"unrelated cli failure": {
+			err: fmt.Errorf("inference provision org/repo: [cli] fullsend inference provision org/repo --project proj failed: exit status 1\nError: creating WIF pool returned 403: Permission 'iam.workloadIdentityPools.create' denied"),
+		},
+		"other status code is not quota": {
+			err: fmt.Errorf("getting WIF provider returned 404: provider not found"),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isGCPWIFQuotaError(tc.err))
+		})
+	}
+}
+
+// TestMarkGCPWIFQuota covers the wrap rule the two inference call sites
+// share: quota-signature errors gain the "setup: gcp wif quota" mark, and
+// everything else — nil, unrelated errors, and already-marked errors —
+// passes through unchanged.
+func TestMarkGCPWIFQuota(t *testing.T) {
+	quotaErr := errors.New("rate limited (HTTP 429) after 7 attempts")
+
+	t.Run("quota error is marked with the setup reason", func(t *testing.T) {
+		marked := markGCPWIFQuota(quotaErr)
+		require.Error(t, marked)
+		assert.True(t, behaviourfail.Is(marked))
+		var infra *behaviourfail.InfraError
+		require.ErrorAs(t, marked, &infra)
+		assert.Equal(t, "setup: gcp wif quota", infra.Reason)
+		assert.ErrorIs(t, marked, quotaErr, "the CLI failure stays reachable through the mark")
+	})
+
+	t.Run("nil passes through", func(t *testing.T) {
+		assert.NoError(t, markGCPWIFQuota(nil))
+	})
+
+	t.Run("unrelated error passes through unchanged", func(t *testing.T) {
+		plain := fmt.Errorf(`expected healthy status, got "unhealthy"`)
+		got := markGCPWIFQuota(plain)
+		assert.Same(t, plain, got)
+		assert.False(t, behaviourfail.Is(got))
+	})
+
+	t.Run("already-marked error is not wrapped again", func(t *testing.T) {
+		marked := behaviourfail.Mark(quotaErr, "setup: gcp wif quota")
+		got := markGCPWIFQuota(marked)
+		assert.Same(t, marked, got, "WaitInferenceHealthy's marked error flows through ResolveInferenceWIFProvider unwrapped")
+	})
+}
+
+// setupCLIErr builds a failed `fullsend github setup` error the way
+// e2etest.tryRunCLIFromDir does: the command line, then the combined
+// output, which ends with the "Error: " line cmd/fullsend's main prints.
+func setupCLIErr(output string) error {
+	return fmt.Errorf("github setup org/repo: [cli] fullsend github setup org/repo --direct --mint-url https://mint.test --runtime dummy --vendor failed: exit status 1\n%s", output)
+}
+
+// TestMarkGitHubSetupTransient pins the anchored signatures behind the
+// GitHub 5xx and stream-reset marks on `github setup` failures (#9497):
+// the observed CLI texts are marked with their reason, and every other
+// setup failure — a 4xx, a validation error, a non-GitHub error, an
+// unobserved transport error, a panic — passes through unmarked.
+func TestMarkGitHubSetupTransient(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err        error
+		wantReason string // empty: unchanged and unmarked
+	}{
+		"stream reset on create blob": {
+			err:        setupCLIErr("[setup] committing scaffold files\nError: committing scaffold files: create blob for .fullsend/bin/fullsend: decode blob: stream error: stream ID 23; CANCEL; received from peer"),
+			wantReason: "setup: github stream reset",
+		},
+		"500 on update ref after retries": {
+			err:        setupCLIErr("Error: committing scaffold files: update ref: github api: 500 retryable error after 5 attempts on PATCH /repos/halfsend-07/test-repo-05/git/refs/heads/main (last delay: 16s)"),
+			wantReason: "setup: github server error",
+		},
+		"502 not resent because it may have been applied": {
+			err:        setupCLIErr("Error: committing scaffold files: update ref: github api: 502 server error on PATCH /repos/org/repo/git/refs/heads/main (not retried: the request may have been applied)"),
+			wantReason: "setup: github server error",
+		},
+		"crlf line endings": {
+			err:        setupCLIErr("Error: committing scaffold files: update ref: github api: 503 retryable error after 5 attempts on PATCH /repos/org/repo/git/refs/heads/main (last delay: 16s)\r\n"),
+			wantReason: "setup: github server error",
+		},
+		"final error wins over an earlier 5xx line": {
+			err: setupCLIErr("Error: github api: 500 retryable error after 5 attempts on GET /repos/org/repo\n" +
+				"Error: committing scaffold files: update ref: github api: 422 Validation Failed (Reference update failed)"),
+		},
+		"404": {
+			err: setupCLIErr("Error: committing scaffold files: create tree: github api: 404 Not Found"),
+		},
+		"422 validation": {
+			err: setupCLIErr("Error: committing scaffold files: update ref: github api: 422 Validation Failed (Reference update failed)"),
+		},
+		"non-github error": {
+			err: setupCLIErr("Error: loading config preset: open /tmp/preset.yaml: no such file or directory"),
+		},
+		"5xx text without the client's give-up wording": {
+			err: setupCLIErr("Error: writing workflow file: upstream said github api: 500 Internal Server Error"),
+		},
+		"stream reset with an unobserved code": {
+			err: setupCLIErr("Error: committing scaffold files: create blob for x: decode blob: stream error: stream ID 7; PROTOCOL_ERROR; received from peer"),
+		},
+		"locally cancelled stream": {
+			err: setupCLIErr("Error: committing scaffold files: create blob for x: decode blob: stream error: stream ID 7; CANCEL"),
+		},
+		"panic after an earlier error line": {
+			err: setupCLIErr("Error: github api: 500 retryable error after 5 attempts on GET /repos/org/repo\n" +
+				"panic: runtime error: invalid memory address or nil pointer dereference\n\ngoroutine 1 [running]:"),
+		},
+		"no error line": {
+			err: setupCLIErr("signal: killed"),
+		},
+		"signature outside the error line": {
+			err: setupCLIErr("[setup] retried: stream error: stream ID 3; CANCEL; received from peer\nError: committing scaffold files: create tree: github api: 404 Not Found"),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := markGitHubSetupTransient(tc.err)
+			if tc.wantReason == "" {
+				assert.Same(t, tc.err, got, "unmatched setup failures pass through unchanged")
+				assert.False(t, behaviourfail.Is(got))
+				return
+			}
+			var infra *behaviourfail.InfraError
+			require.ErrorAs(t, got, &infra)
+			assert.Equal(t, tc.wantReason, infra.Reason)
+			assert.ErrorIs(t, got, tc.err, "the CLI failure stays reachable through the mark")
+		})
+	}
+
+	t.Run("nil passes through", func(t *testing.T) {
+		assert.NoError(t, markGitHubSetupTransient(nil))
+	})
+
+	t.Run("already-marked error is not wrapped again", func(t *testing.T) {
+		marked := behaviourfail.Mark(setupCLIErr("Error: decode blob: stream error: stream ID 23; CANCEL; received from peer"), "setup: other")
+		assert.Same(t, marked, markGitHubSetupTransient(marked))
+	})
+}
+
+func TestRunGitHubSetupWithOpts_MarksTransientSetupFailure(t *testing.T) {
+	runner := func(_, _ string, _ ...string) (string, error) {
+		return "", fmt.Errorf("[cli] fullsend github setup org/repo failed: exit status 1\nError: committing scaffold files: create blob for .fullsend/bin/fullsend: decode blob: stream error: stream ID 23; CANCEL; received from peer")
+	}
+
+	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", DefaultGitHubSetupOpts(), runner, t.Logf)
+	require.Error(t, err)
+	var infra *behaviourfail.InfraError
+	require.ErrorAs(t, err, &infra)
+	assert.Equal(t, "setup: github stream reset", infra.Reason)
+	assert.Contains(t, err.Error(), "github setup org/repo: ", "the setup target stays in the message")
 }

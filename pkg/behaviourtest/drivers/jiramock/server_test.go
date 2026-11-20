@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,25 @@ func TestSearchReturnsAddedIssues(t *testing.T) {
 	issues, err := client.SearchIssues(context.Background(), "project = PROJ", 0)
 	require.NoError(t, err)
 	assert.Len(t, issues, 2)
+}
+
+// An issue without labels is served with "labels": [], as Jira serves it,
+// not null.
+func TestIssueWithoutLabelsHasEmptyList(t *testing.T) {
+	t.Parallel()
+	srv, state := NewServer()
+	defer srv.Close()
+
+	state.AddIssue("PROJ-1", nil)
+
+	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	issues, err := client.SearchIssues(context.Background(), "project = PROJ", 0)
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.NotNil(t, issues[0].Fields.Labels)
+	assert.Empty(t, issues[0].Fields.Labels)
 }
 
 func TestCommentsReturned(t *testing.T) {
@@ -240,4 +260,37 @@ func TestConcurrentAccess(t *testing.T) {
 	for range n {
 		require.NoError(t, <-done)
 	}
+}
+
+// SetIssueLabels replaces the issue's label list without a changelog
+// entry, and Labels reads it back: the transport-bounds scenarios place a
+// large label state at issue creation this way instead of one
+// label-change event per label.
+func TestSetIssueLabels(t *testing.T) {
+	t.Parallel()
+
+	srv, state := NewServer()
+	t.Cleanup(srv.Close)
+
+	state.AddIssue("PROJ-1", []string{"backlog"})
+	require.Equal(t, []string{"backlog"}, state.Labels("PROJ-1"))
+
+	pads := make([]string, 30)
+	for i := range pads {
+		pads[i] = strings.Repeat("p", 40)
+	}
+	state.SetIssueLabels("PROJ-1", pads)
+	require.Equal(t, pads, state.Labels("PROJ-1"))
+
+	// An unknown issue reads as no labels and sets nothing.
+	state.SetIssueLabels("PROJ-404", pads)
+	require.Empty(t, state.Labels("PROJ-404"))
+
+	// A label change after the replacement still records a changelog
+	// entry against the replaced list, the way the scenarios add the
+	// trigger label on top of the pads.
+	state.AddLabelChange("PROJ-1", "ready-to-code")
+	labels := state.Labels("PROJ-1")
+	require.Len(t, labels, 31)
+	require.Equal(t, "ready-to-code", labels[len(labels)-1])
 }

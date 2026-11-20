@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -410,4 +411,135 @@ func TestDispatchExtraWork_AgentJobDisablingInheritanceIgnoresAgentTemplateDefau
 	problem, err := gitlabDispatchExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
 	require.NoError(t, err)
 	assert.Empty(t, problem)
+}
+
+// gitlabDispatchExtraWorkProblem joins GitLabDispatchExtraWorkProblems into
+// one string so the tests can assert on all of a scan's findings at once.
+func gitlabDispatchExtraWorkProblem(ctx context.Context, client forge.Client, owner, repo, branch string) (string, error) {
+	problems, err := GitLabDispatchExtraWorkProblems(ctx, client, owner, repo, branch)
+	return strings.Join(problems, "\n"), err
+}
+
+// A source=trigger finding does not hide the source=pipeline and
+// source=schedule findings for the same file (#9708): every source is
+// reported, and the gate lists each one as its own reason.
+func TestDispatchExtraWork_AccumulatesFindingsPerSource(t *testing.T) {
+	e := readyTriggerDispatchEnv(t)
+	commitShippedScaffold(t, e)
+	e.appendRootCI(t, "\nbuild:\n  script: [./build.sh]\n  rules:\n    - if: $CI_COMMIT_BRANCH == \""+trigBranch+"\"\n")
+
+	problems, err := GitLabDispatchExtraWorkProblems(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	require.Len(t, problems, 3, problems)
+	assert.Contains(t, problems[0], "a trigger pipeline would run")
+	assert.Contains(t, problems[1], "agent child pipeline (source=pipeline)")
+	assert.Contains(t, problems[2], "scheduled pipeline (source=schedule)")
+	for _, p := range problems {
+		assert.Contains(t, p, `job "build"`)
+	}
+
+	gate := e.dispatchGate()
+	assert.False(t, gate.Ready)
+	for _, p := range problems {
+		assert.Contains(t, gate.Deferred, p)
+	}
+
+	// The fast path evaluates source=trigger only.
+	fastPath, err := gitlabTriggerExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	assert.Equal(t, "webhook fast-path deferred: "+problems[0], fastPath)
+}
+
+// A finding in one committed file does not hide a finding in another (#9708):
+// a trigger-only job in the root file and an extra scheduled job in the poll
+// template are both reported.
+func TestDispatchExtraWork_AccumulatesFindingsAcrossFiles(t *testing.T) {
+	e := readyTriggerDispatchEnv(t)
+	commitShippedScaffold(t, e)
+	e.appendRootCI(t, "\nbuild:\n  script: [./build.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\"'\n")
+	e.appendPollTemplate(t, "\ndeploy:\n  script: [./deploy.sh]\n")
+
+	problems, err := GitLabDispatchExtraWorkProblems(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	require.Len(t, problems, 2, problems)
+	assert.Contains(t, problems[0], "the committed .gitlab-ci.yml")
+	assert.Contains(t, problems[0], `job "build"`)
+	assert.Contains(t, problems[1], "the committed "+fullsendPollTemplatePath)
+	assert.Contains(t, problems[1], "scheduled pipeline (source=schedule)")
+	assert.Contains(t, problems[1], `job "deploy"`)
+
+	gate := e.dispatchGate()
+	assert.False(t, gate.Ready)
+	for _, p := range problems {
+		assert.Contains(t, gate.Deferred, p)
+	}
+
+	// The fast path still reports only the first source=trigger finding.
+	fastPath, err := gitlabTriggerExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	assert.Equal(t, "webhook fast-path deferred: "+problems[0], fastPath)
+}
+
+// A problem that reads the same for every source is reported once.
+func TestDispatchExtraWork_IdenticalFindingsReportedOnce(t *testing.T) {
+	e := readyTriggerDispatchEnv(t)
+	commitShippedScaffold(t, e)
+	e.appendRootCI(t, "\n.tpl:\n  variables: [a]\n")
+
+	problems, err := GitLabDispatchExtraWorkProblems(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	require.Len(t, problems, 1, problems)
+	assert.Contains(t, problems[0], "variable overrides cannot be verified (variables: at line ")
+}
+
+// A bare variables: key (null, as with only comments under it) overrides
+// nothing, as GitLab treats it, so it no longer makes the scan fail closed
+// (#9708).
+func TestDispatchExtraWork_NullVariablesIsEmpty(t *testing.T) {
+	for name, extra := range map[string]string{
+		"comments only": "\nlint:\n  variables:\n    # FOO: bar\n  script: [./lint.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"merge_request_event\"'\n",
+		"explicit null": "\nlint:\n  variables: ~\n  script: [./lint.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"merge_request_event\"'\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			commitShippedScaffold(t, e)
+			e.appendRootCI(t, extra)
+
+			problem, err := gitlabDispatchExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+			require.NoError(t, err)
+			assert.Empty(t, problem)
+			fastPath, err := gitlabTriggerExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+			require.NoError(t, err)
+			assert.Empty(t, fastPath)
+		})
+	}
+}
+
+// The remaining unverifiable variable diagnostics name the line of the
+// offending node so the operator can find it.
+func TestTriggerVariableOverrideProblem_NamesLine(t *testing.T) {
+	cases := map[string]struct {
+		content string
+		want    string
+	}{
+		"non-mapping variables": {
+			content: "job:\n  script: [x]\n  variables: \"FOO\"\n",
+			want:    "variable overrides cannot be verified (variables: at line 3 is not a mapping)",
+		},
+		"interpolated key": {
+			content: "job:\n  script: [x]\n  $[[ inputs.key ]]: {}\n",
+			want:    "variable overrides cannot be verified (unverifiable key at line 3)",
+		},
+		"null variables": {
+			content: "job:\n  script: [x]\n  variables:\n",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			docs, err := decodeGitLabDocuments([]byte(tc.content))
+			require.NoError(t, err)
+			got := triggerVariableOverrideProblem(docs[len(docs)-1].Content[0], map[string]*string{"CI_PIPELINE_SOURCE": nil}, nil)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

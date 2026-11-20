@@ -20,8 +20,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/config"
 )
 
 const (
@@ -33,8 +36,9 @@ const (
 	// HTTPTimeout is the per-request timeout of the default client.
 	HTTPTimeout = 30 * time.Second
 
-	// oidcHostSuffix is where GitHub serves ACTIONS_ID_TOKEN_REQUEST_URL
-	// (github.com only; GHES is not supported by fullsend).
+	// oidcHostSuffix is where github.com serves ACTIONS_ID_TOKEN_REQUEST_URL.
+	// On another GitHub server the token service is that server itself
+	// (see RequireGitHubOIDCHost).
 	oidcHostSuffix = ".actions.githubusercontent.com"
 )
 
@@ -173,7 +177,17 @@ func RequireSecureURL(what, raw string) error {
 // GitHub's Actions token service (loopback is allowed for tests). The URL
 // is runner-injected and deny-listed, so this is defence in depth against a
 // rewritten runner environment, not SSRF hardening.
+//
+// On a GitHub server other than github.com (GitHub Enterprise Server, or a
+// GitHub-compatible API) the Actions token service is that server itself,
+// so the host GITHUB_SERVER_URL names is accepted too. The runner sets
+// GITHUB_SERVER_URL beside the request URL. github.com itself is never
+// accepted as a token service.
 func RequireGitHubOIDCHost(raw string) error {
+	return requireGitHubOIDCHost(raw, os.Getenv)
+}
+
+func requireGitHubOIDCHost(raw string, getenv func(string) string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("parsing OIDC request URL: %w", err)
@@ -182,7 +196,36 @@ func RequireGitHubOIDCHost(raw string) error {
 	if isLoopback(host) || strings.HasSuffix(host, oidcHostSuffix) {
 		return nil
 	}
+	if server, port := configuredGitHubServer(getenv); server != "" && host == server && urlPort(u) == port {
+		return nil
+	}
 	return fmt.Errorf("OIDC request URL host %q is not GitHub's Actions token service (*%s)", u.Hostname(), oidcHostSuffix)
+}
+
+// configuredGitHubServer returns the host and port of the GitHub server
+// GITHUB_SERVER_URL names, or ("", "") when it is unset, github.com, or not
+// a URL config.GitHubServerBaseURL accepts (https, no userinfo, path or
+// query), the same rule the rest of the run uses for the server.
+func configuredGitHubServer(getenv func(string) string) (host, port string) {
+	base := config.GitHubServerBaseURL(getenv("GITHUB_SERVER_URL"))
+	if base == "" {
+		return "", ""
+	}
+	// GitHubServerBaseURL returns "https://" + a host that url.Parse
+	// already accepted, so this parse cannot fail.
+	u, _ := url.Parse(base)
+	return strings.ToLower(u.Hostname()), urlPort(u)
+}
+
+// urlPort returns u's port, or the scheme's default when it names none.
+func urlPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if strings.EqualFold(u.Scheme, "http") {
+		return "80"
+	}
+	return "443"
 }
 
 func isLoopback(host string) bool {

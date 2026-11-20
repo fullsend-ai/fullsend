@@ -18,6 +18,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -662,4 +663,56 @@ skills:
 	out, err := ListTriggeredHarnesses(context.Background(), ".fullsend", dirCfg, nil)
 	require.NoError(t, err)
 	require.Len(t, out, 1)
+}
+
+// TestNewComposeOpts_ConfiguredGitHubHost pins that harness dispatch threads
+// the configured GitHub host into ComposeOpts, so a base skill directory on a
+// GitHub Enterprise Server host parses as raw content when LoadWithBase
+// fetches it (#9037).
+func TestNewComposeOpts_ConfiguredGitHubHost(t *testing.T) {
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	configDir := filepath.Join(t.TempDir(), ".fullsend")
+
+	t.Setenv(forge.GitHubServerURLEnv, "https://ghe.example.com")
+	opts := newComposeOpts(configDir, cfg, []string{"https://ghe.example.com/org/repo/raw/"}, fetch.DefaultPolicy)
+	assert.Equal(t, "https://ghe.example.com", opts.GitHubURL)
+	assert.Equal(t, filepath.Dir(configDir), opts.WorkspaceRoot)
+	assert.Equal(t, []string{"https://ghe.example.com/org/repo/raw/"}, opts.OrgAllowlist)
+	_, err := forge.ParseRawContentURLOnHost("https://ghe.example.com/org/repo/raw/abc123/skills/triage", opts.GitHubURL)
+	require.NoError(t, err)
+
+	t.Setenv(forge.GitHubServerURLEnv, "")
+	assert.Empty(t, newComposeOpts(configDir, cfg, nil, fetch.DefaultPolicy).GitHubURL)
+}
+
+// A block's trigger replaces a custom agent's; on a built-in agent name it is not evaluated.
+func TestListTriggeredHarnesses_HarnessBlockTrigger(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	const body = `agent: agents/triage.md
+role: triage
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "issue-ping.yaml"), []byte(body), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "triage.yaml"),
+		[]byte(body+`trigger: 'event.transition.kind == "closed"'`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+agents:
+  - source: harness/issue-ping.yaml
+    harness:
+      trigger: 'event.transition.kind == "opened"'
+  - source: harness/triage.yaml
+    harness:
+      trigger: 'event.transition.kind == "label_changed"'
+`), 0o644))
+
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, `event.transition.kind == "opened"`, out[0].Harness.Trigger)
+	assert.Equal(t, `event.transition.kind == "closed"`, out[1].Harness.Trigger, "triage keeps its harness file's trigger")
 }
