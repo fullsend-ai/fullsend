@@ -554,10 +554,12 @@ func resolveManifestPath(raw string, segs []pathSeg, unset bool) (*resolvedPath,
 
 // githubOnlyFields are the PlatformConfig and RepoEntry fields that only
 // apply to GitHub; gitlabOnlyFields are the PlatformConfig fields that only
-// apply to GitLab.
+// apply to GitLab; gitlabOnlyRepoEntryFields are the RepoEntry fields that
+// only apply to GitLab.
 var (
-	githubOnlyFields = []string{"mint_url", "mint_mode", "app_set"}
-	gitlabOnlyFields = []string{"agent_runner_tags", "control_runner_tags", "runner_tags"}
+	githubOnlyFields          = []string{"mint_url", "mint_mode", "app_set"}
+	gitlabOnlyFields          = []string{"agent_runner_tags", "control_runner_tags", "runner_tags"}
+	gitlabOnlyRepoEntryFields = []string{"allow_insecure_pipeline_variables"}
 )
 
 // forgeFieldError reports a field that the forge section does not support,
@@ -572,7 +574,7 @@ func forgeFieldError(forge string, t reflect.Type, name, prefix string) error {
 		return fmt.Errorf("%s is not supported; %s is a GitLab-only field", full, name)
 	case t == repoEntryType && forge == ForgeGitLab && slices.Contains(githubOnlyFields, name):
 		return fmt.Errorf("%s is only supported for GitHub repos", full)
-	case t == repoEntryType && forge == ForgeGitHub && name == "allow_insecure_pipeline_variables":
+	case t == repoEntryType && forge == ForgeGitHub && slices.Contains(gitlabOnlyRepoEntryFields, name):
 		return fmt.Errorf("%s is only supported for GitLab repos", full)
 	}
 	return nil
