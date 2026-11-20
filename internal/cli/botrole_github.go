@@ -17,6 +17,15 @@ import (
 // githubGraphQLTimeout bounds one GitHub lookup the bot-role helper makes.
 const githubGraphQLTimeout = 30 * time.Second
 
+// botRoleEntityTimeout bounds the run-start entity lookup, which sits on
+// the critical path before a pre-script starts: a slow or failing GitHub
+// API delays the run by at most this much before it continues without the
+// helper (every lookup then fails closed). It is tighter than
+// githubGraphQLTimeout, which the helper's own per-request lookups keep:
+// those run while a script waits for its answer, not while a run waits to
+// start. A var so tests can shrink it.
+var botRoleEntityTimeout = 5 * time.Second
+
 // githubCommentActors answers the bot-role helper's GitHub questions (#9602)
 // — the canonical entity ID of the issue or pull request a run handles, and
 // a comment's current-revision actor — through forge.GitHubExtensions, the

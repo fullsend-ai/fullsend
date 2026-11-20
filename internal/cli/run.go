@@ -2185,9 +2185,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// cannot be completed is reported to the script as a failure, kept
 	// apart from a no-match, so callers fail closed. The deferred shutdown
 	// is registered before the post-script's defer, so under LIFO the
-	// post-script still runs with the helper up.
+	// post-script still runs with the helper up. The helper starts only
+	// when a lookup could ever be answered (botRoleLookupPossible): a run
+	// with no mint URL or no Actions OIDC environment skips the run-start
+	// entity call and exports no helper env, so its scripts fail closed at
+	// the first ask instead of every such run paying a blocking GraphQL
+	// call nothing can answer.
 	var botRoleEnv botRoleHelperEnv
-	if h.PreScript != "" || h.PostScript != "" {
+	if (h.PreScript != "" || h.PostScript != "") && botRoleLookupPossible(mintURL) {
 		entityID, comments := botRoleCommentLookup(ctx, forgePlatform, sOpts.trackerSource, printer)
 		helperEnv, botRoleShutdown, helperErr := startBotRoleHelperService(
 			&botidentity.MintResolver{MintURL: mintURL, OIDCToken: actionsMintOIDCToken},
@@ -6434,12 +6439,27 @@ func isPinnedGitLabRoleRoutingKey(key string) bool {
 	return strings.HasPrefix(key, gitlabRoleRoutingKeyPrefix)
 }
 
+// botRoleLookupPossible reports whether a bot-role lookup could ever be
+// answered in this run: the resolver needs a mint URL and the Actions OIDC
+// request environment its credential comes from. Without either, the
+// helper would refuse every lookup, so the run-start entity call is not
+// made and no helper env reaches a script — it fails closed at the first
+// ask instead of every pre-/post-script run paying a blocking GraphQL call
+// on the critical path before its script (#9602).
+func botRoleLookupPossible(mintURL string) bool {
+	return mintURL != "" && hasActionsOIDCEnv(os.Getenv)
+}
+
 // botRoleCommentLookup returns the canonical entity ID of the GitHub issue
 // or pull request the run handles and the comment lookup the bot-role
 // helper answers through (#9602). Only a GitHub run handling a GitHub issue
 // or pull request (REPO_FULL_NAME with ISSUE_NUMBER or PR_NUMBER) has one:
 // GitLab, Jira-tracked runs and a run whose entity cannot be resolved get
 // none, and the helper then refuses every lookup so a caller fails closed.
+// The entity call runs under botRoleEntityTimeout, tighter than the
+// helper's own per-request lookups: it sits on the critical path before a
+// pre-script, so a slow GitHub API delays the run by at most that much and
+// the run continues without the helper.
 func botRoleCommentLookup(ctx context.Context, forgePlatform, trackerSource string, printer *ui.Printer) (string, commentActorLookup) {
 	if forgePlatform != repos.ForgeGitHub || trackerSource == "jira" {
 		return "", nil
@@ -6453,7 +6473,7 @@ func botRoleCommentLookup(ctx context.Context, forgePlatform, trackerSource stri
 		return "", nil
 	}
 	g := newGitHubCommentActors()
-	lookupCtx, cancel := context.WithTimeout(ctx, githubGraphQLTimeout)
+	lookupCtx, cancel := context.WithTimeout(ctx, botRoleEntityTimeout)
 	defer cancel()
 	entityID, err := g.EntityID(lookupCtx, repo, number)
 	if err != nil {

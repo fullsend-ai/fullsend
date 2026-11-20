@@ -82,6 +82,14 @@ func TestCommentActor(t *testing.T) {
 			`{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"fs-triage"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"User","login":"octocat"},"editedAt":"2026-11-18T00:00:00Z"}]},"issue":{"id":"I_1"},"pullRequest":null}}}`,
 			forge.CommentActor{EntityNodeID: "I_1", ActorType: "User", ActorLogin: "octocat"},
 		},
+		"edited twice, edit history newest-first": {
+			`{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"fs-triage"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"User","login":"octocat"},"editedAt":"2026-11-18T00:00:00Z"},{"editor":{"__typename":"User","login":"alice"},"editedAt":"2026-11-17T00:00:00Z"}]},"issue":{"id":"I_1"},"pullRequest":null}}}`,
+			forge.CommentActor{EntityNodeID: "I_1", ActorType: "User", ActorLogin: "octocat"},
+		},
+		"edited twice, edit history oldest-first": {
+			`{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"fs-triage"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"User","login":"alice"},"editedAt":"2026-11-17T00:00:00Z"},{"editor":{"__typename":"User","login":"octocat"},"editedAt":"2026-11-18T00:00:00Z"}]},"issue":{"id":"I_1"},"pullRequest":null}}}`,
+			forge.CommentActor{EntityNodeID: "I_1", ActorType: "User", ActorLogin: "octocat"},
+		},
 		"conversation comment on a pull request": {
 			`{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"fs-review"},"lastEditedAt":null,"issue":{"id":"I_9"},"pullRequest":{"id":"PR_1"}}}}`,
 			forge.CommentActor{OnPullRequest: true, EntityNodeID: "PR_1", ActorType: "Bot", ActorLogin: "fs-review"},
@@ -124,6 +132,7 @@ func TestCommentActor(t *testing.T) {
 		"edited, editor gone":                  {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":null,"editedAt":"2026-11-18T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`, false},
 		"edited, no history":                   {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[]},"issue":{"id":"I_1"}}}}`, false},
 		"newest edit is not the last revision": {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"Bot","login":"x"},"editedAt":"2026-11-17T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`, false},
+		"two edits in the same second":         {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"User","login":"octocat"},"editedAt":"2026-11-18T00:00:00Z"},{"editor":{"__typename":"User","login":"alice"},"editedAt":"2026-11-18T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`, false},
 		"graphql error":                        {http.StatusOK, `{"errors":[{"message":"Could not resolve to a node"}]}`, false},
 		"graphql not-found error":              {http.StatusOK, `{"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a node"}]}`, true},
 		"empty data":                           {http.StatusOK, `{"data":null}`, false},
