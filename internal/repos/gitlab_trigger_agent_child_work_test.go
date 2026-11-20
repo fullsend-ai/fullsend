@@ -88,8 +88,23 @@ func TestDispatchExtraWork_UnrelatedJobInAgentChildPipelineDefersActivation(t *t
 			extra: "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"schedule\"'\n",
 			want:  "scheduled pipeline (source=schedule)",
 		},
+		// The poll job dispatches the agent through the pipelines API
+		// whenever the child-pipeline route is not selected, and the wrapper
+		// admits the agent include for source=api too (#9727).
 		"job excluded from trigger, pipeline and schedule sources": {
 			extra: "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\" || $CI_PIPELINE_SOURCE == \"pipeline\" || $CI_PIPELINE_SOURCE == \"schedule\"'\n      when: never\n    - when: on_success\n",
+			want:  "API-dispatched agent pipeline (source=api) would run alongside the agent job; add rules to it that reject $CI_PIPELINE_SOURCE == \"api\" pipelines",
+		},
+		"job restricted to api pipelines": {
+			extra: "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"api\"'\n",
+			want:  "API-dispatched agent pipeline (source=api)",
+		},
+		"job with rules that cannot be evaluated for source=api": {
+			extra: "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\" || $CI_PIPELINE_SOURCE == \"pipeline\" || $CI_PIPELINE_SOURCE == \"schedule\"'\n      when: never\n    - changes: [src/**]\n",
+			want:  "exclusion from API-dispatched agent pipelines (source=api) cannot be established",
+		},
+		"job excluded from trigger, pipeline, api and schedule sources": {
+			extra: "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\" || $CI_PIPELINE_SOURCE == \"pipeline\" || $CI_PIPELINE_SOURCE == \"api\" || $CI_PIPELINE_SOURCE == \"schedule\"'\n      when: never\n    - when: on_success\n",
 		},
 		"job that only runs for merge requests": {
 			extra: "\nlint:\n  script: [./lint.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"merge_request_event\"'\n",
@@ -124,11 +139,13 @@ func TestDispatchExtraWork_UnrelatedJobInAgentChildPipelineDefersActivation(t *t
 
 // The webhook fast path on its own never starts an agent child pipeline, so a
 // job that only a source=pipeline pipeline would run does not defer it; the
-// source=pipeline check belongs to the activation gate.
+// source=pipeline check belongs to the activation gate. The same holds for a
+// job only a source=api agent pipeline would run (#9727).
 func TestDispatchExtraWork_FastPathCheckIsTriggerOnly(t *testing.T) {
 	e := readyTriggerDispatchEnv(t)
 	commitShippedScaffold(t, e)
 	e.appendRootCI(t, "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\"'\n      when: never\n    - when: on_success\n")
+	e.appendRootCI(t, "\nnotify:\n  script: [./notify.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"api\"'\n")
 
 	problem, err := gitlabTriggerExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
 	require.NoError(t, err)
@@ -176,6 +193,12 @@ func TestDispatchExtraWork_UnrelatedWorkInAgentTemplateDefersActivation(t *testi
 		"extra job in the agent template": {
 			mutate: func(t *testing.T, e *trigEnv) { e.appendAgentTemplate(t, "\ndeploy:\n  script: [./deploy.sh]\n") },
 			want:   "agent child pipeline (source=pipeline)",
+		},
+		"extra job in the agent template restricted to api pipelines": {
+			mutate: func(t *testing.T, e *trigEnv) {
+				e.appendAgentTemplate(t, "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"api\"'\n")
+			},
+			want: "API-dispatched agent pipeline (source=api)",
 		},
 		"extra include in the agent template": {
 			mutate: func(t *testing.T, e *trigEnv) { e.appendAgentTemplate(t, "\ninclude:\n  - local: evil.yml\n") },
@@ -430,10 +453,11 @@ func TestDispatchExtraWork_AccumulatesFindingsPerSource(t *testing.T) {
 
 	problems, err := GitLabDispatchExtraWorkProblems(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
 	require.NoError(t, err)
-	require.Len(t, problems, 3, problems)
+	require.Len(t, problems, 4, problems)
 	assert.Contains(t, problems[0], "a trigger pipeline would run")
 	assert.Contains(t, problems[1], "agent child pipeline (source=pipeline)")
-	assert.Contains(t, problems[2], "scheduled pipeline (source=schedule)")
+	assert.Contains(t, problems[2], "API-dispatched agent pipeline (source=api)")
+	assert.Contains(t, problems[3], "scheduled pipeline (source=schedule)")
 	for _, p := range problems {
 		assert.Contains(t, p, `job "build"`)
 	}

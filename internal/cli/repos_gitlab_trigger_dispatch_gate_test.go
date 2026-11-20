@@ -145,7 +145,9 @@ func TestReportGitLabTriggerDispatchGate_ReportsUnverifiedInheritedScopes(t *tes
 // A deferred trigger account skips the dispatch gate, but install still
 // reports the gate's unrelated-work scan as a warning (#9708): a branch-only
 // job with no pipeline-source guard runs in the managed scheduled pipelines,
-// and every source's finding is listed. The report changes nothing.
+// and every source's finding is listed, including source=api, the route the
+// poll job dispatches the agent through on this path (#9727). The report
+// changes nothing.
 func TestReportGitLabDeferredDispatchExtraWork_WarnsOnUnguardedJob(t *testing.T) {
 	fc := forge.NewFakeClient()
 	root := []byte("build:\n  script: [./build.sh]\n  rules:\n    - if: $CI_COMMIT_BRANCH == \"main\"\n")
@@ -156,12 +158,14 @@ func TestReportGitLabDeferredDispatchExtraWork_WarnsOnUnguardedJob(t *testing.T)
 
 	out := buf.String()
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	require.Len(t, lines, 4, out)
+	require.Len(t, lines, 5, out)
 	assert.Contains(t, lines[0], "[acme/widgets] Unrelated CI work would run in Fullsend pipelines on the protected default branch")
 	assert.Contains(t, lines[0], "Polling stays the dispatch path")
 	assert.Contains(t, lines[1], `[acme/widgets]   - the committed .gitlab-ci.yml has job "build" that a trigger pipeline would run`)
 	assert.Contains(t, lines[2], "agent child pipeline (source=pipeline)")
-	assert.Contains(t, lines[3], "scheduled pipeline (source=schedule)")
+	assert.Contains(t, lines[3], "API-dispatched agent pipeline (source=api)")
+	assert.Contains(t, lines[3], `reject $CI_PIPELINE_SOURCE == "api" pipelines`)
+	assert.Contains(t, lines[4], "scheduled pipeline (source=schedule)")
 	assert.Equal(t, root, fc.FileContents["acme/widgets/.gitlab-ci.yml"])
 }
 
