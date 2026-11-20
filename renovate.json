@@ -207,7 +207,7 @@
       }
     },
     {
-      "description": "After an ONNX Runtime bump, refresh ORT_SHA256 in the runner Containerfile from the sha256 of the Microsoft.ML.OnnxRuntime NuGet package (#9121, #9759)",
+      "description": "After an ONNX Runtime bump, refresh ORT_SHA256 in the runner Containerfile. The NuGet package is checked against the SHA512 NuGet records for it before its sha256 is written (#9121, #9759)",
       "matchPackageNames": ["Microsoft.ML.OnnxRuntime"],
       "postUpgradeTasks": {
         "commands": ["bash scripts/renovate/update-ort-checksums.sh"],

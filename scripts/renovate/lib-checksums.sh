@@ -26,7 +26,7 @@
 #       exits non-zero before a file is touched.
 #
 # Helpers for published_sha: checksum_file_sha, github_asset_digest,
-# release_notes_sha.
+# release_notes_sha, nuget_package_sha256.
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   echo "error: lib-checksums.sh is a library; source it from an update-*-checksums.sh script" >&2
@@ -166,6 +166,36 @@ release_notes_sha() {
     return 1
   fi
   printf '%s\n' "${matches}"
+}
+
+# nuget_package_sha256 <id> <version> <artifact-url> — NuGet records a SHA512
+# (base64) for every package in its catalog, not a sha256. Check the
+# downloaded package against that SHA512 and, only when it matches, print the
+# package's sha256 for update_pin. <id> is the lowercase package id.
+nuget_package_sha256() {
+  local id="$1" version="$2" url="$3" reg catalog_url catalog algo want got artifact
+  reg=$(fetch_cached "https://api.nuget.org/v3/registration5-semver1/${id}/${version}.json") || return 1
+  if ! catalog_url=$(jq -er '.catalogEntry | strings' "${reg}"); then
+    echo "error: no catalogEntry in the NuGet registration for ${id} ${version}" >&2
+    return 1
+  fi
+  catalog=$(fetch_cached "${catalog_url}") || return 1
+  if ! algo=$(jq -er '.packageHashAlgorithm | strings' "${catalog}") \
+    || ! want=$(jq -er '.packageHash | strings' "${catalog}"); then
+    echo "error: no packageHash in the NuGet catalog entry for ${id} ${version}" >&2
+    return 1
+  fi
+  if [[ "${algo}" != "SHA512" ]]; then
+    echo "error: NuGet catalog entry for ${id} ${version} uses ${algo}, expected SHA512" >&2
+    return 1
+  fi
+  artifact=$(fetch_cached "${url}") || return 1
+  got=$(openssl dgst -sha512 -binary "${artifact}" | base64 | tr -d '\n')
+  if [[ "${got}" != "${want}" ]]; then
+    echo "error: checksum mismatch for ${url}: NuGet records SHA512 ${want}, downloaded ${got}" >&2
+    return 1
+  fi
+  sha256sum "${artifact}" | cut -d' ' -f1
 }
 
 # read_pin_version <file> <PIN> — print ARG <PIN>_VERSION from <file>.
