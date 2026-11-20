@@ -11,12 +11,19 @@
 #   EMULATOR_PY    python with its requirements.txt installed       [required]
 #   STATE_DIR      logs and state (default $RUNNER_TEMP/bt-github-emulator)
 #   UPSTREAM_TOKEN optional token the emulator uses to fetch github.com actions
-#   BT_SUITE       behaviour (default; runs the features given) or playback
-#                  (the @playback suite, -tags playback)
+#   BT_SUITE       behaviour (default; runs the features given), playback
+#                  (the @playback suite, -tags playback) or agents (the
+#                  agents repository's make behaviour-test, built against
+#                  this checkout)
+#   AGENTS_DIR     agents checkout, required for BT_SUITE=agents: its HEAD
+#                  is mirrored as fullsend-ai/agents main and its behaviour
+#                  suite is run. Its go.mod and go.sum are not changed.
 #   AGENTS_SEED    1 to mirror github.com/fullsend-ai/agents into the
 #                  emulator as fullsend-ai/agents; the shipped agents (which
-#                  playback runs) resolve from it. Default 1 for playback.
-#   AGENTS_REF     agents ref to mirror as main (default main)
+#                  playback runs) resolve from it. Default 1 for playback;
+#                  always 1 for agents.
+#   AGENTS_REF     agents ref to mirror as main (default main; not used with
+#                  AGENTS_DIR)
 #   AGENTS_PRS     agents pull request numbers merged on top, space-separated
 #                  (e.g. "1871 1873", the host-aware ops scripts)
 #   BEHAVIOUR_CAPABILITIES  passed to the suite (default none). With
@@ -34,8 +41,20 @@ SUITE="${BT_SUITE:-behaviour}"
 case "$SUITE" in
   behaviour) AGENTS_SEED="${AGENTS_SEED:-0}" ;;
   playback) AGENTS_SEED="${AGENTS_SEED:-1}" ;;
-  *) echo "BT_SUITE must be behaviour or playback, got $SUITE" >&2; exit 2 ;;
+  agents)
+    if [ -z "${AGENTS_DIR:-}" ] || [ ! -d "$AGENTS_DIR/behaviour" ]; then
+      echo "BT_SUITE=agents needs AGENTS_DIR, an agents checkout with a behaviour/ directory, got '${AGENTS_DIR:-}'" >&2
+      exit 2
+    fi
+    AGENTS_DIR="$(cd "$AGENTS_DIR" && pwd)"
+    AGENTS_SEED=1
+    ;;
+  *) echo "BT_SUITE must be behaviour, playback or agents, got $SUITE" >&2; exit 2 ;;
 esac
+# The Go build tag of the suite's own test build: the agents suite builds
+# this checkout's behaviour package.
+BUILD_TAG=behaviour
+[ "$SUITE" = playback ] && BUILD_TAG=playback
 EMU_HOST=ghemu.localhost
 EMU="https://$EMU_HOST"
 ORG=halfsend
@@ -99,7 +118,7 @@ build_mint() {
 }
 (
   build_mint
-  cd "$ROOT" && go test -c -tags "$SUITE" -o "$STATE/suite-warm.test" ./e2e/behaviour/ && rm -f "$STATE/suite-warm.test"
+  cd "$ROOT" && go test -c -tags "$BUILD_TAG" -o "$STATE/suite-warm.test" ./e2e/behaviour/ && rm -f "$STATE/suite-warm.test"
 ) >"$STATE/go-warm.log" 2>&1 &
 go_warm_pid=$!
 
@@ -138,16 +157,24 @@ fi
 tail -1 "$STATE/sandbox-host.log"
 phase sandbox-host
 
-# 0b. The shipped agents, fetched from github.com before the stack starts so
-# the sandbox image pre-pull overlaps the stack start instead of following
-# it. They are pushed into the emulator as fullsend-ai/agents in step 4b.
+# 0b. The shipped agents, fetched from github.com (or AGENTS_DIR's HEAD for
+# BT_SUITE=agents) before the stack starts so the sandbox image pre-pull
+# overlaps the stack start instead of following it. They are pushed into the
+# emulator as fullsend-ai/agents in step 4b.
 if [ "$AGENTS_SEED" = 1 ]; then
   agents="$STATE/agents.git"
   rm -rf "$agents"
-  git clone -q --no-checkout "https://github.com/fullsend-ai/agents.git" "$agents"
-  git -C "$agents" checkout -q --detach "${AGENTS_REF:-main}"
+  if [ "$SUITE" = agents ]; then
+    git clone -q --no-checkout "$AGENTS_DIR" "$agents"
+    git -C "$agents" checkout -q --detach "$(git -C "$AGENTS_DIR" rev-parse HEAD)"
+    agents_source="AGENTS_DIR $AGENTS_DIR"
+  else
+    git clone -q --no-checkout "https://github.com/fullsend-ai/agents.git" "$agents"
+    git -C "$agents" checkout -q --detach "${AGENTS_REF:-main}"
+    agents_source="AGENTS_REF ${AGENTS_REF:-main}"
+  fi
   for pr in ${AGENTS_PRS:-}; do
-    git -C "$agents" fetch -q origin "pull/$pr/head"
+    git -C "$agents" fetch -q "https://github.com/fullsend-ai/agents.git" "pull/$pr/head"
     git -C "$agents" -c user.name=bt-github-emulator -c user.email=bt-github-emulator@localhost \
       merge -q --no-edit -m "bt-github-emulator: merge agents#$pr" FETCH_HEAD
   done
@@ -292,7 +319,7 @@ if [ "$AGENTS_SEED" = 1 ]; then
   ensure_source_repo agents
   git -C "$agents" -c credential.helper= -c http.extraheader= push -q --force \
     "https://admin:$ADMIN@$EMU_HOST/fullsend-ai/agents.git" "HEAD:refs/heads/main"
-  echo "fullsend-ai/agents main on the emulator: $(git -C "$agents" rev-parse --short HEAD) (${AGENTS_REF:-main}${AGENTS_PRS:+ + PRs $AGENTS_PRS})"
+  echo "fullsend-ai/agents main on the emulator: $(git -C "$agents" rev-parse --short HEAD) ($agents_source${AGENTS_PRS:+ + PRs $AGENTS_PRS})"
   phase agents-push
 fi
 
@@ -375,6 +402,20 @@ status=0
     BEHAVIOUR_NEGATIVE_SETTLE="${BEHAVIOUR_NEGATIVE_SETTLE:-20s}"
   if [ "$SUITE" = playback ]; then
     go test -tags playback -count=1 -timeout "${SUITE_TIMEOUT:-40m}" -v ./e2e/behaviour/ -run TestPlaybackSuite
+  elif [ "$SUITE" = agents ]; then
+    # The agents suite builds against this checkout through a modfile in
+    # $STATE, so the agents checkout's go.mod and go.sum stay as they are.
+    # A dependency's own replace does not apply to the main module, so
+    # internal/mintcore (its own module) needs its own replace too.
+    cp "$AGENTS_DIR/go.mod" "$STATE/agents.mod"
+    : >"$STATE/agents.sum"
+    cd "$AGENTS_DIR"
+    go mod edit -modfile="$STATE/agents.mod" \
+      -replace "github.com/fullsend-ai/fullsend=$ROOT" \
+      -replace "github.com/fullsend-ai/fullsend/internal/mintcore=$ROOT/internal/mintcore"
+    go mod tidy -modfile="$STATE/agents.mod"
+    FULLSEND_CHECKOUT="$ROOT" BEHAVIOUR_GOFLAGS="-modfile=$STATE/agents.mod" \
+      make behaviour-test BEHAVIOUR_CAPABILITIES="$CAPABILITIES"
   else
     BEHAVIOUR_FEATURES="${FEATURES[*]}" \
       go test -tags behaviour -count=1 -timeout "${SUITE_TIMEOUT:-40m}" -v ./e2e/behaviour/ -run TestBehaviourSuite
