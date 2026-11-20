@@ -133,9 +133,11 @@ fullsend run triage --fullsend-dir . --target-repo ../repo \
   --runtime pi --model google-vertex/gemini-2.5-flash --effort medium
 ```
 
-On pi, when the agent's skills ship sub-agent personas, Bootstrap prints the resolved
+On pi, and on Claude Code when the agent's `subagents` block has a live entry, when the agent's
+skills ship sub-agent personas, Bootstrap prints the resolved
 per-persona table just after this block — one line per persona with the model it resolved to
-and which entry decided, plus the blanket `default` used by children that name no persona:
+and which entry decided, plus the `default` line (on pi, also used by children that name no
+persona; on Claude Code it covers only personas that name no model):
 
 ```console
 subagents: challenger → xai-vertex/xai/grok-4.6 (from subagents.challenger)
@@ -161,7 +163,8 @@ cases fail earlier:
   ([pi § Vertex sub-agents under an OpenAI parent](../runtimes/pi.md#vertex-sub-agents-under-an-openai-parent)).
 
 See
-[pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration).
+[pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration) and
+[Claude Code § Per-persona models](../runtimes/claude.md#per-persona-models).
 
 ## Live progress
 
