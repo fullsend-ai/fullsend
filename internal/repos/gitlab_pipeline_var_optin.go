@@ -15,11 +15,13 @@ import (
 // The manifest is where the opt-in is saved, so every later install,
 // converge, and status run accepts it instead of refusing again.
 //
-// The opt-in covers delivering runnable jobs, typed dispatch activation,
-// and the managed poll schedules. It does not cover the webhook fast path
-// or the trigger account: those publish one more credential whose safety
-// rests on callers being unable to inject variables, so they stay deferred
-// and agents start from the poll schedules instead.
+// The opt-in covers every check that requires no_one_allowed: delivering
+// runnable jobs, typed dispatch activation, the managed poll schedules, the
+// webhook fast path, and the trigger account. The trigger credential adds no
+// exposure the opt-in has not already accepted: the Poller token it leaves
+// readable can already start pipelines that carry variables. An instance
+// that does not report the setting is still refused, because the opt-in
+// accepts a known weaker setting, not an unverifiable one.
 
 type gitlabPipelineVarOptInKey struct{}
 
@@ -62,19 +64,16 @@ func gitlabPipelineVarOptedIn(ctx context.Context, owner, repo string) bool {
 
 // gitlabPipelineVarRoleAccepted reports whether role satisfies the
 // restriction for owner/repo: no_one_allowed always does, and any other
-// value does when the repository opted in.
+// reported value does when the repository opted in. An empty role means
+// the instance did not report the setting, which the opt-in never accepts.
 func gitlabPipelineVarRoleAccepted(ctx context.Context, owner, repo, role string) bool {
-	return role == forge.PipelineVarOverrideNoOneAllowed || gitlabPipelineVarOptedIn(ctx, owner, repo)
+	return role == forge.PipelineVarOverrideNoOneAllowed || (role != "" && gitlabPipelineVarOptedIn(ctx, owner, repo))
 }
 
 // GitLabPipelineVarOptInWarning is the plain-language warning printed every
-// time fullsend relaxes the check for a repository (ADR 0175).
+// time fullsend relaxes the check for a repository.
 func GitLabPipelineVarOptInWarning(repoFullName string) string {
-	return fmt.Sprintf("%s sets allow_insecure_pipeline_variables (ADR 0175), so fullsend accepts a \"Minimum role to use pipeline variables\" weaker than \"No one allowed\". "+
+	return fmt.Sprintf("%s sets allow_insecure_pipeline_variables, so fullsend accepts a \"Minimum role to use pipeline variables\" weaker than \"No one allowed\". "+
 		"Anyone at that role who can run a pipeline on the default branch can point CI_API_V4_URL at a host they control, or set a BASH_ENV file variable that runs their code inside fullsend jobs, "+
-		"and read the job token, the Poller token, and the role tokens. The webhook fast path stays off; agents start from the poll schedules.", repoFullName)
+		"and read the job token, the Poller token, the trigger token, and the role tokens.", repoFullName)
 }
-
-// gitlabPipelineVarOptInFastPathNote explains why the webhook fast path and
-// trigger account stay deferred for an opted-in repository.
-const gitlabPipelineVarOptInFastPathNote = "allow_insecure_pipeline_variables does not enable the webhook fast path or the trigger account; they stay deferred until the setting is no_one_allowed"

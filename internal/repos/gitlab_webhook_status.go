@@ -60,11 +60,9 @@ type GitLabWebhookStatus struct {
 // A safety violation (for example ci_pipeline_variables_minimum_override_role
 // not no_one_allowed) or an unmet readiness gate (for example a wrapper or
 // root .gitlab-ci.yml without the typed pipeline-input contract) is drift:
-// it needs an administrator or a repos install to fix. The informational
-// state is deferred: nothing is provisioned and either the committed
-// pipeline wrapper does not include the dispatcher yet, or the manifest
-// sets allow_insecure_pipeline_variables (ADR 0175), which keeps the fast
-// path off by design.
+// it needs an administrator or a repos install to fix. The one informational
+// state is deferred: nothing is provisioned and the committed pipeline
+// wrapper does not include the dispatcher yet.
 func DiagnoseGitLabWebhook(ctx context.Context, client forge.Client, owner, repo string) GitLabWebhookStatus {
 	baseURL := GitLabBaseURL(client)
 	if baseURL == "" {
@@ -113,16 +111,6 @@ func DiagnoseGitLabWebhook(ctx context.Context, client forge.Client, owner, repo
 	problem, err := gitlabTriggerSafetyProblem(ctx, client, owner, repo, st.target.defaultBranch)
 	if err != nil {
 		return unreadable("the trigger-token safety invariants", err)
-	}
-	if problem != "" && !live && strings.HasSuffix(problem, gitlabPipelineVarOptInFastPathNote) {
-		// ADR 0175: the manifest opted in to the weaker pipeline-variable
-		// setting, which keeps the fast path off by design. With nothing
-		// provisioned that is the expected state, not drift; agents start
-		// from the poll schedules. Live credentials still drift below,
-		// because repos install revokes them.
-		status.State = GitLabWebhookStateDeferred
-		status.Reasons = []string{problem}
-		return status
 	}
 	if problem != "" {
 		status.State = GitLabWebhookStateDrifted

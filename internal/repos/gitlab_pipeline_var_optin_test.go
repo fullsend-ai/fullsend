@@ -71,11 +71,13 @@ func TestGitLabPipelineVarOptIns_Context(t *testing.T) {
 	assert.True(t, gitlabPipelineVarRoleAccepted(context.Background(), "acme", "strict", forge.PipelineVarOverrideNoOneAllowed))
 	assert.True(t, gitlabPipelineVarRoleAccepted(ctx, "acme", "repo", forge.PipelineVarOverrideDeveloper))
 	assert.False(t, gitlabPipelineVarRoleAccepted(ctx, "acme", "strict", forge.PipelineVarOverrideDeveloper))
+	assert.False(t, gitlabPipelineVarRoleAccepted(ctx, "acme", "repo", ""), "the opt-in never accepts an unreported setting")
 
 	w := GitLabPipelineVarOptInWarning("acme/repo")
-	for _, want := range []string{"acme/repo", "ADR 0175", "CI_API_V4_URL", "BASH_ENV", "Poller token", "webhook fast path stays off"} {
+	for _, want := range []string{"acme/repo", "CI_API_V4_URL", "BASH_ENV", "Poller token", "trigger token"} {
 		assert.Contains(t, w, want)
 	}
+	assert.NotContains(t, w, "ADR", "the user-facing warning does not cite ADRs")
 }
 
 func TestRequireGitLabRestrictionBeforeDelivery_OptIn(t *testing.T) {
@@ -89,6 +91,13 @@ func TestRequireGitLabRestrictionBeforeDelivery_OptIn(t *testing.T) {
 	err := requireGitLabRestrictionBeforeDelivery(ctx, fc, "acme", "strict")
 	require.Error(t, err, "another repository's opt-in does not relax this one")
 	assert.Contains(t, err.Error(), "not no_one_allowed")
+
+	// An instance that omits the setting reports an empty role, which the
+	// opt-in must not accept: the restriction cannot be verified.
+	fc.PipelineVarOverrideRoles["acme/repo"] = ""
+	err = requireGitLabRestrictionBeforeDelivery(ctx, fc, "acme", "repo")
+	require.Error(t, err, "an unreported setting is refused even with the opt-in")
+	assert.Contains(t, err.Error(), "(unset)")
 }
 
 func TestEnsureGitLabPipelineVariableOverrideRole_OptInAcceptsWithoutChanging(t *testing.T) {
@@ -106,6 +115,29 @@ func TestEnsureGitLabPipelineVariableOverrideRole_OptInAcceptsWithoutChanging(t 
 			assert.Equal(t, forge.PipelineVarOverrideDeveloper, fc.PipelineVarOverrideRoles["acme/repo"], "the opt-in never flips the project setting")
 		})
 	}
+}
+
+func TestEnsureGitLabPipelineVariableOverrideRole_OptInRefusesUnreportedSetting(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PipelineVarOverrideRoles = map[string]string{"acme/repo": ""}
+	res, err := EnsureGitLabPipelineVariableOverrideRole(optInCtx("acme/repo"), fc, "acme", "repo", false)
+	require.Error(t, err, "an empty role cannot be shown to be a weaker setting the adopter accepted")
+	assert.NotEqual(t, "accepted-insecure", res.Action)
+}
+
+func TestEnsureGitLabPipelineVariableOverrideRole_OptInStillRequiresVariableFreeSchedules(t *testing.T) {
+	spec := PipelineScheduleSpecs()[0]
+	fc := forge.NewFakeClient()
+	fc.PipelineVarOverrideRoles = map[string]string{"acme/repo": forge.PipelineVarOverrideDeveloper}
+	fc.PipelineSchedules = map[string][]forge.PipelineSchedule{"acme/repo": {{
+		ID:          7,
+		Description: spec.Description,
+		Variables:   map[string]string{forge.VarPollMode: "slash"},
+	}}}
+
+	_, err := EnsureGitLabPipelineVariableOverrideRole(optInCtx("acme/repo"), fc, "acme", "repo", false)
+	require.Error(t, err, "a leftover schedule variable would override the poll mode the job rules select")
+	assert.Contains(t, err.Error(), forge.VarPollMode)
 }
 
 func TestRequireGitLabPipelineVariableRestriction_OptInStillReportsUnsupported(t *testing.T) {
@@ -127,35 +159,56 @@ func TestGitLabJiraPoll_OptInCreatesSchedule(t *testing.T) {
 	assert.NotEmpty(t, fc.CreatedSchedules, "the opt-in lets the Jira poll schedule be created")
 }
 
-func TestCheckGitLabTriggerDispatchGate_OptInStaysDeferred(t *testing.T) {
+// The opt-in also covers the webhook fast path: the Poller token the
+// weaker setting exposes can already start pipelines with variables, so the
+// trigger credential adds nothing the adopter has not accepted.
+func TestCheckGitLabTriggerDispatchGate_OptInEnablesFastPath(t *testing.T) {
 	e := readyTriggerDispatchEnv(t)
 	e.state.PipelineVarOverrideRoles[trigOverrideKey] = forge.PipelineVarOverrideDeveloper
+
 	gate := CheckGitLabTriggerDispatchGate(optInCtx(trigOverrideKey), e.state, e.f, trigOwner, trigRepo, trigBranch, nil)
-	assert.False(t, gate.Ready, "the opt-in does not enable the webhook fast path")
+	assert.True(t, gate.Ready, "deferred: %v", gate.Deferred)
+
+	gate = CheckGitLabTriggerDispatchGate(context.Background(), e.state, e.f, trigOwner, trigRepo, trigBranch, nil)
+	assert.False(t, gate.Ready, "without the opt-in the weaker setting still defers the fast path")
 	require.NotEmpty(t, gate.Deferred)
-	assert.Contains(t, gate.Deferred[0], gitlabPipelineVarOptInFastPathNote)
-	assert.NotContains(t, gate.Deferred[0], gitlabPipelineVarRestrictionHint)
+	assert.Contains(t, gate.Deferred[0], gitlabPipelineVarRestrictionHint)
+
+	e.state.PipelineVarOverrideRoles[trigOverrideKey] = ""
+	gate = CheckGitLabTriggerDispatchGate(optInCtx(trigOverrideKey), e.state, e.f, trigOwner, trigRepo, trigBranch, nil)
+	assert.False(t, gate.Ready, "an unreported setting still defers the fast path")
 }
 
-func TestGitLabTriggerAccount_OptInStaysDeferred(t *testing.T) {
+func TestGitLabTriggerAccount_OptInConverges(t *testing.T) {
 	e := newTrigEnv()
+	e.seedAdminResources()
 	e.state.PipelineVarOverrideRoles[trigOverrideKey] = forge.PipelineVarOverrideDeveloper
-	got, err := ConvergeGitLabTriggerAccount(optInCtx(trigOverrideKey), e.opts())
+	res, err := ConvergeGitLabTriggerAccount(optInCtx(trigOverrideKey), e.opts())
 	require.NoError(t, err)
-	assert.Contains(t, got.Deferred, gitlabPipelineVarOptInFastPathNote)
+	e.assertConverged(t, res)
+
+	strict := newTrigEnv()
+	strict.state.PipelineVarOverrideRoles[trigOverrideKey] = forge.PipelineVarOverrideDeveloper
+	got, err := ConvergeGitLabTriggerAccount(context.Background(), strict.opts())
+	require.NoError(t, err)
+	require.NotEmpty(t, got.Deferred, "without the opt-in the trigger account stays deferred")
+	assert.Contains(t, got.Deferred, "not no_one_allowed")
 }
 
-func TestGitLabTriggerProjectSafetyProblem_OptInNotesFastPath(t *testing.T) {
+func TestGitLabTriggerProjectSafetyProblem_OptIn(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.PipelineVarOverrideRoles = map[string]string{"acme/repo": forge.PipelineVarOverrideDeveloper}
+	// The bare fake fails a later invariant; this only pins that the
+	// override-role invariant is no longer the problem.
 	got, err := gitlabTriggerProjectSafetyProblem(optInCtx("acme/repo"), fc, "acme", "repo", "main")
-	require.NoError(t, err)
-	assert.Contains(t, got, "webhook fast-path deferred")
-	assert.Contains(t, got, gitlabPipelineVarOptInFastPathNote)
+	assert.NotContains(t, got, "ci_pipeline_variables_minimum_override_role", "the opt-in satisfies the override-role invariant")
+	if err != nil {
+		assert.NotContains(t, err.Error(), "ci_pipeline_variables_minimum_override_role")
+	}
 
 	got, err = gitlabTriggerProjectSafetyProblem(context.Background(), fc, "acme", "repo", "main")
 	require.NoError(t, err)
-	assert.NotContains(t, got, gitlabPipelineVarOptInFastPathNote)
+	assert.Contains(t, got, "ci_pipeline_variables_minimum_override_role is \"developer\", not no_one_allowed")
 }
 
 func TestInstall_OptInDeliversWithRelaxedRole(t *testing.T) {
@@ -222,14 +275,12 @@ func TestConverge_GitLabPipelineVarOptInSeedsContext(t *testing.T) {
 }
 
 // TestStatus_GitLabPipelineVarOptInSeedsContext covers the Status entry
-// point's context wiring: Status seeds the ADR 0175 opt-in from the
-// manifest it resolves (status.go). For a repo whose pipeline-variable
-// role is weaker than no_one_allowed and whose fast path is not
-// provisioned, the opt-in makes the deferred fast path expected (no
-// drift, ADR 0175 health-check requirement), while without the opt-in
-// the same weak role is drift.
+// point's context wiring: Status seeds the opt-in from the manifest it
+// resolves (status.go), so the webhook fast-path diagnosis of a repo whose
+// pipeline-variable role is weaker than no_one_allowed passes the
+// override-role safety check with the opt-in and fails it without.
 func TestStatus_GitLabPipelineVarOptInSeedsContext(t *testing.T) {
-	status := func(t *testing.T, optIn bool) RepoStatus {
+	reasons := func(t *testing.T, optIn bool) string {
 		t.Helper()
 		fc := newUnstampedGitLabRepo(t)
 		fc.PipelineVarOverrideRoles["acme/api"] = forge.PipelineVarOverrideDeveloper
@@ -244,49 +295,11 @@ func TestStatus_GitLabPipelineVarOptInSeedsContext(t *testing.T) {
 		require.Len(t, res.Repos, 1)
 		require.Empty(t, res.Repos[0].Error)
 		require.NotNil(t, res.Repos[0].GitLabWebhook, "a client exposing a base URL gets the webhook fast-path diagnosis")
-		return res.Repos[0]
+		return strings.Join(res.Repos[0].GitLabWebhook.Reasons, "\n")
 	}
 
-	optedIn := status(t, true)
-	assert.Equal(t, GitLabWebhookStateDeferred, optedIn.GitLabWebhook.State, "the opt-in keeps the fast path off by design")
-	assert.Contains(t, strings.Join(optedIn.GitLabWebhook.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
-	_, drifted := webhookDrift(optedIn)
-	assert.False(t, drifted, "status treats the opted-in deferral as expected, not drift")
-
-	strict := status(t, false)
-	assert.Equal(t, GitLabWebhookStateDrifted, strict.GitLabWebhook.State, "the weaker role drifts without the opt-in")
-	assert.Contains(t, strings.Join(strict.GitLabWebhook.Reasons, "\n"), "webhook fast-path deferred")
-	assert.NotContains(t, strings.Join(strict.GitLabWebhook.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
-	_, drifted = webhookDrift(strict)
-	assert.True(t, drifted, "without the opt-in the weak role is actionable drift")
-}
-
-// TestDiagnoseGitLabWebhook_OptInDeferredOnlyWithoutLiveCredentials pins
-// the boundary of the ADR 0175 status exception: with nothing provisioned
-// the opted-in weak role is an informational deferral, but live fast-path
-// credentials on such a project are still drift, because repos install
-// revokes them.
-func TestDiagnoseGitLabWebhook_OptInDeferredOnlyWithoutLiveCredentials(t *testing.T) {
-	key := webhookTestOwner + "/" + webhookTestRepo
-	ctx := WithGitLabPipelineVarOptIns(context.Background(), optInManifest(key))
-
-	c := newWebhookFake()
-	c.PipelineVarOverrideRoles[key] = forge.PipelineVarOverrideDeveloper
-	diag := DiagnoseGitLabWebhook(ctx, c, webhookTestOwner, webhookTestRepo)
-	assert.Equal(t, GitLabWebhookStateDeferred, diag.State)
-	assert.Contains(t, strings.Join(diag.Reasons, "\n"), gitlabPipelineVarOptInFastPathNote)
-	rs := RepoStatus{}
-	ApplyGitLabWebhookStatus(&rs, diag)
-	_, drifted := webhookDrift(rs)
-	assert.False(t, drifted)
-
-	c = newWebhookFake()
-	ensureWebhook(t, c, false, false)
-	c.PipelineVarOverrideRoles[key] = forge.PipelineVarOverrideDeveloper
-	diag = DiagnoseGitLabWebhook(ctx, c, webhookTestOwner, webhookTestRepo)
-	assert.Equal(t, GitLabWebhookStateDrifted, diag.State, "live credentials on an opted-in project are still drift")
-	assert.Contains(t, strings.Join(diag.Reasons, "\n"), "revokes the managed webhook and trigger credential")
-	assertWebhookStatusHidesCredentials(t, c, diag)
+	assert.NotContains(t, reasons(t, true), "ci_pipeline_variables_minimum_override_role", "status accepts the opted-in setting")
+	assert.Contains(t, reasons(t, false), "ci_pipeline_variables_minimum_override_role", "without the opt-in the weaker setting is reported")
 }
 
 func newFakeClientWithRoleFor(role string) *forge.FakeClient {
