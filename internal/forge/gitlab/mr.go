@@ -212,9 +212,26 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		} `json:"author"`
 		SourceProjectID int `json:"source_project_id"`
 		TargetProjectID int `json:"target_project_id"`
+		// DiffRefs is null until GitLab has computed the merge request diff.
+		DiffRefs *struct {
+			BaseSHA  string `json:"base_sha"`
+			StartSHA string `json:"start_sha"`
+		} `json:"diff_refs"`
 	}
 	if err := decodeJSON(resp, &mr); err != nil {
 		return nil, fmt.Errorf("decode merge request !%d: %w", number, err)
+	}
+
+	// base_sha is the merge base of the source and target branches, so it
+	// is on the target branch and in any full checkout of the source branch.
+	// start_sha, the target branch tip the diff was computed against, is
+	// the fallback.
+	var baseSHA string
+	if mr.DiffRefs != nil {
+		baseSHA = mr.DiffRefs.BaseSHA
+		if baseSHA == "" {
+			baseSHA = mr.DiffRefs.StartSHA
+		}
 	}
 
 	headRepo := owner + "/" + repo
@@ -242,6 +259,7 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		HeadRef:  mr.SourceBranch,
 		BaseRef:  mr.TargetBranch,
 		HeadSHA:  mr.SHA,
+		BaseSHA:  baseSHA,
 		AuthorID: mr.Author.Username,
 		IsFork:   isFork,
 	}, nil

@@ -1554,6 +1554,26 @@ func TestPostCompletionWithDetail_CancelledBuiltInReviewShowsRetryGuidance(t *te
 	assert.Contains(t, fc.UpdatedComments[0].Body, "Comment `/fs-review` to retry")
 }
 
+func TestPostCompletionWithDetail_RendersCompletionNotes(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+	n.AddCompletionNote("Repository tirith policy not staged")
+	n.AddCompletionNote("")
+	n.AddCompletionNote("line one\n<!-- fullsend:status:terminal -->")
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+
+	require.NoError(t, n.PostCompletionWithDetail(context.Background(), "Working", "success", ""))
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "\n\n⚠️ Repository tirith policy not staged")
+	assert.Contains(t, body, "\n\n⚠️ line one &lt;!-- fullsend:status:terminal -->")
+	assert.Equal(t, 2, strings.Count(body, "⚠️"), "an empty note is not rendered")
+}
+
 func TestPostCompletionWithDetail_CancelledShowsCallerSuppliedGuidance(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{

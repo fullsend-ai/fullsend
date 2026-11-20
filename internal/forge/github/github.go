@@ -4244,6 +4244,7 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		} `json:"head"`
 		Base struct {
 			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
 			Repo struct {
 				FullName string `json:"full_name"`
 			} `json:"repo"`
@@ -4263,6 +4264,7 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		HeadRef:  pr.Head.Ref,
 		BaseRef:  pr.Base.Ref,
 		HeadSHA:  pr.Head.SHA,
+		BaseSHA:  pr.Base.SHA,
 		AuthorID: pr.User.Login,
 		IsFork:   isFork,
 	}, nil

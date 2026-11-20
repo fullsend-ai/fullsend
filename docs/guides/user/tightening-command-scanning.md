@@ -57,9 +57,29 @@ findings.
   no effect.
 - **Come from a pull request.** On pull request and merge request runs (review
   and fix), fullsend uses the copy on the base commit, never the copy in the
-  request. When the base commit is not in the runner's checkout, fullsend
-  applies no repository policy to that run and the run log says so. GitLab
-  merge request runs currently always take this path.
+  request. On GitHub the base commit is the pull request's `base.sha`. On
+  GitLab it is the merge request's merge base, read from the GitLab API. When
+  the runner's checkout does not have the base commit, as in a shallow
+  checkout, fullsend fetches that one commit from the checkout's `origin`
+  remote.
+
+## When the policy is not applied
+
+If a pull or merge request run cannot get its base commit, fullsend applies no
+repository policy to that run. This happens when the base commit is not known,
+the GitLab API call fails, or the fetch fails. The run still uses tirith's
+built-in rules. fullsend reports it in three places:
+
+- A warning in the run log that starts with
+  `Repository tirith policy not staged` and gives the reason.
+- On GitHub Actions, the same warning as an annotation on the workflow run's
+  summary page.
+- A line starting with ⚠️ in the run's completion status comment, when your
+  status notification settings post one.
+
+To fix a failed fetch, make sure the checkout's `origin` remote can still be
+fetched when `fullsend run` starts. For example, keep the checkout's
+credentials.
 
 For how fullsend stages and checks the file, see
 [Tirith: staged repository policy](../../contributing/runtime-implementation.md#tirith-staged-repository-policy).
