@@ -632,21 +632,33 @@ other pattern has already been applied to the decoded key or leaf, so a match on
 the serialized bytes would be a redaction placeholder plus JSON escape
 characters, not a secret. A private-key block spanning members is detected in a
 decoded view of the document before masking a member value can hide its BEGIN
-marker. Such a block is neutralized member by member: every string value the
-match covers becomes `[REDACTED PRIVATE KEY]`, while object keys keep their
-names, so a document that merely quotes the PEM header in one finding and the
-footer in another keeps its shape — every required field of a review result is
-still present — instead of being dropped whole. A key name is treated as block
-content only when the name itself carries a marker; then it is masked too,
-because it cannot be written back as structure. Every string value inside the
-matched span is masked, since nothing distinguishes a quoted marker pair from
-fragments of real key material.
+marker. Such a block is neutralized member by member: every string value that
+carries a block marker or base64 body material becomes
+`[REDACTED PRIVATE KEY]`, while object keys keep their names, so a document that
+merely quotes the PEM header in one finding and the footer in another keeps its
+shape — every required field of a review result is still present, and its
+enum-valued fields (`action`, `severity`, `category`) keep values
+`review-result.schema.json` accepts — instead of being dropped whole or rewritten
+into a document the schema rejects. A key name is treated as block content only
+when the name itself carries a marker; then it is masked too, because it cannot
+be written back as structure. A value that neither carries a marker nor holds a
+base64 run long enough to be PEM body material keeps its content: nothing
+distinguishes a quoted marker pair from a split block, so the choice is between
+masking free text and enum values, which loses the review, and keeping a
+fragment too short to be recognized as key material.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
 rewriting that framing, so only the records it covers are replaced. A
 private-key block spanning records is detected in a decoded view of the stream,
 before per-record masking can remove its BEGIN marker, so a marker written with
-\u escapes is still recognized. Localization inside the changed region is
+\u escapes is still recognized. After the per-record pass the rebuilt stream is
+rescanned, but only for whole-value secrets — registered runtime values and
+private-key blocks, the same set the single-document path scans in its written
+form. Running the value patterns again would re-match a redaction placeholder
+followed by JSON escape bytes: in encoded JSON a `\n` escape is two non-space
+bytes, so `env_assignment` runs past the end of a value the record pass already
+redacted and every such match would replace a correct record with a cross-record
+marker. Localization inside the changed region is
 conservative but per record: a record is kept only when its bytes are unique in
 the stream and reappear as a whole line in the redacted stream, because a
 repeated record could otherwise let an untouched copy stand in for the covered

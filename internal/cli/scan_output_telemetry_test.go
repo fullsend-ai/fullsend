@@ -142,7 +142,7 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	require.NoError(t, os.WriteFile(jsonFile7, []byte(validJSON7), 0o644))
 
 	jsonFile9 := filepath.Join(dir, "split_pem_lines.json")
-	validJSON9 := `["-----BEGIN RSA` + ` PRIVATE KEY-----","BASE64_KEY_MATERIAL_REDACTED","-----END RSA` + ` PRIVATE KEY-----"]`
+	validJSON9 := `["-----BEGIN RSA` + ` PRIVATE KEY-----","MIIEpAIBAAKCAQEA0000000000000000","-----END RSA` + ` PRIVATE KEY-----"]`
 	require.NoError(t, os.WriteFile(jsonFile9, []byte(validJSON9), 0o644))
 
 	var buf bytes.Buffer
@@ -248,7 +248,7 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, json.Valid(content9))
 	assert.NotContains(t, string(content9), "PRIVATE KEY-----", "split PEM-like material must be masked")
-	assert.NotContains(t, string(content9), "BASE64_KEY_MATERIAL_REDACTED")
+	assert.NotContains(t, string(content9), "MIIEpAIBAAKCAQEA", "base64 key material between the markers must be masked")
 
 	// jq is the parser implicated by the original incident; exercise it when
 	// available, while keeping the Go validity assertions portable.
@@ -312,7 +312,7 @@ func TestScanOutputFiles_SingleRecordJSONL_PreservesLineCount(t *testing.T) {
 func TestScanOutputFiles_JSONLCrossValuePrivateKeyRemainsValid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.jsonl")
-	content := ` ["-----BEGIN RSA` + ` PRIVATE KEY-----","KEY_MATERIAL_BASE64_VALUE_1234567890","-----END RSA` + ` PRIVATE KEY-----"]` + "\n"
+	content := ` ["-----BEGIN RSA` + ` PRIVATE KEY-----","MIIEpAIBAAKCAQEA0000000000000000","-----END RSA` + ` PRIVATE KEY-----"]` + "\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{})))
 	got, err := os.ReadFile(path)
@@ -321,7 +321,7 @@ func TestScanOutputFiles_JSONLCrossValuePrivateKeyRemainsValid(t *testing.T) {
 	line := strings.TrimSpace(string(got))
 	assert.True(t, json.Valid([]byte(line)), "each JSONL record must remain valid JSON: %s", line)
 	assert.NotContains(t, line, "PRIVATE KEY-----", "the members carrying the markers must be masked")
-	assert.NotContains(t, line, "KEY_MATERIAL_BASE64_VALUE_1234567890")
+	assert.NotContains(t, line, "MIIEpAIBAAKCAQEA", "base64 key material between the markers must be masked")
 	assert.NotContains(t, line, "output removed", "the record must be kept, not dropped")
 }
 

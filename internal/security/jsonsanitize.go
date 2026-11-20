@@ -29,9 +29,9 @@ const (
 	OutputRemovalTextJSONMarker = `{"error":"output removed because text redaction would invalidate JSON"}`
 )
 
-// privateKeyMask replaces each JSON string value that carries part of a
-// private-key block spanning JSON framing, and any key name that carries a
-// block marker itself.
+// privateKeyMask replaces each JSON string value that carries key material from a
+// private-key block spanning JSON framing, and any key name that carries block
+// text itself.
 const privateKeyMask = "[REDACTED PRIVATE KEY]"
 
 // outputRemovalMarkers lists every whole-file removal marker with the reason it
@@ -165,11 +165,29 @@ var privateKeyRe = func() *regexp.Regexp {
 	panic("private_key structural pattern is missing")
 }()
 
-// privateKeyMarkerRe matches either boundary line of a private-key block. It
-// marks the key names that carry block text instead of JSON structure, so a key
-// whose name holds a marker is masked with the values rather than kept. The
-// quoted markers are the ones privateKeyRe delimits a block with.
-var privateKeyMarkerRe = regexp.MustCompile(`-----BEGIN\s|-----END\s`)
+// privateKeyMarkerRe matches a private-key marker line, including the fragments a
+// marker is reduced to when it is split across members. It marks the text a
+// multi-member block carries into a key name or string value, so nothing that is
+// block content is written back as structure. The quoted markers are the ones
+// privateKeyRe delimits a block with.
+var privateKeyMarkerRe = regexp.MustCompile(`-----BEGIN|-----END|PRIVATE KEY-----`)
+
+// privateKeyMaterialRe matches a run of PEM body material: the base64 alphabet
+// (which covers hex) at a length no ordinary prose word or schema enum reaches.
+// A string value covered by a framing-spanning block is masked only when it
+// holds a marker or matches this, because a lazy pattern that runs from one
+// member's BEGIN to another member's END also covers the members between them.
+// Masking those unconditionally replaced structural values — a finding's
+// severity, category, action or repo, all of which the review schema constrains
+// to enums and patterns — so the review failed validation and was not posted,
+// which is the #5705 outcome. Real PEM bodies are 64-character base64 lines (or
+// a partial final line), so a 16-character floor keeps every realistic split
+// while leaving free text and enum values readable. valueCarriesKeyMaterial still
+// has to reject a hex-only run, which is more likely a hash than a PEM line. A
+// fragment shorter than the floor cannot be recognized as key material, which is
+// the same limit that makes a quoted marker pair indistinguishable from a split
+// block.
+var privateKeyMaterialRe = regexp.MustCompile(`[A-Za-z0-9+/]{16,}=*`)
 
 // jsonProvenance accumulates an order-preserving view of the decoded strings
 // in a document so a private-key block that spans members can be detected after
@@ -224,12 +242,17 @@ type privateKeySpans struct {
 //
 // A block whose markers sit in different members is not proof that key material
 // spans them — a review that quotes the header in one finding and the footer in
-// another matches too — so only the members the match covers are touched. String
-// values are masked whole, because a value is where an agent writes key
-// material. An object key keeps its name unless the name itself carries a block
-// marker: key names are the document's structure, and masking them would drop a
-// required field such as a finding's severity, category or file and make the
-// document fail schema validation.
+// another matches too — so only the members the match carries block content into
+// are touched. The strings the match starts and ends in carry marker text and are
+// masked unconditionally; a string value in between is masked when it holds a
+// block marker or base64 body material (valueCarriesKeyMaterial). Those are the
+// two shapes key material takes in a member, while the free text and enum values
+// between a quoted marker pair stay readable, so a review result keeps its shape
+// instead of failing schema validation and being dropped (#5705). An object key
+// keeps its name unless the match starts or ends in it, or the name itself carries
+// a block marker: key names are the document's structure, and masking them would
+// drop a required field such as a finding's severity, category or file and make
+// the document fail schema validation.
 func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 	spans := privateKeySpans{covered: map[int]bool{}, maskedKeys: map[int]bool{}}
 	for _, match := range privateKeyRe.FindAllIndex(v.decoded.Bytes(), -1) {
@@ -248,17 +271,54 @@ func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 			continue
 		}
 		spans.localized++
-		for _, i := range hit {
-			if !v.keys[i] {
-				spans.covered[i] = true
+		for pos, i := range hit {
+			// The match begins with a BEGIN marker and ends with an END marker, so
+			// the leaves it starts and ends in always carry marker text. They are
+			// masked even when the marker itself is split across two members and
+			// neither fragment matches privateKeyMarkerRe on its own.
+			atBoundary := pos == 0 || pos == len(hit)-1
+			if v.keys[i] {
+				if atBoundary || privateKeyMarkerRe.Match(v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end]) {
+					spans.maskedKeys[i] = true
+				}
 				continue
 			}
-			if privateKeyMarkerRe.Match(v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end]) {
-				spans.maskedKeys[i] = true
+			if atBoundary || v.valueCarriesKeyMaterial(i) {
+				spans.covered[i] = true
 			}
 		}
 	}
 	return spans
+}
+
+// valueCarriesKeyMaterial reports whether the string value at index i has to be
+// replaced whole: it carries a block marker, or it holds base64 body material. A
+// value outside those two shapes is free text or a schema-constrained token that
+// the match only covers because a lazy pattern ran from one member's marker to
+// another's, so it keeps its content.
+func (v *jsonProvenance) valueCarriesKeyMaterial(i int) bool {
+	text := v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end]
+	if privateKeyMarkerRe.Match(text) {
+		return true
+	}
+	run := privateKeyMaterialRe.Find(text)
+	if run == nil {
+		return false
+	}
+	// A run of hex digits alone is as likely a content hash, a commit SHA or a
+	// stable finding id as it is key material, and those are schema-constrained
+	// values (head_sha, id, file). A PEM body is base64, so a real body run
+	// almost always carries a base64-only character; treating a hex-only run as
+	// key material would mask a required field and lose the review (#5705).
+	for _, b := range run {
+		switch {
+		case b == '+' || b == '/' || b == '=':
+			return true
+		case b >= 'G' && b <= 'Z', b >= 'g' && b <= 'z':
+			return true
+		}
+	}
+	return false
 }
 
 // leafContaining returns the index of the leaf that fully contains [start, end),
@@ -384,12 +444,25 @@ func SanitizeJSONLines(content []byte, p *Pipeline) ([]byte, []Finding, error) {
 	}
 
 	rebuilt := out.Bytes()
-	stream := p.Scan(string(rebuilt))
+	// Rescan the rebuilt stream only for the secrets no single record can show.
+	// The per-record pass has already applied every value pattern to the decoded
+	// record, so running them again on the encoded stream re-matches a redaction
+	// placeholder followed by JSON escape characters: in encoded JSON a \n escape
+	// is two non-space bytes, which lets env_assignment run past the end of the
+	// decoded value and swallow the next word. Each such match replaced an
+	// already-correct record — and a record whose only secret was an escaped
+	// newline — with a cross-record marker, which is exactly the failure
+	// redactJSONOutput rules out for single documents (#5705). Only whole-value
+	// secrets (registered runtime values and private-key blocks) can still cross
+	// a record boundary, so only those are scanned here.
+	stream := p.ScanWholeValueSecrets(string(rebuilt))
 	if len(stream.Findings) == 0 {
 		return rebuilt, findings, nil
 	}
-	// Every finding a single record could account for was handled above, so
-	// what remains spans a record boundary.
+	// Every finding a single record could account for was handled above: a
+	// within-record whole-value secret is caught by SanitizeJSONDocument, and a
+	// private-key block crossing records by failClosedCrossRecordPrivateKeys. What
+	// remains spans a record boundary.
 	findings = append(findings, stream.Findings...)
 	return failClosedRecordSpans(rebuilt, spans, stream), findings, nil
 }
@@ -637,9 +710,9 @@ func lineBounded(data []byte, start, end int) bool {
 // scalar value, and renders a valid JSON document. Unlike map decoding it
 // keeps member order and duplicate keys, so a secret in an earlier, overwritten
 // value is still found, and a secret spanning JSON framing stays visible in the
-// rewritten bytes. String values and key names that a framing-spanning private
-// key covers are replaced whole, which is how such a block is neutralized member
-// by member.
+// rewritten bytes. String values that a framing-spanning private key carries key
+// material into, and key names whose own text carries a block marker, are
+// replaced whole, which is how such a block is neutralized member by member.
 func rewriteJSONTokens(doc []byte, p *Pipeline, spans privateKeySpans) ([]byte, []Finding, error) {
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	dec.UseNumber()

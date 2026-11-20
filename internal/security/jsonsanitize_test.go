@@ -75,14 +75,19 @@ func TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersMasksCoveredMembers(t 
 // regression a reviewer found: a review result that quotes the PEM header in one
 // finding and the footer in another matches the lazy private-key pattern across
 // members, but nothing is hidden and the review still has to be posted. Only the
-// string values the match covers are masked, so the document keeps its shape:
-// every required finding key (severity, category, file, description) survives, and
-// the fields outside the matched span keep their content (#5705).
+// values that carry a marker or key material are masked, so the structural values
+// the review schema constrains keep theirs — action, repo, severity and category
+// included — and the sanitized document still validates against
+// schemas/review-result.schema.json. Masking every covered value instead replaced
+// those enums with the block marker, so validation failed and the review was not
+// posted, which is the #5705 outcome (#5705).
 func TestSanitizeJSONDocument_MarkersInSeparateFindingsKeepReview(t *testing.T) {
 	p := OutputPipeline()
 	begin := "-----BEGIN" + " PRIVATE KEY-----"
 	end := "-----END" + " PRIVATE KEY-----"
-	doc := []byte(`{"action":"comment","pr_number":12,"repo":"acme/widgets","findings":[` +
+	doc := []byte(`{"action":"comment","pr_number":12,"repo":"acme/widgets",` +
+		`"head_sha":"abcdef0123456789abcdef0123456789abcdef01",` +
+		`"findings":[` +
 		`{"severity":"high","category":"logic-error","file":"a.go","description":"quotes the ` + begin + ` header"},` +
 		`{"severity":"medium","category":"missing-test","file":"b.go","description":"a finding between the markers"},` +
 		`{"severity":"low","category":"stale-doc","file":"c.go","description":"quotes the ` + end + ` footer"},` +
@@ -94,6 +99,10 @@ func TestSanitizeJSONDocument_MarkersInSeparateFindingsKeepReview(t *testing.T) 
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "output removed", "the review must not be dropped whole")
 	assert.NotContains(t, string(out), "PRIVATE KEY-----")
+
+	// The blocking requirement: the sanitized review still satisfies the schema
+	// the harness validates before post-review runs.
+	assertReviewResultSchemaValid(t, out)
 
 	var result struct {
 		Action   string `json:"action"`
@@ -114,25 +123,98 @@ func TestSanitizeJSONDocument_MarkersInSeparateFindingsKeepReview(t *testing.T) 
 	assert.Equal(t, "summary", result.Body, "a field outside the matched span keeps its content")
 	require.Len(t, result.Findings, 4, "every finding must survive")
 
-	// The blocking requirement is that the required finding keys still exist in
-	// every finding: review-result.schema.json declares additionalProperties false
-	// and requires severity, category, file and description.
-	for i, finding := range result.Findings {
-		assert.NotEmpty(t, finding.Severity, "finding %d must keep its severity key", i)
-		assert.NotEmpty(t, finding.Category, "finding %d must keep its category key", i)
-		assert.NotEmpty(t, finding.File, "finding %d must keep its file key", i)
-		assert.NotEmpty(t, finding.Description, "finding %d must keep its description key", i)
-	}
-	// Nothing can tell a quoted marker pair from key material fragments, so every
-	// string value inside the matched span is masked.
+	// Only the values that carry a marker are masked; the free text between the
+	// quoted markers is not key material and keeps its content.
+	assert.Equal(t, "high", result.Findings[0].Severity, "a structural enum before the match keeps its value")
 	assert.Equal(t, "a.go", result.Findings[0].File, "a value before the match keeps its content")
 	assert.Equal(t, privateKeyMask, result.Findings[0].Description, "the value carrying the marker is masked")
-	for i := 1; i < 3; i++ {
-		assert.Equal(t, privateKeyMask, result.Findings[i].File, "finding %d is inside the matched span", i)
-	}
-	// A finding after the footer is outside the span and keeps its content.
-	assert.Equal(t, "d.go", result.Findings[3].File)
+	assert.Equal(t, "a finding between the markers", result.Findings[1].Description,
+		"free text between a quoted marker pair is not key material")
+	assert.Equal(t, privateKeyMask, result.Findings[2].Description, "the value carrying the footer is masked")
+	assert.Equal(t, "d.go", result.Findings[3].File, "a finding after the footer is outside the span")
 	assert.Equal(t, "a finding after the block", result.Findings[3].Description)
+}
+
+// TestSanitizeJSONDocument_KeyMaterialInSpanKeepsStructuralEnums pins the other
+// half of the rule: when the block really is split across members, the values
+// carrying key material are masked, while the structural values the review schema
+// constrains keep theirs so the review can still be posted (#5705).
+func TestSanitizeJSONDocument_KeyMaterialInSpanKeepsStructuralEnums(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := []byte(`{"action":"request-changes","pr_number":12,"repo":"acme/widgets",` +
+		`"head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[` +
+		`{"severity":"high","category":"secret-exposure","file":"a.go","description":"leaked ` + begin + `"},` +
+		`{"severity":"high","category":"secret-exposure","file":"b.go","description":"MIIEpAIBAAKCAQEA0123456789abcdef"},` +
+		`{"severity":"high","category":"secret-exposure","file":"c.go","description":"and ` + end + `"}],"body":"remove it"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "output removed", "the review must not be dropped whole")
+	assert.NotContains(t, string(out), "PRIVATE KEY-----")
+	assert.NotContains(t, string(out), "MIIEpAIBAAKCAQEA", "the key material must not survive")
+	assertReviewResultSchemaValid(t, out)
+
+	var result struct {
+		Findings []struct {
+			Severity    string `json:"severity"`
+			Category    string `json:"category"`
+			File        string `json:"file"`
+			Description string `json:"description"`
+		} `json:"findings"`
+	}
+	require.NoError(t, json.Unmarshal(out, &result))
+	require.Len(t, result.Findings, 3)
+	for i, finding := range result.Findings {
+		assert.Equal(t, "high", finding.Severity, "finding %d must keep its severity enum", i)
+		assert.Equal(t, "secret-exposure", finding.Category, "finding %d must keep its category enum", i)
+		assert.NotEmpty(t, finding.File, "finding %d must keep its file", i)
+		assert.NotEmpty(t, finding.Description, "finding %d must keep its description", i)
+	}
+}
+
+// TestSanitizeJSONDocument_MarkerSplitAcrossMembersMasked pins that a marker
+// written in pieces does not survive: the leaves the match starts and ends in are
+// always masked, and a value carrying only a marker fragment is masked too, so no
+// piece of the block header or footer is written back (#5705).
+func TestSanitizeJSONDocument_MarkerSplitAcrossMembersMasked(t *testing.T) {
+	p := OutputPipeline()
+	doc := []byte(`["-----BEGIN"," RSA PRIVATE KEY-----","MIIEb2R5","-----END"," RSA PRIVATE KEY-----"]`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "-----BEGIN")
+	assert.NotContains(t, string(out), "-----END")
+	assert.NotContains(t, string(out), "PRIVATE KEY-----")
+}
+
+// TestSanitizeJSONDocument_HexValuesInSpanKeepTheirContent pins that a hex run
+// inside a quoted marker span is not treated as key material. A commit SHA or a
+// finding id is schema-constrained (head_sha, id), and a PEM body is base64, so a
+// hex-only run is far more likely a hash than a PEM line (#5705).
+func TestSanitizeJSONDocument_HexValuesInSpanKeepTheirContent(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := []byte(`{"action":"comment","pr_number":12,"repo":"acme/widgets","findings":[` +
+		`{"severity":"high","category":"logic-error","file":"a.go","id":"f_0123456789abcdef0123456789abcdef","description":"quotes the ` + begin + ` header"},` +
+		`{"severity":"low","category":"doc-style","file":"b.go","id":"f_0123456789abcdef0123456789abcdef","description":"and the ` + end + ` footer"}],` +
+		`"head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"summary"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.Contains(t, string(out), `"head_sha":"abcdef0123456789abcdef0123456789abcdef01"`,
+		"a commit SHA is not PEM body material")
+	assert.Contains(t, string(out), `"id":"f_0123456789abcdef0123456789abcdef"`,
+		"a finding id is not PEM body material")
+	assert.NotContains(t, string(out), "PRIVATE KEY-----")
 }
 
 // TestSanitizeJSONDocument_KeyNameCarryingMarkerIsMasked pins the other half of
@@ -155,22 +237,24 @@ func TestSanitizeJSONDocument_KeyNameCarryingMarkerIsMasked(t *testing.T) {
 }
 
 // TestJSONProvenance_KeysAreStructure pins that the decoded view records which
-// leaves are object keys and that a spanning block only covers string values, so
-// the rewrite never renames a key unless its own text carries a marker.
+// leaves are object keys, that a spanning block only covers string values, and
+// that a value between the markers is covered only when it carries key material,
+// so the rewrite never renames a key unless its own text carries a marker.
 func TestJSONProvenance_KeysAreStructure(t *testing.T) {
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
-	doc := []byte(`{"severity":"` + begin + `","category":"MIIEkeymaterial","file":"` + end + `"}`)
+	doc := []byte(`{"severity":"` + begin + `","category":"MIIEpAIBAAKCAQEA0123456789abcdef","body":"x","file":"` + end + `"}`)
 
 	prov := collectJSONLeaves(doc)
 	require.Equal(t, len(prov.ranges), len(prov.keys), "every recorded leaf must carry a kind")
 	spans := prov.spanningPrivateKeys()
 	require.Equal(t, 1, spans.localized)
 	assert.Empty(t, spans.maskedKeys, "no key name carries a marker")
-	require.Len(t, spans.covered, 3, "every string value in the span is masked")
+	require.Len(t, spans.covered, 3, "the marker and the key-material values are covered")
 	for i := range spans.covered {
 		assert.False(t, prov.keys[i], "only string values are covered")
 	}
+	assert.False(t, spans.covered[5], "free text between the markers is not key material")
 }
 
 // TestSanitizeJSONDocument_FramingSecretInCleanDocumentFailsClosed pins that a
@@ -262,7 +346,42 @@ func TestSanitizeJSONLines_CrossRecordRuntimeSecretFailsClosed(t *testing.T) {
 	}
 }
 
-// TestSanitizeJSONLines_DisjointCrossRecordMatchesKeepCleanRecord pins that
+// TestSanitizeJSONLines_RedactedAssignmentBeforeEscapedNewlineKeepsRecord pins
+// that the whole-stream rescan cannot re-match a value the per-record pass
+// already redacted. In encoded JSON a \n escape is two non-space bytes, so
+// running env_assignment over the rebuilt stream matched the placeholder plus
+// the next word, and the correctly redacted record was replaced with a
+// cross-record marker — a false alarm that dropped real content from
+// transcripts/*.jsonl and output.jsonl (#5705).
+func TestSanitizeJSONLines_RedactedAssignmentBeforeEscapedNewlineKeepsRecord(t *testing.T) {
+	p := OutputPipeline()
+	content := []byte(`{"type":"assistant","text":"run: API_KEY=supersecretvalue123\nnext line"}` + "\n")
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "one secret must be reported once, not recounted by the stream rescan: %+v", findings)
+	assert.Equal(t, "env_assignment", findings[0].Name)
+
+	line := strings.TrimSpace(string(out))
+	assert.True(t, json.Valid([]byte(line)), "the record must stay valid JSON: %s", line)
+	assert.NotContains(t, line, "output removed", "a redacted record must not be replaced")
+	assert.NotContains(t, line, "supersecretvalue123")
+	assert.Contains(t, line, "next line", "the text after the escaped newline must survive")
+}
+
+// TestSanitizeJSONLines_BenignEscapedAssignmentKeepsRecord pins the benign half
+// of the same regression: a shell command with an escaped newline contains no
+// secret at all, and the per-record pass leaves it alone (#5705).
+func TestSanitizeJSONLines_BenignEscapedAssignmentKeepsRecord(t *testing.T) {
+	p := OutputPipeline()
+	content := []byte(`{"text":"export GITHUB_TOKEN=$TOKEN\nnext line"}` + "\n")
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	assert.Empty(t, findings, "no secret is present, so nothing may be reported")
+	assert.Equal(t, string(content), string(out), "a benign record must be written back unchanged")
+}
+
 // only the records a cross-record match touches are replaced. A single
 // first-to-last changed region used to swallow every record between two
 // disjoint matches.
@@ -1109,4 +1228,100 @@ func TestSanitizeJSONDocument_DuplicateKeyWithSecretKey(t *testing.T) {
 	require.NotEmpty(t, findings)
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), secret)
+}
+
+// review-result.schema.json is authored in fullsend-ai/agents and is not
+// vendored here, so the checks below mirror the constraints sanitization can
+// break in a review result: the enums and patterns of the structural fields,
+// additionalProperties false, and the required members. Update them when the
+// schema's enums change.
+var (
+	reviewResultActions    = []string{"approve", "request-changes", "comment", "reject", "failure"}
+	reviewResultSeverities = []string{"critical", "high", "medium", "low", "info"}
+	reviewResultCategories = []string{
+		"logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test",
+		"test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened",
+		"assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
+		"auth-bypass", "rbac-violation", "data-exposure", "privilege-escalation", "injection-vuln",
+		"sandbox-escape", "xss", "ssrf", "insecure-deserialization", "prompt-injection",
+		"unicode-steganography", "bidi-override", "homoglyph-attack", "instruction-smuggling", "fail-open",
+		"permission-expansion", "permission-reduction", "role-escalation", "workflow-permission",
+		"secret-exposure", "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep",
+		"missing-authorization", "misleading-label", "design-direction", "complexity-ratio",
+		"misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering",
+		"under-engineering", "scope-bundling", "naming-convention", "error-handling-idiom", "api-shape",
+		"code-organization", "doc-style", "pattern-inconsistency", "stale-doc", "missing-doc",
+		"incorrect-doc", "incomplete-doc", "breaking-api", "breaking-schema", "breaking-config",
+		"breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible",
+		"uxd-evaluate-code-heuristics", "protected-path", "provenance-warning",
+		"scope-authorization-implicit", "sub-agent-failure",
+	}
+)
+
+// assertReviewResultSchemaValid checks doc against the review-result schema
+// constraints sanitization can break. A review the harness rejects is not posted,
+// which is the #5705 outcome, so a fixture that survives sanitization has to still
+// satisfy these.
+func assertReviewResultSchemaValid(t *testing.T, doc []byte) {
+	t.Helper()
+
+	var result map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(doc, &result), "sanitized review must decode: %s", doc)
+
+	topLevel := map[string]bool{
+		"action": true, "pr_number": true, "repo": true, "head_sha": true, "body": true,
+		"findings": true, "reason": true, "dispositions": true, "label_actions": true,
+		"risk_assessment": true, "risk_gated": true,
+	}
+	for key := range result {
+		assert.True(t, topLevel[key], "unexpected top-level member %q", key)
+	}
+
+	var action string
+	require.NoError(t, json.Unmarshal(result["action"], &action), "action is required")
+	assert.Contains(t, reviewResultActions, action, "action must be one of the schema enums")
+
+	var repo string
+	require.NoError(t, json.Unmarshal(result["repo"], &repo), "repo is required")
+	assert.Regexp(t, `^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$`, repo, "repo must match the schema pattern")
+
+	var prNumber int
+	require.NoError(t, json.Unmarshal(result["pr_number"], &prNumber), "pr_number is required")
+	assert.Positive(t, prNumber, "pr_number must be at least 1")
+
+	if action == "comment" || action == "approve" || action == "request-changes" || action == "reject" {
+		var headSHA, body string
+		require.NoError(t, json.Unmarshal(result["head_sha"], &headSHA), "%s requires head_sha", action)
+		require.NoError(t, json.Unmarshal(result["body"], &body), "%s requires body", action)
+		assert.Regexp(t, `^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$`, headSHA, "head_sha must match the schema pattern")
+		assert.NotEmpty(t, body, "body must be at least one character")
+	}
+
+	rawFindings, hasFindings := result["findings"]
+	if !hasFindings {
+		assert.NotContains(t, []string{"request-changes", "reject"}, action, "%s requires findings", action)
+		return
+	}
+	var findings []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rawFindings, &findings), "findings must be an array of objects")
+	require.NotEmpty(t, findings, "findings must not be empty")
+
+	allowedFinding := map[string]bool{
+		"severity": true, "category": true, "file": true, "line": true, "description": true,
+		"remediation": true, "actionable": true, "id": true, "dimension": true,
+	}
+	for i, finding := range findings {
+		for key := range finding {
+			assert.True(t, allowedFinding[key], "finding %d has unexpected member %q", i, key)
+		}
+		var severity, category, file, description string
+		require.NoError(t, json.Unmarshal(finding["severity"], &severity), "finding %d requires severity", i)
+		require.NoError(t, json.Unmarshal(finding["category"], &category), "finding %d requires category", i)
+		require.NoError(t, json.Unmarshal(finding["file"], &file), "finding %d requires file", i)
+		require.NoError(t, json.Unmarshal(finding["description"], &description), "finding %d requires description", i)
+		assert.Contains(t, reviewResultSeverities, severity, "finding %d severity must be one of the schema enums", i)
+		assert.Contains(t, reviewResultCategories, category, "finding %d category must be one of the schema enums", i)
+		assert.NotEmpty(t, file, "finding %d file must be at least one character", i)
+		assert.NotEmpty(t, description, "finding %d description must be at least one character", i)
+	}
 }
