@@ -1061,7 +1061,9 @@ reason and resource IDs.
   per finding, about every committed CI job or include that a trigger, agent
   child (`source=pipeline`) or scheduled (`source=schedule`) pipeline would run
   besides fullsend's own, because the managed polling schedules run on the
-  protected default branch whichever route dispatches. The check only reads:
+  protected default branch whichever route dispatches. `repos status` lists
+  the same findings under `gitlab_unrelated_ci_work` whatever the trigger
+  account's state. They are a warning and add no drift. The check only reads:
   every managed polling schedule (`fullsend slash poll`, `fullsend event poll`)
   must carry no pipeline variables (legacy schedules still set
   `FULLSEND_POLL_MODE`), and the live

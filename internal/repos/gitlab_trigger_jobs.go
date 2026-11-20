@@ -579,7 +579,8 @@ func gitlabTriggerExtraWorkProblem(ctx context.Context, client forge.Client, own
 // Install also runs it when the trigger account defers and the gate is not
 // reached (#9708): the managed polling schedules keep running on the protected
 // default branch whatever the dispatch route, so the source=schedule findings
-// matter on the polling route too. It only reads.
+// matter on the polling route too. repos status reports it for the same reason
+// (DiagnoseGitLabUnrelatedCIWork). It only reads.
 func GitLabDispatchExtraWorkProblems(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) ([]string, error) {
 	return gitlabExtraWorkProblems(ctx, client, owner, repo, defaultBranch, true)
 }

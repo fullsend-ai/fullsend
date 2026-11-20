@@ -328,6 +328,37 @@ func TestPrintStatusTable_GitLabWebhook(t *testing.T) {
 	assert.NotContains(t, output, "group/ready GitLab webhook fast path")
 }
 
+// Unrelated CI work in Fullsend pipelines is listed per repository as a
+// warning, one finding per line, without adding drift (#9708).
+func TestPrintStatusTable_GitLabUnrelatedCIWork(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{Owner: "group", Repo: "clean", Forge: repos.ForgeGitLab, Installed: true},
+			{
+				Owner: "group", Repo: "noisy", Forge: repos.ForgeGitLab, Installed: true,
+				GitLabUnrelatedCIWork: []string{
+					`the committed .gitlab-ci.yml has job "build" that a trigger pipeline would run`,
+					"the committed .gitlab-ci.yml has job \"build\x1b[31m\" that a scheduled pipeline (source=schedule) would run",
+				},
+			},
+		},
+		Summary: repos.StatusSummary{Total: 2, Installed: 2},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.Contains(t, output, "\n2 installed, 0 drifted, 0 not installed\n")
+	assert.Contains(t, output, "group/noisy GitLab unrelated CI work in Fullsend pipelines (warning; polling stays the dispatch path, but the managed polling schedules run it on the protected default branch):\n"+
+		`  the committed .gitlab-ci.yml has job "build" that a trigger pipeline would run`+"\n")
+	assert.Contains(t, output, "scheduled pipeline (source=schedule) would run\n")
+	assert.NotContains(t, output, "\x1b")
+	assert.NotContains(t, output, "group/clean GitLab unrelated CI work")
+}
+
 func TestPrintStatusTable_NotInstalled(t *testing.T) {
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{
