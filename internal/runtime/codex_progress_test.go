@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -875,24 +874,22 @@ func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
 	t.Run("a repeated item.started keeps the first instant", func(t *testing.T) {
 		t.Parallel()
 		started := `{"type":"item.started","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}`
+		stream := started + "\n" + started + "\n" +
+			`{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"","exit_code":0,"status":"completed"}}` + "\n"
+		// Each reading of the clock is a second later than the last, so
+		// the two item.started lines get different instants.
+		t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		reads := 0
+		now := func() time.Time {
+			reads++
+			return t0.Add(time.Duration(reads-1) * time.Second)
+		}
 		var events []AgentEvent
-		r, w := io.Pipe()
-		second := make(chan time.Time, 1)
-		go func() {
-			fmt.Fprintln(w, started)
-			// io.Pipe hands the line over before Fprintln returns; the
-			// pause lets the parser stamp it before the second start.
-			time.Sleep(50 * time.Millisecond)
-			second <- time.Now()
-			fmt.Fprintln(w, started)
-			fmt.Fprintln(w, `{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"","exit_code":0,"status":"completed"}}`)
-			w.Close()
-		}()
-		_, err := parseCodexStream(r, func(evt AgentEvent) { events = append(events, evt) })
+		_, err := parseCodexStreamAt(strings.NewReader(stream), func(evt AgentEvent) { events = append(events, evt) }, now)
 		require.NoError(t, err)
 		uses, _ := codexToolPairs(t, events)
 		require.Len(t, uses, 1)
-		assert.True(t, uses[0].StartedAt.Before(<-second),
+		assert.Equal(t, t0, uses[0].StartedAt,
 			"the second item.started does not restamp the call")
 	})
 }

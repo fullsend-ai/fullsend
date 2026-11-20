@@ -536,6 +536,13 @@ func ParseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 //     processor shuts down silently — so a stream with no terminal event is
 //     reported as an incomplete, failed run rather than a success.
 func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, err error) {
+	return parseCodexStreamAt(r, onEvent, time.Now)
+}
+
+// parseCodexStreamAt is parseCodexStream with the clock that stamps a call's
+// item.started passed in, so a test can tell one reading from another
+// without depending on elapsed time.
+func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.Time) (threadID string, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
@@ -866,7 +873,7 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 				continue
 			}
 			if _, ok := started[head.ID]; !ok {
-				started[head.ID] = time.Now()
+				started[head.ID] = now()
 			}
 
 		case "item.updated":
