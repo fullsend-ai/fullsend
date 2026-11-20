@@ -73,7 +73,7 @@ jobs:
         run: |
           [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha '${HEAD_SHA}'"; exit 1; }
 
-      - name: Create the Forgejo behaviour check on the PR head
+      - name: Create the E2E checks on the PR head
         id: checks
         if: steps.auth.outputs.authorized == 'true'
         env:

@@ -54,7 +54,9 @@ The obsolete admin install/uninstall suite and `make e2e-test` target have
 been removed. CI keeps both the regular behaviour and playback suites.
 Pull requests run them on a GitHub emulator
 ([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml)),
-and `e2e.yml` runs them live in the merge queue and on push to `main`.
+and `e2e.yml` runs them live in the merge queue and on push to `main`. A
+user with write access can also run them live on a pull request with
+`/ok-to-test <sha> live`.
 
 To run playback manually, select **E2E Tests → Run workflow**, choose the branch,
 and leave **Run the playback behaviour suite** enabled. From the CLI:
