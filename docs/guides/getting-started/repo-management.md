@@ -366,45 +366,49 @@ gitlab:
     - name: group/project
 ```
 
-Every repository selected from the manifest has a managed
-`.fullsend/config.yaml`; neither `defaults.config` nor a repository
-`config` is required. A repository with no `config` gets the sparse file
-with only the ownership marker. An existing overlay without the marker
-blocks that repository's install (adoption required) even when the
-repository has no `config` key; the other selected repositories still
-converge. On a first install with no `config_base` preset and no
-explicit `tracker` declaration, install records
-`config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` in the
-GitHub repository's manifest entry before rendering the overlay. For GitLab, it
-records `config.tracker.gitlab.allowed_targets: {}` instead: additional project
-targets must be configured explicitly for the GitLab host. If the manifest is an
-HTTPS URL or read-only, install fails with the exact edit to make.
-Resolution is code defaults, then `config_base`, then `defaults.config`,
-then the repository's forge section `config` (`github.config` or
-`gitlab.config`), then the repository entry's `config` (glob entries
-included). More specific values win using each field's normal layered
-merge rule: scalars are replaced, nested maps merge key by key, a
-non-empty `allowed_remote_resources` list is unioned with the inherited
-prefixes, and an explicit empty list replaces the inherited value. The
-managed file is sparse and cannot record that reset, so validation rejects a
-non-empty `allowed_remote_resources` list declared in a more specific layer
-than an explicit empty one; declare the full list in a single layer.
-Validation also rejects an agent's `harness:` block that is set in more than
-one of the `defaults`, forge section and repository `config` layers, because
-they render into one `config.yaml`. Set the block in one layer (see the
-[config reference](../../reference/config-reference.md#agents)). A
-forge section's `config` never affects repositories of the other forge.
-The managed configuration contains only explicitly supplied values —
-code defaults and `config.base.yaml` are not baked into the file.
-Unknown fields and invalid values fail manifest validation with errors
-that name the section. `config` is the managed overlay (written to
-`.fullsend/config.yaml`); `config_base` is a separate preset copied to
-`.fullsend/config.base.yaml`.
+Every repository selected from the manifest gets a managed
+`.fullsend/config.yaml`. Neither `defaults.config` nor a repository `config`
+is required. A repository with no `config` gets a file that holds only the
+ownership marker. The managed file holds only the values you declare: code
+defaults and the preset are not copied into it. `config` is this managed
+overlay. `config_base` is a separate preset that install copies to
+`.fullsend/config.base.yaml` (see [Configuration presets](#configuration-presets)).
 
-`runtime` and `allowed_remote_resources` are no longer accepted as sibling
-keys under `defaults` or a repository entry. A manifest that still uses
-them fails to load with the replacement path, and there is no automatic
-migration:
+#### How the layers combine
+
+Fullsend resolves each repository's configuration from these layers, in
+order. A later layer wins over an earlier one:
+
+1. Code defaults.
+2. The `config_base` preset.
+3. `defaults.config`.
+4. The forge section's `config` (`github.config` or `gitlab.config`). It
+   applies only to repositories on that forge.
+5. The repository entry's `config`, including entries that a glob matches.
+
+Each field keeps its normal layered merge rule:
+
+- A scalar replaces the inherited value.
+- Nested maps merge key by key.
+- A non-empty `allowed_remote_resources` list is added to the inherited
+  prefixes. An explicit empty list (`[]`) replaces them and denies every
+  remote resource.
+- `tracker` replaces the inherited value as a whole. Its lists do not merge
+  across layers (see [Issue tracker](#issue-tracker)).
+
+Manifest validation rejects:
+
+- Unknown fields and invalid values. The error names the section.
+- A non-empty `allowed_remote_resources` list in a more specific layer than an
+  explicit empty one. The managed file cannot record that reset, so declare
+  the full list in a single layer.
+- An agent's `harness:` block set in more than one of the `defaults`, forge
+  section, and repository `config` layers. These layers render into one
+  `config.yaml`, so set the block in one layer (see the
+  [config reference](../../reference/config-reference.md#agents)).
+- `runtime` or `allowed_remote_resources` as sibling keys under `defaults` or
+  a repository entry. The error names the replacement path under `config`.
+  There is no automatic migration:
 
 ```yaml
 # Invalid — rejected at manifest load:
@@ -413,6 +417,156 @@ defaults:
   runtime: pi
   allowed_remote_resources: []
 ```
+
+#### Issue tracker
+
+`config.tracker` tells agents which issue tracker the repository uses and
+where, beyond the repository itself, they may create issues. It is the same
+`tracker` field as in a per-repo `config.yaml`, and you can set it in any
+managed layer. The
+[Config Reference — `tracker`](../../reference/config-reference.md#tracker)
+lists every key.
+
+`config.tracker` controls:
+
+- **Issues that agents create in other places.** `allowed_targets` lists the
+  other repositories, groups, or projects where agents may create issues. For
+  example, the [retro agent](../../agents/retro.md) files its improvement
+  proposals as issues, and the [triage agent](../../agents/triage.md) can file
+  a prerequisite issue in an upstream repository. On Jira, `allowed_targets`
+  also limits the projects that `fullsend issues transition` can move an issue
+  to.
+- **The default tracker for `fullsend issues`.** The selected provider is the
+  default `--tracker` value of the
+  [issue commands](../user/issues-commands.md). With no provider selected,
+  every `fullsend issues` command needs `--tracker`.
+- **The Jira connection.** `tracker.jira` holds the Jira site, project, and
+  poller settings (see [Jira tracker](#jira-tracker)).
+
+`allowed_targets` limits only where agents create issues. It does not limit
+which issues agents read or search. For example, triage searches for
+duplicates and related issues whatever `allowed_targets` lists.
+
+Agents can always create issues in the repository they run in, so that
+repository needs no entry in `allowed_targets`. When `allowed_targets` is empty or
+missing, agents create issues only in that repository. For example, the triage
+agent then puts a draft prerequisite issue in its comment for a person to
+file.
+
+`<provider>` in `config.tracker.<provider>` is one of three fixed keys. It is
+not a hostname or a pattern:
+
+| Provider | Issues live in | `allowed_targets` keys |
+|----------|----------------|------------------------|
+| `github` | GitHub repositories | `orgs` (every repository in the organization), `repos` (`owner/name`) |
+| `gitlab` | GitLab projects on the GitLab instance that hosts the repository | `groups` (projects in the group and its subgroups), `repos` (full project path) |
+| `jira` | Jira projects on the site in `tracker.jira.base_url` | `projects` (Jira project keys) |
+
+Set at most one provider. Validation rejects any other key under `tracker`,
+and a `tracker` that holds two providers. The provider does not need to match
+the forge: a repository on GitHub can track its issues in Jira. Because a more
+specific layer replaces the whole `tracker` value, a repository entry that sets
+`tracker` drops the provider and targets it would otherwise inherit.
+
+##### Defaults on first install
+
+With no `tracker` in any layer, no provider is selected and agents create
+issues only in the repository they run in. To keep the manifest the source of
+truth, the first install of a repository records a forge-specific default in
+that repository's manifest entry:
+
+| Repository forge | Value recorded in the manifest entry | Agents can create issues in |
+|------------------|--------------------------------------|-----------------------------|
+| GitHub | `config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` | The repository, plus the platform and agent repositories, so retro proposals and triage prerequisites can reach the repository that owns a change |
+| GitLab | `config.tracker.gitlab.allowed_targets: {}` | The project only. Add other projects or groups yourself |
+
+Install records the default only when all of these are true:
+
+- The repository has no Fullsend installation, no `.fullsend/config.yaml`,
+  and no `.fullsend/config.base.yaml`.
+- No `config_base` preset is declared. A preset keeps its own `tracker`.
+- No layer of the manifest sets `tracker`. Install never overrides a value you
+  declare.
+
+For a repository that only a glob covers, install adds an explicit entry,
+copied from the glob, so that sibling repositories are not affected. When the
+manifest is read-only, install fails and prints the exact edit to make (see
+[Read-only manifests](#read-only-manifests)). Existing installations keep
+their targets on upgrade.
+
+The retro and triage post-scripts currently read the targets only from
+`.fullsend/config.yaml`, not from the preset. Until
+[agents#1728](https://github.com/fullsend-ai/agents/issues/1728) is fixed,
+declare the targets these post-scripts need in `config.tracker` in the
+manifest, even when you use a preset.
+
+##### GitHub tracker
+
+List organizations, repositories, or both. A target is allowed when its
+organization is in `orgs` or the repository is in `repos`:
+
+```yaml
+github:
+  repos:
+    - name: acme/api
+      config:
+        tracker:
+          github:
+            allowed_targets:
+              orgs: [acme]
+              repos: [fullsend-ai/fullsend, fullsend-ai/agents]
+```
+
+The list replaces the default, so keep `fullsend-ai/fullsend` and
+`fullsend-ai/agents` if you still want retro proposals filed there.
+
+##### GitLab tracker
+
+The `gitlab` provider is not limited to gitlab.com. It means the GitLab
+instance that hosts the repository: gitlab.com, or the self-hosted server in
+the manifest's `gitlab.url`. Targets are group and project paths on that
+instance. You cannot name a project on a different GitLab host:
+
+```yaml
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+      config:
+        tracker:
+          gitlab:
+            allowed_targets:
+              groups: [platform]            # platform/... and its subgroups
+              repos: [tools/sub/project]    # full project path
+```
+
+##### Jira tracker
+
+Select `jira` to track issues in Jira while the code and pull requests stay
+on GitHub or GitLab. `jira` replaces the forge provider, so the default GitHub
+targets no longer apply and you cannot also list GitHub or GitLab targets.
+Agents create Jira issues in `tracker.jira.project` or in a project listed in
+`allowed_targets.projects`:
+
+```yaml
+github:
+  repos:
+    - name: acme/api
+      config:
+        tracker:
+          jira:
+            base_url: https://example.atlassian.net
+            project: PROJ
+            allowed_targets:
+              projects: [OTHER]
+```
+
+Jira credentials are repository secrets, never part of `tracker.jira`. For the
+connection settings, polling, and credentials, see
+[`tracker.jira` connection and polling settings](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)
+and [Jira Integration](../user/jira-integration.md).
+
+#### The managed file
 
 Every managed `.fullsend/config.yaml` begins with a stable ownership
 marker and otherwise contains only the declared values:
@@ -437,97 +591,124 @@ the file:
 # Source manifest: https://raw.githubusercontent.com/acme/infra/main/repos.yaml
 ```
 
-The line is recorded only for recognized raw-file URL structures of public
-source hosts, where the path is repository coordinates rather than a
-credential: `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`,
-`github.com/<owner>/<repo>/raw/<ref>/<path>` and
-`gitlab.com/<group>/<project>/-/raw/<ref>/<path>`, with no port and only
-letters, digits and `._~-` in each path segment. Only the scheme, host and
-path are written: userinfo, query string and fragment are removed. For any
-other URL (a self-hosted server, a URL with a port, a percent-escaped or
-otherwise non-plain segment) the line is omitted entirely, because a
-credential in the path cannot be told apart from a directory name. The
-recorded line becomes part of the target repository's Git history, which
-may be public, so still do not put a credential in the path of a manifest
-URL on a recognized host. A manifest loaded from a local path records
-no source line, because its location on the operator's machine is not
-meaningful to readers and would differ between operators. The line is
-informational: `repos status` and `repos install` ignore it when comparing
-the installed file with the managed configuration, so changing the
-manifest URL (or switching between a URL and a local path for the same
-manifest content) is not reported as drift and does not rewrite the file.
-The line is updated the next time a configuration change rewrites the
-file. A file without this line still carries the ownership marker, so it
-never requires adoption.
+Install records this line only for raw-file URLs on public source hosts,
+where the path holds repository coordinates rather than a credential:
 
-If a config-managed repository already has an existing
-`.fullsend/config.yaml` without that marker, `repos status` reports it as
-`managed configuration (adoption required)` rather than ordinary drift,
-and `repos install`/convergence leave the file untouched until it is
-manually adopted (edited to carry the marker, or replaced with the
-rendered managed body). An existing zero-byte file counts as an existing
-file without the marker. The status output (table and JSON `detail`) also
-shows the proposed `repos.yaml` entry that carries every setting the
-existing file declares, including values equal to the code defaults, and
-the difference between the existing file and the managed file adoption
-would produce, followed by the effective layered-configuration change
-(existing overlay over the installed base against the managed overlay over
-the base layer the run would leave in place), so any setting adoption would
-drop, or that changes only through the base layer, is visible first. A
-markerless file that is malformed or not a per-repo configuration is
-reported by `repos status` as an error instead. Once
-a file carries the marker, `repos install`
-writes the canonical sparse `.fullsend/config.yaml` (for an explicitly pinned
-`fullsend_ref`, rendered in the configuration schema that ref reads, and left
-unchanged with an error when that schema cannot be determined; see
-[Configuration schema of a pinned ref](../../cli/repos.md#configuration-schema-of-a-pinned-ref)), `repos status`
-reports any whole-file difference (including a single-key change) as
-drift, and convergence rewrites the file deterministically — unless the
-candidate would become less restrictive than the current effective
-configuration without an explicit manifest declaration. That pre-write
-safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
-agent `enabled: false` suppressions, `tracker.<provider>.allowed_targets`,
-`inference.gateway.url`, `inference.gateway.audience`, `artifacts.content`,
-`artifacts.by_source.<source>`, `progress.verbosity`, and
-`progress.by_source.<source>` through the full
-overlay → base → code-defaults accessor chain. Omitted
-keys fall through rather than being treated as unset; an explicit empty
-`allowed_remote_resources: []` remains deny-all. A change to either
-`inference.gateway` field, including a preset introducing a gateway where
-an established installation has none configured, must be declared in the
-manifest. Status and install output
-identify the affected keys. A blanket adoption acknowledgement is not
-enough. Both files are checked together, before any manifest or forge
-write: when the overlay needs adoption and the base needs action, install
-reports both problems, and an adoption failure prints the same proposed
-`repos.yaml` entry and file and effective-configuration differences that
-`repos status` shows. A repository whose only problem is adoption is
-skipped: install prints that guidance for it, lists it as `FAILED` in the
-summary, converges the other selected repositories and exits non-zero, in
-a dry run and a live run alike. Any other problem these checks find stops
-the whole run before any write. The same checks run again inside convergence: a fresh
-install blocked by adoption or the safety gate stops before any variable,
-secret, scaffold file or PR/MR write, in a dry run and a live run alike.
-Adding a `config_base` preset to a repository with no base file is compared
-like replacing one (the absent base is an empty layer), even when its
-managed overlay is unchanged; only a pristine first install, with neither
-file present, is exempt because there is no current configuration to relax
-and it simply inherits what the preset declares. This applies to repositories with an explicit entry
-and to glob-covered repositories. A malformed or
-non-per-repo file, or a read error, fails with a clear error and is never
-replaced. `.fullsend/config.base.yaml` is managed as described under
+- `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`
+- `github.com/<owner>/<repo>/raw/<ref>/<path>`
+- `gitlab.com/<group>/<project>/-/raw/<ref>/<path>`
+
+The URL must have no port, and each path segment must use only letters,
+digits, and `._~-`. Install writes only the scheme, host, and path. It removes
+userinfo, the query string, and the fragment. For any other URL, such as a
+self-hosted server, a URL with a port, or a percent-escaped segment, install
+omits the line, because a credential in the path cannot be told apart from a
+directory name. The line becomes part of the target repository's Git history,
+which may be public, so do not put a credential in the path of a manifest URL
+on a recognized host. A manifest loaded from a local path records no source
+line, because its location on the operator's machine means nothing to other
+readers.
+
+The line is informational. `repos status` and `repos install` ignore it when
+they compare files, so a changed manifest URL, or a switch between a URL and a
+local path, is not drift and does not rewrite the file. Install updates the
+line the next time a configuration change rewrites the file. A file without
+the line still carries the ownership marker, so it never requires adoption.
+
+Once a file carries the marker:
+
+- `repos install` writes the canonical sparse `.fullsend/config.yaml`. For an
+  explicitly pinned `fullsend_ref`, install renders it in the configuration
+  schema that ref reads, and leaves the file unchanged with an error when it
+  cannot determine that schema (see
+  [Configuration schema of a pinned ref](../../cli/repos.md#configuration-schema-of-a-pinned-ref)).
+- `repos status` reports any whole-file difference, even a single key, as
+  drift.
+- Convergence rewrites the file deterministically, unless the
+  [safety gate](#safety-gate-for-less-restrictive-changes) blocks the change.
+
+A malformed or non-per-repo file, or a read error, fails with a clear error,
+and install never replaces that file. Install manages
+`.fullsend/config.base.yaml` as described under
 [Configuration presets](#configuration-presets).
 
-When the manifest is read-only (an HTTPS URL, a pipe or FIFO such as `<(cmd)`,
-or a local file without write permission or on a read-only file system),
-install fails before attempting any manifest write and prints the exact entry
-to add to its source, including for a glob-covered repository whose
-first-install `tracker` default needs an explicit
-entry. `--dry-run`, live install and `repos status` agree. Trace signing keys
-follow their own rule on GitHub: from such a manifest, a fresh install without
-`--rotate-trace-signing-key` goes ahead without keys and says so, any other
-repository that must record a key fails, and `--rotate-trace-signing-key`
-stops the run before it writes a key (see
+#### Adopting an existing file
+
+An existing `.fullsend/config.yaml` without the ownership marker needs
+adoption, even when the repository has no `config` key. An empty file counts
+as a file without the marker. For such a repository:
+
+- `repos status` reports `managed configuration (adoption required)` instead
+  of ordinary drift. Its output (table and JSON `detail`) shows:
+  - the proposed `repos.yaml` entry, which carries every setting the existing
+    file declares, including values equal to the code defaults
+  - the difference between the existing file and the managed file that
+    adoption would produce
+  - the change to the effective layered configuration: the existing overlay
+    over the installed base, against the managed overlay over the base the run
+    would leave in place. This shows any setting that adoption would drop, or
+    that changes only through the base layer.
+- `repos install` skips the repository and leaves the file untouched. It
+  prints the same guidance, lists the repository as `FAILED` in the summary,
+  converges the other selected repositories, and exits non-zero. A dry run
+  does the same.
+
+To adopt the file, edit it to carry the marker, or replace it with the
+rendered managed body. `repos status` reports a markerless file that is
+malformed or is not a per-repo configuration as an error instead.
+
+#### Safety gate for less restrictive changes
+
+Before it writes a managed file, install compares the candidate and the
+current effective configuration through the full overlay → base →
+code-defaults chain. It rejects a candidate that is less restrictive, unless
+the manifest explicitly declares that change. A blanket adoption
+acknowledgement is not enough. The gate compares:
+
+- `kill_switch` and `roles`
+- `allowed_remote_resources`
+- agent `enabled: false` suppressions
+- `tracker.<provider>.allowed_targets`
+- `inference.gateway.url` and `inference.gateway.audience`
+- `artifacts.content` and `artifacts.by_source.<source>`
+- `progress.verbosity` and `progress.by_source.<source>`
+
+Omitted keys fall through to the next layer and are not treated as unset. An
+explicit empty `allowed_remote_resources: []` stays deny-all. Any change to
+an `inference.gateway` field must be declared in the manifest. This includes a
+preset that adds a gateway to an established installation that has none.
+Status and install output name the affected keys.
+
+Adding a `config_base` preset to a repository with no base file counts as
+replacing the base (the absent base is an empty layer), even when the managed
+overlay is unchanged. Only a pristine first install, with neither file
+present, is exempt: there is no current configuration to relax, so it
+inherits what the preset declares. These rules apply to repositories with an
+explicit entry and to glob-covered repositories.
+
+Install checks the overlay and the base together, before any manifest or forge
+write. When the overlay needs adoption and the base needs action, install
+reports both problems. A repository whose only problem is adoption is skipped,
+as described in [Adopting an existing file](#adopting-an-existing-file). Any
+other problem stops the whole run before any write. Convergence runs the same
+checks again: a fresh install that adoption or the safety gate blocks stops
+before any variable, secret, scaffold file, or PR/MR write, in a dry run and a
+live run alike.
+
+#### Read-only manifests
+
+A manifest is read-only when it is an HTTPS URL, a pipe or FIFO such as
+`<(cmd)`, or a local file without write permission or on a read-only file
+system. When install needs to write to a read-only manifest, for example to
+record the [first-install tracker default](#defaults-on-first-install), it
+fails before any write and prints the exact entry to add to the manifest
+source. This includes a glob-covered repository that needs its own entry.
+`--dry-run`, a live install, and `repos status` agree.
+
+Trace signing keys follow their own rule on GitHub. From a read-only manifest,
+a fresh install without `--rotate-trace-signing-key` goes ahead without keys
+and says so. Any other repository that must record a key fails, and
+`--rotate-trace-signing-key` stops the run before it writes a key (see
 [Trace signing keys](../../cli/repos.md#trace-signing-keys)).
 
 ```bash
