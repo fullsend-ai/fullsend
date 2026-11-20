@@ -1,6 +1,7 @@
 package security
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -524,7 +525,6 @@ func TestOutputRemoval(t *testing.T) {
 		"invalid json":  {failClosedInvalidJSON + "\n", "redaction would invalidate JSON", true},
 		"cross-record":  {failClosedCrossRecordJSON, "a secret spanned multiple records", true},
 		"spans members": {failClosedSpansMembersJSON, "a private key block spans JSON framing", true},
-		"text fallback": {OutputRemovalTextJSONMarker + "\r\n", "text redaction would invalidate JSON", true},
 		"ordinary doc":  {`{"error":"not a removal marker"}`, "", false},
 		"not json":      {"plain prose", "", false},
 		"empty":         {"", "", false},
@@ -1324,4 +1324,36 @@ func assertReviewResultSchemaValid(t *testing.T, doc []byte) {
 		assert.NotEmpty(t, file, "finding %d file must be at least one character", i)
 		assert.NotEmpty(t, description, "finding %d description must be at least one character", i)
 	}
+}
+
+// TestSanitizeJSONDocument_KeepsBOM pins that a document carrying a UTF-8 BOM is
+// sanitized structurally and keeps its encoding mark. The BOM is not JSON
+// whitespace, so without this the document falls through to the plain-text scan,
+// which is the scan that cannot guarantee JSON syntax stays intact (#5705).
+func TestSanitizeJSONDocument_KeepsBOM(t *testing.T) {
+	p := OutputPipeline()
+	bom := []byte("\ufeff")
+
+	clean := append(append([]byte{}, bom...), []byte(`{"verdict":"approve"}`)...)
+	out, findings, err := SanitizeJSONDocument(clean, p)
+	require.NoError(t, err)
+	assert.Empty(t, findings)
+	assert.Equal(t, clean, out, "a clean BOM-prefixed document must be returned unchanged")
+
+	dirty := append(append([]byte{}, bom...), []byte(`{"token":"ghp_FAKEtesttoken000000000000000000000000"}`)...)
+	out, findings, err = SanitizeJSONDocument(dirty, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, bytes.HasPrefix(out, bom), "the BOM must survive the rewrite: %q", out)
+	assert.True(t, json.Valid(bytes.TrimPrefix(out, bom)), "sanitized document must stay valid JSON: %s", out)
+	assert.NotContains(t, string(out), "ghp_FAKEtesttoken")
+}
+
+// TestOutputRemoval_NoPlainTextReason pins that the plain-text marker the CLI no
+// longer writes is not a recognized reason. A document that parses as JSON takes
+// the structural path, so every remaining fail-closed reason is structural.
+func TestOutputRemoval_NoPlainTextReason(t *testing.T) {
+	reason, removed := OutputRemoval([]byte(`{"error":"output removed because text redaction would invalidate JSON"}`))
+	assert.False(t, removed, "the removed plain-text marker must not be recognized")
+	assert.Empty(t, reason)
 }

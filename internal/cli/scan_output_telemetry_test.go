@@ -347,24 +347,35 @@ func TestScanOutputFiles_JSONLRawMultilinePEMRemainsValid(t *testing.T) {
 // TestScanOutputFiles_EmitsAnnotationWhenOutputIsRemoved pins that a whole-file
 // fail-closed replacement is announced as a workflow annotation. A review lost to
 // redaction must not pass silently: the run still exits 0, so the annotation is
-// the only signal an operator gets (#5705).
+// the only signal an operator gets (#5705). Forgejo Actions runners set
+// GITHUB_ACTIONS=true too and understand the same workflow command, so they get
+// the annotation as well, which is why the check is the variable and not the
+// forge.
 func TestScanOutputFiles_EmitsAnnotationWhenOutputIsRemoved(t *testing.T) {
 	const secret = `"v1","k2"`
 	require.True(t, security.RegisterRuntimeSecret(secret))
 	t.Cleanup(security.ResetRuntimeSecretsForTest)
 
 	for name, tc := range map[string]struct {
-		actions string
-		want    string
+		env  map[string]string
+		want string
 	}{
 		"github actions": {
-			actions: "true",
-			want:    "::error::Output file replaced with a fail-closed marker: redaction would invalidate JSON",
+			env:  map[string]string{"GITHUB_ACTIONS": "true"},
+			want: "::error::Output file replaced with a fail-closed marker: redaction would invalidate JSON",
 		},
-		"local run": {actions: "", want: ""},
+		"forgejo actions": {
+			env:  map[string]string{"GITHUB_ACTIONS": "true", "FORGEJO_ACTIONS": "true"},
+			want: "::error::Output file replaced with a fail-closed marker: redaction would invalidate JSON",
+		},
+		"local run": {env: nil, want: ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv("GITHUB_ACTIONS", tc.actions)
+			t.Setenv("GITHUB_ACTIONS", "")
+			t.Setenv("FORGEJO_ACTIONS", "")
+			for key, value := range tc.env {
+				t.Setenv(key, value)
+			}
 			dir := t.TempDir()
 			path := filepath.Join(dir, "agent-result.json")
 			// The secret spans the closing quote, comma and next key, so it
@@ -454,17 +465,25 @@ func TestScanOutputFiles_EmitsAnnotationForJSONLRecordRemoval(t *testing.T) {
 		"{\"event\":\"end\",\"text\":\"" + end + "\"}\n"
 
 	for name, tc := range map[string]struct {
-		actions string
-		want    string
+		env  map[string]string
+		want string
 	}{
 		"github actions": {
-			actions: "true",
-			want:    "::error::Output record replaced with a fail-closed marker: a secret spanned multiple records",
+			env:  map[string]string{"GITHUB_ACTIONS": "true"},
+			want: "::error::Output record replaced with a fail-closed marker: a secret spanned multiple records",
 		},
-		"local run": {actions: "", want: ""},
+		"forgejo actions": {
+			env:  map[string]string{"GITHUB_ACTIONS": "true", "FORGEJO_ACTIONS": "true"},
+			want: "::error::Output record replaced with a fail-closed marker: a secret spanned multiple records",
+		},
+		"local run": {env: nil, want: ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv("GITHUB_ACTIONS", tc.actions)
+			t.Setenv("GITHUB_ACTIONS", "")
+			t.Setenv("FORGEJO_ACTIONS", "")
+			for key, value := range tc.env {
+				t.Setenv(key, value)
+			}
 			dir := t.TempDir()
 			path := filepath.Join(dir, "transcript.jsonl")
 			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
@@ -607,4 +626,30 @@ func TestScanOutputFiles_WriteFailureRemovesUnredactedBytes(t *testing.T) {
 	require.NoError(t, readErr)
 	assert.NotContains(t, string(got), secret, "the unredacted bytes must not survive a write failure")
 	assert.JSONEq(t, `{"error":"output removed because it could not be redacted"}`, string(got))
+}
+
+// TestScanOutputFiles_SanitizesBOMPrefixedJSONStructurally pins that a JSON
+// document that starts with a UTF-8 BOM still takes the structural path. The BOM
+// is not JSON whitespace, so before this it fell through to the plain-text scan,
+// which cannot guarantee the document keeps valid JSON syntax (#5705).
+func TestScanOutputFiles_SanitizesBOMPrefixedJSONStructurally(t *testing.T) {
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := `{"z_begin":"` + begin + `","m_body":"MIIEpAIBAAKCAQEA0123456789abcdef","a_end":"` + end + `","verdict":"approve"}`
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-result.json")
+	require.NoError(t, os.WriteFile(path, append([]byte("\ufeff"), doc...), 0o644))
+
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{})))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	bom := []byte("\ufeff")
+	require.True(t, bytes.HasPrefix(got, bom), "a BOM-prefixed file keeps its encoding mark: %q", got)
+	body := bytes.TrimPrefix(got, bom)
+	assert.True(t, json.Valid(body), "the sanitized document must stay valid JSON: %s", body)
+	assert.NotContains(t, string(body), "BEGIN RSA")
+	assert.NotContains(t, string(body), "MIIEpAIBAAKCAQEA")
+	assert.Contains(t, string(body), `"verdict":"approve"`, "a member outside the block must survive")
 }

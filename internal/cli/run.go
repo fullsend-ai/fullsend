@@ -7166,9 +7166,11 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 		}
 
 		// Structurally sanitize valid JSON so redaction never breaks JSON
-		// syntax and fails closed (#5705). Non-JSON files fall through to the
-		// plain text scan below.
-		if json.Valid(bytes.TrimSpace(content)) {
+		// syntax and fails closed (#5705). The test tolerates a leading UTF-8
+		// BOM, so a document that carries one is not left to the text scan,
+		// where a redaction could still break its syntax. Non-JSON files fall
+		// through to the plain text scan below.
+		if security.IsJSONDocument(content) {
 			out, jsonFindings, jsonErr := sanitizeJSONDocument(content, pipeline)
 			if jsonErr != nil {
 				writeErrs = append(writeErrs, sanitizeFailure(quiet, path, relPath, jsonErr, &unsanitizable))
@@ -7211,16 +7213,11 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 					})
 			}
 			// Sanitized may be empty when all content was invisible characters.
+			// Nothing here writes a fail-closed marker: a document that parsed
+			// as JSON took the structural path above, so this text scan cannot
+			// turn valid JSON into invalid JSON, and the alert has nothing to
+			// report.
 			out := result.Sanitized
-			// A malformed input that still parses as JSON must not be turned
-			// into invalid JSON by a cross-value text redaction.
-			if json.Valid(content) && !json.Valid([]byte(out)) {
-				if !quiet {
-					printer.StepWarn(fmt.Sprintf("Text redaction would invalidate JSON in %s; replacing output with a redacted JSON marker", relPath))
-				}
-				out = security.OutputRemovalTextJSONMarker
-			}
-			alertOnOutputRemoval(printer, []byte(out))
 			if writeErr := writeFile(path, []byte(out), 0o644); writeErr != nil {
 				writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
 			}

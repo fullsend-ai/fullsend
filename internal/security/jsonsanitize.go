@@ -21,18 +21,37 @@ const (
 	failClosedInvalidJSON      = `{"error":"output removed because redaction would invalidate JSON"}`
 	failClosedCrossRecordJSON  = `{"error":"output removed because output contained a cross-record secret"}`
 	failClosedSpansMembersJSON = `{"error":"output removed because a private key block spans JSON framing"}`
-
-	// OutputRemovalTextJSONMarker replaces a whole file whose plain-text
-	// redaction would leave the JSON it started as syntactically broken. The CLI
-	// writes it on the fallback path for files the structural path cannot
-	// handle.
-	OutputRemovalTextJSONMarker = `{"error":"output removed because text redaction would invalidate JSON"}`
 )
 
 // privateKeyMask replaces each JSON string value that carries key material from a
 // private-key block spanning JSON framing, and any key name that carries block
 // text itself.
 const privateKeyMask = "[REDACTED PRIVATE KEY]"
+
+// utf8BOM is the encoding mark some tooling writes at the start of a UTF-8
+// file. encoding/json does not accept it as leading content, so a document that
+// carries one has to lose the prefix before it can be parsed and get it back on
+// write. Without that, the file falls through to the plain-text scan, where a
+// redaction can still break the JSON syntax the BOM was hiding (#5705).
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// IsJSONDocument reports whether doc is one JSON document, tolerating a leading
+// UTF-8 BOM. SanitizeJSONDocument uses the same test, so callers route exactly
+// the documents here that it will treat structurally.
+func IsJSONDocument(doc []byte) bool {
+	return json.Valid(bytes.TrimSpace(bytes.TrimPrefix(doc, utf8BOM)))
+}
+
+// restoreBOM puts back the UTF-8 BOM the structural path strips, so a
+// BOM-prefixed file keeps its encoding mark.
+func restoreBOM(original, sanitized []byte) []byte {
+	if !bytes.HasPrefix(original, utf8BOM) {
+		return sanitized
+	}
+	out := make([]byte, 0, len(utf8BOM)+len(sanitized))
+	out = append(out, utf8BOM...)
+	return append(out, sanitized...)
+}
 
 // outputRemovalMarkers lists every whole-file removal marker with the reason it
 // states.
@@ -42,7 +61,6 @@ var outputRemovalMarkers = []struct {
 	{failClosedInvalidJSON, "redaction would invalidate JSON"},
 	{failClosedCrossRecordJSON, "a secret spanned multiple records"},
 	{failClosedSpansMembersJSON, "a private key block spans JSON framing"},
-	{OutputRemovalTextJSONMarker, "text redaction would invalidate JSON"},
 }
 
 // OutputRemoval reports whether sanitized is a whole-file removal marker and
@@ -99,10 +117,13 @@ const redactedJSONKey = "redacted"
 // a map and re-encoded: that keeps member order and duplicate keys, so a
 // secret that spans JSON framing is still visible in the rewritten bytes.
 func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
-	trimmed := bytes.TrimSpace(doc)
-	if len(trimmed) == 0 || !json.Valid(trimmed) {
+	if !IsJSONDocument(doc) {
 		return doc, nil, nil
 	}
+	// A BOM is framing rather than content: the token walk cannot parse it, and
+	// every return below puts it back, so it is stripped once here.
+	body := bytes.TrimPrefix(doc, utf8BOM)
+	trimmed := bytes.TrimSpace(body)
 	// A block that spans members is invisible to both the leaf scan and the
 	// written-bytes scan once a member is masked, and its markers may be
 	// \u-escaped in the raw bytes. The decoded view is the only place it is
@@ -112,7 +133,7 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 		// The view is built from the leaves themselves, so localization should
 		// never fail. If the walks ever disagree, fail closed rather than write
 		// bytes that may still carry the block.
-		return preserveTrailingNewline([]byte(failClosedSpansMembersJSON), doc),
+		return restoreBOM(doc, preserveTrailingNewline([]byte(failClosedSpansMembersJSON), doc)),
 			[]Finding{privateKeySpanFinding(spans.unmappable, false)}, nil
 	}
 	rebuilt, findings, err := rewriteJSONTokens(trimmed, p, spans)
@@ -122,7 +143,7 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 		// so the caller fails closed instead of writing unscanned bytes.
 		return nil, nil, fmt.Errorf("could not sanitize JSON document: %w", err)
 	}
-	out := doc
+	out := body
 	if len(findings) > 0 || spans.localized > 0 {
 		out = rebuilt
 	}
@@ -134,7 +155,7 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	// JSON framing (for example a PEM block split across members) and so cannot
 	// be mapped back to a single leaf.
 	sanitizedOut, outputFindings := redactJSONOutput(out, p)
-	return preserveTrailingNewline(sanitizedOut, doc), append(findings, outputFindings...), nil
+	return restoreBOM(doc, preserveTrailingNewline(sanitizedOut, body)), append(findings, outputFindings...), nil
 }
 
 // privateKeySpanFinding reports the private-key blocks that span JSON framing.
