@@ -3578,10 +3578,7 @@ func TestDeprovisionRepoWIF_RetainsBindingWhenCovered(t *testing.T) {
 		condition string
 	}{
 		{"same repo different case", "assertion.repository == 'Acme/Widget'"},
-		{"org single", "assertion.repository_owner == 'acme'"},
-		{"org list double quotes", `assertion.repository_owner in ["other", "acme"]`},
 		{"empty condition", "  "},
-		{"public mint condition", publicAttributeCondition},
 		{"constant true", "true"},
 		{"prefix match", "assertion.repository.startsWith('acme/')"},
 		{"numeric owner id", "assertion.repository_owner_id == '12345'"},
@@ -3597,6 +3594,59 @@ func TestDeprovisionRepoWIF_RetainsBindingWhenCovered(t *testing.T) {
 			assert.Equal(t, []string{"keeper"}, res.RetainedBy)
 			assert.False(t, res.BindingRemoved)
 			assert.NotContains(t, fake.calls, "RemoveProjectIAMBinding")
+			assert.Len(t, fake.projectIAMBindings, 1)
+		})
+	}
+}
+
+// Org-level and public-mint providers grant Vertex access to
+// <org>/.fullsend only, so they must not keep another repo's binding.
+func TestDeprovisionRepoWIF_OrgLevelProvidersDoNotRetainRepoBinding(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+	}{
+		{"org single", "assertion.repository_owner == 'acme'"},
+		{"org list double quotes", `assertion.repository_owner in ["other", "acme"]`},
+		{"public mint condition", publicAttributeCondition},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			fake.projectIAMBindings = []projectIAMBinding{{"proj1", testRepoPrincipal, "roles/aiplatform.user"}}
+			fake.wifProviders = []WIFProviderSummary{{ProviderID: "org-provider", AttributeCondition: tc.condition, State: "ACTIVE"}}
+
+			res, err := newRepoDeprovisionProvisioner(fake).DeprovisionRepoWIF(context.Background(), "acme/widget")
+			require.NoError(t, err)
+			assert.Empty(t, res.RetainedBy)
+			assert.True(t, res.BindingRemoved)
+			assert.Empty(t, fake.projectIAMBindings)
+		})
+	}
+}
+
+// For <org>/.fullsend the repo principal is the org grant itself, so an
+// org-level provider still covering the owner keeps it.
+func TestDeprovisionRepoWIF_FullsendRepoRetainedByOrgLevelProviders(t *testing.T) {
+	const principal = "principalSet://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/attribute.repository/acme/.fullsend"
+	tests := []struct {
+		name      string
+		condition string
+	}{
+		{"org single", "assertion.repository_owner == 'acme'"},
+		{"org list", `assertion.repository_owner in ["other", "acme"]`},
+		{"public mint condition", publicAttributeCondition},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			fake.projectIAMBindings = []projectIAMBinding{{"proj1", principal, "roles/aiplatform.user"}}
+			fake.wifProviders = []WIFProviderSummary{{ProviderID: "org-provider", AttributeCondition: tc.condition, State: "ACTIVE"}}
+
+			res, err := newRepoDeprovisionProvisioner(fake).DeprovisionRepoWIF(context.Background(), "acme/.fullsend")
+			require.NoError(t, err)
+			assert.Equal(t, []string{"org-provider"}, res.RetainedBy)
+			assert.False(t, res.BindingRemoved)
 			assert.Len(t, fake.projectIAMBindings, 1)
 		})
 	}
@@ -3649,15 +3699,16 @@ func TestConditionCoversRepo(t *testing.T) {
 	}{
 		{"assertion.repository == 'acme/widget'", true},
 		{"assertion.repository == 'acme/widget-two'", false},
-		{"assertion.repository_owner == 'acme'", true},
+		// Org-level and public-mint providers do not depend on a non-.fullsend repo's binding.
+		{"assertion.repository_owner == 'acme'", false},
 		{"assertion.repository_owner == 'acme-corp'", false},
 		{"assertion.repository == 'acme/gadget'", false},
 		{"assertion.repository_owner in ['x0fullsend0placeholder']", false},
 		{"", true},
-		{`assertion.repository_owner in ["other", "ACME"]`, true},
+		{`assertion.repository_owner in ["other", "ACME"]`, false},
 		{"assertion.repository_owner in ['other', 'another']", false},
+		{"assertion.repository_owner != ''", false},
 		// Unrecognized or permissive forms must be treated as covering.
-		{"assertion.repository_owner != ''", true},
 		{"true", true},
 		{"assertion.repository.startsWith('acme/')", true},
 		{"assertion.repository_owner_id == '12345'", true},
@@ -3666,12 +3717,28 @@ func TestConditionCoversRepo(t *testing.T) {
 		{"assertion.repository == 'acme/gadget' || assertion.repository.startsWith('acme/')", true},
 		// Escape sequences make raw literal text unreliable; keep the binding.
 		{`assertion.repository == 'acme/\x77idget'`, true},
-		{`assertion.repository_owner == "acme"`, true},
+		{`assertion.repository_owner == "acme"`, false},
 		{`assertion.repository_owner in ['other', 'ac\x6de']`, true},
 		{`assertion.repository == 'acme/gadget\n'`, true},
 	}
 	for _, tc := range tests {
 		assert.Equal(t, tc.want, conditionCoversRepo(tc.condition, "acme", "acme/widget"), tc.condition)
+	}
+
+	// For <owner>/.fullsend the org grant and the repo principal coincide.
+	fullsend := []struct {
+		condition string
+		want      bool
+	}{
+		{"assertion.repository_owner == 'acme'", true},
+		{"assertion.repository_owner == 'other'", false},
+		{`assertion.repository_owner in ["other", "ACME"]`, true},
+		{"assertion.repository_owner in ['other']", false},
+		{"assertion.repository_owner != ''", true},
+		{"assertion.repository == 'acme/widget'", false},
+	}
+	for _, tc := range fullsend {
+		assert.Equal(t, tc.want, conditionCoversRepo(tc.condition, "acme", "acme/.fullsend"), tc.condition)
 	}
 }
 

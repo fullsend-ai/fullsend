@@ -731,8 +731,9 @@ Repo-scoped mode (e.g. 'fullsend inference deprovision acme/widget'):
   Deletes the repo's dedicated WIF provider entirely, then revokes the
   roles/aiplatform.user binding on the repo's principalSet
   (attribute.repository/<owner/repo>). The binding is kept if another
-  provider in the pool still has an attribute condition covering the
-  repo or its owner; the summary names those providers.
+  provider in the pool may still need it (same repo, an unrecognized
+  condition, or an org-level provider when the repo is <owner>/.fullsend);
+  the summary names those providers.
 
 Requires the same GCP APIs as 'inference provision' (see 'fullsend inference provision --help').
 
@@ -797,7 +798,7 @@ func runInferenceDeprovisionDryRun(printer *ui.Printer, org, repo, project, pool
 		printer.StepInfo(fmt.Sprintf("  1. Delete WIF provider %s", providerID))
 		printer.StepInfo(fmt.Sprintf("  2. Revoke roles/aiplatform.user from %s",
 			gcf.RepoVertexAIPrincipal("<project-number>", pool, repo)))
-		printer.StepInfo("     unless another provider in the pool still covers the repo or its owner")
+		printer.StepInfo("     unless another provider in the pool may still need it")
 	} else {
 		printer.Header("Dry run: deprovision org " + org + " from inference")
 		printer.Blank()

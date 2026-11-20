@@ -607,7 +607,7 @@ func TestRunInferenceDeprovision_RepoRetainsBindingWhenCovered(t *testing.T) {
 	client := gcf.NewFakeGCFClient(
 		gcf.WithFakeProjectIAMBinding("my-project", testDeprovisionPrincipal, "roles/aiplatform.user"),
 		gcf.WithFakeWIFProviders([]gcf.WIFProviderSummary{
-			{ProviderID: "github-oidc", AttributeCondition: "assertion.repository_owner == 'acme'", State: "ACTIVE"},
+			{ProviderID: "github-oidc", AttributeCondition: "assertion.repository.startsWith('acme/')", State: "ACTIVE"},
 		}),
 	)
 	cmd, buf := newStatusCmd(client)
