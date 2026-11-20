@@ -193,22 +193,26 @@ type codexFileChangeItem struct {
 }
 
 type codexMcpToolCallItem struct {
-	Server    string             `json:"server"`
-	Tool      string             `json:"tool"`
-	Arguments json.RawMessage    `json:"arguments"`
-	Result    *codexMcpResult    `json:"result"`
-	Error     *codexErrorPayload `json:"error"`
-	Status    string             `json:"status"`
+	Server    string          `json:"server"`
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments"`
+	// Result stays raw here and is decoded on its own by
+	// codexMcpResultText, so a result in a shape this parser does not know
+	// costs the call its output, never the call itself.
+	Result json.RawMessage    `json:"result"`
+	Error  *codexErrorPayload `json:"error"`
+	Status string             `json:"status"`
 }
 
 // codexMcpResult is an MCP call's result as the exec stream carries it: the
 // server's content blocks (text, image, audio, resource) and an optional
 // structured_content value. Text is what the Level 3 record keeps, as it is
 // for Claude and pi tool results; structured_content is read only when the
-// blocks hold no text (see codexStructuredText).
+// blocks hold no text (see codexStructuredText). Each block is decoded on
+// its own, so one block of an unknown shape is skipped, not the result.
 type codexMcpResult struct {
-	Content           []piContentBlock `json:"content"`
-	StructuredContent json.RawMessage  `json:"structured_content"`
+	Content           []json.RawMessage `json:"content"`
+	StructuredContent json.RawMessage   `json:"structured_content"`
 }
 
 type codexCollabToolCallItem struct {
@@ -380,20 +384,37 @@ func codexCommandFailed(item codexCommandExecutionItem) bool {
 // otherwise the text of its content blocks, with partial set when a block of
 // another type was skipped (as for Claude and pi). A result whose blocks
 // hold no text falls back to its structured_content, flattened by
-// codexStructuredText.
+// codexStructuredText. A result, or a block, in a shape this parser does
+// not know is skipped and the result marked partial.
 func codexMcpResultText(item codexMcpToolCallItem) (text string, isError, partial bool) {
 	if item.Error != nil {
 		return item.Error.Message, true, false
 	}
-	if item.Result != nil {
-		text, partial = piContentText(item.Result.Content)
-		if text == "" {
-			if s, present := codexStructuredText(item.Result.StructuredContent); present {
-				text, partial = s, true
-			}
+	isError = item.Status == "failed"
+	if codexRawArguments(item.Result) == "" {
+		return "", isError, false
+	}
+	var result codexMcpResult
+	if json.Unmarshal(item.Result, &result) != nil {
+		return "", isError, true
+	}
+	blocks := make([]piContentBlock, 0, len(result.Content))
+	for _, raw := range result.Content {
+		var b piContentBlock
+		if json.Unmarshal(raw, &b) != nil {
+			partial = true
+			continue
+		}
+		blocks = append(blocks, b)
+	}
+	text, skipped := piContentText(blocks)
+	partial = partial || skipped
+	if text == "" {
+		if s, present := codexStructuredText(result.StructuredContent); present {
+			text, partial = s, true
 		}
 	}
-	return text, item.Status == "failed", partial
+	return text, isError, partial
 }
 
 // codexStructuredText flattens a JSON value the exec stream carries as a
