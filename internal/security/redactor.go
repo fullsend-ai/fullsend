@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Runtime secrets are exact credential values the runner learned during
@@ -16,6 +17,12 @@ import (
 // pattern runs. Values shorter than minRuntimeSecretLen are ignored so a
 // trivial string can never blank out ordinary output.
 const minRuntimeSecretLen = 8
+
+// minJSONFieldLen is the shortest value masked as a json_field. It is counted in
+// runes, matching the {8,} quantifier the json_field value used before the
+// pattern was widened to span escaped quotes inside a JSON string. The other
+// structural patterns enforce their own minimum in the pattern itself.
+const minJSONFieldLen = 8
 
 var (
 	runtimeSecretsMu sync.RWMutex
@@ -178,28 +185,18 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 			}
 
 			secret := current[start:end]
-			minLen := 0
-			switch p.name {
-			case "env_assignment":
-				minLen = 8
-			case "auth_header":
-				minLen = 12
-			case "db_connection_password":
-				minLen = 4
-			case "json_field":
-				minLen = 8
-			}
 			// If the matched secret ends with a backslash and is immediately
 			// followed by a quote delimiter, the trailing backslash was escaping
 			// that delimiter (e.g. \" in JSON or code strings). Preserve the
 			// escape by excluding the backslash from the redacted secret span.
-			originalLen := len(secret)
-			if end < len(current) && (current[end] == '"' || current[end] == '\'') {
+			// json_field spans escaped quotes in its own value pattern, so its
+			// capture already ends at the delimiter it belongs to.
+			if p.name != "json_field" && end < len(current) && (current[end] == '"' || current[end] == '\'') {
 				numBackslashes := 0
 				for k := len(secret) - 1; k >= 0 && secret[k] == '\\'; k-- {
 					numBackslashes++
 				}
-				if numBackslashes%2 == 1 && p.name != "json_field" {
+				if numBackslashes%2 == 1 {
 					secret = secret[:len(secret)-1]
 					end--
 				}
@@ -215,10 +212,15 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 			if isAlreadyMasked(secret) {
 				continue
 			}
-			masked := Mask(secret)
-			if originalLen < minLen {
+			// Only json_field needs the length gate here: its value pattern
+			// matches any length, while env_assignment, auth_header and
+			// db_connection_password enforce their own minimum in the pattern.
+			// The gate counts runes and runs on the trimmed span, so the bytes
+			// actually masked are never shorter than the documented minimum.
+			if p.name == "json_field" && utf8.RuneCountInString(secret) < minJSONFieldLen {
 				continue
 			}
+			masked := Mask(secret)
 			result.Findings = append(result.Findings, Finding{
 				Scanner:  "secret_redactor",
 				Name:     p.name,

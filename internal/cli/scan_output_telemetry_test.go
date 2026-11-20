@@ -120,7 +120,8 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	require.NoError(t, os.WriteFile(jsonFile5, []byte(validJSON5), 0o644))
 
 	// Structural findings plus a private-key marker spanning separate values
-	// must still be written as valid JSON after the serialized-text backstop.
+	// must still be written as valid JSON, with the masked members carrying
+	// neither marker.
 	jsonFile8 := filepath.Join(dir, "private_key_and_password.json")
 	validJSON8 := `["see -----BEGIN RSA` + ` PRIVATE KEY----- marker", {"note": "and -----END RSA` + ` PRIVATE KEY----- marker", "password": "a-long-sensitive-value"}]`
 	require.NoError(t, os.WriteFile(jsonFile8, []byte(validJSON8), 0o644))
@@ -133,7 +134,8 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 
 	// The private-key pattern can match across separate JSON string values in
 	// raw text, even though neither value contains a complete key block.
-	// Structural scanning must not let such a cross-value match corrupt JSON.
+	// Structural scanning must not let such a cross-value match corrupt JSON,
+	// and must mask only the members it covers rather than drop the document.
 	jsonFile7 := filepath.Join(dir, "private_key_markers.json")
 	validJSON7 := `["see -----BEGIN RSA` + ` PRIVATE KEY----- marker", {"note": "and -----END RSA` + ` PRIVATE KEY----- marker"}]`
 	require.NoError(t, os.WriteFile(jsonFile7, []byte(validJSON7), 0o644))
@@ -233,15 +235,19 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	content7, err := os.ReadFile(jsonFile7)
 	require.NoError(t, err)
 	assert.True(t, json.Valid(content7), "cross-value private-key match must not corrupt JSON")
-	assert.Contains(t, string(content7), "output removed", "cross-value private-key marker must fail closed")
+	assert.NotContains(t, string(content7), "PRIVATE KEY-----", "both marker members must be masked")
+	assert.NotContains(t, string(content7), "output removed", "the document must be kept, not dropped")
 	content8, err := os.ReadFile(jsonFile8)
 	require.NoError(t, err)
 	assert.True(t, json.Valid(content8), "backstop handling must preserve valid JSON")
-	assert.Contains(t, string(content8), "output removed", "cross-value backstop match must fail closed")
+	assert.NotContains(t, string(content8), "PRIVATE KEY-----",
+		"masking a password member must not hide the private-key markers")
+	assert.NotContains(t, string(content8), "output removed", "the document must be kept, not dropped")
 	content9, err := os.ReadFile(jsonFile9)
 	require.NoError(t, err)
 	assert.True(t, json.Valid(content9))
-	assert.Contains(t, string(content9), "output removed", "split PEM-like material must fail closed")
+	assert.NotContains(t, string(content9), "PRIVATE KEY-----", "split PEM-like material must be masked")
+	assert.NotContains(t, string(content9), "BASE64_KEY_MATERIAL_REDACTED")
 
 	// jq is the parser implicated by the original incident; exercise it when
 	// available, while keeping the Go validity assertions portable.
@@ -313,7 +319,9 @@ func TestScanOutputFiles_JSONLCrossValuePrivateKeyRemainsValid(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(got), "\n"))
 	line := strings.TrimSpace(string(got))
 	assert.True(t, json.Valid([]byte(line)), "each JSONL record must remain valid JSON: %s", line)
-	assert.Contains(t, line, "output removed", "cross-value private-key content should fail closed")
+	assert.NotContains(t, line, "PRIVATE KEY-----", "the members carrying the markers must be masked")
+	assert.NotContains(t, line, "KEY_MATERIAL_BASE64_VALUE_1234567890")
+	assert.NotContains(t, line, "output removed", "the record must be kept, not dropped")
 }
 
 func TestScanOutputFiles_JSONLRawMultilinePEMRemainsValid(t *testing.T) {
@@ -332,6 +340,49 @@ func TestScanOutputFiles_JSONLRawMultilinePEMRemainsValid(t *testing.T) {
 		assert.True(t, json.Valid([]byte(line)), "each line must be valid JSON: %s", line)
 		assert.Contains(t, line, "output removed")
 		assert.NotContains(t, line, "MIIEpAIBAAKCAQEA")
+	}
+}
+
+// TestScanOutputFiles_EmitsAnnotationWhenOutputIsRemoved pins that a whole-file
+// fail-closed replacement is announced as a workflow annotation. A review lost to
+// redaction must not pass silently: the run still exits 0, so the annotation is
+// the only signal an operator gets (#5705).
+func TestScanOutputFiles_EmitsAnnotationWhenOutputIsRemoved(t *testing.T) {
+	const secret = `"v1","k2"`
+	require.True(t, security.RegisterRuntimeSecret(secret))
+	t.Cleanup(security.ResetRuntimeSecretsForTest)
+
+	for name, tc := range map[string]struct {
+		actions string
+		want    string
+	}{
+		"github actions": {
+			actions: "true",
+			want:    "::error::Output file replaced with a fail-closed marker: redaction would invalidate JSON",
+		},
+		"local run": {actions: "", want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("GITHUB_ACTIONS", tc.actions)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "agent-result.json")
+			// The secret spans the closing quote, comma and next key, so it
+			// cannot be redacted in place without breaking the document.
+			require.NoError(t, os.WriteFile(path, []byte(`{"k1":"v1","k2":"v2"}`), 0o644))
+
+			var output bytes.Buffer
+			require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&output)))
+
+			got, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.True(t, json.Valid(got), "a replaced file must still be valid JSON: %s", got)
+			assert.NotContains(t, string(got), secret)
+			if tc.want == "" {
+				assert.NotContains(t, output.String(), "::error::")
+				return
+			}
+			assert.Contains(t, output.String(), tc.want)
+		})
 	}
 }
 

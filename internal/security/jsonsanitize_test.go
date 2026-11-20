@@ -43,18 +43,20 @@ func TestSanitizeJSONDocument_DuplicateKeysSurviveRewrite(t *testing.T) {
 	assert.NotContains(t, string(out), "ghp_FAKEtesttoken")
 }
 
-// TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersFailsClosed pins that a
-// private key spread over several members is detected in the bytes that are
-// actually written. Scanning only the re-encoded form missed it: encoding a map
-// sorts keys, and with the END marker sorted before the BEGIN marker the
-// pattern no longer matched the original key material.
-func TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersFailsClosed(t *testing.T) {
+// TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersMasksCoveredMembers pins
+// that a private key spread over several members is neutralized member by member
+// instead of dropping the whole document. Scanning only the re-encoded form
+// missed the block: encoding a map sorts keys, and with the END marker sorted
+// before the BEGIN marker the pattern no longer matched the original key
+// material. Dropping the document was the other extreme — a review result lost
+// its verdict with it (#5705).
+func TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersMasksCoveredMembers(t *testing.T) {
 	p := OutputPipeline()
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	// Reverse the members' sort order so a map re-encode would emit END before
 	// BEGIN and hide the block from a serialized scan.
-	doc := []byte(`{"z_begin":"` + begin + `","m_body":"MIIEpAIBAAKCAQEA0123456789abcdef","a_end":"` + end + `"}`)
+	doc := []byte(`{"z_begin":"` + begin + `","m_body":"MIIEpAIBAAKCAQEA0123456789abcdef","a_end":"` + end + `","verdict":"approve"}`)
 
 	out, findings, err := SanitizeJSONDocument(doc, p)
 	require.NoError(t, err)
@@ -62,7 +64,36 @@ func TestSanitizeJSONDocument_PrivateKeySplitAcrossMembersFailsClosed(t *testing
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "BEGIN RSA")
 	assert.NotContains(t, string(out), "MIIEpAIBAAKCAQEA")
-	assert.Contains(t, string(out), "output removed", "an unmappable match must fail closed")
+	assert.NotContains(t, string(out), "output removed", "the document must be kept, not dropped")
+	assert.Contains(t, string(out), `"verdict":"approve"`, "a member outside the block must survive")
+}
+
+// TestSanitizeJSONDocument_MarkersInSeparateFindingsKeepReview pins the
+// regression a reviewer found: a review result that quotes the PEM header in one
+// finding and the footer in another matches the lazy private-key pattern across
+// members, but nothing is hidden and the review still has to be posted. Only the
+// members the match covers are masked, so the verdict survives (#5705).
+func TestSanitizeJSONDocument_MarkersInSeparateFindingsKeepReview(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN" + " PRIVATE KEY-----"
+	end := "-----END" + " PRIVATE KEY-----"
+	doc := []byte(`{"findings":[{"body":"checks for the ` + begin + ` header"},` +
+		`{"body":"stops at the ` + end + ` footer"}],"verdict":"approve"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings, "the cross-member marker pair is still reported")
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), "output removed", "the review must not be dropped whole")
+	assert.NotContains(t, string(out), "PRIVATE KEY-----")
+
+	var result struct {
+		Findings []map[string]string `json:"findings"`
+		Verdict  string              `json:"verdict"`
+	}
+	require.NoError(t, json.Unmarshal(out, &result), "the sanitized review must still decode: %s", out)
+	assert.Equal(t, "approve", result.Verdict, "the verdict must survive")
+	assert.Len(t, result.Findings, 2, "every finding must survive")
 }
 
 // TestSanitizeJSONDocument_FramingSecretInCleanDocumentFailsClosed pins that a
@@ -85,16 +116,16 @@ func TestSanitizeJSONDocument_FramingSecretInCleanDocumentFailsClosed(t *testing
 	assert.NotContains(t, string(out), secret)
 }
 
-// TestSanitizeJSONDocument_CrossMemberPrivateKeyWithLeafSecretFailsClosed pins
-// that a leaf secret and a framing-spanning private key in the same document
-// are both handled: the rewrite keeps member order, so the framing-spanning
-// block is still visible in the rewritten bytes.
-func TestSanitizeJSONDocument_CrossMemberPrivateKeyWithLeafSecretFailsClosed(t *testing.T) {
+// TestSanitizeJSONDocument_CrossMemberPrivateKeyWithLeafSecret pins that a leaf
+// secret and a framing-spanning private key in the same document are both
+// handled: the rewrite keeps member order, and the members carrying the block
+// are masked while the rest of the document survives.
+func TestSanitizeJSONDocument_CrossMemberPrivateKeyWithLeafSecret(t *testing.T) {
 	p := OutputPipeline()
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	doc := []byte(`{"z_begin":"` + begin + `","m_body":"MIIEpAIBAAKCAQEA0123456789abcdef","a_end":"` + end + `",` +
-		`"token":"ghp_FAKEtesttoken000000000000000000000000"}`)
+		`"token":"ghp_FAKEtesttoken000000000000000000000000","verdict":"approve"}`)
 
 	out, findings, err := SanitizeJSONDocument(doc, p)
 	require.NoError(t, err)
@@ -102,6 +133,7 @@ func TestSanitizeJSONDocument_CrossMemberPrivateKeyWithLeafSecretFailsClosed(t *
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "ghp_FAKEtesttoken")
 	assert.NotContains(t, string(out), "PRIVATE KEY-----")
+	assert.Contains(t, string(out), `"verdict":"approve"`, "a member outside the block must survive")
 }
 
 // TestSanitizeJSONDocument_DuplicateKeySanitizedKeyCollision pins that a
@@ -261,6 +293,47 @@ func TestSanitizeJSONLines_SingleRecordPEMKeepsCleanRecords(t *testing.T) {
 	assert.NotContains(t, lines[1], "MIIEpAIBAAKCAQEA")
 }
 
+// TestOutputRemoval pins the markers recognized as a whole-file replacement and
+// the reason reported for the operator alert.
+func TestOutputRemoval(t *testing.T) {
+	for name, tc := range map[string]struct {
+		input   string
+		reason  string
+		removed bool
+	}{
+		"invalid json":  {failClosedInvalidJSON + "\n", "redaction would invalidate JSON", true},
+		"cross-record":  {failClosedCrossRecordJSON, "a secret spanned multiple records", true},
+		"spans members": {failClosedSpansMembersJSON, "a private key block spans JSON framing", true},
+		"text fallback": {OutputRemovalTextJSONMarker + "\r\n", "text redaction would invalidate JSON", true},
+		"ordinary doc":  {`{"error":"not a removal marker"}`, "", false},
+		"not json":      {"plain prose", "", false},
+		"empty":         {"", "", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reason, removed := OutputRemoval([]byte(tc.input))
+			assert.Equal(t, tc.removed, removed)
+			assert.Equal(t, tc.reason, reason)
+		})
+	}
+}
+
+// TestJSONProvenance_UnmappableBlock pins the defensive fallback: a block that no
+// recorded leaf range covers is reported as unmappable so the caller fails
+// closed instead of writing bytes that may still carry it.
+func TestJSONProvenance_UnmappableBlock(t *testing.T) {
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	v := &jsonProvenance{}
+	v.decoded.WriteString(begin + "\n" + "MIIEkeymaterial" + "\n" + end + "\n")
+	// One empty leaf, which can never overlap a match.
+	v.ranges = []recordSpan{{start: 0, end: 0}}
+
+	spans := v.spanningPrivateKeys()
+	assert.Equal(t, 1, spans.unmappable)
+	assert.Zero(t, spans.localized)
+	assert.Empty(t, spans.covered)
+}
+
 // TestSanitizeJSONDocument_AlreadyMaskedValueNotRemasked pins that rescanning a
 // document leaves an existing mask placeholder intact.
 func TestSanitizeJSONDocument_AlreadyMaskedValueNotRemasked(t *testing.T) {
@@ -410,16 +483,16 @@ func TestSanitizeJSONLines_RepeatedCleanRecordInsideCrossRecordMatch(t *testing.
 	assert.Equal(t, `{"value":"middle"}`, lines[3], "the repeated clean record outside the match must survive")
 }
 
-// TestSanitizeJSONDocument_SensitiveBeginMemberFailsClosed pins that masking a
-// member value cannot hide a private-key block that spans members. A
+// TestSanitizeJSONDocument_SensitiveBeginMemberMasksBlock pins that masking a
+// sensitive member value cannot hide a private-key block that spans members. A
 // sensitive-named member holding only the BEGIN marker is masked as a
-// json_field, which leaves the body and END marker behind; the block must be
-// detected in the original framing and fail closed.
-func TestSanitizeJSONDocument_SensitiveBeginMemberFailsClosed(t *testing.T) {
+// json_field, which would leave the body and END marker behind; the block is
+// detected in the original framing and its members are masked.
+func TestSanitizeJSONDocument_SensitiveBeginMemberMasksBlock(t *testing.T) {
 	p := OutputPipeline()
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
-	doc := []byte(`{"key_start":"` + begin + `","payload":"MIIEpAIBAAKCAQEA0123456789abcdef","tail":"` + end + `"}`)
+	doc := []byte(`{"key_start":"` + begin + `","payload":"MIIEpAIBAAKCAQEA0123456789abcdef","tail":"` + end + `","verdict":"approve"}`)
 
 	out, findings, err := SanitizeJSONDocument(doc, p)
 	require.NoError(t, err)
@@ -427,7 +500,7 @@ func TestSanitizeJSONDocument_SensitiveBeginMemberFailsClosed(t *testing.T) {
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "MIIEpAIBAAKCAQEA", "the key body must not survive")
 	assert.NotContains(t, string(out), "END RSA")
-	assert.Contains(t, string(out), "output removed")
+	assert.Contains(t, string(out), `"verdict":"approve"`, "a member outside the block must survive")
 }
 
 // TestSanitizeJSONLines_CleanDuplicateKeyRecordPreserved pins that a clean
@@ -569,10 +642,10 @@ func TestLineBounded(t *testing.T) {
 	}
 }
 
-// TestSanitizeJSONDocument_LeafAndSplitPrivateKeysFailClosed pins that a
-// handled leaf block does not exempt a second, framing-spanning block in the
-// same document.
-func TestSanitizeJSONDocument_LeafAndSplitPrivateKeysFailClosed(t *testing.T) {
+// TestSanitizeJSONDocument_LeafAndSplitPrivateKeysMasked pins that a handled
+// leaf block does not exempt a second, framing-spanning block in the same
+// document, and that neither leaves key material behind.
+func TestSanitizeJSONDocument_LeafAndSplitPrivateKeysMasked(t *testing.T) {
 	p := OutputPipeline()
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
@@ -585,7 +658,6 @@ func TestSanitizeJSONDocument_LeafAndSplitPrivateKeysFailClosed(t *testing.T) {
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
 	assert.NotContains(t, string(out), "MIIEleafkeymaterial")
-	assert.Contains(t, string(out), "output removed")
 }
 
 // TestSanitizeJSONLines_SensitiveBeginRecordFailsClosed pins that a
@@ -645,7 +717,6 @@ func TestSanitizeJSONDocument_EscapedLeafBlockDoesNotExemptSplitBlock(t *testing
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "MIIEspanningkeymaterial", "the spanning block must not survive")
 	assert.NotContains(t, string(out), "MIIEleafkeymaterial", "the escaped leaf block must be redacted")
-	assert.Contains(t, string(out), "output removed")
 }
 
 // TestSanitizeJSONLines_EscapedBeginRecordFailsClosed pins that a cross-record
@@ -690,10 +761,10 @@ func TestSanitizeJSONDocument_CRLFNoStrayCarriageReturn(t *testing.T) {
 	}
 }
 
-// TestSanitizeJSONDocument_EscapedMarkersAcrossMembersFailsClosed pins that a
-// block spanning members is detected even when no leaf produces a finding and
-// the markers are \u-escaped in the raw bytes.
-func TestSanitizeJSONDocument_EscapedMarkersAcrossMembersFailsClosed(t *testing.T) {
+// TestSanitizeJSONDocument_EscapedMarkersAcrossMembersMasked pins that a block
+// spanning members is detected even when no leaf produces a finding and the
+// markers are \u-escaped in the raw bytes.
+func TestSanitizeJSONDocument_EscapedMarkersAcrossMembersMasked(t *testing.T) {
 	p := OutputPipeline()
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	doc := []byte(`["\u002d` + "----BEGIN RSA" + " PRIVATE KEY-----" +
@@ -704,13 +775,12 @@ func TestSanitizeJSONDocument_EscapedMarkersAcrossMembersFailsClosed(t *testing.
 	require.NotEmpty(t, findings)
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
-	assert.Contains(t, string(out), "output removed")
 }
 
-// TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersFailsClosed pins that
-// the decoded view applies the same Unicode normalization as the leaf scan, so
-// a marker obfuscated with a zero-width character cannot hide a spanning block.
-func TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersFailsClosed(t *testing.T) {
+// TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersMasked pins that the
+// decoded view applies the same Unicode normalization as the leaf scan, so a
+// marker obfuscated with a zero-width character cannot hide a spanning block.
+func TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersMasked(t *testing.T) {
 	p := OutputPipeline()
 	end := "-----END RSA" + " PRIVATE KEY-----"
 	// U+200B inside the BEGIN marker: not a PEM block in any single form.
@@ -722,13 +792,13 @@ func TestSanitizeJSONDocument_NormalizedMarkersAcrossMembersFailsClosed(t *testi
 	require.NotEmpty(t, findings)
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "MIIEspanningkeymaterial")
-	assert.Contains(t, string(out), "output removed")
 }
 
-// TestSanitizeJSONDocument_UnterminatedBeginBeforeCompleteBlockFailsClosed pins
+// TestSanitizeJSONDocument_UnterminatedBeginBeforeCompleteBlockMasksBoth pins
 // that a lazy match starting at one leaf's BEGIN and ending at another leaf's
-// END cannot cancel out a complete leaf block: containment is judged per match.
-func TestSanitizeJSONDocument_UnterminatedBeginBeforeCompleteBlockFailsClosed(t *testing.T) {
+// END cannot cancel out a complete leaf block: containment is judged per match,
+// so both blocks are neutralized.
+func TestSanitizeJSONDocument_UnterminatedBeginBeforeCompleteBlockMasksBoth(t *testing.T) {
 	p := OutputPipeline()
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
 	end := "-----END RSA" + " PRIVATE KEY-----"
@@ -739,7 +809,7 @@ func TestSanitizeJSONDocument_UnterminatedBeginBeforeCompleteBlockFailsClosed(t 
 	require.NotEmpty(t, findings)
 	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
 	assert.NotContains(t, string(out), "MIIEfirstkeymaterial", "the unterminated block must not survive")
-	assert.Contains(t, string(out), "output removed")
+	assert.NotContains(t, string(out), "ZZZZZZZZ", "the complete block must not survive")
 }
 
 // TestSanitizeJSONDocument_LeavesUnsupportedInputAlone pins the fallback

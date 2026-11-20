@@ -544,6 +544,18 @@ func TestSecretRedactor(t *testing.T) {
 		assert.NotContains(t, result.Sanitized, "ijklmnop")
 	})
 
+	t.Run("json_field minimum counts runes, not bytes", func(t *testing.T) {
+		// Three CJK characters are nine bytes. The {8,} quantifier the value
+		// pattern used before it spanned escaped quotes counted characters, so
+		// a byte count would start masking values it never masked.
+		short := r.Scan(`{"password": "秘密の鍵"}`)
+		assert.True(t, short.Safe, "a value below the minimum must not be masked: %s", short.Sanitized)
+
+		exact := r.Scan(`{"password": "秘密の鍵ですよね"}`) // 8 runes
+		assert.False(t, exact.Safe)
+		assert.True(t, hasFinding(exact, "json_field"))
+	})
+
 	t.Run("mask does not leave dangling escape sequence", func(t *testing.T) {
 		input1 := `Authorization: Bearer abc\ndefghijkl`
 		result1 := r.Scan(input1)

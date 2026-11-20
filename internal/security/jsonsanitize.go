@@ -8,15 +8,55 @@ import (
 	"io"
 	"regexp"
 	"strconv"
+	"unicode/utf8"
 )
 
 // JSON output that cannot be redacted without corrupting its structure is
 // replaced with one of these valid JSON markers so downstream parsers (jq, the
 // retro and eval tooling) keep working while no secret reaches the artifact.
+// Each marker names the reason its content was dropped: the CLI turns that
+// reason into an operator alert, because a replaced file loses whatever the
+// agent wrote into it (#5705).
 const (
-	failClosedInvalidJSON     = `{"error":"output removed because redaction would invalidate JSON"}`
-	failClosedCrossRecordJSON = `{"error":"output removed because output contained a cross-record secret"}`
+	failClosedInvalidJSON      = `{"error":"output removed because redaction would invalidate JSON"}`
+	failClosedCrossRecordJSON  = `{"error":"output removed because output contained a cross-record secret"}`
+	failClosedSpansMembersJSON = `{"error":"output removed because a private key block spans JSON framing"}`
+
+	// OutputRemovalTextJSONMarker replaces a whole file whose plain-text
+	// redaction would leave the JSON it started as syntactically broken. The CLI
+	// writes it on the fallback path for files the structural path cannot
+	// handle.
+	OutputRemovalTextJSONMarker = `{"error":"output removed because text redaction would invalidate JSON"}`
 )
+
+// privateKeyMask replaces each JSON key and string leaf that carries part of a
+// private-key block spanning JSON framing.
+const privateKeyMask = "[REDACTED PRIVATE KEY]"
+
+// outputRemovalMarkers lists every whole-file removal marker with the reason it
+// states.
+var outputRemovalMarkers = []struct {
+	document, reason string
+}{
+	{failClosedInvalidJSON, "redaction would invalidate JSON"},
+	{failClosedCrossRecordJSON, "a secret spanned multiple records"},
+	{failClosedSpansMembersJSON, "a private key block spans JSON framing"},
+	{OutputRemovalTextJSONMarker, "text redaction would invalidate JSON"},
+}
+
+// OutputRemoval reports whether sanitized is a whole-file removal marker and
+// returns the reason it states. A replaced file loses the content the agent
+// wrote into it, so callers alert operators rather than let that loss pass
+// silently (#5705).
+func OutputRemoval(sanitized []byte) (string, bool) {
+	trimmed := string(bytes.TrimSpace(sanitized))
+	for _, marker := range outputRemovalMarkers {
+		if trimmed == marker.document {
+			return marker.reason, true
+		}
+	}
+	return "", false
+}
 
 // sensitiveJSONKeyRe matches object keys whose values are masked even when the
 // value itself does not match a secret pattern.
@@ -42,7 +82,19 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	if len(trimmed) == 0 || !json.Valid(trimmed) {
 		return doc, nil, nil
 	}
-	rebuilt, findings, prov, err := rewriteJSONTokens(trimmed, p)
+	// A block that spans members is invisible to both the leaf scan and the
+	// written-bytes scan once a member is masked, and its markers may be
+	// \u-escaped in the raw bytes. The decoded view is the only place it is
+	// visible, so it is consulted before anything is rewritten.
+	spans := collectJSONLeaves(trimmed).spanningPrivateKeys()
+	if spans.unmappable > 0 {
+		// The view is built from the leaves themselves, so localization should
+		// never fail. If the walks ever disagree, fail closed rather than write
+		// bytes that may still carry the block.
+		return preserveTrailingNewline([]byte(failClosedSpansMembersJSON), doc),
+			[]Finding{privateKeySpanFinding(spans.unmappable, false)}, nil
+	}
+	rebuilt, findings, err := rewriteJSONTokens(trimmed, p, spans.covered)
 	if err != nil {
 		// json.Valid accepted the text and the walk uses the same scanner, so
 		// this is a decoder limit rather than a syntax error. Return the error
@@ -50,21 +102,11 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 		return nil, nil, fmt.Errorf("could not sanitize JSON document: %w", err)
 	}
 	out := doc
-	if len(findings) > 0 {
+	if len(findings) > 0 || spans.localized > 0 {
 		out = rebuilt
 	}
-	// A block that spans members is invisible to both the leaf scan and the
-	// written-bytes scan once a member is masked, and its markers may be
-	// \u-escaped in the raw bytes. The decoded view is the only place it is
-	// visible, so it is consulted whether or not a leaf produced a finding.
-	if prov.spanningBlocks() > 0 {
-		return preserveTrailingNewline([]byte(failClosedInvalidJSON), doc),
-			append(findings, Finding{
-				Scanner:  "secret_redactor",
-				Name:     "private_key",
-				Severity: "critical",
-				Detail:   "Private key block spans JSON framing and cannot be localized; output removed",
-			}), nil
+	if spans.localized > 0 {
+		findings = append(findings, privateKeySpanFinding(spans.localized, true))
 	}
 	// Scan the bytes that will actually be written. The walk above already
 	// scanned every decoded key and leaf, so a match here spans JSON framing
@@ -72,6 +114,22 @@ func SanitizeJSONDocument(doc []byte, p *Pipeline) ([]byte, []Finding, error) {
 	// to a single leaf.
 	sanitizedOut, outputFindings := redactJSONOutput(out, p)
 	return preserveTrailingNewline(sanitizedOut, doc), append(findings, outputFindings...), nil
+}
+
+// privateKeySpanFinding reports the private-key blocks that span JSON framing.
+// localized says whether they were masked in the members that carried them or
+// the whole document had to be dropped.
+func privateKeySpanFinding(blocks int, localized bool) Finding {
+	detail := fmt.Sprintf("%d private key block(s) span JSON framing; masked the members carrying them", blocks)
+	if !localized {
+		detail = "Private key block spans JSON framing and cannot be localized; output removed"
+	}
+	return Finding{
+		Scanner:  "secret_redactor",
+		Name:     "private_key",
+		Severity: "critical",
+		Detail:   detail,
+	}
 }
 
 // privateKeyRe is the structural private-key pattern. A block that spans JSON
@@ -101,8 +159,8 @@ type jsonProvenance struct {
 // characters is normalized exactly as the per-leaf scan normalizes it.
 var decodedViewNormalizer = NewUnicodeNormalizer()
 
-// addString appends one decoded key or string leaf to the view and counts the
-// private-key blocks it fully contains.
+// addString appends one decoded key or string leaf to the view and records its
+// byte range so a match can be mapped back to the leaves that carry it.
 func (v *jsonProvenance) addString(s string) {
 	s = decodedViewNormalizer.Scan(s).Sanitized
 	start := v.decoded.Len()
@@ -111,25 +169,62 @@ func (v *jsonProvenance) addString(s string) {
 	v.ranges = append(v.ranges, recordSpan{start: start, end: v.decoded.Len() - 1})
 }
 
-// spanningBlocks reports how many private-key blocks in the decoded view are
-// not contained in a single key or leaf. Containment is checked per match: a
-// lazy pattern can start at one leaf's BEGIN and end at another leaf's END, and
-// counting differences would let that match cancel out a complete leaf block.
-func (v *jsonProvenance) spanningBlocks() int {
-	count := 0
+// privateKeySpans is the result of looking for private-key blocks that span the
+// keys and leaves of one document.
+type privateKeySpans struct {
+	// covered holds the indexes of the keys and leaves that carry part of a
+	// block spanning more than one of them.
+	covered map[int]bool
+	// localized counts the blocks that were mapped onto leaves.
+	localized int
+	// unmappable counts the blocks that no leaf range covers.
+	unmappable int
+}
+
+// spanningPrivateKeys finds the private-key blocks in the decoded view that are
+// not contained in a single key or leaf, and maps each one onto the leaves it
+// covers. Containment is checked per match: a lazy pattern can start at one
+// leaf's BEGIN and end at another leaf's END, and counting differences would let
+// that match cancel out a complete leaf block.
+//
+// A block whose markers sit in different members is not proof that key material
+// spans them — a review that quotes the header in one finding and the footer in
+// another matches too — so the callers mask only the members the match covers
+// and leave the rest of the document (a verdict, a summary) intact.
+func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
+	spans := privateKeySpans{covered: map[int]bool{}}
 	for _, match := range privateKeyRe.FindAllIndex(v.decoded.Bytes(), -1) {
-		contained := false
-		for _, r := range v.ranges {
-			if r.start <= match[0] && match[1] <= r.end {
-				contained = true
-				break
+		if v.leafContaining(match[0], match[1]) >= 0 {
+			// A block inside one leaf is that leaf's own scan.
+			continue
+		}
+		var hit []int
+		for i, r := range v.ranges {
+			if r.start < match[1] && match[0] < r.end {
+				hit = append(hit, i)
 			}
 		}
-		if !contained {
-			count++
+		if len(hit) == 0 {
+			spans.unmappable++
+			continue
+		}
+		spans.localized++
+		for _, i := range hit {
+			spans.covered[i] = true
 		}
 	}
-	return count
+	return spans
+}
+
+// leafContaining returns the index of the leaf that fully contains [start, end),
+// or -1 when no single leaf does.
+func (v *jsonProvenance) leafContaining(start, end int) int {
+	for i, r := range v.ranges {
+		if r.start <= start && end <= r.end {
+			return i
+		}
+	}
+	return -1
 }
 
 // preserveTrailingNewline drops the newline json.Encoder always appends and
@@ -161,7 +256,7 @@ func redactJSONOutput(clean []byte, p *Pipeline) ([]byte, []Finding) {
 		// A private-key block spanning values cannot be masked in place
 		// without breaking the surrounding JSON.
 		if finding.Name == "private_key" {
-			return []byte(failClosedInvalidJSON), res.Findings
+			return []byte(failClosedSpansMembersJSON), res.Findings
 		}
 	}
 	if res.Sanitized == "" || !json.Valid([]byte(res.Sanitized)) {
@@ -326,6 +421,15 @@ func failClosedCrossRecordPrivateKeys(content []byte) ([]byte, []Finding) {
 // to buf in document order, one per line, so a value split across members is
 // still visible as one contiguous run of text.
 func writeDecodedJSONView(buf *bytes.Buffer, doc []byte) {
+	buf.Write(collectJSONLeaves(doc).decoded.Bytes())
+}
+
+// collectJSONLeaves walks doc and records every decoded object key and string
+// leaf, in document order, in a view where a value split across members reads as
+// one contiguous run of text. Each leaf's range in that view is kept so a match
+// can be mapped back to the members that carry it.
+func collectJSONLeaves(doc []byte) *jsonProvenance {
+	prov := &jsonProvenance{}
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	dec.UseNumber()
 	var walk func()
@@ -343,11 +447,11 @@ func writeDecodedJSONView(buf *bytes.Buffer, doc []byte) {
 				_, _ = dec.Token() // consume the closing delimiter
 			}
 		case string:
-			buf.WriteString(decodedViewNormalizer.Scan(t).Sanitized)
-			buf.WriteByte('\n')
+			prov.addString(t)
 		}
 	}
 	walk()
+	return prov
 }
 
 // jsonLineSpans returns the byte range of every non-empty line in content,
@@ -467,49 +571,70 @@ func lineBounded(data []byte, start, end int) bool {
 // scalar value, and renders a valid JSON document. Unlike map decoding it
 // keeps member order and duplicate keys, so a secret in an earlier, overwritten
 // value is still found, and a secret spanning JSON framing stays visible in the
-// rewritten bytes.
-func rewriteJSONTokens(doc []byte, p *Pipeline) ([]byte, []Finding, *jsonProvenance, error) {
+// rewritten bytes. Keys and leaves whose index is in masked are replaced whole,
+// which is how a framing-spanning private key is neutralized member by member.
+func rewriteJSONTokens(doc []byte, p *Pipeline, masked map[int]bool) ([]byte, []Finding, error) {
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	dec.UseNumber()
 	var (
-		buf      bytes.Buffer
-		findings []Finding
+		buf bytes.Buffer
+		w   = &jsonRewrite{pipeline: p, masked: masked}
 	)
-	prov := &jsonProvenance{}
-	if err := writeSanitizedJSONValue(dec, &buf, p, &findings, prov, ""); err != nil {
-		return nil, nil, nil, fmt.Errorf("could not tokenize JSON: %w", err)
+	if err := w.writeValue(dec, &buf, ""); err != nil {
+		return nil, nil, fmt.Errorf("could not tokenize JSON: %w", err)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, nil, nil, fmt.Errorf("unexpected trailing JSON content")
+		return nil, nil, fmt.Errorf("unexpected trailing JSON content")
 	}
-	return buf.Bytes(), findings, prov, nil
+	return buf.Bytes(), w.findings, nil
 }
 
-// writeSanitizedJSONValue writes one JSON value to buf, sanitizing object keys
-// and scalar leaves as it goes. memberKey is the enclosing object key when the
-// value is an object member, so sensitive-key masking still applies; it is
-// empty for array elements and the top-level value.
-func writeSanitizedJSONValue(dec *json.Decoder, buf *bytes.Buffer, p *Pipeline, findings *[]Finding, prov *jsonProvenance, memberKey string) error {
+// jsonRewrite is the state one token walk carries: the pipeline, the findings it
+// has collected, and the keys and leaves a framing-spanning private key covers.
+type jsonRewrite struct {
+	pipeline *Pipeline
+	findings []Finding
+	masked   map[int]bool
+	// index counts the keys and leaves already walked, in document order, so it
+	// lines up with the ranges in jsonProvenance.
+	index int
+}
+
+// nextLeaf advances the leaf cursor and reports whether the key or leaf reached
+// must be replaced whole because a framing-spanning private key covers it.
+func (w *jsonRewrite) nextLeaf() bool {
+	masked := w.masked[w.index]
+	w.index++
+	return masked
+}
+
+// writeValue writes one JSON value to buf, sanitizing object keys and scalar
+// leaves as it goes. memberKey is the enclosing object key when the value is an
+// object member, so sensitive-key masking still applies; it is empty for array
+// elements and the top-level value.
+func (w *jsonRewrite) writeValue(dec *json.Decoder, buf *bytes.Buffer, memberKey string) error {
 	tok, err := dec.Token()
 	if err != nil {
 		return err
 	}
 	switch t := tok.(type) {
 	case json.Delim:
-		return writeSanitizedJSONContainer(dec, buf, p, findings, prov, t)
+		return w.writeContainer(dec, buf, t)
 	case string:
-		prov.addString(t)
-		sanitized, stringFindings := sanitizeJSONString(t, memberKey, p)
-		*findings = append(*findings, stringFindings...)
+		if w.nextLeaf() {
+			return writeJSONString(buf, privateKeyMask)
+		}
+		sanitized, stringFindings := sanitizeJSONString(t, memberKey, w.pipeline)
+		w.findings = append(w.findings, stringFindings...)
 		return writeJSONString(buf, sanitized)
 	case json.Number:
 		literal := t.String()
-		res := p.Scan(literal)
+		res := w.pipeline.Scan(literal)
 		if len(res.Findings) == 0 {
 			buf.WriteString(literal)
 			return nil
 		}
-		*findings = append(*findings, res.Findings...)
+		w.findings = append(w.findings, res.Findings...)
 		// A redacted number is no longer a number literal, so write the
 		// replacement as a JSON string to keep the document valid.
 		return writeJSONString(buf, res.Sanitized)
@@ -533,9 +658,9 @@ type jsonMember struct {
 	rendered     []byte
 }
 
-// writeSanitizedJSONContainer writes the members of an object or array,
-// preserving member order and duplicate keys.
-func writeSanitizedJSONContainer(dec *json.Decoder, buf *bytes.Buffer, p *Pipeline, findings *[]Finding, prov *jsonProvenance, delim json.Delim) error {
+// writeContainer writes the members of an object or array, preserving member
+// order and duplicate keys.
+func (w *jsonRewrite) writeContainer(dec *json.Decoder, buf *bytes.Buffer, delim json.Delim) error {
 	switch delim {
 	case '{':
 		var members []jsonMember
@@ -548,11 +673,19 @@ func writeSanitizedJSONContainer(dec *json.Decoder, buf *bytes.Buffer, p *Pipeli
 			if !ok {
 				return fmt.Errorf("JSON object key is %T, want string", keyTok)
 			}
-			prov.addString(key)
-			sanitizedKey, keyFindings := sanitizeJSONKey(key, p)
-			*findings = append(*findings, keyFindings...)
+			masked := w.nextLeaf()
+			sanitizedKey, keyFindings := sanitizeJSONKey(key, w.pipeline)
+			if masked {
+				// The whole key goes: it carried part of a private-key block
+				// that spans members.
+				sanitizedKey, keyFindings = privateKeyMask, nil
+			}
+			w.findings = append(w.findings, keyFindings...)
 			var rendered bytes.Buffer
-			if err := writeSanitizedJSONValue(dec, &rendered, p, findings, prov, sanitizedKey); err != nil {
+			// The original key decides whether the value is sensitive: the mask
+			// that replaced a key must not drag its value into json_field
+			// masking.
+			if err := w.writeValue(dec, &rendered, key); err != nil {
 				return err
 			}
 			members = append(members, jsonMember{
@@ -585,7 +718,7 @@ func writeSanitizedJSONContainer(dec *json.Decoder, buf *bytes.Buffer, p *Pipeli
 			if !first {
 				buf.WriteByte(',')
 			}
-			if err := writeSanitizedJSONValue(dec, buf, p, findings, prov, ""); err != nil {
+			if err := w.writeValue(dec, buf, ""); err != nil {
 				return err
 			}
 			first = false
@@ -676,13 +809,14 @@ func sanitizeJSONString(value, memberKey string, p *Pipeline) (string, []Finding
 		findings = append(findings, res.Findings...)
 		out = res.Sanitized
 	}
-	if memberKey != "" && sensitiveJSONKeyRe.MatchString(memberKey) && len(out) >= 8 && !isAlreadyMasked(out) {
+	if memberKey != "" && sensitiveJSONKeyRe.MatchString(memberKey) && !isAlreadyMasked(out) &&
+		utf8.RuneCountInString(out) >= minJSONFieldLen {
 		masked := Mask(out)
 		findings = append(findings, Finding{
 			Scanner:  "secret_redactor",
 			Name:     "json_field",
 			Severity: "high",
-			Detail:   fmt.Sprintf("Redacted json_field (%d chars) -> %s", len(out), masked),
+			Detail:   fmt.Sprintf("Redacted json_field (%d chars) -> %s", utf8.RuneCountInString(out), masked),
 		})
 		out = masked
 	}

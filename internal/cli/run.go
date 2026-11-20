@@ -7146,6 +7146,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 						Phase: "host_output", Finding: f,
 					})
 				}
+				alertOnOutputRemoval(printer, out)
 				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
 					writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
 				}
@@ -7172,6 +7173,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 						Phase: "host_output", Finding: f,
 					})
 				}
+				alertOnOutputRemoval(printer, out)
 				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
 					writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
 				}
@@ -7204,8 +7206,9 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 				if !quiet {
 					printer.StepWarn(fmt.Sprintf("Text redaction would invalidate JSON in %s; replacing output with a redacted JSON marker", relPath))
 				}
-				out = `{"error":"output removed because text redaction would invalidate JSON"}`
+				out = security.OutputRemovalTextJSONMarker
 			}
+			alertOnOutputRemoval(printer, []byte(out))
 			if writeErr := writeFile(path, []byte(out), 0o644); writeErr != nil {
 				writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
 			}
@@ -7231,6 +7234,20 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 		return err
 	}
 	return nil
+}
+
+// alertOnOutputRemoval emits a workflow annotation when an output file was
+// replaced whole by a fail-closed marker. Everything the agent wrote into that
+// file is gone, and a lost review that only shows up as one scan line is the
+// silent failure #5705 set out to fix. Only the marker's fixed reason reaches
+// the annotation: a file path or a matched value could carry agent-chosen text
+// (ADR 0163).
+func alertOnOutputRemoval(printer *ui.Printer, sanitized []byte) {
+	reason, removed := security.OutputRemoval(sanitized)
+	if !removed || os.Getenv("GITHUB_ACTIONS") != "true" {
+		return
+	}
+	printer.Raw("::error::Output file replaced with a fail-closed marker: " + reason + "\n")
 }
 
 // writeFailure records a sanitized-output write error. At the quiet progress
