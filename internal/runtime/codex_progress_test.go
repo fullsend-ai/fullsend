@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -573,6 +575,431 @@ func TestParseCodexStream_OverlongLineIsSkipped(t *testing.T) {
 	require.Len(t, texts, 1, "the oversized line is dropped, the stream continues")
 	assert.Equal(t, "after", texts[0].Text)
 	assert.False(t, codexOnlyResult(t, events).IsError)
+}
+
+// --- tool call ids, arguments and results (#7414) ---------------------------
+
+// codexToolPairs collects the ToolUseEvent/ToolResultEvent stream of a parse
+// and checks the pairing every call must have: a use with an id is followed at
+// once by the result with the same id.
+func codexToolPairs(t *testing.T, events []AgentEvent) ([]ToolUseEvent, []ToolResultEvent) {
+	t.Helper()
+	var uses []ToolUseEvent
+	var results []ToolResultEvent
+	for i, evt := range events {
+		switch e := evt.(type) {
+		case ToolUseEvent:
+			uses = append(uses, e)
+			if e.ID == "" {
+				continue
+			}
+			require.Less(t, i+1, len(events), "call %q has no result", e.ID)
+			res, ok := events[i+1].(ToolResultEvent)
+			require.True(t, ok, "call %q is not followed by its result", e.ID)
+			assert.Equal(t, e.ID, res.ID)
+		case ToolResultEvent:
+			results = append(results, e)
+		}
+	}
+	return uses, results
+}
+
+// codexLiveCall is one call from a live capture with its result.
+type codexLiveCall struct {
+	use    ToolUseEvent
+	result ToolResultEvent
+}
+
+// codexLiveCalls pairs each call in a live capture with its result by id and
+// keys it by key(use): a test reads a call by what the capture prompt asked
+// for, not by its item id, its position or the capturing host's shell
+// wrapper, so a re-capture needs no edit to the test. Every call must have a
+// non-empty id no other call has, an item.started read during this parse
+// (at or after before), and a key no other call has.
+func codexLiveCalls(t *testing.T, events []AgentEvent, before time.Time, key func(ToolUseEvent) string) map[string]codexLiveCall {
+	t.Helper()
+	uses, results := codexToolPairs(t, events)
+	byID := make(map[string]ToolResultEvent, len(results))
+	for _, r := range results {
+		_, dup := byID[r.ID]
+		require.False(t, dup, "call id %q is used twice", r.ID)
+		byID[r.ID] = r
+	}
+	calls := make(map[string]codexLiveCall, len(uses))
+	for _, u := range uses {
+		require.NotEmpty(t, u.ID, "the item id is the call id")
+		assert.False(t, u.StartedAt.Before(before),
+			"call %q has an item.started, read during this parse", u.ID)
+		r, ok := byID[u.ID]
+		require.True(t, ok, "call %q has a result", u.ID)
+		k := key(u)
+		_, dup := calls[k]
+		require.False(t, dup, "two calls read as %q", k)
+		calls[k] = codexLiveCall{use: u, result: r}
+	}
+	return calls
+}
+
+// codexBasicRunKey names a basic_run.ndjson call by what the capture prompt
+// asks for: the command it ends with, whatever shell wraps it on the
+// capturing host, or the file it writes.
+func codexBasicRunKey(t *testing.T) func(ToolUseEvent) string {
+	return func(u ToolUseEvent) string {
+		var args struct {
+			Command  string `json:"command"`
+			FilePath string `json:"file_path"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(u.Arguments), &args), "call %q", u.ID)
+		cmd := strings.TrimRight(args.Command, `'"`)
+		for _, want := range []string{"ls .", "cat hello.txt"} {
+			if strings.HasSuffix(cmd, want) {
+				return u.Name + " " + want
+			}
+		}
+		return u.Name + " " + args.FilePath
+	}
+}
+
+func TestParseCodexStream_ToolCallsFromLiveCapture(t *testing.T) {
+	t.Parallel()
+
+	before := time.Now()
+	events, _ := collectCodexEvents(t, "basic_run.ndjson")
+	calls := codexLiveCalls(t, events, before, codexBasicRunKey(t))
+	require.Len(t, calls, 3, "one use per call: fullsend.tool_calls counts these")
+	for _, c := range calls {
+		assert.False(t, c.result.IsError, c.use.ID)
+		assert.False(t, c.result.Partial, c.use.ID)
+	}
+
+	ls, ok := calls["Bash ls ."]
+	require.True(t, ok, "the capture lists the directory: %v", calls)
+	assert.Equal(t, "raw.ndjson\n", ls.result.Result, "aggregated_output is the result")
+	assert.NotContains(t, ls.use.Summary, "raw.ndjson", "successful output stays out of the summary")
+
+	write, ok := calls["Write /sandbox/workspace/repo/hello.txt"]
+	require.True(t, ok, "the capture writes hello.txt: %v", calls)
+	assert.JSONEq(t, `{"file_path":"/sandbox/workspace/repo/hello.txt"}`, write.use.Arguments)
+	assert.Empty(t, write.result.Result, "a file change carries no output: the result only closes the call")
+
+	cat, ok := calls["Bash cat hello.txt"]
+	require.True(t, ok, "the capture reads hello.txt back: %v", calls)
+	assert.Equal(t, "hi\n", cat.result.Result)
+}
+
+func TestParseCodexStream_McpCallsFromLiveCapture(t *testing.T) {
+	t.Parallel()
+
+	before := time.Now()
+	events, threadID := collectCodexEvents(t, "mcp_tool_call.ndjson")
+	// Asserted by shape, as in TestParseCodexStream_BasicRun: a re-capture
+	// brings a new thread id, and may bring other item ids and order, so
+	// each call is read by its tool name.
+	assert.Regexp(t, `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`, threadID)
+	calls := codexLiveCalls(t, events, before, func(u ToolUseEvent) string { return u.Name })
+	require.Len(t, calls, 3)
+	for _, c := range calls {
+		assert.False(t, c.result.Partial, c.use.Name)
+	}
+	lookup, fail, broken := calls["mcp__stub__lookup"], calls["mcp__stub__fail"], calls["mcp__stub__broken"]
+	require.NotEmpty(t, lookup.use.ID, "the capture calls lookup: %v", calls)
+	require.NotEmpty(t, fail.use.ID, "the capture calls fail: %v", calls)
+	require.NotEmpty(t, broken.use.ID, "the capture calls broken: %v", calls)
+	assert.JSONEq(t, `{"key":"alpha"}`, lookup.use.Arguments, "MCP arguments pass through as the wire carried them")
+	assert.JSONEq(t, `{"key":"beta"}`, fail.use.Arguments)
+	assert.JSONEq(t, `{"key":"gamma"}`, broken.use.Arguments)
+
+	// Success: result.content text, no error.
+	assert.Equal(t, "value for alpha: 42", lookup.result.Result)
+	assert.False(t, lookup.result.IsError)
+	assert.Empty(t, lookup.use.Summary, "a successful MCP call surfaces no payload")
+
+	// A result the tool flagged isError: status failed, the text in result,
+	// error null.
+	assert.Equal(t, "backend unavailable for beta", fail.result.Result)
+	assert.True(t, fail.result.IsError)
+	assert.Equal(t, "failed", fail.use.Summary,
+		"the tool's own text stays out of the summary, which is cut before full redaction")
+
+	// A JSON-RPC error: result null, the message in error.
+	assert.True(t, broken.result.IsError)
+	assert.Contains(t, broken.result.Result, "handler crashed on gamma")
+	assert.Contains(t, broken.use.Summary, "tool call failed for `stub/broken`")
+
+	result := codexOnlyResult(t, events)
+	assert.False(t, result.IsError, "failed tool calls do not fail the turn")
+	assert.Equal(t, 1, result.NumTurns)
+}
+
+func TestParseCodexStream_ToolResultsForEveryItemKind(t *testing.T) {
+	t.Parallel()
+
+	events, _ := collectCodexEvents(t, "mcp_and_file_change.ndjson")
+	uses, results := codexToolPairs(t, events)
+	require.Len(t, uses, 10)
+	require.Len(t, results, 10)
+
+	type want struct {
+		id, args, result string
+		isError          bool
+	}
+	for i, w := range []want{
+		{"item_1#0", `{"file_path":"/sandbox/workspace/repo/new.go"}`, "", false},
+		{"item_1#1", `{"file_path":"/sandbox/workspace/repo/main.go"}`, "", false},
+		{"item_1#2", `{"file_path":"/sandbox/workspace/repo/old.go"}`, "", false},
+		{"item_2", `{"file_path":"/sandbox/workspace/repo/locked.go"}`, "", true},
+		{"item_3", `{"number":6920}`, "issue body", false},
+		{"item_4", `{}`, "server not reachable", true},
+		{"item_5", `{"query":"codex exec json event schema"}`, "", false},
+		{"item_6", "", "", false},
+		{"item_8", `{"command":"rm -rf /"}`, "", true},
+		{"item_9", `{"command":"go test ./...\n  -run TestCodex"}`, "ok\tgithub.com/fullsend-ai/fullsend/internal/runtime\t0.4s\n", false},
+	} {
+		assert.Equal(t, w.id, uses[i].ID, "call %d", i)
+		if w.args == "" {
+			assert.Empty(t, uses[i].Arguments, "call %s", w.id)
+		} else {
+			assert.JSONEq(t, w.args, uses[i].Arguments, "call %s", w.id)
+		}
+		assert.Equal(t, w.result, results[i].Result, "call %s", w.id)
+		assert.Equal(t, w.isError, results[i].IsError, "call %s", w.id)
+	}
+
+	// The fan-out shares item_1's item.started; item_2 had none.
+	assert.False(t, uses[0].StartedAt.IsZero())
+	assert.Equal(t, uses[0].StartedAt, uses[2].StartedAt, "one patch, one start")
+	assert.True(t, uses[3].StartedAt.IsZero(), "no item.started: the tracker falls back to its own receipt")
+}
+
+func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	parse := func(t *testing.T, lines ...string) ([]ToolUseEvent, []ToolResultEvent) {
+		t.Helper()
+		var events []AgentEvent
+		_, err := parseCodexStream(strings.NewReader(strings.Join(lines, "\n")+"\n"), func(evt AgentEvent) {
+			events = append(events, evt)
+		})
+		require.NoError(t, err)
+		return codexToolPairs(t, events)
+	}
+
+	t.Run("a non-zero exit on a completed command is a failed call", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"false","aggregated_output":"","exit_code":1,"status":"completed"}}`)
+		require.Len(t, results, 1)
+		assert.True(t, results[0].IsError)
+	})
+
+	t.Run("a failed command keeps its output as the result", func(t *testing.T) {
+		t.Parallel()
+		events, _ := collectCodexEvents(t, "turn_failed.ndjson")
+		_, results := codexToolPairs(t, events)
+		require.Len(t, results, 1)
+		assert.True(t, results[0].IsError)
+		assert.Equal(t, "go: build failed\nexit status 1\n", results[0].Result)
+	})
+
+	t.Run("an item with no id yields a use but no result", func(t *testing.T) {
+		t.Parallel()
+		uses, results := parse(t, `{"type":"item.completed","item":{"type":"command_execution","command":"ls","aggregated_output":"a\n","exit_code":0,"status":"completed"}}`)
+		require.Len(t, uses, 1, "the call still counts")
+		assert.Empty(t, uses[0].ID)
+		assert.Empty(t, results, "a result with no id could not correlate with anything")
+	})
+
+	t.Run("a non-text MCP block marks the result partial", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":{"content":[{"type":"text","text":"caption"},{"type":"image","data":"iVBOR","mimeType":"image/png"}],"structured_content":null},"error":null,"status":"completed"}}`)
+		require.Len(t, results, 1)
+		assert.Equal(t, "caption", results[0].Result)
+		assert.True(t, results[0].Partial)
+		assert.False(t, results[0].IsError)
+	})
+
+	t.Run("MCP structured_content stands in for a result with no text", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":{"content":[],"structured_content":{"value":"42","key":"alpha","hits":3}},"error":null,"status":"completed"}}`)
+		require.Len(t, results, 1)
+		assert.Equal(t, "alpha\n42", results[0].Result, "string values by key; the number is dropped")
+		assert.True(t, results[0].Partial, "keys and the number are not kept")
+	})
+
+	t.Run("MCP structured_content is not read when a block holds text", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":{"content":[{"type":"text","text":"{\"key\":\"alpha\"}"}],"structured_content":{"key":"alpha"}},"error":null,"status":"completed"}}`)
+		require.Len(t, results, 1)
+		assert.Equal(t, `{"key":"alpha"}`, results[0].Result, "the text block the MCP spec asks servers to send alongside")
+		assert.False(t, results[0].Partial)
+	})
+
+	t.Run("web search results are not recorded, only marked", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"w1","type":"web_search","query":"q","action":{"type":"search","query":"q"},"results":[{"title":"First","url":"https://example.com/a"}]}}`)
+		require.Len(t, results, 1)
+		assert.Empty(t, results[0].Result, "no capture shows the shape of results")
+		assert.True(t, results[0].Partial, "the result is not the whole of what codex sent")
+		assert.False(t, results[0].IsError)
+	})
+
+	t.Run("an item codex completed while still in progress gets no result", func(t *testing.T) {
+		t.Parallel()
+		// What reconcile_unfinished_started_items writes when a turn ends
+		// with the call still running.
+		for _, item := range []string{
+			`{"id":"c1","type":"command_execution","command":"sleep 60","aggregated_output":"","exit_code":null,"status":"in_progress"}`,
+			`{"id":"c1","type":"mcp_tool_call","server":"s","tool":"t","arguments":{},"result":null,"error":null,"status":"in_progress"}`,
+			`{"id":"c1","type":"file_change","changes":[{"path":"/a","kind":"add"},{"path":"/b","kind":"update"}],"status":"in_progress"}`,
+			`{"id":"c1","type":"collab_tool_call","tool":"wait","sender_thread_id":"t0","receiver_thread_ids":["t1"],"agents_states":{},"status":"in_progress"}`,
+		} {
+			// Not parse: its pairing check is what this case breaks.
+			var uses []ToolUseEvent
+			var results []ToolResultEvent
+			_, err := parseCodexStream(strings.NewReader(
+				`{"type":"item.started","item":`+item+"}\n"+
+					`{"type":"item.completed","item":`+item+"}\n"), func(evt AgentEvent) {
+				switch e := evt.(type) {
+				case ToolUseEvent:
+					uses = append(uses, e)
+				case ToolResultEvent:
+					results = append(results, e)
+				}
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, uses, item)
+			for _, u := range uses {
+				assert.True(t, strings.HasPrefix(u.ID, "c1"), item)
+				assert.False(t, u.StartedAt.IsZero(), item)
+			}
+			assert.Empty(t, results, "the tool never answered: %s", item)
+		}
+	})
+
+	t.Run("an item reconciled at turn end with a finished snapshot keeps its result", func(t *testing.T) {
+		t.Parallel()
+		// reconcile_unfinished_started_items emits the snapshot's copy, so a
+		// call that finished without its own item.completed arrives completed
+		// just before turn.completed.
+		uses, results := parse(t,
+			`{"type":"item.started","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}`,
+			`{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"a\n","exit_code":0,"status":"completed"}}`,
+			`{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}`)
+		require.Len(t, uses, 1)
+		require.Len(t, results, 1)
+		assert.Equal(t, "a\n", results[0].Result)
+		assert.False(t, results[0].IsError)
+	})
+
+	t.Run("an item that never gets an item.completed is no call", func(t *testing.T) {
+		t.Parallel()
+		// Missing from the turn snapshot, or mapping to nothing there (an
+		// interrupted collab_tool_call): codex writes no item.completed.
+		uses, results := parse(t,
+			`{"type":"item.started","item":{"id":"a1","type":"collab_tool_call","tool":"wait","sender_thread_id":"t0","receiver_thread_ids":["t1"],"agents_states":{},"status":"in_progress"}}`,
+			`{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}`)
+		assert.Empty(t, uses)
+		assert.Empty(t, results)
+	})
+
+	t.Run("a web search without results closes with an empty result", func(t *testing.T) {
+		t.Parallel()
+		for _, results := range []string{``, `,"results":null`, `,"results":[]`} {
+			_, got := parse(t, `{"type":"item.completed","item":{"id":"w1","type":"web_search","query":"q","action":{"type":"search","query":"q"}`+results+`}}`)
+			require.Len(t, got, 1, "results%s", results)
+			assert.Empty(t, got[0].Result, "results%s", results)
+			assert.False(t, got[0].Partial, "results%s", results)
+		}
+	})
+
+	t.Run("null MCP arguments are no arguments", func(t *testing.T) {
+		t.Parallel()
+		uses, _ := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":null,"error":null,"status":"completed"}}`)
+		require.Len(t, uses, 1)
+		assert.Empty(t, uses[0].Arguments)
+	})
+
+	t.Run("an MCP result in an unknown shape costs the output, not the call", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name, result, text string
+			isError            bool
+		}{
+			{"a string result", `"unexpected"`, "", false},
+			{"content that is not an array", `{"content":"x"}`, "", false},
+			{"a block that is not an object", `{"content":["x",{"type":"text","text":"ok"}]}`, "ok", false},
+			{"a block whose text is not a string", `{"content":[{"type":"text","text":5},{"type":"text","text":"ok"}]}`, "ok", false},
+			{"an unknown shape on a failed call", `["x"]`, "", true},
+		} {
+			status := "completed"
+			if tc.isError {
+				status = "failed"
+			}
+			uses, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":{"k":"v"},"result":`+tc.result+`,"error":null,"status":"`+status+`"}}`)
+			require.Len(t, uses, 1, tc.name)
+			assert.Equal(t, "mcp__s__t", uses[0].Name, tc.name)
+			assert.JSONEq(t, `{"k":"v"}`, uses[0].Arguments, tc.name)
+			require.Len(t, results, 1, tc.name)
+			assert.Equal(t, tc.text, results[0].Result, tc.name)
+			assert.True(t, results[0].Partial, "%s: what was skipped marks the result partial", tc.name)
+			assert.Equal(t, tc.isError, results[0].IsError, tc.name)
+		}
+	})
+
+	t.Run("a failed patch that names no file still closes its call", func(t *testing.T) {
+		t.Parallel()
+		uses, results := parse(t, `{"type":"item.completed","item":{"id":"p1","type":"file_change","changes":[],"status":"failed"}}`)
+		require.Len(t, uses, 1)
+		assert.Equal(t, "p1", uses[0].ID)
+		require.Len(t, results, 1)
+		assert.True(t, results[0].IsError)
+	})
+
+	t.Run("a repeated item.started keeps the first instant", func(t *testing.T) {
+		t.Parallel()
+		started := `{"type":"item.started","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}`
+		stream := started + "\n" + started + "\n" +
+			`{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"","exit_code":0,"status":"completed"}}` + "\n"
+		// Each reading of the clock is a second later than the last, so
+		// the two item.started lines get different instants.
+		t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		reads := 0
+		now := func() time.Time {
+			reads++
+			return t0.Add(time.Duration(reads-1) * time.Second)
+		}
+		var events []AgentEvent
+		_, err := parseCodexStreamAt(strings.NewReader(stream), func(evt AgentEvent) { events = append(events, evt) }, now)
+		require.NoError(t, err)
+		uses, _ := codexToolPairs(t, events)
+		require.Len(t, uses, 1)
+		assert.Equal(t, t0, uses[0].StartedAt,
+			"the second item.started does not restamp the call")
+	})
+}
+
+func TestCodexStructuredText(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, raw, text string
+		present         bool
+	}{
+		{"absent", ``, "", false},
+		{"null", `null`, "", false},
+		{"empty containers", `[{}, [], null]`, "", false},
+		{"a number alone", `[7]`, "", true},
+		{"an empty string", `[""]`, "", true},
+		{"nested, keys in order", `{"b":{"y":"2","x":"1"},"a":["0"]}`, "0\n1\n2", true},
+		{"escapes are decoded", `{"k":"line\nnext A"}`, "line\nnext A", true},
+		{"not JSON", `{`, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			text, present := codexStructuredText(json.RawMessage(tc.raw))
+			assert.Equal(t, tc.text, text)
+			assert.Equal(t, tc.present, present)
+		})
+	}
 }
 
 // --- redaction --------------------------------------------------------------

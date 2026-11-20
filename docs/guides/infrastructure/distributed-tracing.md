@@ -12,11 +12,11 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude and pi runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
+| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude, pi and codex runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors),
 including up to one `execute_tool` span per id-bearing tool call under each
-`agent` span (Claude Code and pi; codex emits no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
+`agent` span (Claude Code, pi and codex; OpenCode emits no call ids),
 capped at 1,024 per iteration.
 Level 3 adds the agent's conversation content to spans — enabled by one
 environment variable, exactly like Level 2's endpoint.
@@ -99,12 +99,13 @@ its `summary` when redaction found a secret in its arguments, the dropped
 members included, masked a URL's userinfo, query or fragment in them,
 stripped an escape sequence or tag characters from them, or could not
 judge them at all (invalid UTF-8 or the replacement character): the parser cut the summary out of them before anything scanned it,
-so the secret could be there as a beginning. Where a runtime reports a summary and no
-arguments (codex, OpenCode), its parser has already run the patterns
-over the summary and, for codex, cut it: a value that straddles a
-cut stays in part, and one a pattern recognised stays as that pattern's
-mask. The same holds for the result text the pi parser appends to a failed
-call's summary. The agent runtime's own
+so the secret could be there as a beginning. Where a call has a summary and no
+arguments (every OpenCode call, and a codex `Agent` call), its parser has
+already run the patterns over the summary and, for codex, cut it: a value
+that straddles a cut stays in part, and one a pattern recognised stays as
+that pattern's mask. The same holds for the result text the pi parser
+appends to a failed call's summary, and for the error message the codex
+parser makes a failed MCP call's summary. The agent runtime's own
 content-logging variables (`OTEL_LOG_USER_PROMPTS`,
 `OTEL_LOG_ASSISTANT_RESPONSES`, etc.) are never set.
 
@@ -126,9 +127,25 @@ with a `finish_reason` of `stop` or `error`. The schema at that commit marks
 `finish_reason` as deprecated and no longer requires it; fullsend still
 emits it. Tool arguments, tool results, and the `id` that correlates a
 result with its call, are captured
-only when the runtime's stream provides them: Claude and pi runs do; the
-codex parser emits none of the three yet
-([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)).
+only when the runtime's stream provides them: Claude, pi and codex runs
+do; OpenCode runs do not. Codex has no uniform input object, so its
+parser gives each call the member of the tool it is renamed to: a
+command as `Bash`'s `command`, a patched path as `Write`'s or `Edit`'s
+`file_path`, a search as `WebSearch`'s `query` (not on the list below,
+so not recorded); an MCP call's arguments pass through as the wire
+carried them.
+Codex tool results are what its `exec --json` stream reports: a
+command's `aggregated_output` and an MCP call's text (its
+`structured_content` when no content block holds text, reduced to its
+string values, never kept as JSON, and marked truncated). A web
+search's `results` are not recorded: fullsend runs codex with web
+search disabled, so no capture shows their shape. That stream carries a tool's
+output from before any `PostToolUse` hook ran, and a codex hook can
+block a result from the model but cannot rewrite it, so output a hook
+withheld from the model is still recorded here, after the collector's
+redaction, as the same output already is in codex's `output.jsonl` and
+rollout artifacts. Claude Code's stream carries the result the hooks
+left.
 `arguments` holds the members of the call's input that name what was
 called, listed by tool, each redacted as text: `Bash` — `command`,
 `description`, `timeout`; `Read` — `file_path`, `limit`, `offset`;
@@ -309,7 +326,7 @@ receipt, marked `fullsend.tool.result_oversized` with no status and no
 `error.type` — the tool answered, and whether it failed was never decoded; a
 result whose call was never reported (its stream line was skipped) is a
 near-zero-duration span marked `fullsend.tool.unmatched`. Runtimes whose parsers
-emit no call ids (codex) produce no `execute_tool` spans, and neither
+emit no call ids (OpenCode) produce no `execute_tool` spans, and neither
 do server-side tools, whose result never arrives as a `tool_result`. Tool
 names and call ids get the redaction span content gets (runner environment
 and provider-only values, Unicode normalization, secret redaction, then

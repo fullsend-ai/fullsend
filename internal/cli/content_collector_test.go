@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -951,6 +953,59 @@ func TestContentCollector_ToolResultBecomesToolCallResponsePart(t *testing.T) {
 	assert.Equal(t, "toolu_01abc", part["id"])
 	assert.Equal(t, "main.go\nutil.go\n", part["response"],
 		"the schema's result field is named response, not result")
+}
+
+func TestContentCollector_CodexToolCallsCorrelateWithResults(t *testing.T) {
+	// The live codex capture through the real parser: every tool_call part
+	// carries its item id and recorded arguments, and each result with text
+	// becomes a tool_call_response part with the same id.
+	f, err := os.Open(filepath.Join("..", "runtime", "testdata", "codex", "basic_run.ndjson"))
+	require.NoError(t, err)
+	t.Cleanup(func() { f.Close() })
+	c := newContentCollector(maxContentBytes)
+	_, err = agentruntime.ParseCodexStream(f, c.Handle)
+	require.NoError(t, err)
+
+	calls := map[string]string{}
+	responses := map[string]any{}
+	for _, m := range decodeOutputMessages(t, c.Result("stop").OutputMessages) {
+		for _, p := range m["parts"].([]any) {
+			part := p.(map[string]any)
+			switch part["type"] {
+			case "tool_call":
+				args, _ := json.Marshal(part["arguments"])
+				calls[part["id"].(string)] = string(args)
+			case "tool_call_response":
+				responses[part["id"].(string)] = part["response"]
+			}
+		}
+	}
+	require.Len(t, calls, 3)
+
+	// Each call is found by what the capture prompt asks for, not by its
+	// item id or the capturing host's shell wrapper, so a re-capture of
+	// basic_run.ndjson needs no edit here.
+	ids := map[string]string{}
+	for id, args := range calls {
+		require.NotEmpty(t, id, "every tool_call part carries its item id")
+		var a struct {
+			Command  string `json:"command"`
+			FilePath string `json:"file_path"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(args), &a))
+		cmd := strings.TrimRight(a.Command, `'"`)
+		switch {
+		case strings.HasSuffix(cmd, "ls ."):
+			ids["ls"] = id
+		case strings.HasSuffix(cmd, "cat hello.txt"):
+			ids["cat"] = id
+		case a.Command == "" && a.FilePath == "/sandbox/workspace/repo/hello.txt":
+			ids["write"] = id
+		}
+	}
+	require.Len(t, ids, 3, "the capture's two commands and its file write: %v", calls)
+	assert.Equal(t, map[string]any{ids["ls"]: "raw.ndjson\n", ids["cat"]: "hi\n"}, responses,
+		"the file change's empty result closes its span but records no part")
 }
 
 func TestContentCollector_RedactsSecretsAndSurfacesFindings(t *testing.T) {

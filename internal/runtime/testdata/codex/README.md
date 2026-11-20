@@ -7,10 +7,18 @@ Inputs for `parseCodexStream` (`internal/runtime/codex_progress.go`) and its tes
 | Fixture | Origin |
 |---|---|
 | `basic_run.ndjson` | **Live capture**, 2026-11-03, `@openai/codex@0.166.0` (`npx`), model `gpt-5.6-luna`, host ChatGPT login. Captured by the committed `regen.sh`; the script rewrote only the throwaway working directory to `/sandbox/workspace/repo`. No manual edits. The 12 events include one reasoning item, `ls .` listing `raw.ndjson`, and `cat hello.txt` returning `hi`. |
+| `mcp_tool_call.ndjson` | **Live capture**, 2026-11-16, `@openai/codex@0.166.0` (`npx`), model `gpt-5.6-luna`, `OPENAI_API_KEY` login in a throwaway `CODEX_HOME`. Captured by the committed `regen-mcp.sh` against the stub server in `mcp_stub.mjs`; no host path reached it and there are no manual edits. Three `mcp_tool_call` items: `lookup` succeeds (text in `result.content`, `structured_content: null`), `fail` returns a result flagged `isError` (status `failed`, its text in `result`, `error: null`), and `broken` gets a JSON-RPC error (`result: null`, a multi-line `error.message`). |
 | everything else | Hand-authored to the structs below. |
 
-`regen.sh` re-captures `basic_run.ndjson` only. It reads `ARG CODEX_VERSION` from
+`regen.sh` re-captures `basic_run.ndjson` only; `regen-mcp.sh` re-captures
+`mcp_tool_call.ndjson`. Both read `ARG CODEX_VERSION` from
 `images/sandbox/Containerfile`; `CODEX_VERSION` overrides that pin when set.
+
+`regen-mcp.sh` pre-approves the stub's tools
+(`mcp_servers.stub.default_tools_approval_mode="approve"`): under
+`approval_policy = "never"` codex 0.166.0 otherwise refuses every MCP call,
+each item failing with `MCP tool call requires approval, but approval policy is
+never`.
 
 The capture prompt requests `cat hello.txt` for verification to avoid `ls -l`
 host metadata. The script normalizes only the working directory; review other
@@ -157,7 +165,8 @@ mcp_tool_call     {server, tool, arguments, result: {content[], _meta?,
 collab_tool_call  {tool: spawn_agent|send_input|wait|close_agent,
                    sender_thread_id, receiver_thread_ids[], prompt|null,
                    agents_states{}, status: in_progress|completed|failed}
-web_search        {id, query, action{type: search|open_page|find_in_page, …}}
+web_search        {id, query, action{type: search|open_page|find_in_page, …},
+                   results?: [any JSON]}
 todo_list         {items: [{text, completed}]}
 error             {message}
 ```

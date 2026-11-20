@@ -179,6 +179,13 @@ codex emit no call ids — becomes an `execute_tool` child of its iteration's
 on the `agent` span stays the content carrier. Sub-agent nesting (deferred item 1 above)
 remains deferred.
 
+**2026-11-16 — codex tool I/O ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
+`tool_call` parts on codex runs now carry ids and arguments, with `tool_call_response`
+parts beside them. Codex has no uniform input object, so each call carries the member
+of the Claude tool it is renamed to (`Bash`'s `command`, `Write`'s or `Edit`'s
+`file_path`), and the recorded-arguments list needs no codex entries. The Claude-only
+wording in the annotations below now holds only for OpenCode.
+
 **2026-11-05 — pi tool I/O ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
 `tool_call` parts on pi runs now carry ids and arguments, with `tool_call_response`
 parts beside them, and pi's tools have their own entries in the recorded-arguments
