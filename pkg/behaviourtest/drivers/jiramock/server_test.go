@@ -104,14 +104,14 @@ func TestTimestampedActivityHelpers(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, comments, 1)
 	assert.Equal(t, "dev-001", comments[0].Author.AccountID)
-	created, err := time.Parse("2006-01-02T15:04:05.000-0700", comments[0].Created)
+	created, err := time.Parse(jiraTimeLayout, comments[0].Created)
 	require.NoError(t, err)
 	assert.True(t, created.Equal(at), "comment created = %s, want %s", created, at)
 
 	entries, err := client.ListChangelog(ctx, "PROJ-1")
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
-	changed, err := time.Parse("2006-01-02T15:04:05.000-0700", entries[0].Created)
+	changed, err := time.Parse(jiraTimeLayout, entries[0].Created)
 	require.NoError(t, err)
 	assert.True(t, changed.Equal(at.Add(time.Minute)), "changelog created = %s", changed)
 }
@@ -262,6 +262,42 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
+// A GET of an issue runs alongside the helpers that write its fields
+// (here updated, via comments) without a data race under -race.
+func TestGetIssueConcurrentWithActivity(t *testing.T) {
+	t.Parallel()
+	srv, state := NewServer()
+	defer srv.Close()
+
+	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+	ctx := context.Background()
+	state.AddIssue("PROJ-1", nil)
+
+	// The writer runs until every GET has returned, so the two overlap.
+	stop := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				state.AddComment("PROJ-1", "comment")
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		<-writerDone
+	}()
+	for range 50 {
+		_, err := client.GetIssue(ctx, "PROJ-1")
+		require.NoError(t, err)
+	}
+}
+
 // SetIssueLabels replaces the issue's label list without a changelog
 // entry, and Labels reads it back: the transport-bounds scenarios place a
 // large label state at issue creation this way instead of one
@@ -312,9 +348,9 @@ func TestUpdatedFollowsActivity(t *testing.T) {
 		issues, err := client.SearchIssues(ctx, "project = PROJ", 0)
 		require.NoError(t, err)
 		require.Len(t, issues, 1)
-		created, err = time.Parse("2006-01-02T15:04:05.000-0700", issues[0].Fields.Created)
+		created, err = time.Parse(jiraTimeLayout, issues[0].Fields.Created)
 		require.NoError(t, err)
-		updated, err = time.Parse("2006-01-02T15:04:05.000-0700", issues[0].Fields.Updated)
+		updated, err = time.Parse(jiraTimeLayout, issues[0].Fields.Updated)
 		require.NoError(t, err)
 		return created, updated
 	}

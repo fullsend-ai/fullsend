@@ -459,7 +459,13 @@ func handleIssueRoute(w http.ResponseWriter, r *http.Request, s *State, parts []
 
 func handleGetIssue(w http.ResponseWriter, s *State, key string) {
 	s.mu.Lock()
-	issue, ok := s.issues[key]
+	var issue jira.Issue
+	stored, ok := s.issues[key]
+	if ok {
+		// Copy under the lock, as handleSearch does: the State helpers
+		// write the stored issue's fields.
+		issue = *stored
+	}
 	s.mu.Unlock()
 
 	if !ok {
