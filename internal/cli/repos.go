@@ -176,6 +176,12 @@ func runReposStatus(cmd *cobra.Command, opts *reposStatusConfig) error {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
+	// ADR 0175: record the saved allow_insecure_pipeline_variables opt-ins
+	// for every GitLab check this command runs. repos.Status seeds only its
+	// own local copy, so without this the GitLab role-lifecycle annotation
+	// that runs after it would report a saved opt-in as drift.
+	ctx = repos.WithGitLabPipelineVarOptIns(ctx, m)
+
 	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
 		clients = newSingleClientFactory(opts.testClient)
