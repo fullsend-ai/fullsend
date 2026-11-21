@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
@@ -12,7 +13,7 @@ import (
 
 func putGitLabAuxiliaryScripts(t testing.TB, fc *forge.FakeClient, owner, repo string) {
 	t.Helper()
-	for _, path := range append(gitlabAuxiliaryScriptPaths(), gitlabDispatcherPaths()...) {
+	for _, path := range slices.Concat(gitlabJobTemplatePaths(), gitlabAuxiliaryScriptPaths(), gitlabDispatcherPaths()) {
 		content, err := scaffold.GitLabPerRepoFile(path)
 		if err != nil {
 			t.Fatalf("GitLabPerRepoFile(%s): %v", path, err)
