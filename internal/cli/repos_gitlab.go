@@ -253,6 +253,11 @@ func summaryDriftedAfterLive(drifted int, was, now bool) int {
 	return drifted
 }
 
+// gitLabTokenInventory returns the GitLab role-credential token client:
+// the injected override when set, otherwise the client derived from a
+// live GitLab client. Role provisioning, rotation, and protected-ref
+// pipeline access all resolve their token client through it, so they
+// agree on one client.
 func gitLabTokenInventory(opts *reposInstallConfig, client forge.Client) repos.ProjectAccessTokenClient {
 	if opts != nil && opts.testGitLabTokenInventory != nil {
 		return opts.testGitLabTokenInventory
@@ -547,10 +552,7 @@ func setupGitLabRoleCredentials(ctx context.Context, opts *reposInstallConfig, c
 	if err != nil {
 		return err
 	}
-	var tokens repos.ProjectAccessTokenClient
-	if glClient, ok := client.(*gitlab.LiveClient); ok {
-		tokens = newGitLabRoleTokenClient(glClient)
-	}
+	tokens := gitLabTokenInventory(opts, client)
 	printer.StepStart(fmt.Sprintf("[%s] Provisioning GitLab role credentials", repoFullName))
 	result, err := repos.ProvisionGitLabRoleCredentials(ctx, repos.RoleProvisionConfig{
 		Owner:            owner,
@@ -590,10 +592,7 @@ func maybeRotateGitLabRoles(ctx context.Context, opts *reposInstallConfig, clien
 	if err != nil {
 		return err
 	}
-	var tokens repos.ProjectAccessTokenClient
-	if glClient, ok := client.(*gitlab.LiveClient); ok {
-		tokens = newGitLabRoleTokenClient(glClient)
-	}
+	tokens := gitLabTokenInventory(opts, client)
 	repoFullName := owner + "/" + repo
 	if tokens != nil {
 		if _, inventoryErr := tokens.ListProjectAccessTokens(ctx, owner, repo); inventoryErr != nil {

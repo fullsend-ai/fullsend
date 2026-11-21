@@ -59,7 +59,7 @@ The former `repos migrate <org>` command (per-org to per-repo migration) has bee
 fullsend repos install [repos...] [flags]
 ```
 
-Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it provisions repositories declared in the manifest, repairs component drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — a disabled GitLab schedule is reported as drift and reactivated only when `--reactivate-schedules` is passed; typed GitLab jobs require verified `no_one_allowed` before template delivery, even with `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` — see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)), repairs scaffold content drift (including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref), and upgrades scaffold refs.
+Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it provisions repositories declared in the manifest, repairs component drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — a disabled GitLab schedule is reported as drift and reactivated only when `--reactivate-schedules` is passed; typed GitLab jobs require verified `no_one_allowed` before template delivery, even with `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced`, unless the repository entry sets `allow_insecure_pipeline_variables` — see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)), repairs scaffold content drift (including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref), and upgrades scaffold refs.
 
 `repos.yaml` is the single source of persistent, non-secret install settings and of repository membership. Install reads every setting from the manifest; its flags supply only credentials, local vendoring artifacts, and controls for one run (see [Flags](#flags)). To change a setting or add a repository, edit `repos.yaml` or use [`repos set`](#repos-set), then run install. Moving from `github setup` or from the removed configuration flags is covered in [Migrating to manifest-driven `repos install`](../guides/getting-started/migrating-from-github-setup.md).
 
@@ -1991,6 +1991,17 @@ Set GitLab runner tags. `gitlab.control_runner_tags` is independent of `gitlab.a
 ```bash
 fullsend repos set gitlab.agent_runner_tags '[fullsend-agent, gpu-runner]'
 fullsend repos set gitlab.control_runner_tags '[fullsend-api]'
+```
+
+Opt one GitLab project in to a "Minimum role to use pipeline variables"
+weaker than "No one allowed". The field is accepted only on a concrete GitLab
+repository entry. Install and status then accept the weaker setting on every
+run, and `repos install` warns each time. Read
+[Opting in to a relaxed setting](../guides/getting-started/configuring-gitlab.md#opting-in-to-a-relaxed-setting)
+for what it exposes before you set it:
+
+```bash
+fullsend repos set 'gitlab.repos["group/project"].allow_insecure_pipeline_variables' true
 ```
 
 Set the GitLab instance URL and pin a ref:
