@@ -588,6 +588,9 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 		"FULLSEND_JIRA_EMAIL":               true,
 		"FULLSEND_JIRA_CLIENT_ID":           true,
 		"FULLSEND_JIRA_CLIENT_SECRET":       true,
+		"FULLSEND_BOT_ROLE_URL":             true,
+		"FULLSEND_BOT_ROLE_TOKEN":           true,
+		"FULLSEND_ENTITY_ID":                true,
 		"OTEL_EXPORTER_OTLP_HEADERS":        true,
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS": true,
 		"OTEL_EXPORTER_OTLP_LOGS_HEADERS":   true,
@@ -599,6 +602,40 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 	} {
 		assert.Equal(t, want, isInheritedScriptDenyKey(key), key)
 	}
+}
+
+// TestScriptEnvs_DropBotRoleHelperRunnerEnv pins the runner_env pin
+// (#9602): FULLSEND_BOT_ROLE_URL / FULLSEND_BOT_ROLE_TOKEN /
+// FULLSEND_ENTITY_ID are runner-owned names, so a harness
+// runner_env/env.runner entry for one of them must not reach any
+// host-side script — the run's own appended export (or
+// nothing, when the helper failed to start) must be the only value a script
+// sees. Deleting the isBotRoleHelperEnvKey check at any call site fails this
+// test.
+func TestScriptEnvs_DropBotRoleHelperRunnerEnv(t *testing.T) {
+	runnerEnv := map[string]string{
+		"FULLSEND_BOT_ROLE_URL":   "http://harness-supplied.example/bot-role",
+		"FULLSEND_BOT_ROLE_TOKEN": "harness-supplied-token",
+		"FULLSEND_ENTITY_ID":      "fullsend:entity:v1:github:github.com:work_item:I_harness",
+		"LEGIT_VAR":               "allowed",
+	}
+
+	for name, env := range map[string][]string{
+		"childScriptEnv":      childScriptEnv(runnerEnv, ""),
+		"postScriptEnv":       postScriptEnv(&harness.Harness{RunnerEnv: runnerEnv}, ""),
+		"validationScriptEnv": validationScriptEnv(&harness.Harness{RunnerEnv: runnerEnv}, "/repo", "/run"),
+	} {
+		assert.Equal(t, 0, envCount(env, "FULLSEND_BOT_ROLE_URL"), "%s: a harness runner_env entry must not supply the helper URL", name)
+		assert.Equal(t, 0, envCount(env, "FULLSEND_BOT_ROLE_TOKEN"), "%s: a harness runner_env entry must not supply the helper token", name)
+		assert.Equal(t, 0, envCount(env, "FULLSEND_ENTITY_ID"), "%s: a harness runner_env entry must not supply the entity ID", name)
+		assert.Equal(t, "allowed", envLast(env, "LEGIT_VAR"), "%s: other runner_env entries preserved", name)
+	}
+
+	preflight := preflightEnv(runnerEnv, "/fullsend-dir")
+	assert.NotContains(t, preflight, "FULLSEND_BOT_ROLE_URL", "preflightEnv: a harness runner_env entry must not supply the helper URL")
+	assert.NotContains(t, preflight, "FULLSEND_BOT_ROLE_TOKEN", "preflightEnv: a harness runner_env entry must not supply the helper token")
+	assert.NotContains(t, preflight, "FULLSEND_ENTITY_ID", "preflightEnv: a harness runner_env entry must not supply the entity ID")
+	assert.Equal(t, "allowed", preflight["LEGIT_VAR"], "preflightEnv: other runner_env entries preserved")
 }
 
 // TestProviderDefinitionsCannotExpandJiraSecrets verifies that provider

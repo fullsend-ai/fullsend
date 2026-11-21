@@ -1862,6 +1862,26 @@ type OrgMembership struct {
 	Role  string // "admin" or "member"
 }
 
+// CommentActor is a comment's current-revision actor and the issue or pull
+// request it is on (#9602). ActorType is the actor's type (Bot, User, …)
+// and ActorLogin its login as the forge spells it (a GitHub Bot without
+// the REST "[bot]" suffix); both are empty for a deleted account.
+type CommentActor struct {
+	OnPullRequest bool
+	EntityNodeID  string
+	ActorType     string
+	ActorLogin    string
+}
+
+// IssueOrPullRequestNode is the GraphQL type ("Issue" or "PullRequest") and
+// node ID of an issue or pull request: the value type the fake records for
+// IssueOrPullRequestNodeID lookups. The interface method itself returns the
+// typename and node ID as strings.
+type IssueOrPullRequestNode struct {
+	Typename string
+	NodeID   string
+}
+
 // GitHubExtensions provides GitHub-specific operations that are not
 // part of the cross-forge Client interface. Callers should type-assert
 // to this interface when they need GitHub App installation features.
@@ -1870,6 +1890,22 @@ type GitHubExtensions interface {
 	ListOrgInstallations(ctx context.Context, org string) ([]Installation, error)
 	// GetAppClientID returns the OAuth client ID for the named GitHub App.
 	GetAppClientID(ctx context.Context, slug string) (string, error)
+
+	// IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
+	// "PullRequest") and node ID of issue or pull request number in
+	// owner/repo. The node ID is in GitHub's new global-ID format, so
+	// long-lived issues and pull requests report the same ID from this
+	// lookup as newly created ones. REST and webhook node_id payloads
+	// still return the legacy format on older objects, and which
+	// canonical format every producer can emit is not settled (see the
+	// normalized-entity spec, docs/normative/normalized-entity/v1/README.md).
+	// Returns forge.ErrNotFound when no such issue or pull request exists.
+	IssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (typename, nodeID string, err error)
+
+	// CommentActor reads a comment's current-revision actor and the issue
+	// or pull request it is on, failing closed when the actor cannot be
+	// attributed. Returns forge.ErrNotFound when no such comment exists.
+	CommentActor(ctx context.Context, commentID string) (CommentActor, error)
 
 	// GetCollaboratorPermission returns the effective GitHub base role
 	// (admin, maintain, write, triage, read or none) for username on

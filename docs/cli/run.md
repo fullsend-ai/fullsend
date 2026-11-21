@@ -637,6 +637,14 @@ collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
 `OTEL_EXPORTER_OTLP_*_HEADERS`) from the `fullsend run` process environment. A script
 receives one only when the harness declares it under `env.runner`; see
 [`env.runner`](../reference/harness-reference.md#field-details) in the harness reference.
+The bot-role helper settings `FULLSEND_BOT_ROLE_URL`,
+`FULLSEND_BOT_ROLE_TOKEN` and `FULLSEND_ENTITY_ID` are denied the same way,
+with one difference: `fullsend run` exports them directly to pre- and
+post-scripts when the bot-role helper runs, and harness-supplied
+`env.runner` values for them are dropped, so a script never receives a
+caller-chosen helper endpoint, token or entity
+(see [Resolving a comment's bot role](../guides/user/bring-your-own-agent.md#resolving-a-comments-bot-role)
+and the delivery rules in the [harness field reference](../reference/harness-reference.md#field-details)).
 `FULLSEND_JIRA_EMAIL` is optional: an `env.runner` reference to it does not fail when it is
 unset, and the entry is omitted rather than passed empty. The OAuth client credentials
 `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` are optional the same way, and
