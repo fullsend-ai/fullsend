@@ -435,6 +435,11 @@ fullsend does not understand, `fullsend lock` exits with an error and
 leaves the file unchanged. Delete the file to regenerate it, or upgrade
 fullsend if the version is newer. A missing lock file is not an error.
 
+`fullsend lock --all` also exits with an error and leaves `lock.yaml`
+unchanged when `config.yaml` loads but one of its `agents` entries cannot
+be resolved, for example because of an invalid `trigger`. Fix the reported
+entry and run the command again.
+
 When `--forge` is specified, only that platform variant is locked. When omitted,
 all forge variants defined in the harness are resolved and the union of their
 dependencies is locked. If your agent's forge-specific files come only from a
