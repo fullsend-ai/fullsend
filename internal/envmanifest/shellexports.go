@@ -21,7 +21,20 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //
 // A plain assignment with no command ("NAME=value" alone, or "readonly
 // NAME=value") is shell-local and is not reported, nor is a prefix
-// assignment on a shell builtin ("IFS= read"). Assignment-shaped text
+// assignment on a shell builtin ("IFS= read"). "export -n NAME" removes
+// the export attribute, so a name the scripts un-export after exporting
+// it is not reported; scripts are read in order as one shell, and an
+// "sh -c" script is its own shell whose un-exports do not reach its
+// parent. Prefix assignments affect only their command's process, and a
+// name exported when a process launches stays in that process's
+// environment, so a later "export -n" does not retract either. "export
+// -f" works on functions, so "export -fn NAME" leaves variable NAME
+// exported. An "export" with an option other than -f, -n or -p
+// changes nothing, and "command -v" only looks a command up and
+// "builtin" runs only a shell builtin, so neither launches a process.
+// Parentheses are only separators, so an "export -n" inside a
+// ( ... ) subshell is treated as if it ran in the parent shell.
+// Assignment-shaped text
 // inside a quoted value is data, not a binding, and a command
 // substitution's exports stay in its subshell. The parser is a tokenizer,
 // not a shell: it handles single and double quotes, backslash escapes,
@@ -29,8 +42,12 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // separators, which is the subset the runner's emitters generate.
 func ExportedNames(scripts ...string) []string {
 	seen := map[string]bool{}
+	exported := map[string]bool{}
 	for _, script := range scripts {
-		collectExportedNames(script, seen, 0)
+		collectExportedNames(script, seen, exported, 0)
+	}
+	for name := range exported {
+		seen[name] = true
 	}
 	names := make([]string, 0, len(seen))
 	for name := range seen {
@@ -48,6 +65,10 @@ var shellBuiltins = map[string]bool{
 	"echo": true, "eval": true, "exit": true, "false": true, "printf": true,
 	"read": true, "return": true, "set": true, "shift": true, "test": true,
 	"true": true, "unset": true,
+	"readonly": true, "local": true, "declare": true, "typeset": true,
+	"let": true, "pwd": true, "wait": true, "trap": true, "umask": true,
+	"getopts": true, "source": true, ".": true, "alias": true,
+	"hash": true, "type": true, "ulimit": true, "builtin": true,
 }
 
 // maxShellDepth bounds sh -c recursion so a malformed input cannot loop.
@@ -74,17 +95,21 @@ func (w shellWord) assignmentName() string {
 	return name
 }
 
-func collectExportedNames(script string, seen map[string]bool, depth int) {
+// collectExportedNames records the names script exports. seen collects
+// names that reach a child process for certain (prefix and env
+// assignments, and a finished child shell's exports); exported holds the
+// current shell's export attributes, which a later "export -n" can clear.
+func collectExportedNames(script string, seen, exported map[string]bool, depth int) {
 	if depth > maxShellDepth {
 		return
 	}
 	for _, words := range shellCommands(script) {
-		collectFromCommand(words, seen, depth)
+		collectFromCommand(words, seen, exported, depth)
 	}
 }
 
 // collectFromCommand records the names one simple command exports.
-func collectFromCommand(words []shellWord, seen map[string]bool, depth int) {
+func collectFromCommand(words []shellWord, seen, exported map[string]bool, depth int) {
 	// Leading NAME=value words are prefix assignments when a command
 	// follows them, and shell-local assignments when nothing does.
 	i := 0
@@ -99,17 +124,55 @@ func collectFromCommand(words []shellWord, seen map[string]bool, depth int) {
 		for _, w := range words[:i] {
 			seen[w.assignmentName()] = true
 		}
+		// Launching a process hands it the shell's current export
+		// attributes, so a later "export -n" cannot retract them. "export"
+		// and "command" run inside the shell (command may run a builtin),
+		// and "exec" with no command launches nothing.
+		if cmd != "export" && cmd != "command" && (cmd != "exec" || len(args) > 0) {
+			for name := range exported {
+				seen[name] = true
+			}
+		}
 	}
 	switch cmd {
 	case "export":
+		// Options precede the operands and end at "--" or the first
+		// operand (a lone "-" is an operand); -n (alone or combined, as in
+		// -pn) switches the command to removing the export attribute. -f
+		// selects the function namespace, so function-mode operands never
+		// change a variable's export attribute.
+		unexport, funcMode, optsDone := false, false, false
 		for _, a := range args {
-			if strings.HasPrefix(a.text, "-") {
+			if !optsDone && a.text != "-" && strings.HasPrefix(a.text, "-") {
+				if a.text == "--" {
+					optsDone = true
+				} else {
+					// An option the builtin rejects makes the whole
+					// command a no-op, so no export state changes.
+					if strings.Trim(a.text[1:], "fnp") != "" {
+						return
+					}
+					if strings.Contains(a.text[1:], "n") {
+						unexport = true
+					}
+					if strings.Contains(a.text[1:], "f") {
+						funcMode = true
+					}
+				}
 				continue
 			}
-			if name := a.assignmentName(); name != "" {
-				seen[name] = true
-			} else if envNameRe.MatchString(a.text) {
-				seen[a.text] = true
+			optsDone = true
+			name := a.assignmentName()
+			if name == "" && envNameRe.MatchString(a.text) {
+				name = a.text
+			}
+			switch {
+			case name == "":
+			case funcMode:
+			case unexport:
+				delete(exported, name)
+			default:
+				exported[name] = true
 			}
 		}
 	case "env":
@@ -119,17 +182,59 @@ func collectFromCommand(words []shellWord, seen map[string]bool, depth int) {
 			}
 			name := a.assignmentName()
 			if name == "" {
-				collectFromCommand(args[j:], seen, depth)
+				// env launches an external program, which cannot run the
+				// export builtin, so the command gets an isolated set.
+				collectFromCommand(args[j:], seen, map[string]bool{}, depth)
 				return
 			}
 			seen[name] = true
 		}
-	case "exec", "command", "nohup":
-		collectFromCommand(args, seen, depth)
+	case "builtin":
+		// builtin runs only a shell builtin, never an external program, so
+		// it launches no process itself. A target outside the shell's
+		// own export/command/exec/builtin dispatchers has no effect on
+		// export attributes, and a non-builtin target is an error.
+		if len(args) > 0 && args[0].text == "--" {
+			args = args[1:]
+		}
+		// The dispatched command keeps this command's prefix assignments,
+		// so "Y=1 builtin exec prog" still hands Y to prog.
+		if len(args) > 0 {
+			switch args[0].text {
+			case "export", "command", "exec", "builtin":
+				target := append(slices.Clone(words[:i]), args...)
+				collectFromCommand(target, seen, exported, depth)
+			}
+		}
+	case "exec", "nohup":
+		collectFromCommand(args, seen, map[string]bool{}, depth)
+	case "command":
+		// Options end at "--" or the first non-option word. -v and -V
+		// only look the command up, and an option the builtin rejects
+		// runs nothing, so neither launches a process.
+		for j, a := range args {
+			if a.text == "--" {
+				collectFromCommand(args[j+1:], seen, exported, depth)
+				return
+			}
+			if !strings.HasPrefix(a.text, "-") || a.text == "-" {
+				collectFromCommand(args[j:], seen, exported, depth)
+				return
+			}
+			if strings.Trim(a.text[1:], "pvV") != "" || strings.ContainsAny(a.text[1:], "vV") {
+				return
+			}
+		}
 	case "sh", "bash", "/bin/sh", "/bin/bash":
 		for j, a := range args {
 			if strings.HasPrefix(a.text, "-") && strings.Contains(a.text, "c") && j+1 < len(args) {
-				collectExportedNames(args[j+1].text, seen, depth+1)
+				// The child shell has its own export attributes: its
+				// "export -n" cannot un-export a name in this shell.
+				child := map[string]bool{}
+				collectExportedNames(args[j+1].text, seen, child, depth+1)
+				for name := range child {
+					seen[name] = true
+				}
 				return
 			}
 		}
