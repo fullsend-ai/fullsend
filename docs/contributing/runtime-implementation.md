@@ -614,6 +614,88 @@ The post-run output scan skips `<runDir>/skills/` and
 origins and warnings are documented in
 [Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file).
 
+### The post-run output scan
+
+`scanOutputFiles` runs the output pipeline (Unicode normalization, then secret
+redaction) over every file under the run directory (`<runDir>/`, including
+`iteration-N/` transcripts) except the skips above, any directory named
+`security` (which holds `findings.jsonl`), and the telemetry
+JSONL. Valid JSON is sanitized structurally so redaction never changes its
+syntax. A leading UTF-8 BOM does not send a document to the text scan either:
+it is stripped before the token walk and restored on write, and a clean document
+comes back byte for byte. The walk visits every object key and scalar leaf
+individually through a token-preserving walk that keeps member order and
+duplicate keys, so an earlier value that map decoding would drop is still
+scanned, and a secret spanning JSON framing stays visible in the rewritten
+bytes. A sanitized key that would collide with a different member is
+disambiguated (`<key>_<N>`). The bytes actually written are scanned as well, but
+only for whole-value secrets — registered runtime values and private-key blocks,
+the two patterns a leaf scan cannot see once a member value is masked. Every
+other pattern has already been applied to the decoded key or leaf, so a match on
+the serialized bytes would be a redaction placeholder plus JSON escape
+characters, not a secret. A private-key block spanning members is detected in a
+decoded view of the document before masking a member value can hide its BEGIN
+marker. Such a block is neutralized member by member. The members the match
+starts and ends in carry marker text, so they are always masked — even when a
+marker is split across two members and neither fragment looks like one alone. A
+string value between them is masked when it carries a block marker or a run that
+looks like PEM body material: at least 16 characters of the base64 alphabet that
+mix upper case, lower case and digits and include a character outside the hex
+range. The length floor alone is not enough — a long word such as
+`misconfiguration` and a path such as `internal/security/jsonsanitize` both reach
+it while using only base64 characters — so the case and digit mix is what tells
+body material from free text. Object keys keep their names, so a document that
+merely quotes the PEM header in one finding and the footer in another keeps its
+shape — every required field of a review result is still present, and its
+enum-valued fields (`action`, `severity`, `category`) and patterned fields
+(`head_sha`, finding `id`) keep values `review-result.schema.json` accepts —
+instead of being dropped whole or rewritten into a document the schema rejects. A
+key name is treated as block content only when the match starts or ends in it or
+the name itself carries a marker; then it is masked too, because it cannot be
+written back as structure. A value that neither carries a marker nor holds a run
+of that shape keeps its content: nothing distinguishes a quoted marker pair from
+a split block, so the choice is between masking free text and enum values, which
+loses the review, and keeping a fragment too short to be recognized as key
+material. A hex-only run is kept for the same reason the enum values are: a PEM
+body is base64, while a hex run is more likely a commit SHA or a finding id.
+`.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
+record framing; a secret that spans records cannot be redacted without
+rewriting that framing, so only the records it covers are replaced. A
+private-key block spanning records is detected in a decoded view of the stream,
+before per-record masking can remove its BEGIN marker, so a marker written with
+\u escapes is still recognized. After the per-record pass the rebuilt stream is
+rescanned, but only for whole-value secrets — registered runtime values and
+private-key blocks, the same set the single-document path scans in its written
+form. Running the value patterns again would re-match a redaction placeholder
+followed by JSON escape bytes: in encoded JSON a `\n` escape is two non-space
+bytes, so `env_assignment` runs past the end of a value the record pass already
+redacted and every such match would replace a correct record with a cross-record
+marker. Localization inside the changed region is
+conservative but per record: a record is kept only when its bytes are unique in
+the stream and reappear as a whole line in the redacted stream, because a
+repeated record could otherwise let an untouched copy stand in for the covered
+one. Records outside the changed region, duplicates included, are copied through
+unchanged.
+
+Some content cannot be redacted in place. A JSON document or JSONL record is
+replaced with a valid fail-closed marker instead — never with corrupted
+syntax — when a private-key block cannot be localized to members or when a
+match spans record boundaries. Markers look like
+`{"error":"output removed because …"}` and are logged
+as findings in `security/findings.jsonl`. Because a replaced file or record loses
+everything the agent wrote into it, and because the run still exits 0, the reason
+a marker states is also emitted as a `::error::` workflow annotation whenever the
+job sets `GITHUB_ACTIONS=true` — GitHub Actions and Forgejo Actions both do: one
+annotation for a file replaced whole, and one per distinct reason for a JSONL
+file whose records were replaced.
+
+A sanitized file that cannot be written, and a file that cannot be sanitized at
+all, do not stop the walk: every remaining file is still scanned and redacted,
+and the run fails closed afterwards with all failures joined. The file itself is
+replaced with a fail-closed marker so the unredacted bytes never reach the
+uploaded artifact. In `quiet` mode the affected paths are counted, not named
+(ADR 0163).
+
 ## Agent rule layering
 
 When `fullsend run` executes an agent, Claude Code loads instructions from

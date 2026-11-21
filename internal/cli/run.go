@@ -3495,33 +3495,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 9f. Post-agent output scan — redact secrets from extracted output.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
-		if err := scanOutputFiles(runDir, securityTraceID, progressVerbosity, printer); err != nil {
-			printer.StepWarn(failureLine("Output scan error", err, progressVerbosity))
+		scanErr := scanOutputFiles(runDir, securityTraceID, progressVerbosity, printer)
+		if scanErr != nil {
+			printer.StepFail(failureLine("Output scan failed", scanErr, progressVerbosity))
 		}
-
-		// Extract sandbox-side security findings for audit trail.
-		findingsDir := filepath.Join(runDir, "security")
-		if err := os.MkdirAll(findingsDir, 0o755); err == nil {
-			remoteFindingsDir := sandbox.SandboxWorkspace + "/.security/"
-			if dlErr := sandbox.Download(sandboxName, remoteFindingsDir, findingsDir); dlErr != nil {
-				printer.StepInfo("No sandbox security findings to extract")
-			} else {
-				printer.StepDone("Security findings extracted")
-			}
-		}
-
-		findingsJSONL := filepath.Join(runDir, "security", "findings.jsonl")
-		if _, statErr := os.Stat(findingsJSONL); statErr == nil {
-			cv, verifyErr := security.VerifyChain(findingsJSONL)
-			if verifyErr != nil {
-				printer.StepWarn(failureLine("Audit log verification error", verifyErr, progressVerbosity))
-			} else if !cv.Valid {
-				line, chainErr := auditChainFailure(cv.BrokenMsg, progressVerbosity)
-				printer.StepFail(line)
-				return chainErr
-			} else if cv.Entries > 0 {
-				printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
-			}
+		// Collect the sandbox audit trail even when the scan failed: those runs
+		// are the ones where it matters most.
+		if err := collectPostScanSecurityArtifacts(runDir, sandboxName, printer, progressVerbosity, scanErr); err != nil {
+			return err
 		}
 	}
 
@@ -7082,12 +7063,24 @@ func printExtractedOutputFiles(printer *ui.Printer, extracted []string, elapsed 
 	printer.StepDone(fmt.Sprintf("Extracted %d output file(s) (%.1fs)", len(extracted), elapsed.Seconds()))
 }
 
+// The structural sanitizers are variables so tests can inject a sanitizer
+// failure: their error path has no natural trigger, because they only fail on a
+// decoder limit after json.Valid has accepted the document.
+var (
+	sanitizeJSONDocument = security.SanitizeJSONDocument
+	sanitizeJSONLines    = security.SanitizeJSONLines
+)
+
 // scanOutputFiles runs the output security pipeline (unicode normalization and
 // secret redaction) on extracted output files, recursively walking all
 // subdirectories (iteration-N/output/, etc.). At the quiet progress level
 // (ADR 0163) it prints counts only: file paths and finding details, which
 // can carry agent-chosen names and matched text, stay in findings.jsonl.
 func scanOutputFiles(outputDir, traceID, progressVerbosity string, printer *ui.Printer) error {
+	return scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity, printer, os.WriteFile)
+}
+
+func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, printer *ui.Printer, writeFile func(string, []byte, os.FileMode) error) error {
 	quiet := config.ProgressIsQuiet(progressVerbosity)
 	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
 		printer.StepInfo("No output files to scan")
@@ -7097,7 +7090,11 @@ func scanOutputFiles(outputDir, traceID, progressVerbosity string, printer *ui.P
 	pipeline := security.OutputPipeline()
 	findingCount := 0
 	// At quiet, unreadable and unwritable files are counted, not named.
-	unreadable, unwritable := 0, 0
+	unreadable, unwritable, unsanitizable := 0, 0, 0
+	// Write and sanitizer failures are collected rather than returned from the
+	// walk callback so every remaining file is still scanned and redacted. The
+	// run still fails closed once the walk finishes (#5705).
+	var writeErrs []error
 	findingsPath := filepath.Join(outputDir, "security", "findings.jsonl")
 
 	err := filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
@@ -7128,21 +7125,81 @@ func scanOutputFiles(outputDir, traceID, progressVerbosity string, printer *ui.P
 			return nil
 		}
 		content, readErr := os.ReadFile(path)
+		relPath, _ := filepath.Rel(outputDir, path)
 		if readErr != nil {
 			if quiet {
 				unreadable++
 				return nil
 			}
-			relPath, _ := filepath.Rel(outputDir, path)
 			printer.StepWarn(fmt.Sprintf("Could not read %s: %v", relPath, readErr))
 			return nil
 		}
+		ext := strings.ToLower(filepath.Ext(path))
 
+		// JSONL and NDJSON are sanitized record by record so one record never
+		// rewrites another (#5705).
+		if ext == ".jsonl" || ext == ".ndjson" {
+			out, jsonLineFindings, scanErr := sanitizeJSONLines(content, pipeline)
+			if scanErr != nil {
+				writeErrs = append(writeErrs, sanitizeFailure(quiet, path, relPath, scanErr, &unsanitizable))
+				return nil
+			}
+			// A record that was replaced with a marker is not a whole-file
+			// marker, so this is the only place its loss reaches an operator.
+			alertOnRecordRemoval(printer, out)
+			if len(jsonLineFindings) > 0 {
+				findingCount += len(jsonLineFindings)
+				for _, f := range jsonLineFindings {
+					if !quiet {
+						printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+					}
+					security.AppendFinding(findingsPath, security.TracedFinding{
+						TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
+						Phase: "host_output", Finding: f,
+					})
+				}
+				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
+					writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
+				}
+			}
+			return nil
+		}
+
+		// Structurally sanitize valid JSON so redaction never breaks JSON
+		// syntax and fails closed (#5705). The test tolerates a leading UTF-8
+		// BOM, so a document that carries one is not left to the text scan,
+		// where a redaction could still break its syntax. Non-JSON files fall
+		// through to the plain text scan below.
+		if security.IsJSONDocument(content) {
+			out, jsonFindings, jsonErr := sanitizeJSONDocument(content, pipeline)
+			if jsonErr != nil {
+				writeErrs = append(writeErrs, sanitizeFailure(quiet, path, relPath, jsonErr, &unsanitizable))
+				return nil
+			}
+			if len(jsonFindings) > 0 {
+				findingCount += len(jsonFindings)
+				for _, f := range jsonFindings {
+					if !quiet {
+						printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+					}
+					security.AppendFinding(findingsPath, security.TracedFinding{
+						TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
+						Phase: "host_output", Finding: f,
+					})
+				}
+				alertOnOutputRemoval(printer, out)
+				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
+					writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
+				}
+			}
+			return nil
+		}
+
+		// Non-JSON files: run plain text pipeline scan.
 		text := string(content)
 		result := pipeline.Scan(text)
 		if len(result.Findings) > 0 {
 			findingCount += len(result.Findings)
-			relPath, _ := filepath.Rel(outputDir, path)
 			for _, f := range result.Findings {
 				if !quiet {
 					printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
@@ -7156,13 +7213,13 @@ func scanOutputFiles(outputDir, traceID, progressVerbosity string, printer *ui.P
 					})
 			}
 			// Sanitized may be empty when all content was invisible characters.
+			// Nothing here writes a fail-closed marker: a document that parsed
+			// as JSON took the structural path above, so this text scan cannot
+			// turn valid JSON into invalid JSON, and the alert has nothing to
+			// report.
 			out := result.Sanitized
-			if writeErr := os.WriteFile(path, []byte(out), 0o644); writeErr != nil {
-				if quiet {
-					unwritable++
-				} else {
-					printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
-				}
+			if writeErr := writeFile(path, []byte(out), 0o644); writeErr != nil {
+				writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
 			}
 		}
 		return nil
@@ -7177,15 +7234,126 @@ func scanOutputFiles(outputDir, traceID, progressVerbosity string, printer *ui.P
 	if unwritable > 0 {
 		printer.StepWarn(fmt.Sprintf("Could not write %d sanitized output file(s)", unwritable))
 	}
+	if unsanitizable > 0 {
+		printer.StepWarn(fmt.Sprintf("Could not sanitize %d output file(s)", unsanitizable))
+	}
 	if findingCount > 0 {
 		printer.StepWarn(fmt.Sprintf("Sanitized %d finding(s) in output files", findingCount))
 	} else {
 		printer.StepDone("Output files clean — no issues found")
 	}
+	if err := errors.Join(writeErrs...); err != nil {
+		return err
+	}
 	return nil
 }
 
-// injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.
+// alertOnOutputRemoval emits a workflow annotation when an output file was
+// replaced whole by a fail-closed marker. Everything the agent wrote into that
+// file is gone, and a lost review that only shows up as one scan line is the
+// silent failure #5705 set out to fix. Only the marker's fixed reason reaches
+// the annotation: a file path or a matched value could carry agent-chosen text
+// (ADR 0163).
+func alertOnOutputRemoval(printer *ui.Printer, sanitized []byte) {
+	reason, removed := security.OutputRemoval(sanitized)
+	if !removed || os.Getenv("GITHUB_ACTIONS") != "true" {
+		return
+	}
+	printer.Raw("::error::Output file replaced with a fail-closed marker: " + reason + "\n")
+}
+
+// alertOnRecordRemoval emits a workflow annotation for each distinct reason a
+// JSONL record was replaced with a fail-closed marker. Such a file keeps its
+// records, so it is never a whole-file marker, and the record's loss would
+// otherwise show up only as one scan line — the silent failure #5705 set out to
+// fix. Only the marker's fixed reason reaches the annotation, never a path or a
+// matched value (ADR 0163).
+func alertOnRecordRemoval(printer *ui.Printer, sanitized []byte) {
+	if os.Getenv("GITHUB_ACTIONS") != "true" {
+		return
+	}
+	for _, reason := range security.OutputRecordRemovals(sanitized) {
+		printer.Raw("::error::Output record replaced with a fail-closed marker: " + reason + "\n")
+	}
+}
+
+// writeFailure records a sanitized-output write error. At the quiet progress
+// level the path is withheld because it can carry an agent-chosen name
+// (ADR 0163); non-quiet callers name it.
+func writeFailure(quiet bool, path, relPath string, writeErr error, unwritable *int) error {
+	*unwritable++
+	quarantineOutput(path)
+	if quiet {
+		return fmt.Errorf("could not write sanitized output file")
+	}
+	return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
+}
+
+// sanitizeFailure records a sanitization error and contains the file it could
+// not sanitize, so the walk continues to the remaining files instead of leaving
+// them unredacted. The unredacted bytes must never reach the uploaded artifact,
+// so the file is replaced with the marker as on a write failure (#5705).
+func sanitizeFailure(quiet bool, path, relPath string, scanErr error, unsanitizable *int) error {
+	*unsanitizable++
+	quarantineOutput(path)
+	if quiet {
+		return fmt.Errorf("could not sanitize output file")
+	}
+	return fmt.Errorf("could not sanitize %s: %w", relPath, scanErr)
+}
+
+// quarantineOutput replaces path with the fail-closed marker, removing it if even
+// that write fails, so unredacted bytes never reach the uploaded artifact.
+func quarantineOutput(path string) {
+	if err := os.WriteFile(path, []byte(unwritableOutputMarker), 0o644); err != nil {
+		_ = os.Remove(path)
+	}
+}
+
+// unwritableOutputMarker replaces a file whose sanitized content could not be
+// computed or written. It is valid JSON so downstream parsers keep working.
+const unwritableOutputMarker = `{"error":"output removed because it could not be redacted"}`
+
+// downloadSandboxFindings extracts the sandbox-side findings directory. It is a
+// variable so tests can observe the ordering contract of
+// collectPostScanSecurityArtifacts without a sandbox.
+var downloadSandboxFindings = sandbox.Download
+
+// collectPostScanSecurityArtifacts extracts the sandbox-side security findings
+// and verifies the audit hash chain. scanErr is the outcome of the host output
+// scan; it is returned after the audit trail has been collected, so a failed
+// scan never skips the artifacts that explain the failure.
+func collectPostScanSecurityArtifacts(runDir, sandboxName string, printer *ui.Printer, progressVerbosity string, scanErr error) error {
+	findingsDir := filepath.Join(runDir, "security")
+	if err := os.MkdirAll(findingsDir, 0o755); err == nil {
+		remoteFindingsDir := sandbox.SandboxWorkspace + "/.security/"
+		if dlErr := downloadSandboxFindings(sandboxName, remoteFindingsDir, findingsDir); dlErr != nil {
+			printer.StepInfo("No sandbox security findings to extract")
+		} else {
+			printer.StepDone("Security findings extracted")
+		}
+	}
+	var chainErr error
+	findingsJSONL := filepath.Join(runDir, "security", "findings.jsonl")
+	if _, statErr := os.Stat(findingsJSONL); statErr == nil {
+		cv, verifyErr := security.VerifyChain(findingsJSONL)
+		switch {
+		case verifyErr != nil:
+			printer.StepWarn(failureLine("Audit log verification error", verifyErr, progressVerbosity))
+		case !cv.Valid:
+			line, err := auditChainFailure(cv.BrokenMsg, progressVerbosity)
+			printer.StepFail(line)
+			chainErr = err
+		case cv.Entries > 0:
+			printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
+		}
+	}
+	if scanErr != nil {
+		scanErr = fmt.Errorf("post-agent output scan failed: %w", scanErr)
+	}
+	return errors.Join(scanErr, chainErr)
+}
+
 func injectTraceID(sandboxName, traceID string) error {
 	if !security.IsShellSafeTraceID(traceID) {
 		return fmt.Errorf("invalid trace ID format: %q", traceID)
