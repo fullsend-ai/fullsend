@@ -87,7 +87,7 @@ live suites on a pull request before it is enqueued, see
 
 #### Troubleshooting
 
-Each row is error text from a real failed run.
+Each row is error text a failed run prints. `N.N` stands for the elapsed time in seconds.
 
 | Error text | What it means | What to do |
 |------------|---------------|------------|
@@ -95,7 +95,8 @@ Each row is error text from a real failed run.
 | `harness agent "retro": workflow run 5 concluded with "failure" before producing artifact (url=https://ghemu.localhost/...)` | The agent's workflow ran on the emulator and failed. | Find the run's job in `stack/runner-<n>.log` and read the failing step. In past runs, the cause was in the change under test. |
 | `harness agent "pr-ping" did not complete successfully; no recent workflow runs found after trigger time; no repository artifacts listed` | The trigger started no workflow run. | Look in `stack/emulator.log` for the event and the run. If the emulator answered HTTP 4xx or 5xx to an API that GitHub supports, the bug is likely in the emulator. |
 | `"review" agent was not dispatched since <time>` | Playback: the expected agent dispatch did not happen. | Same checks as the row above. |
-| `the emulator did not start; last lines of ./stack/emulator.log:` | The emulator did not finish starting within the start timeout, so no scenario ran. | Re-run the failed jobs once. If it happens again, file an emulator issue with the log lines printed below it. |
+| `the emulator did not start: no answer after N.Ns (CI_STACK_START_TIMEOUT=120); last lines of /home/runner/work/_temp/bt-github-emulator/stack/emulator.log:` | The emulator was still starting when the 120 s start deadline ran out. No scenario ran. | In `stack/emulator.log`, each `Startup:` line gives the time one startup step took (app import, database init, admin user seed, SSH server). Use them to see which step was slow. Re-run the failed jobs once. If it happens again, file an emulator issue with the log lines and the `Startup:` lines. |
+| `the emulator did not start: it exited after N.Ns; last lines of /home/runner/work/_temp/bt-github-emulator/stack/emulator.log:` | The emulator process exited before it answered. No scenario ran. | Read the log lines printed below the message for the error. File an emulator issue with those log lines. |
 | `! [remote rejected] HEAD -> main (shallow update not allowed)` | The agents job pushes its checkout into the emulator, and the checkout was shallow. | Only seen when editing the workflow: the agents checkout needs `fetch-depth: 0`. |
 
 To run the job yourself, see
