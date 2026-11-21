@@ -108,19 +108,13 @@ stop_all() {
 }
 trap stop_all EXIT
 
-# The mint binary and the suite's test build, compiled in the background
-# from the start so neither waits on the stack: the suite's go test then
-# finds its packages in the build cache.
+# The mint binary. It is built in the background once the stack is up (see
+# step 1), and again in step 3 if that build failed.
 build_mint() {
   (cd "$ROOT/cmd/mint" && go build -tags github \
     -ldflags "-X github.com/fullsend-ai/fullsend/internal/mintcore.StatusGitHubGroup=$ORG/mint-status" \
     -o "$STATE/mint" .)
 }
-(
-  build_mint
-  cd "$ROOT" && go test -c -tags "$BUILD_TAG" -o "$STATE/suite-warm.test" ./e2e/behaviour/ && rm -f "$STATE/suite-warm.test"
-) >"$STATE/go-warm.log" 2>&1 &
-go_warm_pid=$!
 
 # 0. All runners share this VM, so it becomes the sandbox host once, before
 # the stack start, and the runners inherit OPENSHELL_GATEWAY_ENDPOINT: the
@@ -158,9 +152,9 @@ tail -1 "$STATE/sandbox-host.log"
 phase sandbox-host
 
 # 0b. The shipped agents, fetched from github.com (or AGENTS_DIR's HEAD for
-# BT_SUITE=agents) before the stack starts so the sandbox image pre-pull
-# overlaps the stack start instead of following it. They are pushed into the
-# emulator as fullsend-ai/agents in step 4b.
+# BT_SUITE=agents) before the stack starts, so the sandbox image list is
+# ready when the pre-pull starts after the stack is up. They are pushed into
+# the emulator as fullsend-ai/agents in step 4b.
 if [ "$AGENTS_SEED" = 1 ]; then
   agents="$STATE/agents.git"
   rm -rf "$agents"
@@ -178,14 +172,9 @@ if [ "$AGENTS_SEED" = 1 ]; then
     git -C "$agents" -c user.name=bt-github-emulator -c user.email=bt-github-emulator@localhost \
       merge -q --no-edit -m "bt-github-emulator: merge agents#$pr" FETCH_HEAD
   done
-  # Pre-pull the sandbox images the agents pin (by digest) into the
-  # runner user's rootless store once, in the background, so no agent job
-  # pays the pull. The suite waits for it below.
+  # The sandbox images the agents pin (by digest), pre-pulled once the
+  # stack is up (step 1).
   mapfile -t sandbox_images < <(git -C "$agents" grep -hoE 'image: *[^ ]+@sha256:[0-9a-f]+' HEAD -- harness | sed 's/image: *//' | sort -u)
-  if [ "${#sandbox_images[@]}" -gt 0 ]; then
-    ( for img in "${sandbox_images[@]}"; do podman pull -q "$img" >/dev/null; done ) >"$STATE/prepull.log" 2>&1 &
-    prepull_pid=$!
-  fi
   # The emulator's runners share this VM's $HOME, and the agents' post
   # scripts install gitleaks in place into $HOME/.local/bin. Two runs
   # installing at once can run each other's half-written binary. Install it
@@ -223,6 +212,25 @@ sudo sysctl -qw net.ipv4.ip_unprivileged_port_start=80
   GITHUB_EMULATOR_ACTIONS_UPSTREAM_TOKEN="${UPSTREAM_TOKEN:-}" \
     scripts/ci-stack.sh start
 )
+
+# The mint binary and the suite's test build, compiled in the background
+# so the suite's go test finds its packages in the build cache. They start
+# after the stack so they don't compete with the emulator's startup for CPU.
+(
+  build_mint
+  cd "$ROOT" && go test -c -tags "$BUILD_TAG" -o "$STATE/suite-warm.test" ./e2e/behaviour/ && rm -f "$STATE/suite-warm.test"
+) >"$STATE/go-warm.log" 2>&1 &
+go_warm_pid=$!
+
+# Pre-pull the sandbox images into the runner user's rootless store once,
+# in the background, so no agent job pays the pull. The suite waits for it
+# below. It starts after the stack so it doesn't compete with the
+# emulator's startup for CPU.
+if [ "$AGENTS_SEED" = 1 ] && [ "${#sandbox_images[@]}" -gt 0 ]; then
+  ( for img in "${sandbox_images[@]}"; do podman pull -q "$img" >/dev/null; done ) >"$STATE/prepull.log" 2>&1 &
+  prepull_pid=$!
+fi
+
 export SSL_CERT_FILE="$STATE/stack/tls/bundle.pem" GIT_SSL_CAINFO="$STATE/stack/tls/bundle.pem"
 export CURL_CA_BUNDLE="$STATE/stack/tls/ca.pem" NODE_EXTRA_CA_CERTS="$STATE/stack/tls/ca.pem"
 phase stack
