@@ -117,9 +117,12 @@ inputs:
 Dispatching needs write access to the repository that runs the workflow. The job
 uses no repository secrets, so it runs the same way in your own fork:
 
-1. Push your branch to your fork. The fork's default branch does not need the
-   workflow.
-2. Dispatch it there. With write access to `fullsend-ai/fullsend`, you can
+1. Sync your fork's default branch with `fullsend-ai/fullsend`, for example
+   with `gh repo sync <your-user>/fullsend`. GitHub only dispatches a workflow
+   that exists on the default branch. If the fork's **Actions** tab asks you
+   to enable workflows, enable them.
+2. Push your branch to your fork.
+3. Dispatch it there. With write access to `fullsend-ai/fullsend`, you can
    also use `--repo fullsend-ai/fullsend` and a branch in it.
 
    ```console
