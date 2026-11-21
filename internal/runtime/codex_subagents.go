@@ -218,6 +218,7 @@ const codexDroppedNotification = "dropping in-process server notification (queue
 var codexBackfillFailedMarkers = []string{
 	"thread/items/list failed during turn completion",
 	"thread/items/list returned a repeated cursor during turn completion",
+	"thread/items/list returned an incomplete item during turn completion",
 	"thread/read failed while backfilling turn items",
 }
 

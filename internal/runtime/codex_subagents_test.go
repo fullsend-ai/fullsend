@@ -1173,8 +1173,9 @@ func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
 	}
 	assert.Equal(t, 2, d.Dropped, "one per line, however the writes split it")
 	assert.Equal(t, whole, sink.String(), "every byte still reaches the runner's stderr")
-	// Every backfill marker counts: the paginated thread's two (a failed
-	// page, a looping cursor) and the legacy-mode thread's read.
+	// Every backfill marker counts: the paginated thread's three (a failed
+	// page, a looping cursor, an incomplete item) and the legacy-mode
+	// thread's read.
 	for _, m := range codexBackfillFailedMarkers {
 		_, err := d.Write([]byte("WARN codex_exec: " + m + ": boom\n"))
 		require.NoError(t, err)

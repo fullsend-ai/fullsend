@@ -83,9 +83,10 @@ runner scans for, while exec re-emits at `turn/completed` the completed items wh
 `item.started` it saw (`maybe_backfill_turn_completed_items`,
 `reconcile_unfinished_started_items`), only for a non-ephemeral thread, which is
 paginated, and only when its `thread/items/list` pages succeed
-(`should_backfill_turn_completed_items`; a failed or looping read logs
-`thread/items/list failed during turn completion` or
-`thread/items/list returned a repeated cursor during turn completion` at warn from
+(`should_backfill_turn_completed_items`; a failed or looping read, or a page
+with an incomplete item, logs `thread/items/list failed during turn completion`,
+`thread/items/list returned a repeated cursor during turn completion` or
+`thread/items/list returned an incomplete item during turn completion` at warn from
 `codex_exec`, which the runner counts too; a non-ephemeral thread whose history
 mode is not paginated reads `thread/read` and logs
 `thread/read failed while backfilling turn items for turn completion`; an
