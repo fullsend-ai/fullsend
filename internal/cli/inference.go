@@ -723,17 +723,23 @@ Org-scoped mode (e.g. 'fullsend inference deprovision acme'):
   Removes the org from the shared WIF provider's attribute condition.
   The WIF pool and provider are left in place for other orgs.
 
-Repo-scoped mode (e.g. 'fullsend inference deprovision acme/widget'):
-  Deletes the repo's dedicated WIF provider entirely.
+  The roles/aiplatform.user IAM binding is NOT automatically revoked.
+  To fully revoke access, remove the IAM binding manually in the GCP
+  console or via gcloud.
 
-Note: the IAM binding (roles/aiplatform.user) is NOT automatically
-revoked. To fully revoke access, remove the IAM binding manually in
-the GCP console or via gcloud.
+Repo-scoped mode (e.g. 'fullsend inference deprovision acme/widget'):
+  Deletes the repo's dedicated WIF provider entirely, then revokes the
+  roles/aiplatform.user binding on the repo's principalSet
+  (attribute.repository/<owner/repo>). The binding is kept if another
+  provider in the pool may still need it (same repo, an unrecognized
+  condition, or an org-level provider when the repo is <owner>/.fullsend);
+  the summary names those providers.
 
 Requires the same GCP APIs as 'inference provision' (see 'fullsend inference provision --help').
 
 Required IAM roles on the target project:
-  - roles/iam.workloadIdentityPoolAdmin        (update or delete WIF providers)`,
+  - roles/iam.workloadIdentityPoolAdmin        (update, list, or delete WIF providers)
+  - roles/resourcemanager.projectIamAdmin      (revoke roles/aiplatform.user; repo-scoped mode only)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -762,7 +768,7 @@ Required IAM roles on the target project:
 				return runInferenceDeprovisionDryRun(printer, org, repo, project, pool, provider)
 			}
 
-			return runInferenceDeprovision(cmd, printer, org, repo, project, pool, provider)
+			return runInferenceDeprovision(cmd, printer, org, repo, project, pool, provider, nil)
 		},
 	}
 
@@ -790,6 +796,9 @@ func runInferenceDeprovisionDryRun(printer *ui.Printer, org, repo, project, pool
 		printer.Blank()
 		printer.StepInfo("Would perform:")
 		printer.StepInfo(fmt.Sprintf("  1. Delete WIF provider %s", providerID))
+		printer.StepInfo(fmt.Sprintf("  2. Revoke roles/aiplatform.user from %s",
+			gcf.RepoVertexAIPrincipal("<project-number>", pool, repo)))
+		printer.StepInfo("     unless another provider in the pool may still need it")
 	} else {
 		printer.Header("Dry run: deprovision org " + org + " from inference")
 		printer.Blank()
@@ -803,17 +812,22 @@ func runInferenceDeprovisionDryRun(printer *ui.Printer, org, repo, project, pool
 	}
 
 	printer.Blank()
-	printer.StepWarn("IAM binding (roles/aiplatform.user) is NOT revoked automatically")
-	printer.Blank()
+	if repo == "" {
+		printer.StepWarn("IAM binding (roles/aiplatform.user) is NOT revoked automatically")
+		printer.Blank()
+	}
 	return nil
 }
 
-func runInferenceDeprovision(cmd *cobra.Command, printer *ui.Printer, org, repo, project, pool, provider string) error {
+func runInferenceDeprovision(cmd *cobra.Command, printer *ui.Printer, org, repo, project, pool, provider string, client gcf.GCFClient) error {
 	printer.Banner(Version())
 	printer.Blank()
 
 	ctx := cmd.Context()
-	gcpClient := gcf.NewLiveGCFClient(project)
+	gcpClient := client
+	if gcpClient == nil {
+		gcpClient = gcf.NewLiveGCFClient(project)
+	}
 
 	if repo != "" {
 		printer.Header("Deprovisioning inference for repo: " + repo)
@@ -827,19 +841,38 @@ func runInferenceDeprovision(cmd *cobra.Command, printer *ui.Printer, org, repo,
 			WIFPoolName: pool,
 		}, gcpClient)
 
-		printer.StepStart("Deleting WIF provider " + providerID)
-		if err := provisioner.DeleteWIFProvider(ctx, providerID); err != nil {
-			printer.StepFail("Failed to delete WIF provider")
-			return fmt.Errorf("deleting WIF provider: %w", err)
+		printer.StepStart(fmt.Sprintf("Deleting WIF provider %s and revoking roles/aiplatform.user", providerID))
+		result, err := provisioner.DeprovisionRepoWIF(ctx, repo)
+		if err != nil {
+			if result != nil {
+				// The provider was deleted before the revoke step failed.
+				printer.StepDone("WIF provider deleted")
+				printer.StepFail("IAM binding (roles/aiplatform.user) was NOT revoked; remove it manually: " + result.Principal)
+				return fmt.Errorf("WIF provider %s was deleted but the IAM binding for %s must be removed manually: %w",
+					result.ProviderID, result.Principal, err)
+			}
+			printer.StepFail("Inference deprovisioning failed")
+			return fmt.Errorf("deprovisioning repo inference: %w", err)
 		}
 		printer.StepDone("WIF provider deleted")
+
+		var bindingLine string
+		switch {
+		case len(result.RetainedBy) > 0:
+			bindingLine = fmt.Sprintf("IAM binding (roles/aiplatform.user) retained: still covered by WIF provider(s) %s",
+				strings.Join(result.RetainedBy, ", "))
+		case result.BindingRemoved:
+			bindingLine = "Revoked IAM binding (roles/aiplatform.user): " + result.Principal
+		default:
+			bindingLine = "IAM binding (roles/aiplatform.user) not present: " + result.Principal
+		}
 
 		printer.Blank()
 		printer.Summary("Inference deprovisioning complete", []string{
 			fmt.Sprintf("Repository: %s", repo),
 			fmt.Sprintf("GCP project: %s", project),
-			fmt.Sprintf("Deleted WIF provider: %s", providerID),
-			"Note: IAM binding (roles/aiplatform.user) was NOT revoked — remove manually if needed",
+			fmt.Sprintf("Deleted WIF provider: %s", result.ProviderID),
+			bindingLine,
 		})
 	} else {
 		printer.Header("Deprovisioning inference for org: " + org)

@@ -3541,6 +3541,207 @@ func TestRemoveOrgFromWIFCondition_NoOpWhenOrgAbsent(t *testing.T) {
 	assert.NotContains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
 }
 
+// --- DeprovisionRepoWIF tests ---
+
+const testRepoPrincipal = "principalSet://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/attribute.repository/acme/widget"
+
+func newRepoDeprovisionProvisioner(fake *fakeGCFClient) *Provisioner {
+	return NewProvisioner(Config{ProjectID: "proj1", WIFPoolName: "fullsend-inference"}, fake)
+}
+
+func TestDeprovisionRepoWIF_RevokesBindingWhenNoOtherProviderCovers(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.projectIAMBindings = []projectIAMBinding{
+		{"proj1", testRepoPrincipal, "roles/aiplatform.user"},
+		{"proj1", "principalSet://other", "roles/aiplatform.user"},
+	}
+	fake.wifProviders = []WIFProviderSummary{
+		{ProviderID: "gh-acme-gadget", AttributeCondition: "assertion.repository == 'acme/gadget'", State: "ACTIVE"},
+		{ProviderID: "github-oidc", AttributeCondition: "assertion.repository_owner == 'other-org'", State: "ACTIVE"},
+		// The provider just deleted is soft-deleted; it must not retain the binding.
+		{ProviderID: "gh-acme-widget", AttributeCondition: "assertion.repository == 'acme/widget'", State: "DELETED"},
+	}
+
+	res, err := newRepoDeprovisionProvisioner(fake).DeprovisionRepoWIF(context.Background(), "acme/widget")
+	require.NoError(t, err)
+	assert.Equal(t, mintcore.BuildRepoProviderID("acme", "widget"), res.ProviderID)
+	assert.Equal(t, testRepoPrincipal, res.Principal)
+	assert.True(t, res.BindingRemoved)
+	assert.Empty(t, res.RetainedBy)
+	assert.Equal(t, []string{"GetProjectNumber", "DeleteWIFProvider", "ListWIFProviders", "RemoveProjectIAMBinding"}, fake.calls)
+	assert.Equal(t, []projectIAMBinding{{"proj1", "principalSet://other", "roles/aiplatform.user"}}, fake.projectIAMBindings)
+}
+
+func TestDeprovisionRepoWIF_RetainsBindingWhenCovered(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+	}{
+		{"same repo different case", "assertion.repository == 'Acme/Widget'"},
+		{"empty condition", "  "},
+		{"constant true", "true"},
+		{"prefix match", "assertion.repository.startsWith('acme/')"},
+		{"numeric owner id", "assertion.repository_owner_id == '12345'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			fake.projectIAMBindings = []projectIAMBinding{{"proj1", testRepoPrincipal, "roles/aiplatform.user"}}
+			fake.wifProviders = []WIFProviderSummary{{ProviderID: "keeper", AttributeCondition: tc.condition}}
+
+			res, err := newRepoDeprovisionProvisioner(fake).DeprovisionRepoWIF(context.Background(), "acme/widget")
+			require.NoError(t, err)
+			assert.Equal(t, []string{"keeper"}, res.RetainedBy)
+			assert.False(t, res.BindingRemoved)
+			assert.NotContains(t, fake.calls, "RemoveProjectIAMBinding")
+			assert.Len(t, fake.projectIAMBindings, 1)
+		})
+	}
+}
+
+// Org-level and public-mint providers grant Vertex access to
+// <org>/.fullsend only, so they must not keep another repo's binding.
+func TestDeprovisionRepoWIF_OrgLevelProvidersDoNotRetainRepoBinding(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+	}{
+		{"org single", "assertion.repository_owner == 'acme'"},
+		{"org list double quotes", `assertion.repository_owner in ["other", "acme"]`},
+		{"public mint condition", publicAttributeCondition},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			fake.projectIAMBindings = []projectIAMBinding{{"proj1", testRepoPrincipal, "roles/aiplatform.user"}}
+			fake.wifProviders = []WIFProviderSummary{{ProviderID: "org-provider", AttributeCondition: tc.condition, State: "ACTIVE"}}
+
+			res, err := newRepoDeprovisionProvisioner(fake).DeprovisionRepoWIF(context.Background(), "acme/widget")
+			require.NoError(t, err)
+			assert.Empty(t, res.RetainedBy)
+			assert.True(t, res.BindingRemoved)
+			assert.Empty(t, fake.projectIAMBindings)
+		})
+	}
+}
+
+// For <org>/.fullsend the repo principal is the org grant itself, so an
+// org-level provider still covering the owner keeps it.
+func TestDeprovisionRepoWIF_FullsendRepoRetainedByOrgLevelProviders(t *testing.T) {
+	const principal = "principalSet://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/attribute.repository/acme/.fullsend"
+	tests := []struct {
+		name      string
+		condition string
+	}{
+		{"org single", "assertion.repository_owner == 'acme'"},
+		{"org list", `assertion.repository_owner in ["other", "acme"]`},
+		{"public mint condition", publicAttributeCondition},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			fake.projectIAMBindings = []projectIAMBinding{{"proj1", principal, "roles/aiplatform.user"}}
+			fake.wifProviders = []WIFProviderSummary{{ProviderID: "org-provider", AttributeCondition: tc.condition, State: "ACTIVE"}}
+
+			res, err := newRepoDeprovisionProvisioner(fake).DeprovisionRepoWIF(context.Background(), "acme/.fullsend")
+			require.NoError(t, err)
+			assert.Equal(t, []string{"org-provider"}, res.RetainedBy)
+			assert.False(t, res.BindingRemoved)
+			assert.Len(t, fake.projectIAMBindings, 1)
+		})
+	}
+}
+
+func TestDeprovisionRepoWIF_BindingAlreadyAbsent(t *testing.T) {
+	fake := newFakeGCFClient()
+
+	res, err := newRepoDeprovisionProvisioner(fake).DeprovisionRepoWIF(context.Background(), "acme/widget")
+	require.NoError(t, err)
+	assert.False(t, res.BindingRemoved)
+	assert.Empty(t, res.RetainedBy)
+	assert.Contains(t, fake.calls, "RemoveProjectIAMBinding")
+}
+
+func TestDeprovisionRepoWIF_Errors(t *testing.T) {
+	tests := []struct {
+		name    string
+		repo    string
+		errKey  string
+		wantErr string
+		noCall  string
+	}{
+		{"invalid repo", "acme", "", "invalid repo", "GetProjectNumber"},
+		{"project number", "acme/widget", "GetProjectNumber", "getting project number", "DeleteWIFProvider"},
+		{"delete provider", "acme/widget", "DeleteWIFProvider", "deleting WIF provider", "ListWIFProviders"},
+		{"list providers", "acme/widget", "ListWIFProviders", "IAM binding not revoked", "RemoveProjectIAMBinding"},
+		{"remove binding", "acme/widget", "RemoveProjectIAMBinding", "revoking Agent Platform access", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			if tc.errKey != "" {
+				fake.errs[tc.errKey] = fmt.Errorf("boom")
+			}
+			_, err := newRepoDeprovisionProvisioner(fake).DeprovisionRepoWIF(context.Background(), tc.repo)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			if tc.noCall != "" {
+				assert.NotContains(t, fake.calls, tc.noCall)
+			}
+		})
+	}
+}
+
+func TestConditionCoversRepo(t *testing.T) {
+	tests := []struct {
+		condition string
+		want      bool
+	}{
+		{"assertion.repository == 'acme/widget'", true},
+		{"assertion.repository == 'acme/widget-two'", false},
+		// Org-level and public-mint providers do not depend on a non-.fullsend repo's binding.
+		{"assertion.repository_owner == 'acme'", false},
+		{"assertion.repository_owner == 'acme-corp'", false},
+		{"assertion.repository == 'acme/gadget'", false},
+		{"assertion.repository_owner in ['x0fullsend0placeholder']", false},
+		{"", true},
+		{`assertion.repository_owner in ["other", "ACME"]`, false},
+		{"assertion.repository_owner in ['other', 'another']", false},
+		{"assertion.repository_owner != ''", false},
+		// Unrecognized or permissive forms must be treated as covering.
+		{"true", true},
+		{"assertion.repository.startsWith('acme/')", true},
+		{"assertion.repository_owner_id == '12345'", true},
+		{"assertion.repository == 'acme/gadget' || assertion.repository_owner == 'acme'", true},
+		{"assertion.repository_owner in ['other'] || true", true},
+		{"assertion.repository == 'acme/gadget' || assertion.repository.startsWith('acme/')", true},
+		// Escape sequences make raw literal text unreliable; keep the binding.
+		{`assertion.repository == 'acme/\x77idget'`, true},
+		{`assertion.repository_owner == "acme"`, false},
+		{`assertion.repository_owner in ['other', 'ac\x6de']`, true},
+		{`assertion.repository == 'acme/gadget\n'`, true},
+	}
+	for _, tc := range tests {
+		assert.Equal(t, tc.want, conditionCoversRepo(tc.condition, "acme", "acme/widget"), tc.condition)
+	}
+
+	// For <owner>/.fullsend the org grant and the repo principal coincide.
+	fullsend := []struct {
+		condition string
+		want      bool
+	}{
+		{"assertion.repository_owner == 'acme'", true},
+		{"assertion.repository_owner == 'other'", false},
+		{`assertion.repository_owner in ["other", "ACME"]`, true},
+		{"assertion.repository_owner in ['other']", false},
+		{"assertion.repository_owner != ''", true},
+		{"assertion.repository == 'acme/widget'", false},
+	}
+	for _, tc := range fullsend {
+		assert.Equal(t, tc.want, conditionCoversRepo(tc.condition, "acme", "acme/.fullsend"), tc.condition)
+	}
+}
+
 // --- Role management tests ---
 
 func TestRemoveRoleFromAppIDsJSON(t *testing.T) {

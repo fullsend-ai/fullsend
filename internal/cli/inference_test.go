@@ -559,6 +559,109 @@ func TestInferenceDeprovisionCmd_DoesNotRequireGitHubToken(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestInferenceDeprovisionCmd_DryRunRepoListsBindingRemoval(t *testing.T) {
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "deprovision", "acme/widget",
+		"--project", "my-project",
+		"--dry-run"})
+	require.NoError(t, cmd.Execute())
+	out := buf.String()
+	assert.Contains(t, out, "Revoke roles/aiplatform.user from")
+	assert.Contains(t, out, "workloadIdentityPools/fullsend-inference/attribute.repository/acme/widget")
+	assert.NotContains(t, out, "NOT revoked")
+}
+
+func TestInferenceDeprovisionCmd_DryRunOrgWarnsBindingKept(t *testing.T) {
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "deprovision", "acme",
+		"--project", "my-project",
+		"--dry-run"})
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, buf.String(), "NOT revoked automatically")
+}
+
+// --- runInferenceDeprovision integration tests ---
+
+const testDeprovisionPrincipal = "principalSet://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/attribute.repository/acme/widget"
+
+func TestRunInferenceDeprovision_RepoRevokesBinding(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeProjectIAMBinding("my-project", testDeprovisionPrincipal, "roles/aiplatform.user"),
+		gcf.WithFakeProjectIAMBinding("my-project", "principalSet://unrelated", "roles/aiplatform.user"),
+	)
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceDeprovision(cmd, ui.New(buf), "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", client)
+	require.NoError(t, err)
+
+	assert.Contains(t, gcf.RecordedCalls(client), "DeleteWIFProvider")
+	assert.Equal(t, []string{"principalSet://unrelated"}, gcf.ProjectIAMBindingMembers(client))
+	assert.Contains(t, buf.String(), "Revoked IAM binding (roles/aiplatform.user)")
+	assert.NotContains(t, buf.String(), "NOT revoked")
+}
+
+func TestRunInferenceDeprovision_RepoRetainsBindingWhenCovered(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeProjectIAMBinding("my-project", testDeprovisionPrincipal, "roles/aiplatform.user"),
+		gcf.WithFakeWIFProviders([]gcf.WIFProviderSummary{
+			{ProviderID: "github-oidc", AttributeCondition: "assertion.repository.startsWith('acme/')", State: "ACTIVE"},
+		}),
+	)
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceDeprovision(cmd, ui.New(buf), "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", client)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{testDeprovisionPrincipal}, gcf.ProjectIAMBindingMembers(client))
+	assert.Contains(t, buf.String(), "retained: still covered by WIF provider(s) github-oidc")
+}
+
+func TestRunInferenceDeprovision_RepoBindingAbsent(t *testing.T) {
+	client := gcf.NewFakeGCFClient()
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceDeprovision(cmd, ui.New(buf), "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", client)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "IAM binding (roles/aiplatform.user) not present")
+}
+
+func TestRunInferenceDeprovision_RepoError(t *testing.T) {
+	client := gcf.NewFakeGCFClient(gcf.WithFakeErrors(map[string]error{
+		"RemoveProjectIAMBinding": errors.New("denied"),
+	}))
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceDeprovision(cmd, ui.New(buf), "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", client)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revoking Agent Platform access")
+	assert.Contains(t, err.Error(), "was deleted")
+	assert.Contains(t, err.Error(), "must be removed manually")
+	assert.Contains(t, buf.String(), "WIF provider deleted")
+	assert.Contains(t, buf.String(), "NOT revoked; remove it manually")
+}
+
+func TestRunInferenceDeprovision_RepoDeleteFailureKeepsGenericMessage(t *testing.T) {
+	client := gcf.NewFakeGCFClient(gcf.WithFakeErrors(map[string]error{
+		"DeleteWIFProvider": errors.New("denied"),
+	}))
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceDeprovision(cmd, ui.New(buf), "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", client)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "was deleted")
+	assert.Contains(t, buf.String(), "Inference deprovisioning failed")
+}
+
+func TestRunInferenceDeprovision_OrgKeepsManualNote(t *testing.T) {
+	client := gcf.NewFakeGCFClient(gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner in ['acme', 'other']",
+	}))
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceDeprovision(cmd, ui.New(buf), "acme", "", "my-project", "fullsend-inference", "github-oidc", client)
+	require.NoError(t, err)
+	assert.NotContains(t, gcf.RecordedCalls(client), "RemoveProjectIAMBinding")
+	assert.Contains(t, buf.String(), "NOT revoked")
+}
+
 // --- runInferenceStatus integration tests ---
 
 func newStatusCmd(client gcf.GCFClient) (*cobra.Command, *bytes.Buffer) {

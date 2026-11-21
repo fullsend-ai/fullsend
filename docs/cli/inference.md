@@ -11,7 +11,7 @@ Manage the inference credentials agent runs use. `provision`, `deprovision` and 
 | Command | Description | Who runs it / permission |
 |---------|-------------|--------------------------|
 | `fullsend inference provision <org\|owner/repo\|group/project>` | Create WIF pool/provider and grant Agent Platform access (GitLab projects with `--forge gitlab`) | GCP project admin, with `roles/iam.workloadIdentityPoolAdmin` and `roles/resourcemanager.projectIamAdmin` (plus `roles/serviceusage.serviceUsageAdmin` to enable missing APIs automatically) |
-| `fullsend inference deprovision <org\|owner/repo>` | Remove org or repo from WIF | GCP project admin, with `roles/iam.workloadIdentityPoolAdmin` |
+| `fullsend inference deprovision <org\|owner/repo>` | Remove org or repo from WIF (repo-scoped mode also revokes the repo's `roles/aiplatform.user` binding) | GCP project admin, with `roles/iam.workloadIdentityPoolAdmin`, plus `roles/resourcemanager.projectIamAdmin` for repo-scoped mode |
 | `fullsend inference status <org\|owner/repo>` | Check WIF health and print config values | Read access on the GCP project: `roles/iam.workloadIdentityPoolViewer` and `roles/browser` |
 | `fullsend inference openai request <owner/repo>[,…]` | Generate WIF provider/mapping request for OpenAI admin | Anyone; needs no credentials |
 | `fullsend inference openai import [reply.json]` | Import OpenAI WIF identifiers into config | Repo admin. Writes `.fullsend/config.yaml` locally, to commit afterwards; `--variables` needs a GitHub token that can set repository variables |
@@ -95,18 +95,24 @@ gcloud services enable \
 
 ## `inference deprovision`
 
-Removes an org or repo from WIF by deleting the IAM binding and (optionally) the WIF provider.
+Removes an org or repo from WIF.
 
 ```bash
 fullsend inference deprovision <org|owner/repo> \
   --project "<GCP_PROJECT>"
 ```
 
+- **Repo-scoped (`<owner/repo>`):** deletes the repo's dedicated provider (`gh-<owner>-<repo>`). It then revokes the `roles/aiplatform.user` binding on the repo's `principalSet://…/attribute.repository/<owner/repo>`. Before revoking, it lists the remaining providers in the pool. It revokes the binding only when every remaining provider has a recognized condition that provably does not need it: an exact `repository` equality that does not name the repo, or a `repository_owner` equality or list, or the public-mint `repository_owner != ''` condition. Org-level and public-mint providers are granted access on `<org>/.fullsend` only, so they do not keep another repo's binding. For the `<owner>/.fullsend` repo, the binding is the org's grant, so it is kept while an org-level or public-mint provider still covers the owner. Any other condition (for example no condition, `true`, a prefix match, or any CEL it does not recognize) keeps the binding. The summary then names the providers that retained it. If the binding is already absent, the command still succeeds. If the revoke step fails (for example, missing `roles/resourcemanager.projectIamAdmin`), the provider has already been deleted. The command exits non-zero and says to remove the binding manually.
+- **Org-scoped (`<org>`):** removes the org from the shared provider's attribute condition. The pool, the provider, and the `roles/aiplatform.user` binding are left in place. Remove the binding manually if you no longer need it.
+
+`--dry-run` lists the planned provider deletion and binding revocation without calling GCP.
+
 ### Required IAM roles
 
 | Role | Description |
 |------|-------------|
-| `roles/iam.workloadIdentityPoolAdmin` | Modify WIF pool and provider |
+| `roles/iam.workloadIdentityPoolAdmin` | Modify, list, and delete WIF providers |
+| `roles/resourcemanager.projectIamAdmin` | Revoke `roles/aiplatform.user` from the repo's WIF principal (repo-scoped mode only) |
 
 ## `inference status`
 

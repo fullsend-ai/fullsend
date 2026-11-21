@@ -1407,13 +1407,156 @@ func (p *Provisioner) grantOrgVertexAIAccessWithNumber(ctx context.Context, proj
 	return nil
 }
 
+// RepoVertexAIPrincipal returns the principalSet that repo-scoped inference
+// provisioning grants roles/aiplatform.user to.
+func RepoVertexAIPrincipal(projectNumber, pool, repo string) string {
+	return fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
+		projectNumber, pool, repo)
+}
+
 func (p *Provisioner) grantRepoVertexAIAccessWithNumber(ctx context.Context, projectNumber, repo string) error {
-	principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
-		projectNumber, p.cfg.WIFPoolName, repo)
+	principal := RepoVertexAIPrincipal(projectNumber, p.cfg.WIFPoolName, repo)
 	if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
 		return fmt.Errorf("granting Agent Platform access for repo %s: %w", repo, err)
 	}
 	return nil
+}
+
+// RepoDeprovisionResult reports what DeprovisionRepoWIF did.
+type RepoDeprovisionResult struct {
+	// ProviderID is the repo's dedicated WIF provider that was deleted.
+	ProviderID string
+	// Principal is the repo's roles/aiplatform.user principalSet.
+	Principal string
+	// RetainedBy lists remaining providers in the pool whose attribute
+	// condition may still need the repo's binding (see conditionCoversRepo).
+	// When non-empty the IAM binding was left in place.
+	RetainedBy []string
+	// BindingRemoved reports whether the IAM binding was found and removed.
+	// It is false when the binding was retained or was already absent.
+	BindingRemoved bool
+}
+
+// DeprovisionRepoWIF tears down repo-scoped inference WIF access: it deletes
+// the repo's dedicated provider, then revokes roles/aiplatform.user from the
+// repo's principalSet unless another provider in the pool may still need it
+// (see conditionCoversRepo).
+//
+// WARNING: the coverage check and the IAM update are not atomic; a provider
+// created concurrently for the same repo may lose its binding.
+func (p *Provisioner) DeprovisionRepoWIF(ctx context.Context, repo string) (*RepoDeprovisionResult, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return nil, fmt.Errorf("invalid repo %q: expected owner/repo", repo)
+	}
+
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("getting project number: %w", err)
+	}
+
+	result := &RepoDeprovisionResult{
+		ProviderID: mintcore.BuildRepoProviderID(owner, name),
+		Principal:  RepoVertexAIPrincipal(projectNumber, p.cfg.WIFPoolName, repo),
+	}
+
+	if err := p.gcpAPI.DeleteWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, result.ProviderID); err != nil {
+		return nil, fmt.Errorf("deleting WIF provider: %w", err)
+	}
+
+	providers, err := p.gcpAPI.ListWIFProviders(ctx, projectNumber, p.cfg.WIFPoolName)
+	if err != nil {
+		return result, fmt.Errorf("listing remaining WIF providers (IAM binding not revoked): %w", err)
+	}
+	for _, prov := range providers {
+		if prov.ProviderID == result.ProviderID || prov.State == "DELETED" {
+			continue
+		}
+		if conditionCoversRepo(prov.AttributeCondition, owner, repo) {
+			result.RetainedBy = append(result.RetainedBy, prov.ProviderID)
+		}
+	}
+	if len(result.RetainedBy) > 0 {
+		return result, nil
+	}
+
+	removed, err := p.gcpAPI.RemoveProjectIAMBinding(ctx, p.cfg.ProjectID, result.Principal, "roles/aiplatform.user")
+	if err != nil {
+		return result, fmt.Errorf("revoking Agent Platform access for repo %s: %w", repo, err)
+	}
+	result.BindingRemoved = removed
+	return result, nil
+}
+
+// Condition shapes whose exclusion of a repo can be proven. Each is matched
+// against the whole condition; anything else is treated as possibly covering.
+var (
+	// assertion.repository == 'owner/repo'
+	repoEqualsCondition = regexp.MustCompile(`^assertion\.repository\s*==\s*(?:'([^']*)'|"([^"]*)")$`)
+	// assertion.repository_owner == 'owner'
+	ownerEqualsCondition = regexp.MustCompile(`^assertion\.repository_owner\s*==\s*(?:'([^']*)'|"([^"]*)")$`)
+	// assertion.repository_owner in ['a', "b"]
+	ownerInCondition = regexp.MustCompile(`^assertion\.repository_owner\s+in\s*\[(.*)\]$`)
+	// one quoted string literal inside a list
+	quotedLiteral = regexp.MustCompile(`'([^']*)'|"([^"]*)"`)
+	// a list body consisting only of comma-separated quoted literals
+	quotedListBody = regexp.MustCompile(`^\s*(?:(?:'[^']*'|"[^"]*")\s*(?:,\s*(?:'[^']*'|"[^"]*")\s*)*)?$`)
+)
+
+// conditionCoversRepo reports whether a remaining WIF provider may still need
+// the repo's roles/aiplatform.user binding (the principalSet
+// attribute.repository/<owner/repo>). It returns false only when the
+// condition is one of a small set of recognized forms that provably does not:
+//
+//   - An exact repository equality or repository_owner equality/list that
+//     does not name the repo or its owner.
+//   - An org-level condition (repository_owner equality or list naming the
+//     owner, or the public-mint not-equal-empty form) when the repo
+//     is not <owner>/.fullsend. Org and public-mint provisioning grant
+//     Vertex access to attribute.repository/<org>/.fullsend only, so those
+//     providers do not rely on another repo's own binding. Retaining it
+//     would leave the deprovisioned repo with Vertex access. For the
+//     <owner>/.fullsend repo the principal is the org grant itself, so it is
+//     kept while an org-level provider still covers the owner.
+//
+// A repository equality naming the repo always retains the binding (another
+// provider for the same repo). Every other condition — empty, constant true,
+// prefix or numeric-owner matches, or any unrecognized CEL — is treated as
+// covering the repo, which keeps the IAM binding. A condition containing a
+// backslash may use CEL escape sequences that make a literal differ from its
+// raw text, so it is also treated as covering. Matching is case-insensitive.
+func conditionCoversRepo(condition, owner, repo string) bool {
+	c := strings.TrimSpace(condition)
+	if strings.Contains(c, `\`) {
+		return true
+	}
+	// Org-level grants target <org>/.fullsend, which is the only repo whose
+	// principal an org or public-mint provider depends on.
+	orgBindingRepo := strings.EqualFold(repo, owner+fullsendRepoSuffix)
+	first := func(m []string) string {
+		if m[1] != "" {
+			return m[1]
+		}
+		return m[2]
+	}
+	if isPublicAttributeCondition(c) {
+		return orgBindingRepo
+	}
+	if m := repoEqualsCondition.FindStringSubmatch(c); m != nil {
+		return strings.EqualFold(first(m), repo)
+	}
+	if m := ownerEqualsCondition.FindStringSubmatch(c); m != nil {
+		return orgBindingRepo && strings.EqualFold(first(m), owner)
+	}
+	if m := ownerInCondition.FindStringSubmatch(c); m != nil && quotedListBody.MatchString(m[1]) {
+		for _, lit := range quotedLiteral.FindAllStringSubmatch(m[1], -1) {
+			if orgBindingRepo && strings.EqualFold(first(lit), owner) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // RemoveOrgFromWIFCondition removes an org from the org-level WIF provider's

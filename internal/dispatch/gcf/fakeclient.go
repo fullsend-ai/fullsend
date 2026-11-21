@@ -29,6 +29,9 @@ type fakeGCFClient struct {
 	// WIF provider state for GetWIFProvider.
 	wifProvider *WIFProviderInfo
 
+	// Providers returned by ListWIFProviders.
+	wifProviders []WIFProviderSummary
+
 	// Track secret names written via AddSecretVersion.
 	secretVersionNames []string
 	deletedSecretIDs   []string
@@ -177,6 +180,25 @@ func (f *fakeGCFClient) ReplaceSecretIAMBinding(_ context.Context, _, _, _ strin
 func (f *fakeGCFClient) SetProjectIAMBinding(_ context.Context, projectID, member, role string) error {
 	f.projectIAMBindings = append(f.projectIAMBindings, projectIAMBinding{projectID, member, role})
 	return f.record("SetProjectIAMBinding")
+}
+func (f *fakeGCFClient) RemoveProjectIAMBinding(_ context.Context, projectID, member, role string) (bool, error) {
+	if err := f.record("RemoveProjectIAMBinding"); err != nil {
+		return false, err
+	}
+	for i, b := range f.projectIAMBindings {
+		if b == (projectIAMBinding{projectID, member, role}) {
+			f.projectIAMBindings = append(f.projectIAMBindings[:i], f.projectIAMBindings[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func (f *fakeGCFClient) ListWIFProviders(_ context.Context, _, _ string) ([]WIFProviderSummary, error) {
+	f.calls = append(f.calls, "ListWIFProviders")
+	if err := f.errs["ListWIFProviders"]; err != nil {
+		return nil, err
+	}
+	return f.wifProviders, nil
 }
 func (f *fakeGCFClient) SetCloudRunInvoker(_ context.Context, _, _, _ string) error {
 	return f.record("SetCloudRunInvoker")
@@ -328,6 +350,34 @@ func WithFakeErrors(errs map[string]error) FakeGCFOption {
 
 func WithFakeWIFProvider(p *WIFProviderInfo) FakeGCFOption {
 	return func(f *fakeGCFClient) { f.wifProvider = p }
+}
+
+// WithFakeWIFProviders sets the providers returned by ListWIFProviders.
+func WithFakeWIFProviders(providers []WIFProviderSummary) FakeGCFOption {
+	return func(f *fakeGCFClient) { f.wifProviders = providers }
+}
+
+// WithFakeProjectIAMBinding seeds an existing project IAM binding, as if a
+// prior SetProjectIAMBinding call had created it.
+func WithFakeProjectIAMBinding(projectID, member, role string) FakeGCFOption {
+	return func(f *fakeGCFClient) {
+		f.projectIAMBindings = append(f.projectIAMBindings, projectIAMBinding{projectID, member, role})
+	}
+}
+
+// ProjectIAMBindingMembers returns the members of the project IAM bindings
+// currently held by a fake client, for cross-package test assertions.
+// Returns nil if client isn't a fake.
+func ProjectIAMBindingMembers(client GCFClient) []string {
+	f, ok := client.(*fakeGCFClient)
+	if !ok {
+		return nil
+	}
+	var members []string
+	for _, b := range f.projectIAMBindings {
+		members = append(members, b.Member)
+	}
+	return members
 }
 
 // LastWIFProviderCondition returns the AttributeCondition passed to the most
