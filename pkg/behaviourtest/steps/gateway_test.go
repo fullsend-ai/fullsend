@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -223,6 +224,49 @@ func TestGivenTestInferenceGatewayAPIKey_RequiresGitHub(t *testing.T) {
 	w := &world.World{Org: "org", RepoName: "repo", SCM: &fakeCleanupSCM{fileContent: []byte("runtime: dummy\n")}}
 	assert.ErrorContains(t, givenTestInferenceGatewayAPIKey(w, ""), "requires GitHub SCM driver")
 	assert.False(t, w.GatewayAPIKeySecretSet)
+}
+
+// The api-key create runs on the lease guard (mutationCtx), like the
+// runner-secret step's create: a slot this scenario no longer holds gets
+// no name-based secret write.
+func TestGivenTestInferenceGatewayAPIKey_LostLeaseStopsTheWrite(t *testing.T) {
+	const cfgKey = "org/repo/.fullsend/config.yaml"
+	client := &guardedSecretClient{FakeClient: forge.NewFakeClient()}
+	client.FileContents[cfgKey] = []byte("runtime: dummy\n")
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scmgh.New(client)}
+	w.LeaseOwned = func(context.Context) (bool, error) { return false, nil }
+	t.Setenv(envInferenceGatewayURL, "https://gw.example")
+	t.Setenv(envInferenceGatewayTestKey, "test-gateway-key-value")
+
+	err := givenTestInferenceGatewayAPIKey(w, "")
+	require.ErrorIs(t, err, errLeaseLost)
+	assert.Zero(t, client.writes, "no secret is written to a slot this scenario no longer holds")
+}
+
+// A scenario that still holds its lease keeps the behaviour it had: the
+// create runs through the lease guard, the secret is written and the
+// gateway config committed.
+func TestGivenTestInferenceGatewayAPIKey_HeldLeaseWritesSecretAndCommitsConfig(t *testing.T) {
+	const cfgKey = "org/repo/.fullsend/config.yaml"
+	client := &guardedSecretClient{FakeClient: forge.NewFakeClient()}
+	client.FileContents[cfgKey] = []byte("runtime: dummy\n")
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scmgh.New(client)}
+	w.LeaseOwned = func(context.Context) (bool, error) { return true, nil }
+	t.Setenv(envInferenceGatewayURL, "https://gw.example")
+	t.Setenv(envInferenceGatewayTestKey, "test-gateway-key-value")
+
+	require.NoError(t, givenTestInferenceGatewayAPIKey(w, ""))
+	assert.NotZero(t, client.guardChecks, "the create runs on the lease guard, like the runner-secret step's")
+	assert.Equal(t, 1, client.writes)
+	assert.Equal(t, []forge.SecretRecord{{Owner: "org", Repo: "repo", Name: forge.SecretInferenceGatewayAPIKey, Value: "test-gateway-key-value"}},
+		client.CreatedSecrets, "the step still sets the enrolled repo's key secret")
+	assert.True(t, w.GatewayAPIKeySecretSet)
+	var doc map[string]any
+	require.NoError(t, yaml.Unmarshal(client.FileContents[cfgKey], &doc))
+	gw := doc["inference"].(map[string]any)["gateway"].(map[string]any)
+	assert.Equal(t, "https://gw.example", gw["url"])
+	assert.Equal(t, "api-key", gw["auth"])
+	assert.NotContains(t, string(client.FileContents[cfgKey]), "test-gateway-key-value", "the key is never committed")
 }
 
 func TestDeleteGatewayAPIKeySecret_NotFoundIsFine(t *testing.T) {

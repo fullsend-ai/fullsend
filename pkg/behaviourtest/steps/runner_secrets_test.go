@@ -100,14 +100,17 @@ func TestGivenRepositoryRunnerSecret_SecondCallIsRefused(t *testing.T) {
 }
 
 // guardedSecretClient runs the request context's retry guard before it
-// writes a secret, as the GitHub client does before its PUT.
+// writes a secret, as the GitHub client does before its PUT, and records
+// in guardChecks whether the create's context carried the guard.
 type guardedSecretClient struct {
 	*forge.FakeClient
-	writes int
+	writes      int
+	guardChecks int
 }
 
 func (c *guardedSecretClient) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
 	if guard := forge.RetryGuard(ctx); guard != nil {
+		c.guardChecks++
 		if err := guard(ctx); err != nil {
 			return err
 		}

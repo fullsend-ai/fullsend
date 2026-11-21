@@ -63,6 +63,10 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 		}
 		w.LeasedRepoName = lease.Repo
 		w.LeasedRepoOrg = lease.Org
+		// Install the ownership check at acquisition, so step-time
+		// mutations (mutationCtx) are guarded while the scenario runs,
+		// not only for cleanup in the After hook.
+		w.LeaseOwned = LeaseOwnership(w.Driver, lease.Org, lease.Repo)
 	} else {
 		repoName, err := w.Driver.AllocateRepo(ctx)
 		if err != nil {
