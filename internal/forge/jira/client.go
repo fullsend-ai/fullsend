@@ -555,10 +555,14 @@ const maxSearchPages = 200
 //
 // This endpoint is eventually consistent: Atlassian documents that recent
 // updates might not be immediately visible in results. For the poller that
-// only means an issue can appear (or re-sort under ORDER BY updated) a
-// cycle late — per-issue checkpoints come from the strongly-consistent
-// direct comment/changelog GETs, never from search results, so no events
-// are lost. Do not "fix" ordering assumptions by trusting search freshness.
+// means an issue can appear, re-sort under ORDER BY updated, or show a
+// stale updated value a cycle late. The poller skips an issue whose row's
+// updated is not after its checkpoint (ADR 0160), so a stale row only
+// delays the issue to a later cycle. A look raises the checkpoint to the
+// row's updated value only after the direct comment/changelog GETs, and
+// relies on them being at least as fresh as the row; if they lag it, an
+// entry can be skipped. Do not "fix" ordering assumptions by trusting
+// search freshness.
 func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([]Issue, error) {
 	var all []Issue
 	var nextPageToken string
