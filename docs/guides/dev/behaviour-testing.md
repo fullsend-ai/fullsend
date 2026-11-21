@@ -31,8 +31,8 @@ The run needs no repository secrets.
   `behaviour-github-emulator (p)`, and the `behaviour-github-emulator
   (playback)` job all pass.
 - **`behaviour-github-emulator (agents)`** runs the agents repository's suite
-  against your change. It is not required. It is advisory: it shows whether a
-  fullsend change breaks the agents suite.
+  against your change. It is advisory, not required: it shows whether a fullsend
+  change breaks the agents suite.
 - **`behaviour`** and **`playback`**, from `e2e.yml`, show as skipped. This is
   expected, and a skipped job still satisfies these required checks.
 
@@ -58,9 +58,9 @@ live suites on a pull request before it is enqueued, see
    The `Upload logs` step in `behaviour-github-emulator.yml` lists the paths.
    Each artifact holds:
 
-   - the run's `*.log` files. `bt-run.log` is the suite output,
-     `stack/emulator.log` is the emulator's log and `stack/runner-<n>.log` is
-     each emulator runner's log;
+   - the run's `*.log` files: `bt-run.log` (the suite output),
+     `stack/emulator.log` (the emulator) and `stack/runner-<n>.log` (one per
+     emulator runner);
    - `phases.tsv`, with the time each phase of the job took;
    - `emulator-profile.json`, a profile of the emulator process. Only the
      shard artifacts hold it;
@@ -77,17 +77,30 @@ live suites on a pull request before it is enqueued, see
    - Otherwise, treat it as a failure in the code under test. A scenario
      that fails on an assertion, or a fullsend command that exits with an
      error, usually points at the change.
-4. Re-run the failed jobs once, with **Re-run failed jobs** on the run.
+4. Re-run the failed jobs once, with **Re-run failed jobs** on the run's
+   summary page.
    Re-running needs write access to the repository. Without it, ask a
    maintainer to re-run the jobs, or push a new commit.
 5. If the job fails again and the failure looks like an emulator bug, file it
    at <https://github.com/fullsend-ai/github-emulator/issues>. Include the
    run link, the scenario and the emulator log lines.
 
+#### Troubleshooting
+
+Each row is error text from a real failed run.
+
+| Error text | What it means | What to do |
+|------------|---------------|------------|
+| `behaviour suite failed with status 1: scenario failure (0 infrastructure, 1 scenario); report: .../failure-class.json` | A summary line. The counts say how many failed scenarios were classified as infrastructure and how many as scenario failures. | Scroll up to the `Error:` line under `Failed steps:` for the cause. |
+| `harness agent "retro": workflow run 5 concluded with "failure" before producing artifact (url=https://ghemu.localhost/...)` | The agent's workflow ran on the emulator and failed. | Find the run's job in `stack/runner-<n>.log` and read the failing step. In past runs, the cause was in the change under test. |
+| `harness agent "pr-ping" did not complete successfully; no recent workflow runs found after trigger time; no repository artifacts listed` | The trigger started no workflow run. | Look in `stack/emulator.log` for the event and the run. If the emulator answered HTTP 4xx or 5xx to an API that GitHub supports, the bug is likely in the emulator. |
+| `"review" agent was not dispatched since <time>` | Playback: the expected agent dispatch did not happen. | Same checks as the row above. |
+| `! [remote rejected] HEAD -> main (shallow update not allowed)` | The agents job pushes its checkout into the emulator, and the checkout was shallow. | Only seen when editing the workflow: the agents checkout needs `fetch-depth: 0`. |
+
 To run the job yourself, see
 [Running the emulator job on a VM](#running-the-emulator-job-on-a-vm).
-[Moving to a new emulator release](#moving-to-a-new-emulator-release) covers
-the emulator version the job runs.
+For the emulator version the job uses, see
+[Moving to a new emulator release](#moving-to-a-new-emulator-release).
 
 ### Running chosen scenarios in CI
 
@@ -100,23 +113,23 @@ inputs:
 | `workers` | Scenarios run in parallel: the slot pool size and the godog concurrency. Empty uses the shard's value from `shards.txt`, or `DEFAULT_WORKERS` (2) with `features`. |
 | `runners` | Real `actions/runner` processes on the emulator. Empty uses the shard's value from `shards.txt`, or `DEFAULT_RUNNERS` (4) with `features`. |
 
-To run one feature from a branch in `fullsend-ai/fullsend`:
+Dispatching needs write access to the repository that runs the workflow. The job
+uses no repository secrets, so it runs the same way in your own fork:
 
-```bash
-gh workflow run behaviour-github-emulator.yml --repo fullsend-ai/fullsend \
-  --ref <branch> -f features="features/triage/triage.feature" \
-  -f workers=2 -f runners=4
-```
+1. Push your branch to your fork. The fork's default branch does not need the
+   workflow.
+2. Dispatch it there. With write access to `fullsend-ai/fullsend`, you can
+   also use `--repo fullsend-ai/fullsend` and a branch in it.
 
-Not run: when this section was written, the workflow had no
-`workflow_dispatch` runs, so this command and its output are not yet
-verified.
+   ```console
+   $ gh workflow run behaviour-github-emulator.yml --repo <your-user>/fullsend \
+       --ref <your-branch> -f features=features/triage/triage.feature
+   https://github.com/<your-user>/fullsend/actions/runs/<run-id>
+   ```
 
-Dispatching a workflow in `fullsend-ai/fullsend` needs write access to the
-repository, and `--ref` must name a branch in it. A contributor without write
-access gets every sharded scenario from the pull request run on each push.
-To run chosen scenarios alone, use
-[Running the emulator job on a VM](#running-the-emulator-job-on-a-vm).
+The run has a `behaviour-github-emulator (custom)` job, and the playback and
+agents jobs show as skipped. In the run above, the custom job's log ended
+with `1 scenarios (1 passed)`. `gh workflow run` prints the run URL.
 
 ### Adding a scenario
 

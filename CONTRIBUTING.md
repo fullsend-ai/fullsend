@@ -53,8 +53,8 @@ contribution.
   lines you changed. Tables, code blocks, headings, and long URLs are
   exceptions. See
   [Documentation § Line wrapping](docs/contributing/documentation.md#line-wrapping).
-- Every PR must pass the required `behaviour-github-emulator` check. To read
-  a failure and re-run it, see
+- Every PR must pass the required `behaviour-github-emulator` check. To find
+  why it failed and re-run it, see
   [Behaviour testing § On a pull request](docs/guides/dev/behaviour-testing.md#on-a-pull-request).
 - Keep PRs focused. One problem area or decision per PR is easier to review than a grab-bag.
 - If your change touches a problem doc, make sure the "Open questions" section still makes sense after your edit.
