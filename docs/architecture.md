@@ -135,12 +135,17 @@ each target repository's **`.fullsend/`** directory
   within the sandbox? (The environment-variable dimension is now a
   published, generated contract —
   [ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md),
-  [contract](normative/sandbox-env/v1/README.md); tools, runtimes,
-  and workspace setup remain open.)
+  [contract](normative/sandbox-env/v1/README.md). Image composition for
+  project-selected images and a separate tools image is decided in
+  [ADR 0173](ADRs/0173-compose-multiple-images-into-agent-sandboxes.md);
+  the exact tools, runtimes, and workspace setup remain open.)
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
 
 **Decided:**
 
+- Image composition: harnesses can pair a project-selected sandbox image with
+  a separately mounted tools image
+  ([ADR 0173](ADRs/0173-compose-multiple-images-into-agent-sandboxes.md)).
 - Provider-backed policy composition: network access is granted through provider profiles declared in harness files. Policy files define only non-composable sandbox restrictions (filesystem, landlock, process). A single `base.yaml` replaces per-agent policy files in the scaffold. Inline `network_policies` continue to work but providers are the recommended approach ([ADR 0065](ADRs/0065-provider-backed-policy-composition.md)).
 
 ## Agent Harness
