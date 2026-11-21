@@ -60,6 +60,15 @@ const fullsendWorkflowNamePrefix = "fullsend "
 // dispatcher job's stage would not exist.
 var fullsendStages = []string{"dispatch", "poll", "agent"}
 
+// gitlabDefaultStages are the stages GitLab uses when no pipeline
+// configuration file declares stages: (.pre and .post are added to every
+// stage list implicitly). The fullsend include declares stages:, and
+// GitLab replaces lists across includes rather than merging them, so a
+// root without its own stages: would lose these — and every job using
+// them (a job without stage: runs in "test") would fail validation. See
+// mergeStages.
+var gitlabDefaultStages = []string{"build", "test", "deploy"}
+
 // gitlabDispatchInputNames is the root-to-wrapper contract for API-triggered
 // pipelines. Keep this list in the installer as well as the poller: the root
 // file is the pipeline-input declaration boundary, so changing only the
@@ -433,8 +442,11 @@ func extendsNames(node *yaml.Node) (names []string, ok bool) {
 // detection by checking:
 //
 //  1. include: contains the fullsend-pipeline.yml entry
-//  2. If stages: exists, it contains dispatch, poll, agent
-//     (if no stages: key, the included pipeline provides them).
+//  2. If stages: exists, it contains dispatch, poll, agent. If no
+//     stages: key exists, the included pipeline provides them, unless
+//     the root defines jobs or includes other files — then the
+//     included list would replace theirs, which is drift (see
+//     gitlabRootNeedsExplicitStages).
 //  3. If workflow: exists, it must have a rules: sequence containing
 //     fullsend's if: conditions. If workflow: exists without
 //     rules:, that is drift — MergeGitLabCI would add them.
@@ -475,8 +487,12 @@ func HasFullsendEntries(existing []byte) bool {
 		return false
 	}
 
-	// 2. If stages: exists, it must contain all fullsend stages.
+	// 2. If stages: exists, it must contain all fullsend stages. If it
+	//    does not exist, the root must not need an explicit list.
 	stagesVal := findMappingValue(root, "stages")
+	if stagesVal == nil && gitlabRootNeedsExplicitStages(root) {
+		return false
+	}
 	if stagesVal != nil && stagesVal.Kind == yaml.SequenceNode {
 		existingStages := make(map[string]bool)
 		for _, item := range stagesVal.Content {
@@ -530,7 +546,11 @@ func HasFullsendEntries(existing []byte) bool {
 //     (skipped if already present)
 //  2. Appends fullsend's current stages (dispatch, poll, agent) to
 //     the existing stages: array, deduplicating if already present.
-//     Skipped when no stages: key exists.
+//     When no stages: key exists and the root defines jobs, writes
+//     GitLab's default stages followed by fullsend's, so the include's
+//     list does not replace the defaults; when the root also includes
+//     other files, whose stages the root cannot show, returns an error
+//     instead (see mergeStages).
 //  3. When a workflow: block already exists, merges workflow:rules
 //     entries (deduplicates by if: condition) and sets
 //     auto_cancel.on_new_commit: none if not present. When no
@@ -631,7 +651,9 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 		// comparison.
 		return nil, fmt.Errorf("existing STAGE variable conflicts with the dispatch input bridge")
 	}
-	mergeStages(root)
+	if err := mergeStages(root); err != nil {
+		return nil, err
+	}
 	if err := mergeWorkflow(root); err != nil {
 		return nil, err
 	}
@@ -1534,13 +1556,45 @@ func isFullsendPipelineInclude(node *yaml.Node) bool {
 }
 
 // mergeStages appends fullsend's stages to an existing stages: array,
-// deduplicating entries that are already present. When no stages: key
-// exists, the function is a no-op — the included pipeline file's
-// stages will be used by GitLab automatically.
-func mergeStages(root *yaml.Node) {
+// deduplicating entries that are already present.
+//
+// When no stages: key exists, the fullsend include's stages: list becomes
+// the pipeline's whole stage list, because GitLab replaces lists across
+// includes. That is harmless for a root with no jobs and no other
+// includes (the fresh-install scaffold), which is left alone. A root that
+// defines jobs relies on GitLab's default stages, so those are written
+// explicitly, followed by fullsend's. A root that includes other files
+// may take its stage list from one of them, which the root alone cannot
+// show, so the merge refuses with an error asking for an explicit
+// stages: list rather than silently replacing it.
+func mergeStages(root *yaml.Node) error {
 	stagesVal := findMappingValue(root, "stages")
-	if stagesVal == nil || stagesVal.Kind != yaml.SequenceNode {
-		return
+	if stagesVal == nil {
+		if !gitlabRootNeedsExplicitStages(root) {
+			return nil
+		}
+		if gitlabRootHasOtherIncludes(root) {
+			return fmt.Errorf(".gitlab-ci.yml has no top-level stages: and includes other files: "+
+				"the fullsend include declares stages: (%s), which would replace the stage list "+
+				"those files or GitLab's defaults (%s) provide and leave jobs in other stages invalid; "+
+				"add a top-level stages: list to .gitlab-ci.yml naming every stage your jobs use, then re-run",
+				strings.Join(fullsendStages, ", "), strings.Join(gitlabDefaultStages, ", "))
+		}
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		for _, stage := range slices.Concat(gitlabDefaultStages, fullsendStages) {
+			seq.Content = append(seq.Content, scalarNode(stage))
+		}
+		// Place stages: right after include: (mergeInclude has already
+		// ensured it exists), where GitLab configurations usually keep it.
+		at := findMappingKeyIndex(root, "include") + 2
+		if at < 2 {
+			at = 0
+		}
+		root.Content = slices.Insert(root.Content, at, scalarNode("stages"), seq)
+		return nil
+	}
+	if stagesVal.Kind != yaml.SequenceNode {
+		return nil
 	}
 
 	// Collect existing stage names for deduplication.
@@ -1561,6 +1615,33 @@ func mergeStages(root *yaml.Node) {
 			})
 		}
 	}
+	return nil
+}
+
+// gitlabRootNeedsExplicitStages reports whether a root pipeline body with
+// no stages: key must not let the fullsend include's stages: list become
+// the pipeline's whole stage list: either it defines a job, which relies
+// on GitLab's default stages, or it includes a file besides the fullsend
+// pipeline include, which may define jobs or a stage list of its own.
+// Jobs are top-level keys that are neither reserved pipeline
+// configuration (nonJobTopLevelKeys, plus "spec") nor hidden
+// `.`-prefixed templates. A key that cannot be classified counts as a
+// job, erring toward keeping the default stages.
+func gitlabRootNeedsExplicitStages(root *yaml.Node) bool {
+	if gitlabRootHasOtherIncludes(root) {
+		return true
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		name, ok := classifyTopLevelKey(root.Content[i])
+		if !ok {
+			return true
+		}
+		if nonJobTopLevelKeys[name] || name == "spec" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // mergeWorkflow ensures an existing workflow: block contains fullsend's

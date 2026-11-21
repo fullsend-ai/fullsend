@@ -100,6 +100,9 @@ func TestMergeGitLabCI_ExistingWithWorkflowRules(t *testing.T) {
 include:
   - local: '.gitlab/ci/existing.yml'
 
+stages:
+  - build
+
 workflow:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -382,6 +385,8 @@ func TestMergeMissingGitLabDebugTraceRule_RootNotMappingNoAction(t *testing.T) {
 func TestMergeGitLabCI_SingleIncludeScalar(t *testing.T) {
 	existing := []byte(`---
 include: 'other.yml'
+stages:
+  - build
 `)
 	result, err := MergeGitLabCI(existing)
 	require.NoError(t, err)
@@ -704,6 +709,8 @@ func TestMergeGitLabCI_IncludeAsMappingEntry(t *testing.T) {
 	existing := []byte(`---
 include:
   local: 'other.yml'
+stages:
+  - build
 `)
 	result, err := MergeGitLabCI(existing)
 	require.NoError(t, err)
@@ -806,18 +813,144 @@ job1:
 	assert.NotContains(t, s, "workflow:")
 }
 
-func TestMergeGitLabCI_NoStagesKeyLeftAlone(t *testing.T) {
-	// When no stages: key exists, fullsend's stages come from the
-	// included pipeline file and do not need to be in the root.
-	existing := []byte(`job1:
-  script: echo hi
+// mergedRootStages returns the root pipeline body's stages: list from
+// merged .gitlab-ci.yml content, or nil when it has none.
+func mergedRootStages(t *testing.T, content []byte) []string {
+	t.Helper()
+	docs, err := decodeGitLabDocuments(content)
+	require.NoError(t, err)
+	require.NotEmpty(t, docs)
+	var body struct {
+		Stages []string `yaml:"stages"`
+	}
+	require.NoError(t, docs[len(docs)-1].Decode(&body))
+	return body.Stages
+}
+
+func TestMergeGitLabCI_NoStagesKeyWithJobsKeepsDefaultStages(t *testing.T) {
+	// The fullsend include declares stages:, and GitLab replaces lists
+	// across includes, so a root with jobs but no stages: would lose
+	// GitLab's default stages (#9423). The merge writes them explicitly,
+	// followed by fullsend's.
+	existing := []byte(`unit:
+  script: ["true"]
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"build", "test", "deploy", "dispatch", "poll", "agent"},
+		mergedRootStages(t, result))
+	assert.True(t, HasFullsendEntries(result))
+
+	// Re-running the merge leaves the stage list unchanged.
+	again, err := MergeGitLabCI(result)
+	require.NoError(t, err)
+	assert.Equal(t, string(result), string(again))
+}
+
+func TestMergeGitLabCI_NoStagesKeyCustomJobStage(t *testing.T) {
+	// A job naming a stage outside GitLab's defaults is already invalid
+	// without stages:; the merge still keeps the defaults and only adds
+	// fullsend's stages.
+	existing := []byte(`lint:
+  stage: build
+  script: ["true"]
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"build", "test", "deploy", "dispatch", "poll", "agent"},
+		mergedRootStages(t, result))
+}
+
+func TestMergeGitLabCI_NoStagesKeyStagesFollowInclude(t *testing.T) {
+	existing := []byte(`include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+unit:
+  script: ["true"]
 `)
 	result, err := MergeGitLabCI(existing)
 	require.NoError(t, err)
 	s := string(result)
+	includeAt := strings.Index(s, "include:")
+	stagesAt := strings.Index(s, "stages:")
+	unitAt := strings.Index(s, "unit:")
+	require.GreaterOrEqual(t, includeAt, 0)
+	assert.Greater(t, stagesAt, includeAt, "stages: should follow include:")
+	assert.Greater(t, unitAt, stagesAt, "stages: should precede the jobs")
+}
 
-	// No stages: key added.
-	assert.NotContains(t, s, "stages:")
+func TestMergeGitLabCI_NoStagesKeyNoJobsLeftAlone(t *testing.T) {
+	// Without jobs or other includes, the fullsend include's stages are
+	// the whole stage list and nothing is lost, so no stages: is added.
+	for name, existing := range map[string]string{
+		"hidden template only": ".base:\n  script: [\"true\"]\nvariables:\n  FOO: bar\n",
+		"empty":                "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := MergeGitLabCI([]byte(existing))
+			require.NoError(t, err)
+			assert.Nil(t, mergedRootStages(t, result))
+			assert.NotContains(t, string(result), "\nstages:")
+		})
+	}
+}
+
+func TestMergeGitLabCI_NoStagesKeyOtherIncludeRefuses(t *testing.T) {
+	// An earlier include may declare the stage list, which the root
+	// cannot show; the fullsend include would replace it, so the merge
+	// refuses before anything is written.
+	for name, existing := range map[string]string{
+		"with jobs":   "include:\n  - local: 'ci/stages.yml'\nunit:\n  script: [\"true\"]\n",
+		"no jobs":     "include:\n  - local: 'ci/jobs.yml'\n",
+		"scalar form": "include: 'ci/jobs.yml'\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := MergeGitLabCI([]byte(existing))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "no top-level stages:")
+			assert.Contains(t, err.Error(), "add a top-level stages: list")
+		})
+	}
+}
+
+func TestMergeGitLabCI_OtherIncludeWithStagesKey(t *testing.T) {
+	// With an explicit root stages:, other includes are fine: the root
+	// list wins over every include, so fullsend's stages are appended.
+	existing := []byte(`include:
+  - local: 'ci/jobs.yml'
+stages:
+  - test
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"test", "dispatch", "poll", "agent"}, mergedRootStages(t, result))
+}
+
+func TestHasFullsendEntries_NoStagesKeyWithJobs(t *testing.T) {
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+unit:
+  script: ["true"]
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_NoStagesKeyWithOtherInclude(t *testing.T) {
+	yaml := `---
+include:
+  - local: 'ci/jobs.yml'
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestGitLabRootNeedsExplicitStages_UnclassifiableKey(t *testing.T) {
+	// A top-level key that cannot be classified (here a non-core tag)
+	// counts as a job.
+	docs, err := decodeGitLabDocuments([]byte("!custom unit:\n  script: [\"true\"]\n"))
+	require.NoError(t, err)
+	assert.True(t, gitlabRootNeedsExplicitStages(docs[0].Content[0]))
 }
 
 func TestMergeGitLabCI_StagesIdempotent(t *testing.T) {
