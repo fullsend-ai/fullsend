@@ -1779,7 +1779,7 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 }
 
 // codexSubagentStopInput is the SubagentStop payload codex sends from a
-// thread-spawned child (rust-v0.166.0 hooks/src/schema.rs
+// thread-spawned child (rust-v0.170.0 hooks/src/schema.rs
 // SubagentStopCommandInput), with message as last_assistant_message.
 func codexSubagentStopInput(message any) map[string]any {
 	return map[string]any{

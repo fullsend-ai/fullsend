@@ -18,17 +18,17 @@ import (
 // kernel-resolved /proc/<pid>/exe of the process that opens the connection
 // OR of any of its ancestors. That makes two kinds of runtime:
 //
-//   - Wrapped by node: pi is a script run by node, and codex's npm launcher
-//     bin/codex.js spawns the native vendor/<triple>/bin/codex under node.
-//     **/node admits both through the ancestor; **/codex names the process
-//     itself. A pin bump cannot break these unless the wrapper goes away.
+//   - Wrapped by node: pi is a script run by node, so **/node admits it. A
+//     pin bump cannot break it unless the wrapper goes away.
 //   - Exec'd directly: `claude` on PATH is a symlink to the npm package's
 //     bin/claude.exe (2.1.2xx places the native binary there — install.cjs,
 //     "Always write to bin/claude.exe"), so the connecting process has no
 //     wrapper ancestor. OpenCode is installed directly as the native
-//     /usr/local/bin/opencode binary. Only globs on the real file names admit
-//     them. This is what broke every 0.40.0-image Claude run (fullsend#6971):
-//     **/claude alone never matched.
+//     /usr/local/bin/opencode binary, and codex's npm launcher bin/codex.js
+//     replaces node with the native vendor/<triple>/bin/codex
+//     (process.execve). Only globs on the real file names admit them. This is
+//     what broke every 0.40.0-image Claude run (fullsend#6971): **/claude
+//     alone never matched.
 //
 // A new runtime must add its mapping here; TestScaffoldProfilesAllowRuntimeBinaries
 // fails for any selectable runtime without one. Decide the globs against the
@@ -45,7 +45,7 @@ var runtimeEgressBinaries = map[string]map[string][]string{
 		"fullsend-inference-gateway": {"**/node"},
 	},
 	"codex": {
-		"fullsend-openai":            {"**/node", "**/codex"},
+		"fullsend-openai":            {"**/codex"},
 		"fullsend-inference-gateway": {"**/codex"},
 	},
 	"opencode": {

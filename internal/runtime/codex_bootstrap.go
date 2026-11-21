@@ -111,18 +111,6 @@ func (r CodexRuntime) codexModelsCachePath() string {
 	return r.ConfigDir() + "/" + codexModelsCacheFile
 }
 
-// codexLastMessageFile is where --output-last-message writes the agent's final
-// message, under the runner-owned config dir.
-//
-// Deliberately not the workspace output directory: that is the agent's own
-// result location (FULLSEND_OUTPUT_DIR), the runner extracts everything there
-// as the run's output files, and nothing creates it up front — codex reported
-// `Failed to write last message file ... No such file or directory` in the
-// first end-to-end smoke. The final message is in the stream as an
-// agent_message either way; this file is a convenience for an operator
-// inspecting a kept sandbox, and ClearIterationArtifacts removes it.
-const codexLastMessageFile = "last-message.txt"
-
 // Bootstrap prepares the runner-owned codex config directory for one agent
 // run: the agent body as developer_instructions in config.toml, the auth
 // script for the run-scoped OpenAI provider, skills, the hook scripts plus the
@@ -425,7 +413,9 @@ const codexNoSubagentNote = "\n## Runtime note\n\n" +
 // codexChunkedReadNote is the chunked-read rule for Codex's exec truncation
 // (10,000 tokens, head and tail; verified at 0.157.0 and 0.166.0, the latter
 // live: a 200-line dense file rides whole, a larger one is cut in the middle
-// behind an "N tokens truncated" marker). A single cat of a long SKILL.md
+// behind an "N tokens truncated" marker; at 0.170.0 the code-mode host cuts a
+// code_mode_only model such as gpt-5.6-luna at the same cap, with the same
+// marker). A single cat of a long SKILL.md
 // drops the middle with no retry (#7831). Reading in ranges is not enough on
 // its own: a parent that stopped after four ranges of a 1,457-line SKILL.md
 // missed the dispatch rules past line 800 (#9657), so the note also says to
