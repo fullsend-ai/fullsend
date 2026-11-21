@@ -130,6 +130,10 @@ type JiraPollConfig struct {
 	// Query is the JQL the poller runs, before project scoping; empty
 	// means DefaultJiraPollQuery.
 	Query string `yaml:"query,omitempty"`
+	// RepoLabelPrefix specifies the label prefix for repository routing (default: "repo:").
+	RepoLabelPrefix string `yaml:"repo_label_prefix,omitempty"`
+	// StrictRouting skips unrouted candidates when true. Nil or false retains unrouted candidates.
+	StrictRouting *bool `yaml:"strict_routing,omitempty"`
 }
 
 // jiraTrackingKeys, jiraPollKeys, and jiraAllowedTargetsKeys are the keys
@@ -137,7 +141,7 @@ type JiraPollConfig struct {
 // tracker.jira.allowed_targets.
 var (
 	jiraTrackingKeys       = map[string]bool{"base_url": true, "api_url": true, "run_label": true, "project": true, "allowed_targets": true, "poll": true}
-	jiraPollKeys           = map[string]bool{"enabled": true, "query": true}
+	jiraPollKeys           = map[string]bool{"enabled": true, "query": true, "repo_label_prefix": true, "strict_routing": true}
 	jiraAllowedTargetsKeys = map[string]bool{"projects": true}
 )
 
@@ -448,10 +452,17 @@ func cloneTracking(src *TrackingConfig) *TrackingConfig {
 			},
 		}
 		if p := src.Jira.Poll; p != nil {
-			poll := &JiraPollConfig{Query: p.Query}
+			poll := &JiraPollConfig{
+				Query:           p.Query,
+				RepoLabelPrefix: p.RepoLabelPrefix,
+			}
 			if p.Enabled != nil {
 				enabled := *p.Enabled
 				poll.Enabled = &enabled
+			}
+			if p.StrictRouting != nil {
+				strict := *p.StrictRouting
+				poll.StrictRouting = &strict
 			}
 			out.Jira.Poll = poll
 		}

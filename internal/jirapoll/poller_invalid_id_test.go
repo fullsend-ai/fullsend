@@ -161,6 +161,16 @@ func (c *rawSearchClient) SearchIssues(ctx context.Context, jql string, limit in
 	return c.searchResult, nil
 }
 
+func (c *rawSearchClient) SearchIssuesPage(_ context.Context, jql, nextPageToken string, maxResults int) (*jira.SearchResult, error) {
+	if c.searchErr != nil {
+		return nil, c.searchErr
+	}
+	return &jira.SearchResult{
+		Issues: c.searchResult,
+		IsLast: true,
+	}, nil
+}
+
 // TestRun_NilLabelsTreatedAsUnlabeled: an issue Jira serves without a labels
 // array (null or missing) is in effect unlabeled, so toNormalizedEvent maps
 // nil labels to an empty list (criterion 2 as amended on PR #9191's review)
@@ -391,7 +401,7 @@ func TestRun_MatcherErrEventsDroppedNotLost(t *testing.T) {
 // Center deployment whose project key is a single character (which the
 // config gate's jiraProjectKeyRe accepts) through the scoped default query
 // too: the CLI always sets a JQL, so the project-key check in
-// searchCandidates (which runs only with no JQL at all) never intercepts
+// buildCandidateJQL (which runs only with no JQL at all) never intercepts
 // it. The mock serves the issue regardless of the JQL, as Jira does for
 // either query.
 func TestRun_MalformedKeyEventSkipped(t *testing.T) {

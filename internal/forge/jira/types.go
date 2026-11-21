@@ -234,3 +234,18 @@ type changelogPage struct {
 	StartAt    int              `json:"startAt"`
 	IsLast     bool             `json:"isLast"`
 }
+
+// RemoteLink represents an external web link attached to a Jira issue
+// via GET /rest/api/3/issue/{issueIdOrKey}/remotelink.
+type RemoteLink struct {
+	ID     int              `json:"id,omitempty"`
+	Self   string           `json:"self,omitempty"`
+	Object RemoteLinkObject `json:"object"`
+}
+
+// RemoteLinkObject describes the linked target resource in a RemoteLink.
+type RemoteLinkObject struct {
+	URL     string `json:"url"`
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
+}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -1086,9 +1087,12 @@ func TestIsRetryable(t *testing.T) {
 		want   bool
 	}{
 		{"429 GET", http.StatusTooManyRequests, http.MethodGet, "/issue/PROJ-1", true},
+		{"429 GET remotelink", http.StatusTooManyRequests, http.MethodGet, "/issue/PROJ-1/remotelink", false},
 		{"429 POST", http.StatusTooManyRequests, http.MethodPost, "/issue", true},
 		{"429 POST search/jql", http.StatusTooManyRequests, http.MethodPost, "/search/jql", true},
 		{"500 GET", http.StatusInternalServerError, http.MethodGet, "/issue/PROJ-1", true},
+		{"500 GET remotelink", http.StatusInternalServerError, http.MethodGet, "/issue/PROJ-1/remotelink", false},
+		{"503 GET remotelink", http.StatusServiceUnavailable, http.MethodGet, "/issue/PROJ-1/remotelink", false},
 		{"503 PUT", http.StatusServiceUnavailable, http.MethodPut, "/issue/PROJ-1", true},
 		{"500 POST", http.StatusInternalServerError, http.MethodPost, "/issue", false},
 		{"500 POST search/jql", http.StatusInternalServerError, http.MethodPost, "/search/jql", true},
@@ -1313,4 +1317,185 @@ func TestGetUserGroups_Empty(t *testing.T) {
 	groups, err := client.GetUserGroups(ctx, "user-no-groups")
 	require.NoError(t, err)
 	assert.Empty(t, groups)
+}
+
+func TestSearchIssuesPage(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body searchRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, "project = PROJ", body.JQL)
+		assert.Equal(t, "page-2", body.NextPageToken)
+		assert.Equal(t, 25, body.MaxResults)
+		assert.NotContains(t, body.Fields, "components")
+		assert.Equal(t, searchFields, body.Fields)
+
+		writeJSON(t, w, http.StatusOK, SearchResult{
+			Issues: []Issue{
+				{
+					ID:  "101",
+					Key: "PROJ-101",
+					Fields: IssueFields{
+						Summary: "backend feature",
+					},
+				},
+			},
+			NextPageToken: "page-3",
+			IsLast:        false,
+		})
+	})
+
+	res, err := client.SearchIssuesPage(ctx, "project = PROJ", "page-2", 25)
+	require.NoError(t, err)
+	require.Len(t, res.Issues, 1)
+	assert.Equal(t, "PROJ-101", res.Issues[0].Key)
+	assert.Equal(t, "backend feature", res.Issues[0].Fields.Summary)
+	assert.Equal(t, "page-3", res.NextPageToken)
+	assert.False(t, res.IsLast)
+}
+
+func TestListRemoteLinks(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-42/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, []RemoteLink{
+			{
+				ID:   1000,
+				Self: "https://example.atlassian.net/rest/api/3/issue/PROJ-42/remotelink/1000",
+				Object: RemoteLinkObject{
+					URL:   "https://github.com/acme/backend/pull/12",
+					Title: "PR #12",
+				},
+			},
+		})
+	})
+
+	links, err := client.ListRemoteLinks(ctx, "PROJ-42")
+	require.NoError(t, err)
+	require.Len(t, links, 1)
+	assert.Equal(t, "https://github.com/acme/backend/pull/12", links[0].Object.URL)
+	assert.Equal(t, "PR #12", links[0].Object.Title)
+}
+
+func TestListRemoteLinks_Empty(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-43/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []RemoteLink{})
+	})
+
+	links, err := client.ListRemoteLinks(ctx, "PROJ-43")
+	require.NoError(t, err)
+	assert.Empty(t, links)
+}
+
+func TestSearchIssuesPage_DefaultMaxResultsAndError(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		var body searchRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		if body.JQL == "bad" {
+			writeJSON(t, w, http.StatusBadRequest, map[string]any{
+				"errorMessages": []string{"Invalid JQL"},
+			})
+			return
+		}
+		assert.Equal(t, 50, body.MaxResults)
+		writeJSON(t, w, http.StatusOK, SearchResult{IsLast: true})
+	})
+
+	res, err := client.SearchIssuesPage(ctx, "project = PROJ", "", 0)
+	require.NoError(t, err)
+	assert.True(t, res.IsLast)
+
+	_, err = client.SearchIssuesPage(ctx, "bad", "", 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "search issues")
+}
+
+func TestListRemoteLinks_LinkingDisabled(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-44/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]any{
+			"errorMessages": []string{"Issue linking is currently disabled."},
+		})
+	})
+
+	links, err := client.ListRemoteLinks(ctx, "PROJ-44")
+	require.NoError(t, err)
+	assert.Empty(t, links)
+}
+
+func TestListRemoteLinks_Empty403BodyAndCachesDisabledState(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var hits atomic.Int32
+	mux.HandleFunc("/rest/api/3/issue/PROJ-45/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	})
+	mux.HandleFunc("/rest/api/3/issue/PROJ-46/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	links, err := client.ListRemoteLinks(ctx, "PROJ-45")
+	require.NoError(t, err)
+	assert.Empty(t, links)
+	assert.Equal(t, int32(1), hits.Load())
+
+	links2, err := client.ListRemoteLinks(ctx, "PROJ-46")
+	require.NoError(t, err)
+	assert.Empty(t, links2)
+	assert.Equal(t, int32(1), hits.Load(), "subsequent ListRemoteLinks calls should skip HTTP after HTTP 403")
+}
+
+func TestListRemoteLinks_NoRetryOn503(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var attempts atomic.Int32
+	mux.HandleFunc("/rest/api/3/issue/PROJ-503/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	_, err := client.ListRemoteLinks(ctx, "PROJ-503")
+	require.Error(t, err)
+	assert.Equal(t, int32(1), attempts.Load(), "should not retry GET /remotelink on 503")
+}
+
+func TestListRemoteLinks_Error(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-99/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{"Issue does not exist or you do not have permission to see it."},
+		})
+	})
+
+	_, err := client.ListRemoteLinks(ctx, "PROJ-99")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list remote links for PROJ-99")
+	assert.ErrorIs(t, err, forge.ErrNotFound)
 }

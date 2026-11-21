@@ -42,7 +42,8 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account).
 2. **Grant it the minimum Jira permissions** in the target project, usually
    through the **Developers** project role. The poller needs Browse
-   Projects, Edit Issues, Add Comments, and Edit Own Comments to operate on
+   Projects (which also covers reading remote issue links for repository
+   routing), Edit Issues, Add Comments, and Edit Own Comments to operate on
    issues and write the entity properties it uses for lock and checkpoint
    coordination. Then choose how Jira users are authorized:
    - **Recommended:** list who may trigger agents under a `jira` provider in
@@ -1389,9 +1390,11 @@ the user's Jira profile: the ID is the last part of its URL.
 
 | Permission | When the poller account needs it |
 |---|---|
-| Browse Projects, Edit Issues, Add Comments, Edit Own Comments | Always |
+| Browse Projects, Edit Issues, Add Comments, Edit Own Comments | Always (Browse Projects also covers reading issue remote links via `GET /issue/{key}/remotelink`; if issue linking is disabled on the Jira site, the poller degrades gracefully and treats remote links as absent) |
 | Browse users and groups (global permission) | When the `jira` lists name groups, or when project-role resolution finds a project role granted to a group (the poller then calls `GET /user/groups` for the actor) |
 | Administer Projects (the **Administrators** project role) | Only when project roles are used: no `jira` entry, `labels: project_roles`, or slash commands when the `jira` entry sets no lists |
+
+> **OAuth and scoped API token scopes.** When authenticating with Atlassian service accounts or OAuth 2.0 client credentials, reading remote links (`GET /issue/{key}/remotelink`) requires the classic scope `read:jira-work` or both granular OAuth scopes `read:issue.remote-link:jira` and `read:status:jira` (designated as **Beta** by Atlassian; see the [Atlassian Remote Issue Links REST API documentation](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-remote-links/#api-rest-api-3-issue-issueidorkey-remotelink-get)). Credentials lacking these scopes receive HTTP 401 on remote-link lookups, causing candidate routing to fail safe. Ensure these scopes are granted to your service account credential.
 
 The poller reads the project role list only in a cycle that has an event
 needing it. A setup whose `jira` entry uses the lists without
@@ -1433,6 +1436,10 @@ entry's default `labels: jira_editors`, anyone with Edit Issues on the project c
 add a label such as `ready-to-code` and dispatch the agent whose trigger
 matches it. Use `labels: allowlist` if that group is broader than you want.
 
+> **Security note — Issue labels and remote links control repository routing.** Any user with Jira's **Edit Issues** or **Link Issues** permission on a polled project can apply `repo:` labels or attach remote web links pointing at Git repositories. Because repository routing determines which repository's poller claims or skips an issue, adding or modifying a repo label or link changes agent dispatch boundaries. Treat **Edit Issues** and **Link Issues** on polled projects as part of the routing trust boundary.
+
+> **Upgrade notice — OAuth scopes for remote links.** Existing scoped API tokens or OAuth 2.0 credentials must include `read:jira-work` (classic) or both granular scopes `read:issue.remote-link:jira` and `read:status:jira` (designated as **Beta** by Atlassian; see the [Atlassian Remote Issue Links REST API documentation](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-remote-links/#api-rest-api-3-issue-issueidorkey-remotelink-get)) so the poller can read attached repository links during Priority 2 candidate routing. Without these scopes, Jira returns HTTP 401 and the cycle fails safe.
+
 ## Poll coordination
 
 The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following a write-then-verify protocol. Each cycle randomly selects up to N (default 5) issues from the candidate set for processing, spreading load across cycles. Two properties are stored on each processed issue:
@@ -1473,13 +1480,62 @@ Because each cron run is a fresh process, per-cycle Jira API cost is worth sizin
 
 Two more scaling limits:
 
-- **Issues beyond the top M candidates can be starved.** Each cycle's JQL search returns at most M (default 50) candidates, ordered by `updated DESC`. If a project has more than M issues with in-scope activity at once, whichever issues aren't in that top-M window this cycle are simply never selected — there's no rotation across cycles to eventually reach them. This is expected to self-resolve for most projects (an issue with new activity moves toward the front of `updated DESC` on its own), but a project that consistently has more than M simultaneously-active issues will have some starved indefinitely. Narrow the default `--jql` (e.g. scope to a label or a subset of issue types) if this applies to you.
+- **Issues beyond the candidate scan window can be starved, and remote-link routing scales per inspected candidate.** Each cycle scans up to **5 JQL pages** of 50 issues (up to **250 candidates** ordered by `updated DESC`), evaluating attached repository links in bounded batches (up to **8 concurrent** `GET /issue/{key}/remotelink` calls) until M (default 50) matching candidates for `--target-repo` (GitHub) or `--project` (GitLab) are collected, the routing fan-out deadline (2 minutes) is reached, or a rate-limit (`429`) / `5xx` error aborts the scan early before selecting up to N issues to process. If a project has more than M matching issues (or more than 250 active issues) ahead in `updated DESC`, issues beyond that scan window are not reached — there is no rotation across cycles. Scope `tracker.jira.poll.query` (for example with `component = "..."` or `labels = "..."`) to reduce both starvation and per-cycle `remotelink` API cost.
 - **Comments are re-listed in full, oldest-first, every cycle.** The Jira REST API has no way to filter comments server-side by date, so `ListComments` always paginates from the start of an issue's comment history; the poller then filters client-side by timestamp. For issues with very long comment histories, this means re-fetching (and re-decoding) old comments every cycle just to discard them. Listings are capped at 10,000 entries per issue; an issue beyond that cap has its newest activity invisible to the poller (a WARNING is logged when the cap is hit). Each API response is bounded to 10MB, but the accumulated per-issue comment history is bounded only by the page cap — a per-issue byte budget is a tracked follow-up; against real Jira Cloud (which caps individual comments) the realistic worst case is tens of MB per issue.
-- **Sustained Jira errors can stall a cycle.** Each Jira call retries up to 5 times with exponential backoff, honoring `Retry-After` (capped at 5 minutes). Under a sustained 429 or outage a single cycle can therefore run long; the workflow's concurrency group queues subsequent cron runs rather than stacking them, and a failed cycle simply retries from its checkpoints on the next run.
+- **Sustained Jira errors can stall a cycle.** Each Jira call retries up to 5 times with exponential backoff, honoring `Retry-After` (capped at 5 minutes). Candidate remote-link lookups (`GET /issue/{key}/remotelink`) bypass 429 retries and cancel in-flight sibling requests in the batch immediately upon receiving a `429` or `5xx` error, halting candidate fan-out without adding retry pressure or sleeping. The entire routing fan-out is bounded to a 2-minute per-cycle deadline so transient errors on large candidate lists do not stall the workflow timeout. For other calls, the workflow's concurrency group queues subsequent cron runs rather than stacking them, and a failed cycle simply retries from its checkpoints on the next run.
 
 ## Multi-repo polling
 
-Multiple GitHub repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed. Before adding pollers, use Jira Components or labels to segment your project so each repo's `tracker.jira.poll.query` filter only matches issues relevant to it — this avoids redundant API calls and keeps each poller's candidate window focused.
+Multiple GitHub or GitLab repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed. The poller uses a decoupled **3-tier routing architecture** to route work automatically without taxonomy collisions:
+
+1. **Priority 1 — In-Memory `repo:` Labels (0 HTTP calls)**
+2. **Priority 2 — Attached Git Remote Links (Bounded batch concurrency)**
+3. **Priority 3 — Unrouted Fallback (`strict_routing` toggle)**
+
+### Clean 3-Tier Routing Architecture
+
+#### Priority 1: In-Memory `repo:` Labels
+
+The poller first evaluates each candidate's `issue.fields.labels` directly in memory without making any HTTP calls:
+- Labels matching the prefix `repo:` (case-insensitive, customizable via `tracker.jira.poll.repo_label_prefix` in `.fullsend/config.yaml` or `--repo-label-prefix`).
+- Supports bare repository slugs (e.g. `repo:my-org/my-repo` or `repo:group/subgroup/project`) as well as host-qualified URLs (e.g. `repo:https://github.com/my-org/my-repo`, `repo:https://code.example.com/org/repo`, or `repo:git@gitlab.com:group/project.git`). Bare names without a slash (e.g. `repo:backend`) or malformed repository labels are rejected as unparseable; candidates carrying only unparseable repo labels are logged with a warning and skipped immediately (treated as routed elsewhere), preventing them from falling through to remote-link lookups or unrouted fallback claiming. Bare `owner/repo` labels match any target forge (GitHub, GitLab), while host-qualified URL or SSH labels match only when the label's host matches the target forge's host (`github.com` or the configured GitLab host); labels for unrecognized hosts are preserved as host-qualified targets and skipped cleanly by pollers for other hosts.
+- **Match:** If any `repo:` label matches the poller's `--target-repo` (GitHub) or `--project` (GitLab), the issue is claimed immediately.
+- **Mismatch:** If one or more `repo:` labels are present but none match the poller's target, the issue is skipped immediately with **zero** remote-link HTTP lookups, avoiding Jira rate limits.
+
+#### Priority 2: Attached Git Remote Links
+
+If an issue carries no `repo:` labels, the poller inspects its Jira remote web links (`GET /issue/{key}/remotelink`) in bounded batches (up to 8 concurrent calls) across recognized forge URLs (`github.com`, `bitbucket.org`, `gitlab.com`, `gitlab.*`, `*.gitlab.com`, configured GitLab hosts, SSH URLs, and `git.*` hosts ending in `.git`):
+- **Match:** If an attached Git repository link matches `--target-repo` or `--project`, the candidate is claimed.
+- **Mismatch:** If attached Git repository links are present pointing to other repositories, the issue is skipped.
+- On sites where remote issue linking is disabled (HTTP 403), the poller logs a warning, skips remote-link lookups for the rest of the cycle, and treats remote links as empty.
+
+> **Important — Development panel links (GitHub/GitLab for Jira) are not read.** Priority 2 queries only Jira remote (web) issue links (`GET /issue/{key}/remotelink`). It does **not** read Development panel links (branches, pull requests, commits) created by official Atlassian integration apps like GitHub for Jira or GitLab for Jira, which ingest data via Jira's internal dev-info, builds, and deployments APIs rather than issue remote links. In multi-repo environments sharing a Jira project that rely on those apps, issues with linked PRs in the Development panel have no remote web links visible to the poller. To prevent these issues from falling through to Priority 3 unrouted fallback and triggering unwanted cross-repo dispatches, teams must use explicit `repo:` labels (e.g. `repo:org/repo`) or enable `strict_routing: true`.
+
+#### Priority 3: Unrouted Fallback (`strict_routing`)
+
+When an issue has neither `repo:` labels nor attached Git links:
+- **`strict_routing: false` (Default / Single-Repo Mode):** Candidates with neither a `repo:` label nor any attached Git repository link are claimed as an unrouted fallback. However, issues carrying an attached Git repository link or `repo:` label that points to a different repository are skipped. Note that remote links pointing to unrecognized Git hosts (such as a self-managed GitLab instance not configured on a GitHub poller) return no repository slug and are treated as having no repo link, falling through to the Priority 3 unrouted fallback.
+- **`strict_routing: true` (Multi-Repo Mode):** Candidates with neither a `repo:` label nor an attached Git repository link are skipped cleanly. In multi-repo environments sharing a Jira project—especially environments relying on GitHub for Jira or GitLab for Jira Development panel links, or mixed environments with both GitHub and private or self-managed GitLab repositories—teams must either enable `strict_routing: true` or use explicit `repo:` labels (e.g. `repo:https://code.example.com/org/repo` or bare `repo:org/repo`) so that unrecognized host links or unread Development panel links do not inadvertently trigger unrouted fallback dispatches across multiple pollers. When a host-qualified `repo:` label is present, it is evaluated in Priority 1 and skipped by pollers targeting other hosts, preventing fallback dispatches.
+
+### Configuration
+
+Configure repository routing in `.fullsend/config.yaml`:
+
+```yaml
+version: "1"
+tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    project: PROJ
+    poll:
+      enabled: true
+      repo_label_prefix: "repo:" # default "repo:"
+      strict_routing: true       # skip unrouted candidates in multi-repo setups
+```
+
+You can also override routing settings via CLI flags or environment variables:
+- `--repo-label-prefix <prefix>` (env: `FULLSEND_REPO_LABEL_PREFIX`)
+- `--strict-repo-routing` (env: `FULLSEND_STRICT_REPO_ROUTING=true`)
 
 ### Should each repo have its own poll workflow?
 
@@ -1509,13 +1565,13 @@ When `acme/frontend` and `acme/backend` both poll issue `PROJ-42`:
 
 The two repos lock independently, checkpoint independently, and can process the same Jira comment — each dispatching to its own agent workflows. This is intentional: the same `/fs-triage` comment on a Jira issue may be relevant to multiple repos if their harness triggers match.
 
-### 50-candidate cap with multiple repos
+### Candidate window and API cost with multiple repos
 
-Each repo's poller runs its own JQL query and gets its own top-M (default 50) candidate window. The cap is per-poller, not global — three repos polling the same project each see up to 50 candidates per cycle, not 50 shared across all three.
+Each repo's poller runs its own JQL query, scans up to 5 pages × 50 issues (250 candidates) checking remote links, and keeps up to M (default 50) routed candidates per cycle. The cap is per-poller, not global — three repos polling the same project each maintain their own window and checkpoints.
 
-However, more pollers against the same Jira project means more API calls per cycle. Each poller independently reads entity properties for lock filtering, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
+However, more pollers against the same Jira project means more API calls per cycle. Each poller reads up to 250 `remotelink` endpoints, reads entity properties for lock filtering, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
 
-- **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so it skips issues that belong to other repos.
+- **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use repository labels (e.g. `labels in ("repo:my-org/frontend")`) or JQL filters to segment the project server-side so Jira skips issues that belong to other repos before candidate lookups run.
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.
 - **Monitoring Jira rate limits.** Jira Cloud uses points-based quotas, and multiple pollers multiply the cost. Watch for `429` responses in workflow logs — the poller retries with backoff, but sustained rate limiting slows all repos' cycles.
 
@@ -1527,6 +1583,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | `jira: OAuth token request to "https://auth.atlassian.com/oauth/token" with FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET: unexpected status 401 (invalid_client)` | The service account's OAuth 2.0 client ID or secret is wrong, expired, or revoked | Create a new OAuth 2.0 credential for the service account and update `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` with `repos install --jira-client-id --jira-client-secret` |
 | `jira: set either FULLSEND_JIRA_TOKEN or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both` | Both credential types are set | Keep one. `repos install` removes the other set when you supply new credentials |
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
+| The poll fails with `all N candidates dropped by remote-link lookup errors` | `GET /rest/api/3/issue/{key}/remotelink` failed for every candidate attempted in the cycle (for example due to scoped tokens or OAuth credentials missing the classic remote-link scope `read:jira-work` or both granular OAuth scopes `read:issue.remote-link:jira` and `read:status:jira` [Beta; see [Atlassian Remote Issue Links REST API documentation](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-remote-links/#api-rest-api-3-issue-issueidorkey-remotelink-get)] returning 401, expired credentials, rate limiting, or upstream 5xx errors), and the poller fails safe rather than routing without link data | Read the `WARNING: listing remote links for <KEY>: …` lines above the error, verify OAuth scopes or API token permissions, check API rate limits, and let the next scheduled cycle retry since no checkpoints were advanced |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. The built-in agents post with the poller's own `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`. Confirm that a custom agent which posts comments or labels uses the same credential, not another account's token. Human follow-up, including `/fs-triage`, still dispatches |
 | Your own comments or label changes never dispatch | The poller's `FULLSEND_JIRA_TOKEN` belongs to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |
