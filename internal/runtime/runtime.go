@@ -50,12 +50,18 @@ type RunMetrics struct {
 // iteration, one per sub-agent call); the claude runtime has no source for
 // it and leaves it zero.
 type ModelUsage struct {
-	Requests                 int     `json:"requests"`
-	InputTokens              int     `json:"input_tokens"`
-	OutputTokens             int     `json:"output_tokens"`
-	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
-	CostUSD                  float64 `json:"cost_usd"`
+	Requests                 int `json:"requests"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	// ReasoningTokens is this model's reasoning share, filled only by
+	// runtimes whose OutputTokens exclude reasoning (see
+	// OutputExcludesReasoning), so a per-model span can add it back the way
+	// the agent span does. Runtimes that count reasoning inside output
+	// leave it zero.
+	ReasoningTokens int     `json:"reasoning_tokens,omitempty"`
+	CostUSD         float64 `json:"cost_usd"`
 }
 
 // Add accumulates other into u.
@@ -65,6 +71,7 @@ func (u *ModelUsage) Add(other ModelUsage) {
 	u.OutputTokens += other.OutputTokens
 	u.CacheCreationInputTokens += other.CacheCreationInputTokens
 	u.CacheReadInputTokens += other.CacheReadInputTokens
+	u.ReasoningTokens += other.ReasoningTokens
 	u.CostUSD += other.CostUSD
 }
 

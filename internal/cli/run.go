@@ -5336,22 +5336,33 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 		stringAttr("gen_ai.provider.name", system),
 		boundedStringAttr("gen_ai.request.model", m.Model),
 		stringAttr("fullsend.runtime", runtimeName),
-		// The GenAI semconv (v1.40.0+) defines input_tokens as including
-		// cached tokens. RunMetrics.InputTokens is uncached input, so add the
-		// cache counters back; backends that price from the convention
-		// subtract them out again and would otherwise go negative (#9532).
-		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens+m.CacheReadInputTokens+m.CacheCreationInputTokens),
-		// Marks input_tokens above as the inclusive count. Spans written
-		// before that change have no such attribute, which is how a reader
-		// tells the two apart. service.version cannot: a source build
-		// stamps "dev" or a git describe string (a bare commit id on CI's
-		// shallow clone), not a release number.
-		attribute.Bool("fullsend.usage.input_includes_cache", true),
-		attribute.Int("gen_ai.usage.output_tokens", outputTokens),
-		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
-		attribute.Int("gen_ai.usage.cache_read.input_tokens", m.CacheReadInputTokens),
 		attribute.Float64("fullsend.cost_usd", roundUSD(m.TotalCostUSD)),
 		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
+	}
+	// Mixed-model iterations emit gen_ai.usage.* on per-model usage
+	// children instead of here, so a backend that auto-sums those keys
+	// (MLflow) cannot add this rollup to the components (#7550). The
+	// parent identity and fullsend.cost_usd stay; reasoning_tokens has
+	// no per-model counterpart and remains on this span.
+	if isMixedModelUsage(m) {
+		attrs = append(attrs, attribute.Bool(attrUsageRollup, true))
+	} else {
+		attrs = append(attrs,
+			// The GenAI semconv (v1.40.0+) defines input_tokens as including
+			// cached tokens. RunMetrics.InputTokens is uncached input, so add the
+			// cache counters back; backends that price from the convention
+			// subtract them out again and would otherwise go negative (#9532).
+			attribute.Int("gen_ai.usage.input_tokens", m.InputTokens+m.CacheReadInputTokens+m.CacheCreationInputTokens),
+			// Marks input_tokens above as the inclusive count. Spans written
+			// before that change have no such attribute, which is how a reader
+			// tells the two apart. service.version cannot: a source build
+			// stamps "dev" or a git describe string (a bare commit id on CI's
+			// shallow clone), not a release number.
+			attribute.Bool("fullsend.usage.input_includes_cache", true),
+			attribute.Int("gen_ai.usage.output_tokens", outputTokens),
+			attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
+			attribute.Int("gen_ai.usage.cache_read.input_tokens", m.CacheReadInputTokens),
+		)
 	}
 	if m.ReasoningTokens > 0 {
 		// gen_ai.usage.reasoning.output_tokens is the semconv key (v1.41.0+).
@@ -5726,6 +5737,13 @@ func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, s
 	// SIGTERM handleRunCancellation names) still lands its unanswered calls
 	// in the file sink before the process goes.
 	recordToolSpanOverflow(span, toolSpans.Finish())
+	// Usage children end before the agent span so they reach the file
+	// sink on a cancelled iteration, the same way unanswered tool spans do.
+	var runnerEnv map[string]string
+	if toolSpans != nil {
+		runnerEnv = toolSpans.runnerEnv
+	}
+	emitPerModelUsageSpans(span, system, runtimeName, m, runnerEnv)
 	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, runtimeName, m)...)
 	switch {
 	case runErr != nil:
