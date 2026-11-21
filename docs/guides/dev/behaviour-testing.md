@@ -69,8 +69,8 @@ live suites on a pull request before it is enqueued, see
      scenario;
    - `openshell-logs/`, the OpenShell logs of each agent run.
 3. Decide whether the failure comes from your change or from the emulator.
-   - It is likely an **emulator failure** when the emulator answers HTTP 4xx
-     or 5xx to an API call that GitHub supports, or when a workflow job never
+   - It is likely an **emulator failure** when the emulator returns HTTP 4xx
+     or 5xx for an API call that GitHub supports, or when a workflow job never
      starts because no emulator runner picks it up. Look for the call in
      `bt-run.log` and `stack/emulator.log`, and for the job in
      `stack/runner-<n>.log`.
@@ -81,7 +81,7 @@ live suites on a pull request before it is enqueued, see
    summary page.
    Re-running needs write access to the repository. Without it, ask a
    maintainer to re-run the jobs, or push a new commit.
-5. If the job fails again and the failure looks like an emulator bug, file it
+5. If the job fails again and the failure looks like an emulator bug, file an issue
    at <https://github.com/fullsend-ai/github-emulator/issues>. Include the
    run link, the scenario and the emulator log lines.
 
@@ -95,7 +95,7 @@ Each row is error text from a real failed run.
 | `harness agent "retro": workflow run 5 concluded with "failure" before producing artifact (url=https://ghemu.localhost/...)` | The agent's workflow ran on the emulator and failed. | Find the run's job in `stack/runner-<n>.log` and read the failing step. In past runs, the cause was in the change under test. |
 | `harness agent "pr-ping" did not complete successfully; no recent workflow runs found after trigger time; no repository artifacts listed` | The trigger started no workflow run. | Look in `stack/emulator.log` for the event and the run. If the emulator answered HTTP 4xx or 5xx to an API that GitHub supports, the bug is likely in the emulator. |
 | `"review" agent was not dispatched since <time>` | Playback: the expected agent dispatch did not happen. | Same checks as the row above. |
-| `the emulator did not start; last lines of ./stack/emulator.log:` | The emulator process did not finish starting before the job gave up, before any scenario ran. | Re-run the failed jobs once. If it happens again, file an emulator issue with the log lines printed below it. |
+| `the emulator did not start; last lines of ./stack/emulator.log:` | The emulator did not finish starting within the start timeout, so no scenario ran. | Re-run the failed jobs once. If it happens again, file an emulator issue with the log lines printed below it. |
 | `! [remote rejected] HEAD -> main (shallow update not allowed)` | The agents job pushes its checkout into the emulator, and the checkout was shallow. | Only seen when editing the workflow: the agents checkout needs `fetch-depth: 0`. |
 
 To run the job yourself, see
@@ -123,7 +123,7 @@ uses no repository secrets, so it runs the same way in your own fork:
    to enable workflows, enable them.
 2. Push your branch to your fork.
 3. Dispatch it there. With write access to `fullsend-ai/fullsend`, you can
-   also use `--repo fullsend-ai/fullsend` and a branch in it.
+   also pass `--repo fullsend-ai/fullsend` with a branch in that repository.
 
    ```console
    $ gh workflow run behaviour-github-emulator.yml --repo <your-user>/fullsend \
@@ -528,8 +528,8 @@ The first row proves execution via an auxiliary file; the second row emits the s
 
 ## Prerequisites
 
-The procedures in this guide need the following before the first step. The
-items marked live suite only are not needed for an emulator run, which makes
+The procedures in this guide need the following before the first step. Items
+marked "(live suite only)" are not needed for an emulator run, which creates
 its own credentials (see
 [Running against a GitHub emulator](#running-against-a-github-emulator)).
 
