@@ -6,11 +6,152 @@ End-to-end Gherkin tests under `e2e/behaviour/` validate **deterministic platfor
 |---|-----------------|-----------|------------|
 | **Target** | Platform workflows, sandbox, SCM | Prompts, models | Go functions |
 | **Inference** | Dummy runtime | Real LLM | N/A |
-| **Infrastructure** | Live GitHub + GHA | Varies | None |
+| **Infrastructure** | GitHub emulator on pull requests; live GitHub + GHA in the merge queue and on `main` | Varies | None |
 
 ## When to add a behaviour test
 
 Add one when a **user-visible workflow** must be verified end-to-end (dispatch → workflow → post-script → SCM state) and the assertion is **binary**. Prefer unit tests for pure Go logic.
+
+Pull requests run the scenarios on a GitHub emulator, and the merge queue and
+`main` run them on live GitHub. Write the scenario so it runs on the emulator,
+which lets every pull request run it; see
+[Adding a scenario](#adding-a-scenario).
+
+## On a pull request
+
+Every pull request runs the behaviour scenarios against the
+[GitHub emulator](#running-against-a-github-emulator), from
+[`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml).
+The run needs no repository secrets.
+
+### What runs, and what you see in Checks
+
+- **`behaviour-github-emulator`** is the required check. It passes only when
+  the 16 shard jobs, `behaviour-github-emulator (a)` to
+  `behaviour-github-emulator (p)`, and the `behaviour-github-emulator
+  (playback)` job all pass.
+- **`behaviour-github-emulator (agents)`** runs the agents repository's suite
+  against your change. It is advisory, not required: it shows whether a fullsend
+  change breaks the agents suite.
+- **`behaviour`** and **`playback`**, from `e2e.yml`, show as skipped. This is
+  expected, and a skipped job still satisfies these required checks.
+
+The live `behaviour` and `playback` suites run in the merge queue and on push
+to `main`. The merge queue runs `behaviour-github-emulator` as well. To run the
+live suites on a pull request before it is enqueued, see
+[Run the live suites on a pull request](e2e-testing.md#run-the-live-suites-on-a-pull-request).
+
+### When the check fails
+
+1. Open the failed job. Find the failing scenario in the log of its main step:
+   `Run behaviour features` for a shard, `Run the playback suite` or
+   `Run the agents suite`.
+2. Download the job's artifact from the **Artifacts** list on the run's
+   summary page. Every job uploads it, whether it passed or failed.
+
+   | Job | Artifact |
+   |-----|----------|
+   | A shard | `behaviour-github-emulator-logs-<shard>` (`a` to `p`, or `custom` for a [dispatch with features](#running-chosen-scenarios-in-ci)) |
+   | Playback | `behaviour-github-emulator-logs-playback` |
+   | Agents | `behaviour-github-emulator-logs-agents` |
+
+   The `Upload logs` step in `behaviour-github-emulator.yml` lists the paths.
+   Each artifact holds:
+
+   - the run's `*.log` files: `bt-run.log` (the suite output),
+     `stack/emulator.log` (the emulator) and `stack/runner-<n>.log` (one per
+     emulator runner);
+   - `phases.tsv`, with the time each phase of the job took;
+   - `emulator-profile.json`, a profile of the emulator process. Only the
+     shard artifacts hold it;
+   - `bt-artifacts/`, the per-scenario output, such as
+     `debug-scenario-<name>-<suffix>/failure-summary.txt` for a failed
+     scenario;
+   - `openshell-logs/`, the OpenShell logs of each agent run.
+3. Decide whether the failure comes from your change or from the emulator.
+   - It is likely an **emulator failure** when the emulator returns HTTP 4xx
+     or 5xx for an API call that GitHub supports, or when a workflow job never
+     starts because no emulator runner picks it up. Look for the call in
+     `bt-run.log` and `stack/emulator.log`, and for the job in
+     `stack/runner-<n>.log`.
+   - Otherwise, treat it as a failure in the code under test. A scenario
+     that fails on an assertion, or a fullsend command that exits with an
+     error, usually points at the change.
+4. Re-run the failed jobs once, with **Re-run failed jobs** on the run's
+   summary page.
+   Re-running needs write access to the repository. Without it, ask a
+   maintainer to re-run the jobs, or push a new commit.
+5. If the job fails again and the failure looks like an emulator bug, file an issue
+   at <https://github.com/fullsend-ai/github-emulator/issues>. Include the
+   run link, the scenario and the emulator log lines.
+
+#### Troubleshooting
+
+Each row is error text from a real failed run.
+
+| Error text | What it means | What to do |
+|------------|---------------|------------|
+| `behaviour suite failed with status 1: scenario failure (0 infrastructure, 1 scenario); report: .../failure-class.json` | A summary line. The counts say how many failed scenarios were classified as infrastructure and how many as scenario failures. | Scroll up to the `Error:` line under `Failed steps:` for the cause. |
+| `harness agent "retro": workflow run 5 concluded with "failure" before producing artifact (url=https://ghemu.localhost/...)` | The agent's workflow ran on the emulator and failed. | Find the run's job in `stack/runner-<n>.log` and read the failing step. In past runs, the cause was in the change under test. |
+| `harness agent "pr-ping" did not complete successfully; no recent workflow runs found after trigger time; no repository artifacts listed` | The trigger started no workflow run. | Look in `stack/emulator.log` for the event and the run. If the emulator answered HTTP 4xx or 5xx to an API that GitHub supports, the bug is likely in the emulator. |
+| `"review" agent was not dispatched since <time>` | Playback: the expected agent dispatch did not happen. | Same checks as the row above. |
+| `the emulator did not start; last lines of ./stack/emulator.log:` | The emulator did not finish starting within the start timeout, so no scenario ran. | Re-run the failed jobs once. If it happens again, file an emulator issue with the log lines printed below it. |
+| `! [remote rejected] HEAD -> main (shallow update not allowed)` | The agents job pushes its checkout into the emulator, and the checkout was shallow. | Only seen when editing the workflow: the agents checkout needs `fetch-depth: 0`. |
+
+To run the job yourself, see
+[Running the emulator job on a VM](#running-the-emulator-job-on-a-vm).
+For the emulator version the job uses, see
+[Moving to a new emulator release](#moving-to-a-new-emulator-release).
+
+### Running chosen scenarios in CI
+
+`behaviour-github-emulator.yml` has a `workflow_dispatch` trigger with three
+inputs:
+
+| Input | Meaning |
+|-------|---------|
+| `features` | Space-separated feature paths under `e2e/behaviour`, each with an optional `:line`. They run as one shard named `custom`, and the playback and agents jobs are skipped. Empty runs the 16 shards, playback and agents. |
+| `workers` | Scenarios run in parallel: the slot pool size and the godog concurrency. Empty uses the shard's value from `shards.txt`, or `DEFAULT_WORKERS` (2) with `features`. |
+| `runners` | Real `actions/runner` processes on the emulator. Empty uses the shard's value from `shards.txt`, or `DEFAULT_RUNNERS` (4) with `features`. |
+
+Dispatching needs write access to the repository that runs the workflow. The job
+uses no repository secrets, so it runs the same way in your own fork:
+
+1. Sync your fork's default branch with `fullsend-ai/fullsend`, for example
+   with `gh repo sync <your-user>/fullsend`. GitHub only dispatches a workflow
+   that exists on the default branch. If the fork's **Actions** tab asks you
+   to enable workflows, enable them.
+2. Push your branch to your fork.
+3. Dispatch it there. With write access to `fullsend-ai/fullsend`, you can
+   also pass `--repo fullsend-ai/fullsend` with a branch in that repository.
+
+   ```console
+   $ gh workflow run behaviour-github-emulator.yml --repo <your-user>/fullsend \
+       --ref <your-branch> -f features=features/triage/triage.feature
+   https://github.com/<your-user>/fullsend/actions/runs/<run-id>
+   ```
+
+The run has a `behaviour-github-emulator (custom)` job, and the playback and
+agents jobs show as skipped. In the run above, the custom job's log ended
+with `1 scenarios (1 passed)`. `gh workflow run` prints the run URL.
+
+### Adding a scenario
+
+Prefer a scenario that uses the dummy runtime, with no real model, and runs on
+the emulator, so every pull request runs it. List it in
+`e2e/behaviour/github-emulator/shards.txt` (see
+[Checklist for new scenarios](#checklist-for-new-scenarios)).
+
+If the emulator lacks a GitHub behaviour that the scenario needs, add that
+behaviour to the emulator. Do not list the scenario in
+`e2e/behaviour/github-emulator/not-sharded.txt` for that reason. The
+emulator's
+[CONTRIBUTING.md](https://github.com/fullsend-ai/github-emulator/blob/main/CONTRIBUTING.md)
+and
+[development guide](https://github.com/fullsend-ai/github-emulator/blob/main/docs/guides/development.md)
+describe how to change it. `not-sharded.txt` is for scenarios that cannot run
+on the emulator for another reason, such as a real model behind a
+`@requires:capability:` tag.
 
 ## Layout
 
@@ -338,6 +479,15 @@ Before merging a scenario that dispatches an agent stage:
    And the agent will succeed to Emit <stage> JSON
    ```
 5. Verify that fixture field values satisfy downstream CLI validation, not just the JSON schema. For example, `head_sha` in `review-result` must be a full-length 40-character hex SHA (`abcdef0123456789abcdef0123456789abcdef01`), not a short prefix.
+6. List the scenario in `e2e/behaviour/github-emulator/shards.txt`, or in
+   `e2e/behaviour/github-emulator/not-sharded.txt` with the reason it cannot
+   run on the emulator (see [Adding a scenario](#adding-a-scenario)).
+   `e2e/behaviour/shards_test.go` fails when a scenario is in neither list.
+   It has no build tag, so plain `go test` runs it:
+   ```console
+   $ go test ./e2e/behaviour/
+   ok  	github.com/fullsend-ai/fullsend/e2e/behaviour	0.026s
+   ```
 
 ### Fixture inventory
 
@@ -378,18 +528,21 @@ The first row proves execution via an auxiliary file; the second row emits the s
 
 ## Prerequisites
 
-The procedures in this guide need the following before the first step:
+The procedures in this guide need the following before the first step. Items
+marked "(live suite only)" are not needed for an emulator run, which creates
+its own credentials (see
+[Running against a GitHub emulator](#running-against-a-github-emulator)).
 
 - **Go toolchain.** The repo's Go version (see `go.mod`), used by the
   `make behaviour-test`, `make playback-test`, and
   `make behaviour-test-unit` targets.
 - **`jq`.** `scripts/run-with-infra-retry.sh` reads the failure-class
   report with `jq` when deciding whether a failed attempt can be retried.
-- **GitHub credentials.** Locally, `gh auth login` or export
+- **GitHub credentials (live suite only).** Locally, `gh auth login` or export
   `GH_TOKEN`/`GITHUB_TOKEN` with access to the `halfsend` org pool. In
   CI, the suite mints per-org tokens through the mint service
   (`id-token: write` and `ACTIONS_ID_TOKEN_REQUEST_URL`).
-- **Driver credentials.** The install factories read the role PEM files
+- **Driver credentials (live suite only).** The install factories read the role PEM files
   (`TEST_*_PEM`) and Cloudflare credentials (`TEST_CLOUDFLARE_*`), and
   `E2E_GCP_*` configures the GCP side, as described in
   [Running the playback suite in CI](#running-the-playback-suite-in-ci).
@@ -626,6 +779,12 @@ The agents repository's emulator job reads the pin from the fullsend checkout it
 builds, so it follows this pin with no change in that repository.
 
 ### Failure classification and infrastructure retry
+
+This section applies to the live suite. For a failure in the
+`behaviour-github-emulator` check, see
+[When the check fails](#when-the-check-fails).
+The `behaviour-artifacts-*` artifact below belongs to the live `behaviour`
+job; the emulator jobs upload `behaviour-github-emulator-logs-*`.
 
 Behaviour tests run against live infrastructure — the GitHub API, Actions
 runners, GCP WIF and the mint — and historically about one required-check
