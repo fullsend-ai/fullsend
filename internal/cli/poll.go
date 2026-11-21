@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strconv"
@@ -204,7 +205,7 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 		return fmt.Errorf("build CEL matcher: %w", err)
 	}
 
-	poller := jirapoll.New(jiraClient, matcher, jiraPollOptions(args, matcher))
+	poller := jirapoll.New(jiraClient, matcher, jiraPollOptions(args, matcher, os.Getenv))
 	return poller.Run(cmd.Context())
 }
 
@@ -564,10 +565,11 @@ func jiraAuthOptions(p *config.AuthorizationProvider) harnessdispatch.AuthOption
 
 // jiraPollOptions builds the poller options every jira-poll target forge
 // shares: the Jira connection, the query, the output path and the jira
-// authorization provider the matcher loaded. Forge-specific callers set
+// authorization provider the matcher loaded, with any groups_from and
+// accounts_from list read through getenv. Forge-specific callers set
 // their own TargetForge, GitLabURL and Dispatcher on the result, so the
 // authorization lists reach the poller on every target.
-func jiraPollOptions(args jiraPollArgs, matcher *celMatcher) jirapoll.Options {
+func jiraPollOptions(args jiraPollArgs, matcher *celMatcher, getenv func(string) string) jirapoll.Options {
 	return jirapoll.Options{
 		TargetRepo:  args.targetRepo,
 		JiraBaseURL: args.jira.baseURL,
@@ -575,27 +577,43 @@ func jiraPollOptions(args jiraPollArgs, matcher *celMatcher) jirapoll.Options {
 		JQL:         args.jira.jql,
 		OutputPath:  args.outputPath,
 
-		Authorization: jiraPollAuthorization(matcher.jiraAuth),
+		Authorization: jiraPollAuthorization(matcher.jiraAuth, getenv),
 	}
 }
 
 // jiraPollAuthorization converts the jira authorization provider to the
-// poller's option type. A nil provider is the zero value.
-func jiraPollAuthorization(p *config.AuthorizationProvider) jirapoll.Authorization {
+// poller's option type, reading each groups_from and accounts_from list
+// through getenv on every poll. An unset or empty variable leaves that list
+// empty, which denies everyone it would have named, and logs a warning. A
+// nil provider is the zero value. The resolved lists can identify people,
+// so they are never logged.
+func jiraPollAuthorization(p *config.AuthorizationProvider, getenv func(string) string) jirapoll.Authorization {
 	if p == nil {
 		return jirapoll.Authorization{}
 	}
-	list := func(l *config.JiraActorList) jirapoll.ActorList {
-		if l == nil {
-			return jirapoll.ActorList{}
+	list := func(role string, l *config.JiraActorList) jirapoll.ActorList {
+		groups, accounts := l.Resolved(getenv)
+		if l != nil {
+			warnEmptyJiraEnvList(role+".groups_from", l.GroupsFrom, groups)
+			warnEmptyJiraEnvList(role+".accounts_from", l.AccountsFrom, accounts)
 		}
-		return jirapoll.ActorList{Groups: l.Groups, Accounts: l.Accounts}
+		return jirapoll.ActorList{Groups: groups, Accounts: accounts}
 	}
 	return jirapoll.Authorization{
 		Configured:      true,
-		Write:           list(p.Write),
-		Triage:          list(p.Triage),
+		Write:           list("write", p.Write),
+		Triage:          list("triage", p.Triage),
 		ListsConfigured: p.Write != nil || p.Triage != nil,
 		Labels:          p.EffectiveJiraLabels(),
+	}
+}
+
+// warnEmptyJiraEnvList logs when the variable a groups_from or accounts_from
+// key names grants no one, so a missing secret does not stop every agent
+// without a sign. It prints the variable's name, which config.yaml already
+// shows, never its value.
+func warnEmptyJiraEnvList(key, name string, entries []string) {
+	if name != "" && len(entries) == 0 {
+		log.Printf("WARNING: jira authorization %s: %s is unset or empty, so it grants no one", key, name)
 	}
 }
