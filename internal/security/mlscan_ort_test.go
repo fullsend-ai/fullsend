@@ -13,10 +13,12 @@ import (
 func TestInitMLScanner_DisablesORTTelemetry(t *testing.T) {
 	t.Setenv("ORT_DISABLE_TELEMETRY", "")
 	t.Setenv("HF_HUB_OFFLINE", "")
-	// A missing library fails session creation before the shared ORT environment starts.
-	t.Setenv("ORT_LIB_PATH", filepath.Join(t.TempDir(), "missing-libonnxruntime.so"))
+	// A missing ORT_LIB_PATH fails option parsing, before the ORT environment exists.
+	// That ordering itself is guarded by the runner-image.yml smoke test.
+	t.Setenv("ORT_LIB_PATH", filepath.Join(t.TempDir(), "missing"))
+	prevScanner, prevSession, prevErr := mlScanner, mlSession, mlScannerErr
 	t.Cleanup(func() {
-		mlScanner, mlSession, mlScannerErr = nil, nil, nil
+		mlScanner, mlSession, mlScannerErr = prevScanner, prevSession, prevErr
 	})
 
 	initMLScanner()

@@ -19,6 +19,8 @@ var testPipeline *pipelines.TextClassificationPipeline
 var testModelPath string
 
 func TestMain(m *testing.M) {
+	// Keep ORT's telemetry uploader off in local test runs (#9777).
+	os.Setenv("ORT_DISABLE_TELEMETRY", "1")
 	initTestPipeline()
 	os.Exit(m.Run())
 }
