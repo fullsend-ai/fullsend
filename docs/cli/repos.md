@@ -2102,7 +2102,8 @@ application on it:
 4. Put the application's client ID in `forgejo.instances[].oauth.client_id`.
 
 The client ID is not secret. The login uses no client secret, and
-`repos.yaml` rejects a `client_secret` field.
+`repos.yaml` rejects a `client_secret` field. Older `fullsend` CLIs reject a
+manifest that sets `oauth.client_id`, so use a CLI version with OAuth support.
 
 The login uses the Authorization Code flow with PKCE (`S256`). Forgejo
 redirects the browser to a listener on `127.0.0.1`, and the CLI rejects a

@@ -32,6 +32,7 @@ type fakeOAuthServer struct {
 	validAccess   map[string]bool
 	validRefresh  string
 	exchangeError string
+	refreshStatus int // when set, refresh requests fail with this HTTP status
 	tokenCalls    int
 	userCalls     int
 	srv           *httptest.Server
@@ -80,6 +81,10 @@ func (f *fakeOAuthServer) serve(w http.ResponseWriter, r *http.Request) {
 			f.validRefresh = "refresh-1"
 			writeJSON(w, http.StatusOK, map[string]any{"access_token": "access-1", "refresh_token": "refresh-1", "token_type": "bearer", "expires_in": 3600})
 		case "refresh_token":
+			if f.refreshStatus != 0 {
+				writeJSON(w, f.refreshStatus, map[string]string{"error": "temporarily_unavailable"})
+				return
+			}
 			if f.validRefresh == "" || r.PostForm.Get("refresh_token") != f.validRefresh {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 				return
@@ -356,6 +361,19 @@ func TestOAuthCachedToken(t *testing.T) {
 		assert.Empty(t, tok)
 		assert.Contains(t, reason, "could not be refreshed")
 		assert.Empty(t, store.values)
+	})
+	t.Run("transient refresh failure keeps the token", func(t *testing.T) {
+		for _, status := range []int{http.StatusTooManyRequests, http.StatusRequestTimeout} {
+			f := newFakeOAuthServer(t)
+			f.refreshStatus = status
+			store := newMemStore()
+			cacheToken(t, store, storeKeyFor(f), storedToken{AccessToken: "old-access", RefreshToken: "old-refresh", Expiry: past})
+			tok, _, err := (&OAuth{Store: store}).CachedToken(ctx, f.instance())
+			require.ErrorContains(t, err, "refreshing the cached OAuth token", "status %d", status)
+			assert.Empty(t, tok)
+			assert.Equal(t, 1, f.tokenCalls)
+			assert.Len(t, store.values, 1, "status %d", status)
+		}
 	})
 	t.Run("expired token without refresh token is removed", func(t *testing.T) {
 		f := newFakeOAuthServer(t)

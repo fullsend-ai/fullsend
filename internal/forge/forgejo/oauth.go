@@ -181,7 +181,11 @@ func (o *OAuth) CachedToken(ctx context.Context, inst OAuthInstance) (token, rea
 	fresh, err := cfg.TokenSource(o.httpContext(ctx), cached).Token()
 	if err != nil {
 		var re *oauth2.RetrieveError
-		rejected := errors.As(err, &re) && re.Response != nil && re.Response.StatusCode >= 400 && re.Response.StatusCode < 500
+		// Only a definitive OAuth rejection (400/401, e.g. invalid_grant)
+		// discards the token. Transient 4xx responses such as 429 and 408
+		// keep it so a later run can retry the refresh.
+		rejected := errors.As(err, &re) && re.Response != nil &&
+			(re.Response.StatusCode == http.StatusBadRequest || re.Response.StatusCode == http.StatusUnauthorized)
 		if rejected || cached.RefreshToken == "" {
 			o.forget(key)
 			return "", "the cached OAuth token expired and could not be refreshed; it was removed", nil
