@@ -194,6 +194,7 @@ func input(t *testing.T, doc *normentity.Document, minRole normentity.Role) Inpu
 			SourceRevision: revision,
 			TitleEditor:    &editor,
 			Assigners:      map[string]normentity.Actor{reader: human(writer)},
+			ThreadOrigins:  map[string]normentity.Actor{"T1": human(writer)},
 		},
 		Roles: RoleEvidence{Live: live(t)},
 		Now:   checkTime,
@@ -371,9 +372,11 @@ func TestStaleEvidence(t *testing.T) {
 		assert.Equal(t, ReasonStaleSourceRevision, e.Comments.Coverage.Reason)
 		assert.Equal(t, Counts{Unresolved: 4}, view.Evidence.Collections["comments"].Counts)
 
-		// A thread whose origin comment is stale is unresolved, not kept.
-		assert.Empty(t, e.Threads.Known)
-		assert.Equal(t, normentity.CoverageUnknown, e.Threads.Coverage.Status)
+		// The thread is admitted through its attributed origin, but its
+		// stale comment members are unresolved and none is kept.
+		require.Len(t, e.Threads.Known, 1)
+		assert.Empty(t, e.Threads.Known[0].CommentIDs.Known)
+		assert.Equal(t, normentity.CoverageUnknown, e.Threads.Known[0].CommentIDs.Coverage.Status)
 	})
 	t.Run("complete coverage without a revision is not complete at this revision", func(t *testing.T) {
 		doc := workItem(t)
@@ -679,14 +682,15 @@ func TestNestedCollectionsAreRevisionChecked(t *testing.T) {
 			doc := workItem(t)
 			doc.Entity.Threads.Known[0].CommentIDs.Coverage = cov
 			view := build(t, input(t, doc, normentity.RoleTriage))
+			ids := view.Document.Entity.Threads.Known[0].CommentIDs
 			if name == "stale" {
-				// A stale membership list cannot attribute the thread's
-				// origin, so the thread itself is not kept.
-				assert.Empty(t, view.Document.Entity.Threads.Known, name)
-				assert.Equal(t, normentity.CoverageUnknown, view.Document.Entity.Threads.Coverage.Status, name)
+				// A stale membership list keeps no member; the thread
+				// itself is admitted through its attributed origin.
+				assert.Empty(t, ids.Known, name)
+				assert.Equal(t, normentity.CoverageUnknown, ids.Coverage.Status, name)
+				assert.Equal(t, ReasonStaleSourceRevision, ids.Coverage.Reason, name)
 				continue
 			}
-			ids := view.Document.Entity.Threads.Known[0].CommentIDs
 			assert.Equal(t, normentity.CoverageUnknown, ids.Coverage.Status, name)
 			assert.Equal(t, []string{"C_writer", "C_bot"}, ids.Known)
 			assert.Equal(t, ReasonUnboundRevision, ids.Coverage.Reason)
@@ -696,8 +700,10 @@ func TestNestedCollectionsAreRevisionChecked(t *testing.T) {
 		doc := workItem(t)
 		doc.Entity.Threads.Known[0].CommentIDs = normentity.List[string]{Known: []string{}, Coverage: stale}
 		view := build(t, input(t, doc, normentity.RoleTriage))
-		assert.Empty(t, view.Document.Entity.Threads.Known)
-		assert.Equal(t, normentity.CoverageUnknown, view.Document.Entity.Threads.Coverage.Status)
+		require.Len(t, view.Document.Entity.Threads.Known, 1)
+		staleIDs := view.Document.Entity.Threads.Known[0].CommentIDs
+		assert.Empty(t, staleIDs.Known)
+		assert.Equal(t, normentity.CoverageUnknown, staleIDs.Coverage.Status)
 	})
 
 	t.Run("extension lists", func(t *testing.T) {
@@ -1025,25 +1031,37 @@ func TestUnresolvedSubjectsKeepTheActorShape(t *testing.T) {
 }
 
 // TestThreadsAreAdmittedThroughTheirOrigin checks that a thread record is kept
-// only when its origin comment (the first in thread order) is admitted.
+// only when its independently attributed origin actor is admitted, whatever
+// its comment membership list holds.
 func TestThreadsAreAdmittedThroughTheirOrigin(t *testing.T) {
+	missing := normentity.Actor{}
 	cases := []struct {
-		name string
-		ids  []string
-		want Outcome
+		name   string
+		ids    []string
+		origin *normentity.Actor
+		want   Outcome
 	}{
-		{"admitted origin", []string{"C_writer", "C_reader"}, Admitted},
-		{"only below-minimum comments", []string{"C_reader"}, Excluded},
-		{"excluded origin with later admitted reply", []string{"C_reader", "C_writer"}, Excluded},
-		{"unregistered bot origin", []string{"C_unreg", "C_writer"}, Excluded},
-		{"origin not in the view", []string{"C_missing", "C_writer"}, Unresolved},
-		{"no comments", []string{}, Unresolved},
+		{"admitted origin", []string{"C_writer", "C_reader"}, new(human(writer)), Admitted},
+		{"below-minimum origin", []string{"C_reader"}, new(human(reader)), Excluded},
+		{"excluded origin with later admitted reply", []string{"C_reader", "C_writer"}, new(human(reader)), Excluded},
+		{"reply-only membership, excluded origin", []string{"C_writer"}, new(human(reader)), Excluded},
+		{"root omitted by upstream filtering", []string{"C_bot"}, new(human(reader)), Excluded},
+		{"unregistered bot origin", []string{"C_writer"}, new(bot(unregBot)), Excluded},
+		{"reply-only membership, no origin attribution", []string{"C_writer"}, nil, Unresolved},
+		{"origin with no usable identity", []string{"C_writer"}, &missing, Unresolved},
+		{"origin with unresolved role", []string{"C_writer"}, new(human(unknownAct)), Unresolved},
+		{"no comments, admitted origin", []string{}, new(human(writer)), Admitted},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			doc := workItem(t)
 			doc.Entity.Threads.Known[0].CommentIDs.Known = c.ids
-			v := build(t, input(t, doc, normentity.RoleTriage))
+			in := input(t, doc, normentity.RoleTriage)
+			in.Provenance.ThreadOrigins = nil
+			if c.origin != nil {
+				in.Provenance.ThreadOrigins = map[string]normentity.Actor{"T1": *c.origin}
+			}
+			v := build(t, in)
 			th := v.Document.Entity.Threads
 			switch c.want {
 			case Admitted:
@@ -1064,8 +1082,8 @@ func TestThreadsAreAdmittedThroughTheirOrigin(t *testing.T) {
 		doc := workItem(t)
 		doc.Entity.Threads.Known[0].CommentIDs = normentity.List[string]{}
 		v := build(t, input(t, doc, normentity.RoleTriage))
-		assert.Empty(t, v.Document.Entity.Threads.Known)
-		assert.Equal(t, normentity.CoverageUnknown, v.Document.Entity.Threads.Coverage.Status)
+		assert.Len(t, v.Document.Entity.Threads.Known, 1, "membership does not decide origin admission")
+		assert.Equal(t, normentity.CoverageComplete, v.Document.Entity.Threads.Coverage.Status)
 	})
 }
 
@@ -1225,30 +1243,46 @@ func TestResolutionAndChangeTimeFollowTheirActor(t *testing.T) {
 	const at = normentity.Timestamp("2026-11-17T11:00:00.000000000Z")
 
 	t.Run("thread resolution", func(t *testing.T) {
+		none := normentity.Field[normentity.Actor]{}
+		null := normentity.Null[normentity.Actor]()
 		cases := []struct {
 			name       string
 			resolvedBy normentity.Field[normentity.Actor]
 			resolved   normentity.Field[bool]
+			stateActor *normentity.Actor
 			wantKnown  bool
 		}{
-			{"excluded resolver", normentity.Known(human(reader)), normentity.Known(true), false},
-			{"unresolved resolver", normentity.Known(human(unknownAct)), normentity.Known(true), false},
-			{"excluded resolver, unresolved thread", normentity.Known(human(reader)), normentity.Known(false), false},
-			{"unattributed resolution", normentity.Field[normentity.Actor]{}, normentity.Known(true), false},
-			{"admitted resolver", normentity.Known(human(writer)), normentity.Known(true), true},
-			{"open thread without resolver", normentity.Field[normentity.Actor]{}, normentity.Known(false), true},
+			{"excluded resolver", normentity.Known(human(reader)), normentity.Known(true), nil, false},
+			{"unresolved resolver", normentity.Known(human(unknownAct)), normentity.Known(true), nil, false},
+			{"excluded resolver, unresolved thread", normentity.Known(human(reader)), normentity.Known(false), nil, false},
+			{"unattributed resolution", none, normentity.Known(true), nil, false},
+			{"admitted resolver", normentity.Known(human(writer)), normentity.Known(true), nil, true},
+			{"open thread without attributed transition", null, normentity.Known(false), nil, false},
+			{"reopened by a below-minimum actor", null, normentity.Known(false), new(human(reader)), false},
+			{"reopened by an unresolved actor", null, normentity.Known(false), new(human(unknownAct)), false},
+			{"reopened by an admitted actor", null, normentity.Known(false), new(human(writer)), true},
+			{"resolution by a below-minimum actor, no resolver", null, normentity.Known(true), new(human(reader)), false},
+			{"resolution by an admitted actor, no resolver", null, normentity.Known(true), new(human(writer)), true},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				doc := workItem(t)
 				th := &doc.Entity.Threads.Known[0]
 				th.ResolvedBy, th.Resolved = tc.resolvedBy, tc.resolved
-				view := build(t, input(t, doc, normentity.RoleTriage))
-				_, known := view.Document.Entity.Threads.Known[0].Resolved.Value()
+				in := input(t, doc, normentity.RoleTriage)
+				if tc.stateActor != nil {
+					in.Provenance.ThreadStateActors = map[string]normentity.Actor{"T1": *tc.stateActor}
+				}
+				view := build(t, in)
+				got := view.Document.Entity.Threads.Known[0]
+				_, known := got.Resolved.Value()
 				assert.Equal(t, tc.wantKnown, known)
 				if !tc.wantKnown {
-					_, unknown := view.Document.Entity.Threads.Known[0].Resolved.UnknownReason()
+					_, unknown := got.Resolved.UnknownReason()
 					assert.True(t, unknown, "resolved stays unknown, never false")
+					assert.False(t, got.ResolvedBy.IsNull(), "a null resolver is not left as a concrete value")
+					_, known := got.ResolvedBy.Value()
+					assert.False(t, known)
 				}
 			})
 		}

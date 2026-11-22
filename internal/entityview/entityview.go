@@ -86,6 +86,14 @@ type Provenance struct {
 	// ReviewerAttribution maps a reviewer subject's source ID to the actor
 	// responsible for that entry's current assignment or standing.
 	ReviewerAttribution map[string]normentity.Actor
+	// ThreadOrigins maps a thread's source ID to the actor that created the
+	// thread, attributed independently of the thread's comment membership
+	// list. A thread without an entry is unresolved and removed.
+	ThreadOrigins map[string]normentity.Actor
+	// ThreadStateActors maps a thread's source ID to the actor of its current
+	// resolution-state transition (a resolution or a reopening). A thread
+	// without a resolver and without an entry has unknown resolution state.
+	ThreadStateActors map[string]normentity.Actor
 }
 
 // Verdict is a completed, provider-verified actor-role result.
