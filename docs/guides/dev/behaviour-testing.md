@@ -809,6 +809,7 @@ everything else stays `scenario` — never retried, never masked.
 | Pool capacity exhausted — every org rate-limited, denied or failed | `install.CapacityError` (all causes), when it reaches the classifier on its own |
 | Collaborator invitation pending (access requested, not yet granted) | the `gh.ErrInvitationPending` sentinel |
 | Terminal setup-poll exhaustion — repo never visible after creation, or dispatch workflow never settles | `behaviourfail.Mark` in the install ensure path |
+| A not-dispatched timeout on a repo installed fresh for the scenario, where the [dispatch diagnostics](#dispatch-diagnostics) find, after the full grace wait and an untruncated listing, that the waited-for workflow has no run at all, for any event. GitHub can report the workflow `active` before Actions reacts to events, and the first event is then dropped ([#9779](https://github.com/fullsend-ai/fullsend/issues/9779)). A timeout joined with another error stays `scenario` | `behaviourfail.Mark` in `CollectFailureLogs` (`markFreshRepoNoRun` in `steps/debuglogs.go`), recorded by the After hook |
 | Post-install validation reads a file setup has just committed and GitHub still answers 404 after every retry (5 attempts, backing off 2, 4, 8 and 16 seconds) | `behaviourfail.Mark` in `getFileWithRetry` (`drivers/install/validate.go`) |
 | GCP WIF quota or rate limit during inference provisioning (provision and status wait) | `behaviourfail.Mark` on matched CLI stderr signatures |
 | `fullsend github setup` fails during repo setup because the forge client gave up on a GitHub 500–504, or GitHub reset the HTTP/2 stream (`stream error: stream ID N; CANCEL; received from peer`). Setup runs as a subprocess, so `gh.IsServerError` cannot see a typed error. Any other setup failure, a 4xx or validation error for example, stays `scenario`. A GraphQL server error during setup also stays `scenario`, because none has been observed there (#9497). | `behaviourfail.Mark` on the CLI's final `Error:` line (`markGitHubSetupTransient` in `drivers/install/common/setup.go`) |
@@ -847,9 +848,10 @@ was not dispatched` on GitHub Actions, `pipeline (<event>) was not
 dispatched` on GitLab CI. A wait for any event drops the ` (<event>)` part,
 for example `pipeline was not dispatched`. The issue-open and dispatch-run
 waits retry it once, allowing 30 s of clock skew. If the retry also times
-out, the failure stays `scenario` and gets no infrastructure retry. Whether
-the run arrives late or never is not yet established. To see what happened
-in a failing GitHub Actions job:
+out, the failure stays `scenario` and gets no infrastructure retry. The one
+exception is a workflow that never ran at all in a repo installed fresh for
+the scenario (see the table above). To see what happened in a failing
+GitHub Actions job:
 
 1. Download the `behaviour-artifacts-*` artifact of the failing job.
 2. Open `debug-scenario-<name>-<suffix>/failure-summary.txt`.
@@ -1038,9 +1040,15 @@ deletes the repository. The section shows, in this order:
   matching run also reads `no (inconclusive: the listing was truncated;
   ...)` when the run listing hit its limit.
 
-Whatever the verdict, the timeout stays a `scenario` failure; re-run the job
-as usual, and add the summary's verdict line to #9469 so the cause can be
-settled from data.
+The timeout stays a `scenario` failure, with one exception. If the verdict is
+`no` with no matching run, the waited-for workflow has no run for any event,
+and the leased repository was installed fresh for the scenario, then the
+failure is `infrastructure`. The section then ends with a
+`classification: infrastructure` line, and the suite's single retry reruns
+the scenario on another repo
+([#9779](https://github.com/fullsend-ai/fullsend/issues/9779)). Otherwise
+re-run the job as usual, and add the summary's verdict line to #9469 so the
+cause can be settled from data.
 
 Total grace wait time is bounded at about 6 minutes of wall-clock time per
 test process. Time already covered by another running wait is free, so a
@@ -1710,8 +1718,18 @@ After creating a repo and committing workflow files via `fullsend github setup`,
 
 The install driver's internal ensurer handles this by polling `GetWorkflow`
 until the workflow is visible and its state is `active`. Polls back off
-exponentially from 5 seconds to a 30-second cap, for up to 5 minutes. Indexing
-on a freshly created repo sometimes never finishes in that window, so a timeout
+exponentially from 5 seconds to a 30-second cap, for up to 5 minutes.
+`active` can come before Actions reacts to events
+([#9779](https://github.com/fullsend-ai/fullsend/issues/9779)). So the first
+`active` poll must be confirmed by a second poll 5 seconds later, and the
+ensurer then waits 15 seconds more before handing the repo to the scenario.
+A confirming poll that does not see `active` resumes normal polling. This
+gate is a heuristic. When the first event still starts no run, the failure
+is classified `infrastructure` (see
+[Failure classification](#failure-classification-and-infrastructure-retry)).
+
+Indexing on a freshly created repo sometimes never finishes within the 5
+minutes, so a timeout
 does not fail the allocation straight away: the driver releases the slot
 (deleting its repo), claims a fresh repo, installs, and waits again, up to 2
 claimed repos in total
@@ -1721,13 +1739,14 @@ than "not found" do not claim a fresh repo. When writing new provisioning code
 or modifying the install flow, always poll for workflow readiness before
 dispatching events that depend on the workflow.
 
-Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is active; [`AllocateLease`](../../../pkg/behaviourtest/drivers/install/composed.go) claims a fresh repo when it times out.
+Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until two polls in a row see the workflow active, then waits a short settle time; [`AllocateLease`](../../../pkg/behaviourtest/drivers/install/composed.go) claims a fresh repo when it times out.
 
 ### CI timeout budgeting for lazy provisioning
 
 Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete
-leftover state + create + `github setup` + Actions settle; the first lease of
-each name also resolves inference WIF), including when a later scenario reuses
+leftover state + create + `github setup` + Actions settle, which includes
+about 20 seconds to confirm the workflow is active and let it settle; the
+first lease of each name also resolves inference WIF), including when a later scenario reuses
 the same `test-repo-NN` name. A lease whose workflow Actions does not index in
 time can take about 10 minutes longer: up to two 5-minute settle waits plus one
 more claim and `github setup`

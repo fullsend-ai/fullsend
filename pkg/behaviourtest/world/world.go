@@ -113,6 +113,13 @@ type World struct {
 	// slot with it. Empty when the driver leases by repo name only.
 	LeasedRepoOrg string
 
+	// RepoFreshlyInstalled is true when fullsend was installed into the
+	// leased repository for this scenario (install.RepoLease.FreshInstall),
+	// so the scenario sends the repository's first events. A
+	// not-dispatched failure whose workflow never ran there is classified
+	// infrastructure (#9779).
+	RepoFreshlyInstalled bool
+
 	// LeaseOwned reports whether the repository under the leased slot's
 	// name is still this scenario's lease (install.LeaseVerifier). The
 	// After hook sets it before scenario cleanup, which consults it before

@@ -63,6 +63,7 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 		}
 		w.LeasedRepoName = lease.Repo
 		w.LeasedRepoOrg = lease.Org
+		w.RepoFreshlyInstalled = lease.FreshInstall
 	} else {
 		repoName, err := w.Driver.AllocateRepo(ctx)
 		if err != nil {
