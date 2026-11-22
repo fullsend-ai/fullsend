@@ -1477,15 +1477,22 @@ func (op *gitLabTriggerAccountOp) checkNoUnfinishedJobs(ctx context.Context) err
 // its effective access level, which includes access inherited from groups.
 // It fails closed when the effective level is not exactly level, so inherited
 // access that a direct update cannot lower is never reported as converged.
+// GitLab can briefly report the previous level after accepting an update, so
+// the effective level is re-read with bounded backoff before a mismatch is
+// treated as persistent.
 func (op *gitLabTriggerAccountOp) ensureMembership(ctx context.Context, level int) error {
 	o, r, id := op.opts.Owner, op.opts.Repo, int64(op.st.AccountID)
+	// After an elevation was attempted, a read showing Developer may be stale
+	// while the Maintainer update is still propagating, so demotion always
+	// sends the update instead of trusting that read.
+	forceDemote := level == forge.GitLabAccessLevelDeveloper && op.st.Elevated
 	current, err := op.opts.API.GetProjectMemberAccessLevel(ctx, o, r, id)
 	switch {
 	case forge.IsNotFound(err):
 		err = op.opts.API.AddProjectMember(ctx, o, r, id, level)
 	case err != nil:
 		return safeAPIError("reading the GitLab trigger account's membership", err)
-	case current != level:
+	case current != level || forceDemote:
 		err = op.opts.API.UpdateProjectMemberAccessLevel(ctx, o, r, id, level)
 	}
 	if err != nil {
@@ -1493,12 +1500,14 @@ func (op *gitLabTriggerAccountOp) ensureMembership(ctx context.Context, level in
 	}
 	// Always confirm the effective level, even when the first read already
 	// matched: that read is not trusted to include inherited group access.
-	effective, err := op.opts.API.GetProjectMemberAccessLevel(ctx, o, r, id)
+	effective, err := awaitGitLabAccessLevel(ctx, level, func(c context.Context) (int, error) {
+		return op.opts.API.GetProjectMemberAccessLevel(c, o, r, id)
+	})
 	if err != nil {
 		return safeAPIError("confirming the GitLab trigger account's membership", err)
 	}
 	if effective != level {
-		return fmt.Errorf("GitLab trigger account %d has effective access level %d after its membership was set to %d; remove the inherited group or project access that overrides it", op.st.AccountID, effective, level)
+		return fmt.Errorf("GitLab trigger account %d has effective access level %d after its membership was set to %d and did not change within %s; remove the inherited group or project access that overrides it", op.st.AccountID, effective, level, gitlabMembershipConvergeWait)
 	}
 	return nil
 }
