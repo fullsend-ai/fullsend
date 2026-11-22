@@ -396,6 +396,90 @@ Two cases keep the Git Data REST API, where GitHub signs commits only for App in
 
 On GitLab, scaffold commits go through the Commits API, and GitLab treats commits created through the REST API as web-based commits. They are signed with the instance's signing key only where web-based commit signing is set up: on GitLab.com, when the group or project has [Sign web-based commits](https://docs.gitlab.com/user/project/repository/signed_commits/web_commits/) turned on (available since GitLab 18.9, generally available in 18.10); on GitLab Self-Managed and GitLab Dedicated, when the instance has commit signing for GitLab UI commits configured. GitLab's "Reject unsigned commits" push rule does not apply to commits created through the API.
 
+### Lint check
+
+`repos install` can manage a CI check that runs
+[`fullsend lint`](lint.md) on pull requests that change `.fullsend/`, so an
+invalid trigger or a broken harness reference fails before it merges. The
+check is off by default. Enable it with a boolean `lint` in `repos.yaml`.
+It resolves like [`signoff`](#dco-sign-off): a repo entry (or the glob entry
+that matches the repo) overrides its forge section, which overrides
+`defaults`, and an explicit `false` disables an inherited `true`.
+
+```yaml
+version: 1
+defaults:
+  lint: true                 # every repo
+github:
+  repos:
+    - name: acme/api         # inherits defaults.lint (true)
+    - name: acme/legacy
+      lint: false            # no managed check for this repo
+```
+
+```bash
+fullsend repos set defaults.lint true
+fullsend repos install -f repos.yaml
+```
+
+- **GitHub workflow.** With `lint: true`, install writes the caller
+  `.github/workflows/fullsend-lint.yml`. It runs on `pull_request` events
+  that touch `.fullsend/**` or the caller itself, with `contents: read` and
+  no secrets, and calls fullsend's `reusable-fullsend-lint.yml`. That
+  workflow installs the CLI and runs `fullsend lint --fullsend-dir .fullsend`,
+  without `--strict`, so warnings from upstream harnesses do not fail the
+  check.
+- **Version.** The caller is pinned to the same ref as the `fullsend`
+  workflow (the shim) in the repository, so the check and your agents use one
+  fullsend version. When install moves the shim to a new `fullsend_ref`, the
+  caller moves with it, and the pull request that moves the pin runs the
+  check at the new version. When install leaves the shim where it is, for
+  example because `fullsend_ref` is not set or the change would be a
+  downgrade, the caller stays on the shim's ref too.
+- **Vendored repositories.** The caller always references the upstream
+  workflow, also with `vendor: true`, so GitHub must be able to load
+  `fullsend-ai/fullsend` when the check starts. The vendored shim has no
+  ref, so the caller uses `fullsend_ref`. If `fullsend_ref` is not set
+  either, a new caller is pinned to the release of the CLI that installs it
+  and then keeps that pin; set `fullsend_ref` to move it. The workflow runs
+  the vendored binary at `.fullsend/bin/fullsend` and fetches nothing else
+  from the upstream repository. On a pull request it takes that binary from
+  the base branch, so a pull request cannot replace the linter that checks
+  it; a pull request that updates the vendored binary is linted with the
+  previous one. Vendoring also copies `reusable-fullsend-lint.yml` into the
+  repository, like the other reusable workflows; the managed caller does not
+  use that copy.
+- **Delivery.** Install adds, updates, or removes the caller in the scaffold
+  commit, so `--direct` and pull-request delivery apply to it as they do to
+  the shim. Install prints what it does to the caller. A repeated install
+  changes nothing, and `--dry-run` reports the action without writing.
+- **Older refs.** The ref the caller is pinned to must contain
+  `reusable-fullsend-lint.yml`. On a first install, install checks the target
+  ref before any write and fails for that repo if the workflow is missing.
+  On an installed repo, install checks the ref the shim ends up on: if the
+  workflow is missing there, install does not write the caller and reports an
+  error for that repo. Upgrade `fullsend_ref`, or set `lint: false`.
+- **Ownership.** Install changes the file only when it carries the
+  `# fullsend-component: lint` marker line. A workflow at that path without
+  the marker is yours: install reports it and leaves it untouched. To adopt
+  the managed check, delete your file and run install again.
+- **Removal.** When `lint` is `false` or omitted, install deletes the managed
+  caller. `repos uninstall` deletes it too. Neither deletes a file without
+  the marker.
+- **Status.** `repos status` reports drift on
+  `.github/workflows/fullsend-lint.yml` when `lint` is `true` and the managed
+  caller is missing or differs from what install would write, and when
+  `lint` is not `true` and a managed caller is still there.
+- **Do not require the check.** Do not add it to the branch's required
+  status checks. It only runs on pull requests that change `.fullsend/**` or
+  the caller, and it has no `merge_group` trigger. If it is required, GitHub
+  blocks every other pull request, because they never report it, and a merge
+  queue never gets it.
+
+> **Planned:** a managed lint check for GitLab repositories
+> ([#9788](https://github.com/fullsend-ai/fullsend/issues/9788)). Until then,
+> install reports a GitLab repo with `lint: true` and changes nothing.
+
 ### Inference authentication selection
 
 Every repo that `repos install` converges or `repos status` checks must resolve an explicit inference authentication method, `inference.auth`, unless it routes inference through the [inference gateway](#inference-gateway-route). Three values are accepted:

@@ -1586,6 +1586,10 @@ func convergeRepo(ctx context.Context,
 		cr.Error = err
 		return cr
 	}
+	if err := checkGitHubLintWorkflow(ctx, resolved, cfg, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
 
 	auth := resolved.InferenceAuth
 	// A pinned scaffold that predates the OpenAI credential mapping cannot
@@ -1623,6 +1627,40 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 	}
+	// lintFor converges the managed lint check (#9789). declaredRef is the
+	// manifest's fullsend_ref before the OpenAI WIF override below, as repos
+	// status sees it. A dry run stages no shim, so with refChanging the
+	// caller is planned for the ref the shim will move to.
+	declaredRef := resolved.FullsendRef
+	lintFor := func(files []forge.TreeFile, stage func(forge.TreeFile), dryRun, refChanging, verify bool) []ComponentAction {
+		delivery := lintDelivery{
+			stage:    stage,
+			dryRun:   dryRun,
+			progress: func(detail string) { progress(repoFullName, "lint", detail) },
+		}
+		if resolved.Lint && resolved.Forge == ForgeGitHub {
+			shim, shimErr := stagedOrInstalledShim(ctx, resolved, files)
+			if shimErr != nil {
+				return []ComponentAction{{
+					Component: lintComponent,
+					Action:    "error",
+					Detail:    fmt.Sprintf("failed to converge the lint workflow: %v", shimErr),
+				}}
+			}
+			fullsendRef := declaredRef
+			if dryRun && refChanging && extractWorkflowRef(shim, resolved.ForgeConfig) != resolved.FullsendRef {
+				shim, fullsendRef = nil, resolved.FullsendRef
+			}
+			delivery.pin = func(installed []byte) scaffold.RenderOptions {
+				return lintPin(ctx, shim, installed, fullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
+			}
+			if verify {
+				delivery.verify = verifyLintWorkflowAt(ctx, refResolver)
+			}
+		}
+		return convergeLint(ctx, resolved, delivery)
+	}
+
 	// A release build supplies the target when an OpenAI WIF manifest is
 	// unpinned, including migration from an existing github setup install.
 	if auth == InferenceAuthOpenAIWIF && resolved.FullsendRef == "" && cfg.UpstreamRef != "" {
@@ -1886,9 +1924,10 @@ func convergeRepo(ctx context.Context,
 					dryCleanupErrors = append(dryCleanupErrors, a.Detail)
 				}
 			}
-			dryJira := convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{render: jiraRender}, progress)
-			cr.Actions = append(cr.Actions, dryJira...)
-			for _, a := range dryJira {
+			dryCallers := convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{render: jiraRender}, progress)
+			dryCallers = append(dryCallers, lintFor(nil, nil, true, false, false)...)
+			cr.Actions = append(cr.Actions, dryCallers...)
+			for _, a := range dryCallers {
 				if a.Action == "error" {
 					dryCleanupErrors = append(dryCleanupErrors, a.Detail)
 				}
@@ -1925,20 +1964,22 @@ func convergeRepo(ctx context.Context,
 		// Jira polling converges when the install commits its scaffold:
 		// its credentials are written after Install has written its own,
 		// and a file-based poll resource joins the same scaffold commit.
-		var jiraActions []ComponentAction
+		// The managed lint caller joins that commit too.
+		var callerActions []ComponentAction
 		scaffoldCommit := installCommit
 		installCommit = func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
-			jiraActions = convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{
+			callerActions = convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{
 				render: jiraRender,
 				stage:  func(f forge.TreeFile) { files = append(files, f) },
 			}, progress)
+			callerActions = append(callerActions, lintFor(files, func(f forge.TreeFile) { files = append(files, f) }, false, false, false)...)
 			return scaffoldCommit(ctx, owner, repo, files, direct, installed)
 		}
 
 		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, installCommit, progress)
 		if installErr != nil {
 			cr.Error = installErr
-			cr.Actions = append(cr.Actions, jiraActions...)
+			cr.Actions = append(cr.Actions, callerActions...)
 			if installResult != nil {
 				cr.WIFProvider = installResult.WIFProvider
 			}
@@ -1959,7 +2000,7 @@ func convergeRepo(ctx context.Context,
 		// earlier run wrote the credentials but failed to complete setup or
 		// to delete the obsolete secrets.
 		cleanup := removeObsoleteInferenceSecrets(ctx, resolved, false, false, installResult.ScaffoldFiles, progress)
-		cleanup = append(cleanup, jiraActions...)
+		cleanup = append(cleanup, callerActions...)
 		cr.Actions = append(cr.Actions, cleanup...)
 		var cleanupErrors []string
 		for _, a := range cleanup {
@@ -1993,6 +2034,17 @@ func convergeRepo(ctx context.Context,
 		jiraDelivery.render = scaffold.RenderOptions{UpstreamRef: rref.ref, UpstreamTag: rref.tag}
 	}
 	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, jiraDelivery, progress)...)
+
+	// 2d'-lint: Converge the managed lint check (#9789). A dry run stages no
+	// shim, so tell it whether the ref will change.
+	refChanging := false
+	for _, a := range orderedActions {
+		if a.Component == "ref" && a.Action != "none" && a.Action != "error" {
+			refChanging = true
+		}
+	}
+	lintActions := lintFor(allScaffoldFiles, func(f forge.TreeFile) { allScaffoldFiles = append(allScaffoldFiles, f) }, cfg.DryRun, refChanging, true)
+	cr.Actions = append(cr.Actions, lintActions...)
 
 	// 2d'': The trace signing key (ADR 0154), before the commit that delivers
 	// the config naming it. A failure stops the repository here. Until that
@@ -2058,7 +2110,7 @@ func convergeRepo(ctx context.Context,
 		if !cfg.DryRun {
 			delivered = allScaffoldFiles
 		}
-		cr.Actions = append(cr.Actions, removeObsoleteInferenceSecrets(ctx, resolved, cfg.DryRun, scaffoldDeliveryPlanned(allScaffoldFiles, scaffoldActions, cfg.DryRun), delivered, progress)...)
+		cr.Actions = append(cr.Actions, removeObsoleteInferenceSecrets(ctx, resolved, cfg.DryRun, scaffoldDeliveryPlanned(allScaffoldFiles, slices.Concat(scaffoldActions, lintActions), cfg.DryRun), delivered, progress)...)
 	}
 
 	// Determine result state.

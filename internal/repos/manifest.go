@@ -165,6 +165,9 @@ type PlatformConfig struct {
 	// on scaffold commits for every repository in this forge section,
 	// overriding defaults.signoff and overridden by repository entries.
 	Signoff *bool `yaml:"signoff,omitempty"`
+	// Lint, when non-nil, overrides defaults.lint for this forge section.
+	// Repository entries override it.
+	Lint *bool `yaml:"lint,omitempty"`
 	// Config is a sparse managed .fullsend/config.yaml layer for every
 	// repository in this forge section (ADR 0122). It overrides
 	// defaults.config and is overridden by each repository entry's config,
@@ -224,6 +227,8 @@ type RepoEntry struct {
 	// for this repository. nil inherits; an explicit false disables an
 	// inherited true.
 	Signoff *bool `yaml:"signoff,omitempty"`
+	// Lint overrides the forge section and defaults. nil inherits.
+	Lint *bool `yaml:"lint,omitempty"`
 	// ConfigBase configures the configuration preset written as
 	// .fullsend/config.base.yaml. Empty Source inherits
 	// defaults.config_base; source "none" disables inheritance. SHA256
@@ -252,6 +257,10 @@ type DefaultsConfig struct {
 	// authenticated installing user to every scaffold commit created by
 	// repos install. Forge sections and repository entries override it.
 	Signoff *bool `yaml:"signoff,omitempty"`
+	// Lint, when true, makes repos install manage a check that runs
+	// `fullsend lint` on changes to .fullsend/ (#9789). Otherwise install
+	// removes the managed check.
+	Lint *bool `yaml:"lint,omitempty"`
 	// ConfigBase is the default configuration preset, written as
 	// .fullsend/config.base.yaml. Empty Source disables the default;
 	// source "none" disables inheritance for entries that reference it.
@@ -337,6 +346,9 @@ type ResolvedConfig struct {
 	// Signed-off-by trailer for the authenticated installing user
 	// (entry, then forge section, then defaults; default false).
 	Signoff bool
+	// Lint is true when the repository must have the managed lint check
+	// (entry, then forge section, then defaults; default false).
+	Lint bool
 	// Config is the resolved preset source; empty means no preset is
 	// declared, so the desired state is no base file and an existing one
 	// is drift (#8218).
@@ -1320,6 +1332,12 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 		inheritedSignoff = m.Defaults.Signoff
 	}
 	cfg.Signoff = resolveBoolField(entry.Signoff, inheritedSignoff, false)
+	// Lint resolves like Signoff.
+	inheritedLint := platform.Lint
+	if inheritedLint == nil {
+		inheritedLint = m.Defaults.Lint
+	}
+	cfg.Lint = resolveBoolField(entry.Lint, inheritedLint, false)
 	// ConfigBase: per-repo overrides defaults; source "none" disables
 	// the preset. A resolved empty source drops the hash so callers do
 	// not validate a digest against an unspecified document. configSource()

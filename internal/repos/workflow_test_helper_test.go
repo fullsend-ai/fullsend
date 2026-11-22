@@ -69,6 +69,8 @@ func newFakeClientForBatch(repos ...string) *forge.FakeClient {
 	// v1.0.0 is the current-release fixture for tests that enable GitHub
 	// Jira polling. Older pins intentionally lack this file in the fixture.
 	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@v1.0.0"] = []byte(jiraOAuthWorkflowFixture)
+	// Likewise for the managed lint check's reusable workflow.
+	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableLintWorkflowPath+"@v1.0.0"] = []byte("name: Fullsend lint\n")
 	// A GitHub OpenAI install that cannot fetch its explicit pin's scaffold
 	// fails closed, so the default test pin serves the embedded per-repo
 	// shim and thin callers, which forward the key and match what the

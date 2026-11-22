@@ -1,0 +1,117 @@
+# Reusable fullsend lint workflow for per-repo installations (#9787).
+# Called by the managed .github/workflows/fullsend-lint.yml that
+# `fullsend repos install` writes while `lint` is true in repos.yaml.
+#
+# workflow_call contract:
+# - No secrets and no outputs. The job fails when `fullsend lint` reports an
+#   error. It does not pass --strict: warnings from upstream harnesses must
+#   not fail the check.
+# - Optional inputs: runner_image and timeout_minutes. The managed caller
+#   passes neither.
+# - The CLI is built at the ref this workflow is pinned to. A vendored
+#   installation runs its vendored binary instead.
+#
+# Security: for pull_request callers, with a read-only token. The vendored
+# marker and binary come from the pull request's base commit, so a pull
+# request cannot replace the linter that checks it.
+name: Fullsend lint
+
+on:
+  workflow_call:
+    inputs:
+      runner_image:
+        description: GitHub Actions runner image for the lint job.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
+      timeout_minutes:
+        description: Maximum runtime in minutes for the lint job.
+        type: number
+        required: false
+        default: 10
+
+permissions: {}
+
+jobs:
+  lint:
+    name: Lint Fullsend configuration
+    runs-on: ${{ inputs.runner_image }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .fullsend/
+          sparse-checkout-cone-mode: false
+
+      # Trusted commit: the pull request's base, else the triggering commit.
+      - name: Checkout trusted install files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          path: .trusted
+          persist-credentials: false
+          sparse-checkout: |
+            .fullsend/bin/fullsend
+            .fullsend/.defaults/action.yml
+            .defaults/action.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Detect CLI install mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .trusted/.defaults/action.yml || -f .trusted/.fullsend/.defaults/action.yml ]]; then
+            echo "mode=vendored" >> "${GITHUB_OUTPUT}"
+          else
+            echo "mode=upstream" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # No upstream action here: job.workflow_repository and job.workflow_sha
+      # do not exist on GitHub Enterprise Server.
+      - name: Install fullsend CLI (vendored)
+        if: steps.mode.outputs.mode == 'vendored'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f .trusted/.fullsend/bin/fullsend ]]; then
+            echo "::error::broken --vendor install: vendored marker present but .fullsend/bin/fullsend is missing"
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/fullsend"
+          cp .trusted/.fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
+          chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+          echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+
+      - name: Checkout upstream install action
+        if: steps.mode.outputs.mode == 'upstream'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-actions
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/install-fullsend-cli/
+          sparse-checkout-cone-mode: false
+
+      - name: Install fullsend CLI (upstream workflow)
+        if: steps.mode.outputs.mode == 'upstream'
+        uses: ./.workflow-actions/.github/actions/install-fullsend-cli
+        with:
+          mode: upstream
+          workflow_repository: ${{ job.workflow_repository }}
+          workflow_sha: ${{ job.workflow_sha }}
+          github_token: ${{ github.token }}
+
+      - name: Lint Fullsend configuration
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fullsend lint --fullsend-dir .fullsend

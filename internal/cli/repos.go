@@ -537,6 +537,14 @@ two credential sets are mutually exclusive; supplying one removes existing
 secrets of the other. When polling is false or omitted, Fullsend-owned poll
 resources are removed and the Jira secrets are left in place.
 
+A lint check follows each repo's lint setting in repos.yaml (defaults, a
+forge section, or a repository entry). When it is true, a GitHub repo gets
+.github/workflows/fullsend-lint.yml, which runs 'fullsend lint' on pull
+requests that change .fullsend/, pinned to the same ref as the fullsend
+workflow. When it is false or omitted, the managed workflow is removed. A
+workflow at that path without the Fullsend marker is never changed. GitLab
+repos get no lint check yet.
+
 Trace signing keys (ADR 0154) are provisioned on GitHub only. A fresh
 install generates a trace installation ID and an Ed25519 key pair,
 records the installation ID and the public key in the repository's

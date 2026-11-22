@@ -677,6 +677,20 @@ fullsend repos set defaults.signoff true
 fullsend repos install -f repos.yaml
 ```
 
+To check `.fullsend/` changes before they merge, set `lint: true` at the
+same levels. On GitHub, install then manages
+`.github/workflows/fullsend-lint.yml`, which runs `fullsend lint` on pull
+requests that change `.fullsend/`, with the same fullsend version as the
+repo's agents. A workflow you wrote at that path is left untouched. When
+`lint` is `false` or omitted, install removes the managed workflow. Do not
+make the check a required status check. See
+[Lint check](../../cli/repos.md#lint-check).
+
+```bash
+fullsend repos set defaults.lint true
+fullsend repos install -f repos.yaml
+```
+
 Scaffold commits are also [signed](../../glossary.md#signed-commit),
 independently of the DCO trailer. On GitHub the install asks GitHub to
 create each commit on your behalf, so GitHub signs it, it shows as
@@ -919,7 +933,8 @@ own.
 
 Per-repo settings live on the entry, never in install flags:
 `fullsend_ref`, `mint_url`, `app_set`, `inference.auth`, `vendor`,
-`signoff`, `config_base`, and every per-repo config field under `config`
+`signoff`, `lint`, `config_base`, and every per-repo config field under
+`config`
 (for example `config.roles`, `config.runtime`, or
 `config.inference.region`). For example:
 

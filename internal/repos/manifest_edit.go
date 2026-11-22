@@ -97,6 +97,10 @@ func carveOutGlobEntry(platforms []*PlatformConfig, name, glob string) (*RepoEnt
 				s := *entry.Signoff
 				explicit.Signoff = &s
 			}
+			if entry.Lint != nil {
+				l := *entry.Lint
+				explicit.Lint = &l
+			}
 			platform.Repos = append(platform.Repos, explicit)
 			return &platform.Repos[len(platform.Repos)-1], entry.Name, nil
 		}

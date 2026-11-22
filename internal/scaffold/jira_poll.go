@@ -77,8 +77,14 @@ func RenderJiraPollCaller(opts RenderOptions, emailConfigured, oauthConfigured b
 // IsManagedJiraPollCaller reports whether content is a Fullsend-managed Jira
 // poll caller: one of its lines is JiraPollCallerMarker.
 func IsManagedJiraPollCaller(content []byte) bool {
+	return hasMarkerLine(content, JiraPollCallerMarker)
+}
+
+// hasMarkerLine reports whether one of content's lines is marker, ignoring
+// surrounding whitespace.
+func hasMarkerLine(content []byte, marker string) bool {
 	for _, line := range strings.Split(string(content), "\n") {
-		if strings.TrimSpace(line) == JiraPollCallerMarker {
+		if strings.TrimSpace(line) == marker {
 			return true
 		}
 	}

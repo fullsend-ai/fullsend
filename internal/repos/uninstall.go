@@ -359,6 +359,19 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		for _, a := range actions {
 			progress(fullName, "workflow", a.Detail)
 		}
+
+		// Likewise the managed lint caller (#9787).
+		actions, err = removeLintCaller(ctx, client, owner, repo, lintDelivery{
+			stage: func(f forge.TreeFile) { files = append(files, f) },
+		})
+		if err != nil {
+			result.Error = fmt.Errorf("checking managed lint workflow before uninstall: %w", err)
+			progress(fullName, "workflow", fmt.Sprintf("Failed: %v", result.Error))
+			return result
+		}
+		for _, a := range actions {
+			progress(fullName, "workflow", a.Detail)
+		}
 	}
 
 	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml

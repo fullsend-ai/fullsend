@@ -1488,6 +1488,15 @@ when it is not the mapping or list the path needs. `fullsend lint` reports a
 malformed block in `.fullsend/config.yaml`, manifest validation refuses one in
 `repos.yaml`, and `fullsend run` fails on one before it creates the sandbox.
 
+## Checking the configuration in CI
+
+[`fullsend lint`](../cli/lint.md) validates `config.yaml` and the harnesses of
+the agents it registers. `fullsend repos install` can manage a CI check that
+runs it on every pull request that changes `.fullsend/`: set `lint: true` in
+`repos.yaml`. `lint` is a `repos.yaml` setting, declared under `defaults`, a
+forge section, or a repository entry. It is not a `config.yaml` field. See
+[Lint check](../cli/repos.md#lint-check).
+
 ## Installation model
 
 This reference documents the **per-repo** config format (stored in

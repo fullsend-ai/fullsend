@@ -8,25 +8,32 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// TestResolveConfig_SignoffCascade also covers lint, which is declared at the
+// same levels with the same values.
 func TestResolveConfig_SignoffCascade(t *testing.T) {
 	input := `
 version: 1
 defaults:
   signoff: true
+  lint: true
 github:
   signoff: false
+  lint: false
   repos:
     - name: acme/inherit-forge
     - name: acme/repo-true
       signoff: true
+      lint: true
     - name: "acme/glob-*"
       signoff: true
+      lint: true
 gitlab:
   url: https://gitlab.example.com
   repos:
     - name: group/inherit-defaults
     - name: group/repo-false
       signoff: false
+      lint: false
 `
 	var m Manifest
 	require.NoError(t, parseManifestBytes([]byte(input), &m))
@@ -46,6 +53,7 @@ gitlab:
 		t.Run(tt.owner+"/"+tt.repo, func(t *testing.T) {
 			cfg, _ := m.ResolveConfigWithGlobs(tt.owner, tt.repo)
 			assert.Equal(t, tt.want, cfg.Signoff)
+			assert.Equal(t, tt.want, cfg.Lint, "lint resolves through the same levels as signoff")
 		})
 	}
 }
@@ -262,8 +270,8 @@ func TestSignoffForgesFor_InvalidPattern(t *testing.T) {
 }
 
 func TestCarveOutGlobEntry_CopiesSignoff(t *testing.T) {
-	signoff := true
-	platform := &PlatformConfig{Repos: []RepoEntry{{Name: "acme/*", Signoff: &signoff}}}
+	signoff, lint := true, true
+	platform := &PlatformConfig{Repos: []RepoEntry{{Name: "acme/*", Signoff: &signoff, Lint: &lint}}}
 
 	carved, _, err := carveOutGlobEntry([]*PlatformConfig{platform}, "acme/api", "")
 	require.NoError(t, err)
@@ -274,6 +282,9 @@ func TestCarveOutGlobEntry_CopiesSignoff(t *testing.T) {
 	// The carved entry must not alias the glob entry's pointer.
 	*carved.Signoff = false
 	assert.True(t, *platform.Repos[0].Signoff)
+	require.NotNil(t, carved.Lint)
+	*carved.Lint = false
+	assert.True(t, *platform.Repos[0].Lint)
 }
 
 // A repository install skips gets no scaffold commit, so it needs no

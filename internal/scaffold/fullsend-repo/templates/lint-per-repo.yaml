@@ -1,0 +1,26 @@
+---
+# fullsend-component: lint
+# fullsend lint caller (per-repo installation mode)
+# `fullsend repos install` writes this workflow while `lint` is true in
+# repos.yaml, and removes it otherwise. It pins reusable-fullsend-lint.yml to
+# the same ref as the fullsend workflow, so the check and the agents use one
+# Fullsend version.
+#
+# Do not make this a required status check: pull requests that touch neither
+# path below never report it.
+name: fullsend lint
+
+on:
+  pull_request:
+    paths:
+      - ".fullsend/**"
+      # A pull request that moves the pin is linted at the new version.
+      - ".github/workflows/fullsend-lint.yml"
+
+permissions: {}
+
+jobs:
+  lint:
+    permissions:
+      contents: read
+    uses: __REUSABLE_WORKFLOW__

@@ -602,6 +602,11 @@ fullsend lint --fullsend-dir <path>
 `.fullsend/config.base.yaml` if you have one, with the same validation agent
 runs use. It exits 1 when it finds an error.
 
+To run this check on every pull request that changes `.fullsend/`, set
+`lint: true` for the repository in `repos.yaml` and run
+`fullsend repos install`. See
+[Lint check](../../cli/repos.md#lint-check).
+
 `fullsend lint` caches the agents it fetches in `.fullsend/.fullsend-cache/`.
 Add `.fullsend/.fullsend-cache/` to your `.gitignore`, or delete the directory
 before you commit.

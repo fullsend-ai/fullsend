@@ -175,7 +175,7 @@ through the inference gateway (`config.inference.gateway`) needs no
 Values resolve the same way on every install, dry run, and status run:
 
 - **Manifest fields** (`fullsend_ref`, `mint_url`, `mint_mode`, `app_set`,
-  `inference.auth`, `vendor`, `signoff`, `config_base`) resolve entry →
+  `inference.auth`, `vendor`, `signoff`, `lint`, `config_base`) resolve entry →
   forge section → `defaults`, at the levels each field supports.
 - **Managed configuration** (`config`) resolves field by field, from lowest
   to highest priority: code defaults, the `config_base` preset,

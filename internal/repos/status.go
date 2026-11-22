@@ -512,6 +512,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		return status
 	}
 
+	checkLintDrift(ctx, cfg, dcfg, resolver, &status)
+	if status.Error != "" {
+		return status
+	}
+
 	// Same predicate as convergence: a pending initialization (credentials
 	// written, shim workflow not yet merged) is not an established install.
 	cfg.FreshInstall = pristineInstallation(components)
