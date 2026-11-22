@@ -288,6 +288,37 @@ func TestLabelsAreRecomputedFromAdmittedApplications(t *testing.T) {
 	assert.Equal(t, ReasonAttributionUnresolved, v.Document.Entity.Labels.Coverage.Reason)
 }
 
+// TestThreadMembershipReasonFollowsTheCommentFailure checks that a thread's
+// comment-membership coverage reports why a referenced comment is unresolved,
+// rather than calling every failure an attribution failure.
+func TestThreadMembershipReasonFollowsTheCommentFailure(t *testing.T) {
+	noID := human("")
+	noID.ID = normentity.Unknown[string](normentity.ReasonNotLoaded)
+	for _, tc := range []struct {
+		name   string
+		actor  normentity.Actor
+		member string
+		want   string
+	}{
+		{"role verdict missing", human(unknownAct), "C_unknown", ReasonRoleUnresolved},
+		{"attribution missing", noID, "C_noid", ReasonAttributionUnresolved},
+		{"comment not in the document", human(writer), "C_absent", ReasonAttributionUnresolved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := workItem(t)
+			if tc.member != "C_absent" {
+				doc.Entity.Comments.Known = append(doc.Entity.Comments.Known, comment(tc.member, tc.actor))
+			}
+			ids := &doc.Entity.Threads.Known[0].CommentIDs
+			ids.Known = append(ids.Known, tc.member)
+			v := build(t, input(t, doc, normentity.RoleTriage))
+			got := v.Document.Entity.Threads.Known[0].CommentIDs
+			assert.Equal(t, normentity.CoverageUnknown, got.Coverage.Status)
+			assert.Equal(t, tc.want, got.Coverage.Reason)
+		})
+	}
+}
+
 func TestUnresolvedActorMakesCoverageNonComplete(t *testing.T) {
 	doc := workItem(t)
 	noID := human("")
@@ -1284,6 +1315,47 @@ func TestResolutionAndChangeTimeFollowTheirActor(t *testing.T) {
 					_, known := got.ResolvedBy.Value()
 					assert.False(t, known)
 				}
+			})
+		}
+	})
+
+	// A null resolver is a resolution-state signal even when a partial thread
+	// carries no known boolean, so it is gated on its own.
+	t.Run("null resolver without a known boolean", func(t *testing.T) {
+		unknownBool := normentity.Unknown[bool](normentity.ReasonPartial)
+		cases := []struct {
+			name       string
+			resolved   normentity.Field[bool]
+			stateActor *normentity.Actor
+			wantNull   bool
+		}{
+			{"unknown boolean, no transition actor", unknownBool, nil, false},
+			{"absent boolean, no transition actor", normentity.Field[bool]{}, nil, false},
+			{"unknown boolean, excluded transition actor", unknownBool, new(human(reader)), false},
+			{"absent boolean, excluded transition actor", normentity.Field[bool]{}, new(human(reader)), false},
+			{"unknown boolean, unresolved transition actor", unknownBool, new(human(unknownAct)), false},
+			{"unknown boolean, admitted transition actor", unknownBool, new(human(writer)), true},
+			{"absent boolean, admitted transition actor", normentity.Field[bool]{}, new(human(writer)), true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				doc := workItem(t)
+				th := &doc.Entity.Threads.Known[0]
+				th.ResolvedBy, th.Resolved = normentity.Null[normentity.Actor](), tc.resolved
+				in := input(t, doc, normentity.RoleTriage)
+				if tc.stateActor != nil {
+					in.Provenance.ThreadStateActors = map[string]normentity.Actor{"T1": *tc.stateActor}
+				}
+				got := build(t, in).Document.Entity.Threads.Known[0]
+				assert.Equal(t, tc.wantNull, got.ResolvedBy.IsNull())
+				if !tc.wantNull {
+					_, unknown := got.ResolvedBy.UnknownReason()
+					assert.True(t, unknown, "an unadmitted null resolver is unknown, not null")
+				}
+				// The boolean is left exactly as the document supplied it.
+				_, known := got.Resolved.Value()
+				assert.False(t, known)
+				assert.Equal(t, tc.resolved.IsZero(), got.Resolved.IsZero())
 			})
 		}
 	})

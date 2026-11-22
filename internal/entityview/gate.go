@@ -32,10 +32,12 @@ func (b *builder) entity(e *normentity.Entity) {
 	b.updatedAt(e)
 	b.body(e)
 
-	comments := map[string]Outcome{}
+	comments, commentReasons := map[string]Outcome{}, map[string]string{}
 	filterList(b, "comments", &e.Comments, func(c *normentity.Comment) (Outcome, string) {
 		o, r := b.action(&c.Action)
-		comments[c.ID] = worst(o, outcomeOr(comments, c.ID, Admitted))
+		if w := worst(o, outcomeOr(comments, c.ID, Admitted)); w != comments[c.ID] {
+			comments[c.ID], commentReasons[c.ID] = w, r
+		}
 		return o, r
 	})
 	filterList(b, "reviews", &e.Reviews, func(r *normentity.Review) (Outcome, string) {
@@ -77,7 +79,7 @@ func (b *builder) entity(e *normentity.Entity) {
 		return b.threadOrigin(t)
 	})
 	for i := range e.Threads.Known {
-		b.thread(&e.Threads.Known[i], comments)
+		b.thread(&e.Threads.Known[i], comments, commentReasons)
 	}
 	filterList(b, "checks", &e.Checks, nil)
 	for i := range e.Checks.Known {
@@ -219,30 +221,36 @@ func (b *builder) threadOrigin(t *normentity.Thread) (Outcome, string) {
 
 // thread filters a thread's comment IDs to admitted comments and gates its
 // resolver.
-func (b *builder) thread(t *normentity.Thread, comments map[string]Outcome) {
+func (b *builder) thread(t *normentity.Thread, comments map[string]Outcome, commentReasons map[string]string) {
 	counts := b.ev.Values["threads.comment_ids"]
 	if !t.CommentIDs.IsZero() {
 		// The membership list has its own coverage revision, independent of
 		// the comments it names: a stale list keeps no member.
 		stale := b.revise(&t.CommentIDs.Coverage)
 		kept := make([]string, 0, len(t.CommentIDs.Known))
-		unresolved := false
+		reason := ""
 		for _, id := range t.CommentIDs.Known {
 			o := outcomeOr(comments, id, Unresolved)
+			r, ok := commentReasons[id]
+			if !ok {
+				r = ReasonAttributionUnresolved
+			}
 			if stale {
-				o = Unresolved
+				o, r = Unresolved, ReasonStaleSourceRevision
 			}
 			counts.add(o)
 			switch o {
 			case Admitted:
 				kept = append(kept, id)
 			case Unresolved:
-				unresolved = true
+				if reason == "" {
+					reason = r
+				}
 			}
 		}
 		t.CommentIDs.Known = kept
-		if unresolved {
-			downgrade(&t.CommentIDs.Coverage, ReasonAttributionUnresolved)
+		if reason != "" {
+			downgrade(&t.CommentIDs.Coverage, reason)
 		}
 	}
 	b.ev.Values["threads.comment_ids"] = counts
@@ -258,17 +266,22 @@ func (b *builder) thread(t *normentity.Thread, comments map[string]Outcome) {
 			t.Resolved = unknownIfSet(t.Resolved, d.outcome)
 		}
 		b.value("threads.resolved_by", d.outcome)
-	} else if _, ok := t.Resolved.Value(); ok {
+	} else if _, known := t.Resolved.Value(); known || t.ResolvedBy.IsNull() {
 		// With no resolver, the current resolution state (a resolution or a
 		// reopening) is admitted through the actor of that transition, which
-		// the document does not carry. Without an admitted transition actor
-		// the state, and the null resolver that accompanies it, are unknown.
+		// the document does not carry. A null resolver is itself a
+		// resolution-state signal, so it is gated even when the boolean is
+		// unknown or absent. Without an admitted transition actor the state,
+		// and the null resolver that accompanies it, are unknown; an unknown
+		// or absent boolean stays as it is.
 		o := Unresolved
 		if a, ok := b.in.Provenance.ThreadStateActors[t.ID]; ok {
 			o = b.admit(a).outcome
 		}
 		if o != Admitted {
-			t.Resolved = normentity.Unknown[bool](unknownReason(o))
+			if known {
+				t.Resolved = normentity.Unknown[bool](unknownReason(o))
+			}
 			t.ResolvedBy = unknownIfSet(t.ResolvedBy, o)
 		}
 		b.value("threads.resolved_by", o)
