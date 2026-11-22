@@ -15,6 +15,15 @@
 // A feature that exercises Vault starts one server, reuses it across
 // its scenarios and stops it at feature or job cleanup; features that
 // do not exercise Vault never start it.
+//
+// OpenBao has no OpenTelemetry support, so the server is configured
+// with a stdout audit device that records the W3C traceparent and
+// tracestate request headers unhashed. The Fullsend Vault client sends
+// the run's trace context on every request, so each audit entry can be
+// correlated with the run's trace. At Stop the server log (audit
+// entries included) and the startup and memory measurements are saved
+// under BEHAVIOUR_ARTIFACT_DIR/openbao/<container>/, with the root
+// token masked, like the trace collector's log.
 package install
 
 import (
@@ -27,6 +36,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -66,6 +76,15 @@ const (
 	// openBaoTokenTTL bounds the tokens the runner obtains at login.
 	openBaoTokenTTL = "10m"
 
+	// openBaoAuditDevice is the path of the stdout file audit device, and
+	// openBaoAuditedHeaders the request headers it records unhashed so
+	// audit entries correlate with the caller's trace.
+	openBaoAuditDevice = "stdout"
+
+	// openBaoArtifactSubdir is the directory under BEHAVIOUR_ARTIFACT_DIR
+	// that holds one subdirectory of artifacts per server.
+	openBaoArtifactSubdir = "openbao"
+
 	openBaoContainerPort = 8200
 	openBaoStartTimeout  = 10 * time.Minute
 	openBaoStopSeconds   = "10"
@@ -81,6 +100,10 @@ var (
 	lookPathFunc   = exec.LookPath
 	newOpenBaoFunc = newOpenBao
 )
+
+// openBaoAuditedHeaders are the W3C trace context headers the audit
+// device records in clear text. They carry trace and span IDs only.
+var openBaoAuditedHeaders = []string{"traceparent", "tracestate"}
 
 // openBaoRunnerPolicy is the least-privilege ACL policy the JWT role
 // attaches: read on the scenario secret prefix and nothing else.
@@ -129,6 +152,12 @@ type openBao struct {
 	readyTimeout time.Duration
 	pollInterval time.Duration
 	now          func() time.Time
+	artifactDir  string
+
+	// startup and startMemory are the measurements taken when Start
+	// finished; they are saved with the server log at Stop.
+	startup     time.Duration
+	startMemory string
 
 	rootToken     string
 	localURL      string
@@ -153,6 +182,7 @@ type openBao struct {
 func newOpenBao(logf func(string, ...any)) *openBao {
 	return &openBao{
 		logf:         logf,
+		artifactDir:  strings.TrimSpace(getenvFunc("BEHAVIOUR_ARTIFACT_DIR")),
 		run:          execCommandRunner,
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
 		freePort:     freeLocalPort,
@@ -301,8 +331,10 @@ func (b *openBao) Start(ctx context.Context) (err error) {
 		return err
 	}
 	b.address = "https://" + host
-	b.logf("[openbao] serving Vault scenarios at %s (startup %s, memory %s)",
-		b.address, b.now().Sub(started).Round(time.Millisecond), b.memoryUsage(ctx))
+	b.startup = b.now().Sub(started).Round(time.Millisecond)
+	b.startMemory = b.memoryUsage(ctx)
+	b.logf("[openbao] serving Vault scenarios at %s (container %s, startup %s, memory %s); audit log records traceparent and tracestate",
+		b.address, b.containerName, b.startup, b.startMemory)
 	return nil
 }
 
@@ -328,7 +360,28 @@ func (b *openBao) configure(ctx context.Context) error {
 			return fmt.Errorf("%s: %w", s.what, err)
 		}
 	}
+	b.configureAudit(ctx)
 	return nil
+}
+
+// configureAudit enables the stdout audit device and records the W3C
+// trace context headers unhashed, so each audit entry in the server log
+// names the trace of the run that made the request. The audit log is
+// diagnostic: a failure (a server that refuses API-created audit
+// devices, for example) is logged and the server runs without it.
+func (b *openBao) configureAudit(ctx context.Context) {
+	if err := b.admin(ctx, http.MethodPut, "/v1/sys/audit/"+openBaoAuditDevice, map[string]any{
+		"type":    "file",
+		"options": map[string]string{"file_path": "stdout"},
+	}); err != nil {
+		b.logf("[openbao] WARNING: no audit log (requests cannot be correlated with traces): enabling stdout audit device: %v", err)
+		return
+	}
+	for _, h := range openBaoAuditedHeaders {
+		if err := b.admin(ctx, http.MethodPut, "/v1/sys/config/auditing/request-headers/"+h, map[string]any{"hmac": false}); err != nil {
+			b.logf("[openbao] WARNING: audit log will not record the %s header: %v", h, err)
+		}
+	}
 }
 
 // AllowRepo lets the workflows of org/repo log in with the default
@@ -379,6 +432,62 @@ func (b *openBao) PutSecret(ctx context.Context, name string, data map[string]st
 		return "", fmt.Errorf("writing secret %s: %w", name, err)
 	}
 	return path, nil
+}
+
+// openBaoMeasurements is the measurements artifact of one server.
+type openBaoMeasurements struct {
+	Container      string  `json:"container"`
+	Image          string  `json:"image"`
+	StartupSeconds float64 `json:"startup_seconds"`
+	MemoryAtStart  string  `json:"memory_at_start"`
+	MemoryAtStop   string  `json:"memory_at_stop,omitempty"`
+}
+
+// saveArtifacts writes the server log (audit entries included) and the
+// measurements under artifactDir/openbao/<container>/. It does nothing
+// without an artifact dir. The root token is masked in every file.
+func (b *openBao) saveArtifacts(ctx context.Context, stopMemory string) error {
+	if b.artifactDir == "" {
+		if b.logf != nil {
+			b.logf("[openbao] BEHAVIOUR_ARTIFACT_DIR is not set; not saving the %s log", b.containerName)
+		}
+		return nil
+	}
+	destDir := filepath.Join(b.artifactDir, openBaoArtifactSubdir, b.containerName)
+	logs, err := b.run(ctx, nil, "podman", "logs", b.containerName)
+	if err != nil {
+		if strings.Contains(strings.ToLower(string(logs)), "no such container") {
+			return nil
+		}
+		return fmt.Errorf("reading %s log: %w: %s", b.containerName, err, strings.TrimSpace(string(logs)))
+	}
+	if err := writeMaskedArtifact(destDir, "openbao.log", logs, b.rootToken); err != nil {
+		return err
+	}
+	m, err := json.MarshalIndent(openBaoMeasurements{
+		Container:      b.containerName,
+		Image:          openBaoImage,
+		StartupSeconds: b.startup.Seconds(),
+		MemoryAtStart:  b.startMemory,
+		MemoryAtStop:   stopMemory,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding measurements: %w", err)
+	}
+	if err := writeMaskedArtifact(destDir, "measurements.json", append(m, '\n'), b.rootToken); err != nil {
+		return err
+	}
+	b.logf("[openbao] saved the %s log and measurements under %s (startup %s, memory at start %s, at stop %s)",
+		b.containerName, destDir, b.startup, b.startMemory, stopMemory)
+	return nil
+}
+
+// writeMaskedArtifact writes data, with token masked, as destDir/name
+// (0600). Like traceCollector.writeArtifact it never writes through a
+// symlink: destDir must be a real directory, and an existing file is
+// removed and re-created exclusively.
+func writeMaskedArtifact(destDir, name string, data []byte, token string) error {
+	return (&traceCollector{token: token}).writeArtifact(destDir, name, data)
 }
 
 // validateOpenBaoSecretName accepts slash-separated components of
@@ -529,16 +638,30 @@ func (b *openBao) Stop(_ context.Context) error {
 	ctx, cancel := context.WithTimeout(context.Background(), openBaoStopTimeout)
 	defer cancel()
 	var errs []error
+	stopMemory := ""
+	if b.containerUp && b.artifactDir != "" {
+		stopMemory = b.memoryUsage(ctx)
+	}
 	for _, c := range []struct {
-		name string
-		up   *bool
-	}{{b.tunnelName, &b.tunnelUp}, {b.containerName, &b.containerUp}} {
+		name   string
+		up     *bool
+		server bool
+	}{{b.tunnelName, &b.tunnelUp, false}, {b.containerName, &b.containerUp, true}} {
 		if !*c.up {
 			continue
 		}
 		if out, err := b.run(ctx, nil, "podman", "stop", "--time", openBaoStopSeconds, c.name); err != nil &&
 			!strings.Contains(strings.ToLower(string(out)), "no such container") {
 			errs = append(errs, fmt.Errorf("stopping container %s: %w: %s", c.name, err, strings.TrimSpace(string(out))))
+		}
+		if c.server {
+			// The log is saved before the container is removed: removal
+			// discards it. A failed save keeps the container so a later
+			// Stop can retry.
+			if err := b.saveArtifacts(ctx, stopMemory); err != nil {
+				errs = append(errs, err)
+				continue
+			}
 		}
 		out, err := b.run(ctx, nil, "podman", "rm", "-f", c.name)
 		if err != nil && !strings.Contains(strings.ToLower(string(out)), "no such container") {

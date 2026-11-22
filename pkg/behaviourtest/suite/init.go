@@ -269,6 +269,10 @@ func resetScenarioWorld(w *world.World) {
 	w.GatewayConfigOriginal = nil
 	w.GatewayAPIKeySecretSet = false
 	w.RunnerSecretsSecretSet = false
+	w.VaultServer = nil
+	w.VaultScenarioID = ""
+	w.VaultSecrets = nil
+	w.VaultOverrideValues = nil
 	w.OwnersAuthActivated = false
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
