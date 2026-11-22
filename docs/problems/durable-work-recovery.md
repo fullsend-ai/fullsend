@@ -70,10 +70,12 @@ make a remote issue creation atomic or authorize a retry after scope changes.
 [ADR 0165](../ADRs/0165-recover-work-through-repository-owned-operation-journals.md)
 chooses JSON journal files in the control repository, initially hosted on
 GitLab. The journal covers the full saga and each required branch, while
-source repositories and trackers can use other providers. Workflow-supplied trusted host adapters claim work and use shared journal
-operations to record progress and reconcile unfinished actions. Assessment runs
-and their scripts do not receive journal-write credentials. CI finalization is a best-effort checkpoint, not the recovery guarantee.
-Its implementation remains separate from the decision. A local database test is not distributed acceptance.
+source repositories and trackers can use other providers. Workflow-supplied
+trusted host adapters claim work and use shared journal operations to record
+progress and reconcile unfinished actions. Assessment runs and their scripts
+do not receive journal-write credentials. CI finalization is a best-effort
+checkpoint, not the recovery guarantee. Its implementation remains separate
+from the decision. A local database test is not distributed acceptance.
 
 Entity-first discovery must also find eligible work whose trigger was lost
 before admission. Trackers retain business and handled state; the journal
