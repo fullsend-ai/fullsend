@@ -557,7 +557,7 @@ jobs:
       # the binary; default callers install the trusted workflow build.
       - name: Detect review dedup CLI
         id: review-cli-mode
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) && steps.review-dedup-guard.outputs.allowed == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -575,7 +575,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Validate cached fullsend CLI for review dedup
         id: review-cli-cache-validation
@@ -607,7 +607,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .review-dedup-actions
           fetch-depth: 1
           sparse-checkout: |
@@ -625,7 +625,7 @@ jobs:
           add_to_path: 'false'
           source_dir: ${{ runner.temp }}/fullsend-review-dedup-src
           workflow_repository: ${{ job.workflow_repository }}
-          workflow_sha: ${{ job.workflow_sha }}
+          workflow_sha: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for review dedup
@@ -661,7 +661,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       # A synchronize event can be caused by merging the base branch into a
       # PR without changing its effective diff. Missing or incomplete
@@ -890,7 +890,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('cel-route/.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('cel-route/.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Validate cached fullsend CLI for CEL route
         id: cel-cli-cache-validation
@@ -978,7 +978,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('cel-route/.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('cel-route/.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Evaluate CEL route
         id: cel-route
@@ -1843,7 +1843,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Validate cached fullsend CLI for review job
         id: review-job-cli-cache-validation
@@ -1875,7 +1875,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .review-dedup-actions
           fetch-depth: 1
           sparse-checkout: |
@@ -1893,7 +1893,7 @@ jobs:
           add_to_path: 'false'
           source_dir: ${{ runner.temp }}/fullsend-review-dedup-src
           workflow_repository: ${{ job.workflow_repository }}
-          workflow_sha: ${{ job.workflow_sha }}
+          workflow_sha: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for review job
@@ -1929,7 +1929,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Prepare workspace
         id: workspace
@@ -2773,7 +2773,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Validate cached fullsend CLI
         if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache.outputs.cache-hit == 'true'
@@ -2843,7 +2843,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Run fullsend dispatch
         id: dispatch
