@@ -12,6 +12,7 @@ import (
 // Actor-originated actions (body, comments, reviews, label applications,
 // reactions, current approvals) and singular actor-attributed values (title,
 // lifecycle actors, thread resolvers, extension values) pass the actor gate.
+// A thread record is admitted through its origin comment.
 // Current labels, assignees, and reviewers are relationships: their members
 // are admitted through the action that produced them, never through the
 // subject's own role. Raw source state (state, checks, commits, changed
@@ -71,7 +72,9 @@ func (b *builder) entity(e *normentity.Entity) {
 	filterList(b, "reactions", &e.Reactions, func(r *normentity.Reaction) (Outcome, string) {
 		return b.gatedActor(&r.Actor)
 	})
-	filterList(b, "threads", &e.Threads, nil)
+	filterList(b, "threads", &e.Threads, func(t *normentity.Thread) (Outcome, string) {
+		return b.threadOrigin(t, comments)
+	})
 	for i := range e.Threads.Known {
 		b.thread(&e.Threads.Known[i], comments)
 	}
@@ -198,6 +201,19 @@ func (b *builder) relationship(subject *normentity.Actor, by map[string]normenti
 	return d.outcome, d.reason
 }
 
+// threadOrigin admits a thread record through the admission of its origin,
+// the first comment in source thread order. A thread whose origin comment is
+// excluded cannot keep its ID, creation time, location, or existence. A
+// thread whose origin cannot be determined (no membership list, a stale list,
+// an empty list, or a comment that is not in the view) is unresolved.
+func (b *builder) threadOrigin(t *normentity.Thread, comments map[string]Outcome) (Outcome, string) {
+	if t.CommentIDs.IsZero() || b.stale(t.CommentIDs.Coverage) || len(t.CommentIDs.Known) == 0 {
+		return Unresolved, ReasonAttributionUnresolved
+	}
+	o := outcomeOr(comments, t.CommentIDs.Known[0], Unresolved)
+	return o, ReasonAttributionUnresolved
+}
+
 // thread filters a thread's comment IDs to admitted comments and gates its
 // resolver.
 func (b *builder) thread(t *normentity.Thread, comments map[string]Outcome) {
@@ -247,9 +263,10 @@ func (b *builder) thread(t *normentity.Thread, comments map[string]Outcome) {
 	// A thread with no resolver keeps resolved=false as known: the
 	// normalized-entity contract makes resolved_by null for every unresolved
 	// thread, so an open thread is unattributed raw source state that cannot
-	// be told apart from one reopened by a below-minimum actor. Threads are
-	// kept regardless of who opened them, so this adds no capability beyond
-	// what raw thread existence already gives. Only resolutions (true) are
+	// be told apart from one reopened by a below-minimum actor. The thread
+	// itself is admitted through its origin comment (threadOrigin), so a
+	// below-minimum actor cannot create a thread in this view, but can still
+	// reopen one whose origin is admitted. Only resolutions (true) are
 	// attributed above.
 	b.extensions(t.Extensions)
 }

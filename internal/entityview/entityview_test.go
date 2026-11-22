@@ -371,10 +371,9 @@ func TestStaleEvidence(t *testing.T) {
 		assert.Equal(t, ReasonStaleSourceRevision, e.Comments.Coverage.Reason)
 		assert.Equal(t, Counts{Unresolved: 4}, view.Evidence.Collections["comments"].Counts)
 
-		// Thread membership of stale comments is unresolved, not empty.
-		th := e.Threads.Known[0]
-		assert.Empty(t, th.CommentIDs.Known)
-		assert.Equal(t, normentity.CoverageUnknown, th.CommentIDs.Coverage.Status)
+		// A thread whose origin comment is stale is unresolved, not kept.
+		assert.Empty(t, e.Threads.Known)
+		assert.Equal(t, normentity.CoverageUnknown, e.Threads.Coverage.Status)
 	})
 	t.Run("complete coverage without a revision is not complete at this revision", func(t *testing.T) {
 		doc := workItem(t)
@@ -680,22 +679,25 @@ func TestNestedCollectionsAreRevisionChecked(t *testing.T) {
 			doc := workItem(t)
 			doc.Entity.Threads.Known[0].CommentIDs.Coverage = cov
 			view := build(t, input(t, doc, normentity.RoleTriage))
+			if name == "stale" {
+				// A stale membership list cannot attribute the thread's
+				// origin, so the thread itself is not kept.
+				assert.Empty(t, view.Document.Entity.Threads.Known, name)
+				assert.Equal(t, normentity.CoverageUnknown, view.Document.Entity.Threads.Coverage.Status, name)
+				continue
+			}
 			ids := view.Document.Entity.Threads.Known[0].CommentIDs
 			assert.Equal(t, normentity.CoverageUnknown, ids.Coverage.Status, name)
-			if name == "stale" {
-				assert.Empty(t, ids.Known)
-				assert.Equal(t, ReasonStaleSourceRevision, ids.Coverage.Reason)
-			} else {
-				assert.Equal(t, []string{"C_writer", "C_bot"}, ids.Known)
-				assert.Equal(t, ReasonUnboundRevision, ids.Coverage.Reason)
-			}
+			assert.Equal(t, []string{"C_writer", "C_bot"}, ids.Known)
+			assert.Equal(t, ReasonUnboundRevision, ids.Coverage.Reason)
 		}
 
 		// An empty complete stale list is not conclusively empty.
 		doc := workItem(t)
 		doc.Entity.Threads.Known[0].CommentIDs = normentity.List[string]{Known: []string{}, Coverage: stale}
 		view := build(t, input(t, doc, normentity.RoleTriage))
-		assert.Equal(t, normentity.CoverageUnknown, view.Document.Entity.Threads.Known[0].CommentIDs.Coverage.Status)
+		assert.Empty(t, view.Document.Entity.Threads.Known)
+		assert.Equal(t, normentity.CoverageUnknown, view.Document.Entity.Threads.Coverage.Status)
 	})
 
 	t.Run("extension lists", func(t *testing.T) {
@@ -973,6 +975,109 @@ func TestSubjectWithoutEvidenceHasUnknownRole(t *testing.T) {
 	v = build(t, input(t, doc, normentity.RoleTriage))
 	_, unknown = v.Document.Entity.Author.Ptr().BotRole.UnknownReason()
 	assert.True(t, unknown)
+}
+
+// TestUnresolvedSubjectsKeepTheActorShape checks that a subject with no
+// usable verdict is projected by its own kind into the shape the
+// normalized-entity schema allows: a bot has role none and a bot_role, and a
+// human or unknown-kind subject has no bot_role.
+func TestUnresolvedSubjectsKeepTheActorShape(t *testing.T) {
+	noID := func(a normentity.Actor) normentity.Actor {
+		a.ID = normentity.Unknown[string](normentity.ReasonNotLoaded)
+		return a
+	}
+	unknownKind := human(unknownAct)
+	unknownKind.Kind = normentity.Unknown[normentity.ActorKind](normentity.ReasonNotLoaded)
+
+	cases := []struct {
+		name    string
+		subject normentity.Actor
+		bot     bool
+	}{
+		{"bot without role evidence", bot("B_none"), true},
+		{"bot with missing ID", noID(bot(registered)), true},
+		{"human without role evidence", human(unknownAct), false},
+		{"human with missing ID", noID(human(writer)), false},
+		{"unknown kind", unknownKind, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc := workItem(t)
+			doc.Entity.Author = normentity.Known(c.subject)
+			v := build(t, input(t, doc, normentity.RoleTriage))
+			a := v.Document.Entity.Author.Ptr()
+			require.NotNil(t, a)
+			_, unknown := a.RoleVerified.UnknownReason()
+			assert.True(t, unknown)
+			if c.bot {
+				role, known := a.Role.Value()
+				assert.True(t, known)
+				assert.Equal(t, normentity.RoleNone, role, "a bot always has role none")
+				_, unknown = a.BotRole.UnknownReason()
+				assert.True(t, unknown)
+				return
+			}
+			_, unknown = a.Role.UnknownReason()
+			assert.True(t, unknown)
+			assert.True(t, a.BotRole.IsZero(), "only a bot has bot_role")
+		})
+	}
+}
+
+// TestThreadsAreAdmittedThroughTheirOrigin checks that a thread record is kept
+// only when its origin comment (the first in thread order) is admitted.
+func TestThreadsAreAdmittedThroughTheirOrigin(t *testing.T) {
+	cases := []struct {
+		name string
+		ids  []string
+		want Outcome
+	}{
+		{"admitted origin", []string{"C_writer", "C_reader"}, Admitted},
+		{"only below-minimum comments", []string{"C_reader"}, Excluded},
+		{"excluded origin with later admitted reply", []string{"C_reader", "C_writer"}, Excluded},
+		{"unregistered bot origin", []string{"C_unreg", "C_writer"}, Excluded},
+		{"origin not in the view", []string{"C_missing", "C_writer"}, Unresolved},
+		{"no comments", []string{}, Unresolved},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc := workItem(t)
+			doc.Entity.Threads.Known[0].CommentIDs.Known = c.ids
+			v := build(t, input(t, doc, normentity.RoleTriage))
+			th := v.Document.Entity.Threads
+			switch c.want {
+			case Admitted:
+				assert.Len(t, th.Known, 1)
+				assert.Equal(t, normentity.CoverageComplete, th.Coverage.Status)
+			case Excluded:
+				assert.Empty(t, th.Known, "a thread opened below the minimum cannot satisfy an existence predicate")
+				assert.Equal(t, normentity.CoverageComplete, th.Coverage.Status)
+			case Unresolved:
+				assert.Empty(t, th.Known)
+				assert.Equal(t, normentity.CoverageUnknown, th.Coverage.Status)
+			}
+			assert.Equal(t, c.want, outcomeOf(v.Evidence.Collections["threads"].Counts))
+		})
+	}
+
+	t.Run("thread without a membership list", func(t *testing.T) {
+		doc := workItem(t)
+		doc.Entity.Threads.Known[0].CommentIDs = normentity.List[string]{}
+		v := build(t, input(t, doc, normentity.RoleTriage))
+		assert.Empty(t, v.Document.Entity.Threads.Known)
+		assert.Equal(t, normentity.CoverageUnknown, v.Document.Entity.Threads.Coverage.Status)
+	})
+}
+
+// outcomeOf returns the single outcome counted in c.
+func outcomeOf(c Counts) Outcome {
+	switch {
+	case c.Unresolved > 0:
+		return Unresolved
+	case c.Excluded > 0:
+		return Excluded
+	}
+	return Admitted
 }
 
 func TestTeamActorCannotAuthorAnAction(t *testing.T) {

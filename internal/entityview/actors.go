@@ -163,10 +163,15 @@ func withVerdict(a normentity.Actor, d *decision) normentity.Actor {
 	if d.verdict == nil {
 		a.Role = normentity.Unknown[normentity.Role](normentity.ReasonNotLoaded)
 		a.RoleVerified = normentity.Unknown[bool](normentity.ReasonNotLoaded)
-		if d.kind == normentity.ActorHuman {
-			a.BotRole = normentity.Field[string]{}
-		} else {
+		// Project the unresolved fields from the subject's own kind: the
+		// decision carries no kind when admission stopped before the kind
+		// was read. A bot always has role none and a bot_role; a human or
+		// unknown-kind subject has no bot_role.
+		if kind, ok := a.Kind.Value(); ok && kind == normentity.ActorBot {
+			a.Role = normentity.Known(normentity.RoleNone)
 			a.BotRole = normentity.Unknown[string](normentity.ReasonNotLoaded)
+		} else {
+			a.BotRole = normentity.Field[string]{}
 		}
 		return a
 	}
