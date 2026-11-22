@@ -338,36 +338,6 @@ func (m *Manifest) overlapsNonForgejo(selector string, matches []ForgejoTarget) 
 	return false, nil
 }
 
-// globsMayIntersect conservatively reports whether two glob patterns could
-// select a common repository path. It compares only the literal prefix before
-// the first metacharacter and the literal suffix after the last one: patterns
-// whose fixed prefixes or suffixes conflict cannot intersect, anything else is
-// treated as possibly intersecting. It may report a false positive, never a
-// false negative.
-func globsMayIntersect(a, b string) bool {
-	a, b = strings.ToLower(a), strings.ToLower(b)
-	pa, sa := globLiteralEnds(a)
-	pb, sb := globLiteralEnds(b)
-	return (strings.HasPrefix(pa, pb) || strings.HasPrefix(pb, pa)) &&
-		(strings.HasSuffix(sa, sb) || strings.HasSuffix(sb, sa))
-}
-
-// globLiteralEnds returns the literal text before the first glob
-// metacharacter and after the last one. A pattern with an escape yields an
-// empty suffix, which keeps the comparison conservative.
-func globLiteralEnds(p string) (prefix, suffix string) {
-	const meta = `*?[\`
-	i := strings.IndexAny(p, meta)
-	if i < 0 {
-		return p, p
-	}
-	if strings.Contains(p, `\`) {
-		return p[:i], ""
-	}
-	j := strings.LastIndexAny(p, "*?]")
-	return p[:i], p[j+1:]
-}
-
 // matchQualifiedForgejo resolves forgejo:<alias>/<owner>/<repo>.
 func (m *Manifest) matchQualifiedForgejo(all []ForgejoTarget, selector string) ([]ForgejoTarget, error) {
 	rest := strings.TrimPrefix(selector, ForgejoSelectorPrefix)

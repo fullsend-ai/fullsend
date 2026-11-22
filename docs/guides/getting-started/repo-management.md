@@ -138,6 +138,11 @@ forgejo:
   otherwise the command fails and lists the qualified choices.
 - **Uninstall confirmation.** A selection that spans several repositories
   is confirmed once, as a whole, before anything is torn down.
+- **Compatibility.** `forgejo` is a new key in `repos.yaml`, and the
+  manifest parser rejects unknown keys. A fullsend binary from before
+  Forgejo support fails to load a manifest that contains `forgejo:`, so
+  upgrade every machine and CI job that reads the manifest before adding
+  the section. Manifests without it are unaffected.
 
 See [Forgejo instances](../../cli/repos.md#forgejo-instances) in the CLI
 reference for the full lifecycle and selector rules.

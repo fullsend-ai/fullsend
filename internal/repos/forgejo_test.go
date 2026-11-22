@@ -218,6 +218,26 @@ forgejo:
 	assert.False(t, sel.RunOthers)
 }
 
+func TestSplitForgejoSelectors_DisjointCharacterClasses(t *testing.T) {
+	m := parseTestManifest(t, `version: 1
+github:
+  repos:
+    - name: org/[cd]
+forgejo:
+  instances:
+    - alias: home
+      url: https://git.example.com
+      repos:
+        - name: org/a
+`)
+	// org/[ab] shares its literal prefix and suffix with the declared
+	// org/[cd] but can never select a repository that glob covers.
+	sel, err := m.SplitForgejoSelectors([]string{"org/[ab]"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"forgejo:home/org/a"}, selectors(sel.Targets))
+	assert.False(t, sel.RunOthers)
+}
+
 func TestGlobsMayIntersect(t *testing.T) {
 	tests := []struct {
 		a, b string
@@ -230,7 +250,23 @@ func TestGlobsMayIntersect(t *testing.T) {
 		{"org/[ab]x", "org/b*", true},
 		{"other/*", "org/*", false},
 		{`org/a\*`, "org/b*", false},
-		{`org/*\z`, "org/*y", true},
+		{`org/*\z`, "org/*y", false},
+		{`org/*\z`, "org/*z", true},
+		// Identical literal prefix and suffix, but disjoint classes.
+		{"org/[ab]", "org/[cd]", false},
+		{"org/[ab]*", "org/[cd]*", false},
+		{"org/[a-c]*", "org/[b-d]*", true},
+		{"org/[^a]*", "org/a*", false},
+		{"org/[^a]*", "org/[ab]*", true},
+		// `?` fixes a length and `*` does not cross a separator.
+		{"org/a?", "org/a??", false},
+		{"org/a?", "org/a?", true},
+		{"org/a*", "org/a??", true},
+		{"org/*", "org/a/b", false},
+		{"org/*x*", "org/y*z", true},
+		// A malformed pattern is treated as possibly intersecting.
+		{"org/[", "org/b*", true},
+		{`org/a\`, "org/b*", true},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, globsMayIntersect(tt.a, tt.b), "%s vs %s", tt.a, tt.b)
