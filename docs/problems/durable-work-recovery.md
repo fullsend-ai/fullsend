@@ -4,19 +4,12 @@ title: Durable work recovery
 
 # Durable work recovery
 
-A job can disappear after discovery, finish after its caller stops, or publish
-an external change before its acknowledgement is saved. A successful model
-invocation does not answer whether the requested work was scheduled, which
-attempt owns it, or whether publication must be retried.
+In the current fullsend architecture, agents run as independent jobs, with
+[the repository acting as coordinator](agent-architecture.md#interaction-model-the-repo-as-coordinator).
+Work can span several jobs and external systems. Interruptions and overlapping
+jobs create distributed failure scenarios that need to be addressed.
 
-The [repository coordination model](agent-architecture.md#interaction-model-the-repo-as-coordinator)
-keeps authority in repository-visible controls. Recovery must preserve that
-boundary. It needs deterministic bookkeeping, rather than an agent deciding
-which other agents should run. The
-[infrastructure discussion](agent-infrastructure.md) also separates execution
-capacity from waiting for people or external systems.
-
-## Failure boundaries
+## Failure scenarios
 
 - A dispatcher stops after a remote scheduler accepts a request but before it
   records the scheduler's run identifier.
@@ -34,10 +27,11 @@ or the absence of a running CI job cannot prove completion. Operators need to
 distinguish these conditions from ordinary agent failures; see
 [operational observability](operational-observability.md#what-just-happened).
 
-Persistent attempt bounds supply recovery mechanics, while
-[cross-run escalation](cross-run-memory.md#error-recovery-and-retry-mechanics)
-also needs failure interpretation and policy. A journal does not decide whether
-a different model strategy is likely to succeed.
+Recovery needs to track attempts across jobs and enforce retry limits. Choosing
+whether a retry should use a different model or strategy is a separate question
+in [cross-run escalation](cross-run-memory.md#error-recovery-and-retry-mechanics).
+The [infrastructure discussion](agent-infrastructure.md) considers the execution
+capacity needed to resume work.
 
 ## Options and trade-offs
 
@@ -57,6 +51,14 @@ repository coordination model and avoids a required central service. It needs
 explicit trust, retention, conflict, lease and external-effect protocols;
 eventual-consistency searches cannot establish that an ambiguous write failed.
 
+### Use an opt-in local stage engine
+
+A local engine can store accepted outputs and enforce the order of stages in a
+workflow. Integrations can opt in without requiring a shared service. Recovery
+on another host also needs a way to transfer durable state and reject stale
+owners. Stage ordering alone does not reconcile external writes whose outcome
+is unknown. A workflow can combine stage gating with external-action recovery.
+
 ### Delegate to a durable workflow service
 
 A service can supply timers, retries and ownership. It introduces another
@@ -68,9 +70,9 @@ make a remote issue creation atomic or authorize a retry after scope changes.
 [ADR 0165](../ADRs/0165-recover-work-through-repository-owned-operation-journals.md)
 chooses JSON journal files in the control repository, initially hosted on
 GitLab. The journal covers the full saga and each required branch, while
-source repositories and trackers can use other providers. Shared trusted
-operations let pre/post scripts and scheduled reconcilers consume the same
-state. CI finalization is a best-effort checkpoint, not the recovery guarantee.
+source repositories and trackers can use other providers. Workflow-supplied trusted host adapters claim work and use shared journal
+operations to record progress and reconcile unfinished actions. Assessment runs
+and their scripts do not receive journal-write credentials. CI finalization is a best-effort checkpoint, not the recovery guarantee.
 Its implementation remains separate from the decision. A local database test is not distributed acceptance.
 
 Entity-first discovery must also find eligible work whose trigger was lost
@@ -94,7 +96,12 @@ analysis fails; that request is not an assessment or permission to remediate.
 - Which bounded JSON layout, integrity checks, retention and compaction rules
   preserve history and conditional transitions in the control repository?
 - Which trusted host identity writes the protected GitLab journal branch, and
-  how are its credentials kept separate from read-only assessment workers?
+  how are its credentials kept separate from assessment runs?
+- How should workflow adapters be implemented and packaged, and should fullsend
+  ship reusable adapters? Shared journal integration is tracked in
+  [#9253](https://github.com/fullsend-ai/fullsend/issues/9253); the tracker-first
+  consumer integration is tracked in
+  [#9260](https://github.com/fullsend-ai/fullsend/issues/9260).
 - Which shared script interface and reconciliation schedule expose the saga
   without making CI finalizers a prerequisite for recovery?
 - Which existing scheduler APIs can reconcile accepted-but-unacknowledged

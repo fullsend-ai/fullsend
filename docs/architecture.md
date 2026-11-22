@@ -620,8 +620,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
 
 - Decided, not yet implemented: a saga journal stores versioned JSON in the
   control repository, initially on GitLab, independently of the source forge
-  and tracker. Shared pre/post-script operations and scheduled reconciliation
-  retain separate dispatch, execution and publication receipts for each target.
+  and tracker. Workflow-supplied trusted host adapters claim work and reconcile
+  it on subsequent invocations. They retain separate dispatch, execution and
+  publication receipts for each target.
   Conditional updates and ownership generations support cross-host recovery;
   CI finalization provides only a best-effort checkpoint. Domain adapters
   retain operation, completion and compensation semantics
@@ -647,7 +648,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - How should explicit cancellation, retry, and reassignment interact with the
   automatic event-coalescing policy in
   [ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)?
-- Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
+- Does the coordinator need state (a queue, a lock, a claim system), or can it
+  be stateless and event-driven? (ADR 0165 requires durable claims for workflows
+  that opt in. Adapter implementation and packaging remain open in
+  [#9253](https://github.com/fullsend-ai/fullsend/issues/9253) and the
+  tracker-first integration in
+  [#9260](https://github.com/fullsend-ai/fullsend/issues/9260).)
 - When should a conversation or thread be linked to a work item (e.g. Discussion
   → issue) so a conversation-native agent can hand off to `/fs-code` without
   violating entity-context separation ([ADR 0076](ADRs/0076-slash-command-entity-context-separation.md),

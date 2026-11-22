@@ -41,14 +41,26 @@ controls. A mandatory workflow service adds an operated dependency. A
 repository-owned journal reuses forge state and existing schedulers, at the
 cost of conditional writes and explicit reconciliation.
 
+An opt-in local stage engine can retain accepted stage outputs and enforce
+ordering without a mandatory service. It may complement the journal, but
+cross-host recovery also requires state transfer, ownership fencing and
+reconciliation of external actions. Stage progress alone does not provide
+those guarantees, so it does not replace the journal for this decision.
+
 ## Decision
 
-Fullsend adopts a durable saga journal stored as versioned JSON files in the
-control repository. A saga records progress across separate external actions
+Fullsend adopts a durable saga journal stored as versioned JSON files in a
+control repository. This repository holds recovery state and may be separate
+from the repositories where agent runs execute and source code lives. A saga records progress across separate external actions
 and recovers individual steps without claiming an atomic transaction across
 services. It covers admission, target resolution, dispatch, execution,
 publication and accounting for every required target, including multiple
-branches. Domain dispatch and assessment semantics remain in adapters.
+branches. Each participating workflow supplies a trusted host adapter: integration code
+that claims admitted work, dispatches attempts and returns to reconcile
+unfinished operations. The journal stores and checks transitions; it does not
+drive the workflow itself. Domain dispatch and assessment semantics remain in
+these adapters. This ADR defines their recovery contract, not their
+implementation or packaging.
 
 The journal retains stable operation identities, input bindings, work bounds,
 effect intents and separate scheduling, execution and publication receipts.
@@ -79,23 +91,25 @@ paths do not automatically journal every run; their selection and dispatch behav
 remains unchanged unless explicitly integrated. Once a workflow admits work to
 the journal, the recovery contract covers all its required targets and effects.
 
-Shared trusted journal operations are consumable from pre/post scripts and
-reconcilers. Incremental checkpoints and periodic reconciliation provide
+Shared journal operations are callable by authorized host scripts and
+reconcilers. Running as a pre/post script does not itself grant journal access. Incremental checkpoints and periodic reconciliation provide
 recovery when execution stops. CI cleanup supplies a best-effort checkpoint;
 it is not the recovery guarantee. This is a deterministic host capability,
 not a coordinator agent.
 
-Only authorized trusted host code writes the journal. Assessment workers
-receive admitted context without journal-write credentials. Journal state
+Only authorized trusted host code writes the journal. Assessment runs,
+including their pre/post scripts and agent sandboxes, receive admitted context
+without journal-write credentials. A trusted host adapter outside that run
+claims work and records its results. Journal state
 contains bounded identities, digests and receipts. Workflow integrators must
 ensure journal contents and retained evidence are accessible only to readers
 authorized for that data; journal storage may use a separate private repository.
-Artifact publication filters do not protect journal commits. With artifact
+The [run-artifact filters in ADR 0161](0161-repo-config-limits-run-artifact-content.md)
+limit uploaded logs and transcripts; they do not filter journal commits. With artifact
 levels of `metadata` or `none`, evidence needed for recovery requires a separate
 store permitted by the source's disclosure and retention policies. Its location
 and access controls are integration choices. Journal contents grant no
-authority, and integrity failure
-stops scheduling and publication rather than resetting state and repeating work.
+authority, and integrity failure stops scheduling and publication rather than resetting state and repeating work.
 
 ## Entity state and journal state
 
@@ -132,7 +146,7 @@ Jira issue properties do not satisfy the journal's conditional-update contract.
 - Conditional updates, ownership fencing and ambiguous-effect reconciliation
   require backend conformance; delivery is not claimed to be exactly once.
 - Shared script operations and periodic reconciliation are both required.
-  Assessment workers retain their existing source-access boundaries.
+  Assessment runs retain their existing source-access boundaries.
 - Tracker-state reconciliation and publish-only retry can ship independently
   without narrowing the saga's scope.
 
