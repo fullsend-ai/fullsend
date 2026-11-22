@@ -156,6 +156,7 @@ func TestClient_APIErrorSanitizesServerMessage(t *testing.T) {
 		want       string
 	}{
 		{"newline workflow command", `{"message":"boom\n::add-mask::secret"}`, "boom?: :add-mask: :secret"},
+		{"colon runs", `{"message":"a:::b::::c"}`, "a: : :b: : : :c"},
 		{"ansi escape", `{"message":"red\u001b[31mtext\u001b]0;title\u0007"}`, "red?[31mtext?]0;title?"},
 		{"carriage return", `{"message":"a\r::error::b"}`, "a?: :error: :b"},
 		{"truncated multibyte", `{"message":"` + strings.Repeat("é", 200) + `"}`, strings.Repeat("é", 150) + "..."},

@@ -185,7 +185,11 @@ func apiMessage(data []byte) string {
 		}
 		return '?'
 	}, msg)
-	msg = strings.ReplaceAll(msg, "::", ": :")
+	// A single pass leaves "::" behind in runs of three or more colons
+	// (":::" becomes ": ::"), so repeat until none remain.
+	for strings.Contains(msg, "::") {
+		msg = strings.ReplaceAll(msg, "::", ": :")
+	}
 	if truncated {
 		msg += "..."
 	}
