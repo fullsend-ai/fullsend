@@ -570,6 +570,12 @@ func TestOpenBaoStop_LogReadFailureKeepsContainer(t *testing.T) {
 	require.NoError(t, b.Stop(context.Background()))
 	assert.False(t, b.containerUp)
 
+	leaky := &fakePodman{failOn: "logs bt-openbao-z", failOut: "startup: root token tok-secret-123"}
+	lb := &openBao{run: leaky.run, containerName: "bt-openbao-z", containerUp: true, rootToken: "tok-secret-123", artifactDir: t.TempDir(), logf: t.Logf}
+	err := lb.Stop(context.Background())
+	require.ErrorContains(t, err, "reading bt-openbao-z log")
+	assert.NotContains(t, err.Error(), "tok-secret-123", "the log output, which can hold the root token, is not in the error")
+
 	gone := &openBao{run: func(context.Context, []string, string, ...string) ([]byte, error) {
 		return []byte("Error: no such container bt-openbao-y"), errors.New("exit status 1")
 	}, containerName: "bt-openbao-y", containerUp: true, artifactDir: t.TempDir(), logf: t.Logf}

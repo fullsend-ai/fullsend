@@ -459,7 +459,9 @@ func (b *openBao) saveArtifacts(ctx context.Context, stopMemory string) error {
 		if strings.Contains(strings.ToLower(string(logs)), "no such container") {
 			return nil
 		}
-		return fmt.Errorf("reading %s log: %w: %s", b.containerName, err, strings.TrimSpace(string(logs)))
+		// The output is left out: it can hold the root token, and the
+		// caller logs this error without the redactor.
+		return fmt.Errorf("reading %s log: %w", b.containerName, err)
 	}
 	if err := writeMaskedArtifact(destDir, "openbao.log", logs, b.rootToken); err != nil {
 		return err
