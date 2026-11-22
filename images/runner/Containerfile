@@ -347,6 +347,8 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 # Allow target repos with a newer go.mod toolchain directive to auto-download
 # the required toolchain at runtime rather than failing with "GOTOOLCHAIN=local".
 ENV GOTOOLCHAIN=auto
+# Stop ONNX Runtime starting its telemetry uploader for anything that loads it (#9777).
+ENV ORT_DISABLE_TELEMETRY=1
 
 WORKDIR /work
 
