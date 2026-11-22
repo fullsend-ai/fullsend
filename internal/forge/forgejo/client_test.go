@@ -83,7 +83,7 @@ func (f *fakeForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newFake(t *testing.T, prefix string) (*fakeForgejo, *Client) {
+func newFake(t *testing.T, prefix string) (*fakeForgejo, *LiveClient) {
 	t.Helper()
 	f := &fakeForgejo{prefix: prefix, files: map[string]string{}}
 	srv := httptest.NewServer(f)
@@ -97,20 +97,25 @@ func TestClient_FileLifecyclePreservesPathPrefix(t *testing.T) {
 	ctx := context.Background()
 	f, c := newFake(t, "/forgejo")
 
-	_, err := c.GetFileContent(ctx, "acme", "app", ".fullsend/config.yaml")
+	_, err := c.GetFile(ctx, "acme", "app", ".fullsend/config.yaml")
 	require.True(t, forge.IsNotFound(err), "missing file maps to forge.ErrNotFound: %v", err)
 
-	require.NoError(t, c.CreateOrUpdateFile(ctx, "acme", "app", ".fullsend/config.yaml", "create", []byte("a: 1\n")))
-	got, err := c.GetFileContent(ctx, "acme", "app", ".fullsend/config.yaml")
+	require.NoError(t, c.CreateFile(ctx, "acme", "app", ".fullsend/config.yaml", "create", []byte("a: 1\n")))
+	got, err := c.GetFile(ctx, "acme", "app", ".fullsend/config.yaml")
 	require.NoError(t, err)
-	assert.Equal(t, "a: 1\n", string(got))
+	assert.Equal(t, "a: 1\n", string(got.Content))
 
-	require.NoError(t, c.CreateOrUpdateFile(ctx, "acme", "app", ".fullsend/config.yaml", "update", []byte("a: 2\n")))
+	require.NoError(t, c.UpdateFile(ctx, "acme", "app", ".fullsend/config.yaml", "update", []byte("a: 2\n"), got.SHA))
 	assert.Equal(t, "a: 2\n", f.files["acme/app/.fullsend/config.yaml"])
 
-	require.NoError(t, c.DeleteFile(ctx, "acme", "app", ".fullsend/config.yaml", "delete"))
+	// A stale SHA is rejected rather than overwriting or deleting.
+	assert.Error(t, c.UpdateFile(ctx, "acme", "app", ".fullsend/config.yaml", "update", []byte("a: 3\n"), "stale"))
+	assert.Error(t, c.DeleteFile(ctx, "acme", "app", ".fullsend/config.yaml", "delete", "stale"))
+	assert.Equal(t, "a: 2\n", f.files["acme/app/.fullsend/config.yaml"])
+
+	require.NoError(t, c.DeleteFile(ctx, "acme", "app", ".fullsend/config.yaml", "delete", got.SHA))
 	assert.Empty(t, f.files)
-	err = c.DeleteFile(ctx, "acme", "app", ".fullsend/config.yaml", "delete")
+	err = c.DeleteFile(ctx, "acme", "app", ".fullsend/config.yaml", "delete", got.SHA)
 	assert.True(t, forge.IsNotFound(err))
 
 	for _, r := range f.requests {
@@ -123,7 +128,7 @@ func TestClient_FileLifecyclePreservesPathPrefix(t *testing.T) {
 
 func TestClient_EscapesPathSegments(t *testing.T) {
 	f, c := newFake(t, "")
-	_, err := c.GetFileContent(context.Background(), "ac?me", "a#pp", "dir/fi le")
+	_, err := c.GetFile(context.Background(), "ac?me", "a#pp", "dir/fi le")
 	require.True(t, forge.IsNotFound(err))
 	require.Len(t, f.requests, 1)
 	assert.Equal(t, "GET /api/v1/repos/ac%3Fme/a%23pp/contents/dir/fi%20le", f.requests[0])
@@ -137,7 +142,7 @@ func TestClient_APIErrorOmitsToken(t *testing.T) {
 	defer srv.Close()
 	c, err := New(srv.URL, "secret-token", srv.Client())
 	require.NoError(t, err)
-	_, err = c.GetFileContent(context.Background(), "acme", "app", "x")
+	_, err = c.GetFile(context.Background(), "acme", "app", "x")
 	var apiErr *APIError
 	require.True(t, errors.As(err, &apiErr))
 	assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
@@ -153,19 +158,19 @@ func TestClient_RejectsNonFileAndBadEncoding(t *testing.T) {
 	defer srv.Close()
 	c, err := New(srv.URL, "", srv.Client())
 	require.NoError(t, err)
-	_, err = c.GetFileContent(context.Background(), "acme", "app", "x")
-	assert.ErrorContains(t, err, "is a dir, not a file")
+	_, err = c.GetFile(context.Background(), "acme", "app", "x")
+	assert.ErrorContains(t, err, `is a "dir", not a file`)
 
 	resp = `{"type":"file","encoding":"none","content":"x"}`
-	_, err = c.GetFileContent(context.Background(), "acme", "app", "x")
+	_, err = c.GetFile(context.Background(), "acme", "app", "x")
 	assert.ErrorContains(t, err, "unsupported content encoding")
 
 	resp = `{"type":"file","encoding":"base64","content":"!!"}`
-	_, err = c.GetFileContent(context.Background(), "acme", "app", "x")
+	_, err = c.GetFile(context.Background(), "acme", "app", "x")
 	assert.ErrorContains(t, err, "decoding content")
 
 	resp = `not json`
-	_, err = c.GetFileContent(context.Background(), "acme", "app", "x")
+	_, err = c.GetFile(context.Background(), "acme", "app", "x")
 	assert.ErrorContains(t, err, "decoding response")
 }
 
@@ -184,7 +189,60 @@ func TestNew_ValidatesBaseURL(t *testing.T) {
 func TestClient_TransportError(t *testing.T) {
 	c, err := New("http://127.0.0.1:1", "secret-token", nil)
 	require.NoError(t, err)
-	err = c.CreateOrUpdateFile(context.Background(), "o", "r", "p", "m", []byte("x"))
+	err = c.CreateFile(context.Background(), "o", "r", "p", "m", []byte("x"))
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestClient_RefusesRedirects(t *testing.T) {
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		assert.Empty(t, r.Header.Get("Authorization"), "the token must never reach a redirect target")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/api/v1/repos/o/r/contents/p", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	// Supplied clients (including one that would allow redirects) and the
+	// default client both refuse: here an https-to-http redirect.
+	supplied := origin.Client()
+	supplied.CheckRedirect = nil
+	c, err := New(origin.URL, "secret-token", supplied)
+	require.NoError(t, err)
+	_, err = c.GetFile(context.Background(), "o", "r", "p")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "refusing to follow redirect")
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.Zero(t, targetHits)
+
+	// Cross-origin redirect on the same scheme.
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/x", http.StatusTemporaryRedirect)
+	}))
+	defer other.Close()
+	c, err = New(other.URL, "secret-token", nil)
+	require.NoError(t, err)
+	err = c.CreateFile(context.Background(), "o", "r", "p", "m", []byte("x"))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "refusing to follow redirect")
+	assert.Zero(t, targetHits)
+}
+
+func TestAPIError_IsTransient(t *testing.T) {
+	for code, want := range map[int]bool{
+		http.StatusTooManyRequests:     true,
+		http.StatusInternalServerError: true,
+		http.StatusBadGateway:          true,
+		http.StatusGatewayTimeout:      true,
+		http.StatusBadRequest:          false,
+		http.StatusForbidden:           false,
+		http.StatusConflict:            false,
+		505:                            false,
+	} {
+		assert.Equal(t, want, forge.IsTransient(&APIError{StatusCode: code}), "status %d", code)
+	}
 }

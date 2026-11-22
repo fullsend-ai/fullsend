@@ -729,7 +729,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if err != nil {
 		return err
 	}
-	if len(sel.Targets) > 0 {
+	installForgejo := func() error {
+		if len(sel.Targets) == 0 {
+			return nil
+		}
 		printer.StepStart(fmt.Sprintf("Installing %d Forgejo repos", len(sel.Targets)))
 		results, err := newForgejoLifecycle(manifest, opts.dryRun, opts.testForgejo).Install(ctx, sel.Targets)
 		printForgejoResults(os.Stdout, results)
@@ -737,9 +740,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			return fmt.Errorf("forgejo install: %w", err)
 		}
 		printer.StepDone(fmt.Sprintf("Converged %d Forgejo repos", len(results)))
+		return nil
 	}
 	if !sel.RunOthers {
-		return nil
+		return installForgejo()
 	}
 	if len(opts.repoFilter) > 0 {
 		narrowed := *opts
@@ -775,6 +779,15 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// that cannot be listed must not leave an explicit repository's interrupted
 	// bootstrap uncontained. Normal installation stages stay blocked.
 	selectionMatchErr := repos.RequireDeclaredSelections(ctx, manifest, clients, opts.repoFilter)
+
+	// The Forgejo lifecycle writes only once the whole selection, including
+	// every selector left for github/gitlab, has validated: an undeclared
+	// remaining selector must not leave Forgejo repositories installed.
+	if selectionMatchErr == nil {
+		if err := installForgejo(); err != nil {
+			return err
+		}
+	}
 
 	// Containment-only recovery of an interrupted GitLab trigger-account
 	// bootstrap (#8437). It runs for every targeted GitLab repository as soon as
@@ -1705,47 +1718,33 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if err != nil {
 		return err
 	}
-	if len(sel.Targets) > 0 {
-		if !opts.manifestOnly && !opts.uninstallOnly && repos.ManifestReadOnly(manifest, opts.manifest) {
-			return fmt.Errorf("manifest %s is read-only and the uninstall must remove Forgejo repositories from it; no changes were made. "+
-				"Run with --uninstall-only to tear down without editing the manifest", opts.manifest)
-		}
-		if !opts.yes && !opts.dryRun {
-			if err := confirmForgejoTargets(printer, "uninstall", sel.Targets, os.Stdin); err != nil {
-				return err
-			}
-		}
-		lc := newForgejoLifecycle(manifest, opts.dryRun, opts.testForgejo)
-		if err := runForgejoUninstall(opts, printer, manifest, sel.Targets, func() ([]repos.ForgejoRepoResult, error) {
-			return lc.Uninstall(ctx, sel.Targets)
-		}); err != nil {
-			return err
-		}
-	}
-	if !sel.RunOthers {
-		return nil
-	}
-	repoArgs = sel.Rest
-
-	matched, matchErr := repos.MatchManifestRepos(manifest, repoArgs)
-	if matchErr != nil {
-		return matchErr
-	}
-	if len(matched) == 0 {
-		printer.StepInfo("No manifest entries matched the given patterns")
-		return nil
-	}
-
+	// Resolve the whole selection, Forgejo and github/gitlab alike, before
+	// anything is torn down or the manifest is written, so a single
+	// confirmation covers every selected repository.
 	var concreteRepos []string
-	for _, r := range matched {
-		if strings.ContainsAny(r, "*?[") {
-			printer.StepInfo(fmt.Sprintf("[%s] Skipping glob manifest entry (use concrete repo names to uninstall)", r))
-			continue
+	if sel.RunOthers {
+		repoArgs = sel.Rest
+		matched, matchErr := repos.MatchManifestRepos(manifest, repoArgs)
+		if matchErr != nil {
+			return matchErr
 		}
-		concreteRepos = append(concreteRepos, r)
+		if len(matched) == 0 {
+			printer.StepInfo("No manifest entries matched the given patterns")
+		}
+		for _, r := range matched {
+			if strings.ContainsAny(r, "*?[") {
+				printer.StepInfo(fmt.Sprintf("[%s] Skipping glob manifest entry (use concrete repo names to uninstall)", r))
+				continue
+			}
+			concreteRepos = append(concreteRepos, r)
+		}
+		if len(matched) > 0 && len(concreteRepos) == 0 {
+			printer.StepInfo("All matched entries are glob patterns — no concrete repos to uninstall")
+		}
+	} else {
+		repoArgs = nil
 	}
-	if len(concreteRepos) == 0 {
-		printer.StepInfo("All matched entries are glob patterns — no concrete repos to uninstall")
+	if len(sel.Targets) == 0 && len(concreteRepos) == 0 {
 		return nil
 	}
 	// The manifest edit follows the teardown, so a read-only manifest is
@@ -1753,7 +1752,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if !opts.manifestOnly && !opts.uninstallOnly && repos.ManifestReadOnly(manifest, opts.manifest) {
 		return fmt.Errorf("manifest %s is read-only and the uninstall must remove %s from it; no changes were made. "+
 			"Run with --uninstall-only to tear down without editing the manifest, then remove each torn-down entry from its source",
-			opts.manifest, strings.Join(concreteRepos, ", "))
+			opts.manifest, strings.Join(append(forgejoSelectors(sel.Targets), concreteRepos...), ", "))
 	}
 
 	action := "uninstall and remove from manifest"
@@ -1763,9 +1762,21 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		action = "uninstall"
 	}
 	if !opts.yes && !opts.dryRun {
-		if err := confirmBulkAction(printer, action, repoArgs, manifest, os.Stdin); err != nil {
+		if err := confirmBulkAction(printer, action, repoArgs, manifest, os.Stdin, forgejoSelectors(sel.Targets)...); err != nil {
 			return err
 		}
+	}
+
+	if len(sel.Targets) > 0 {
+		lc := newForgejoLifecycle(manifest, opts.dryRun, opts.testForgejo)
+		if err := runForgejoUninstall(opts, printer, manifest, sel.Targets, func() ([]repos.ForgejoRepoResult, error) {
+			return lc.Uninstall(ctx, sel.Targets)
+		}); err != nil {
+			return err
+		}
+	}
+	if len(concreteRepos) == 0 {
+		return nil
 	}
 
 	var clients repos.ForgeClientFactory
@@ -1914,11 +1925,14 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 
 // confirmBulkAction prompts for confirmation when a destructive action targets
 // multiple repos — either through glob expansion or an explicit bulk list.
-func confirmBulkAction(printer *ui.Printer, action string, patterns []string, manifest *repos.Manifest, stdin *os.File) error {
+// extra names already-resolved repositories outside the github/gitlab
+// sections (Forgejo selectors), so one prompt covers the whole selection.
+func confirmBulkAction(printer *ui.Printer, action string, patterns []string, manifest *repos.Manifest, stdin *os.File, extra ...string) error {
 	matched, err := repos.MatchManifestRepos(manifest, patterns)
 	if err != nil {
 		return err
 	}
+	matched = append(matched, extra...)
 	if len(matched) <= 1 {
 		return nil
 	}

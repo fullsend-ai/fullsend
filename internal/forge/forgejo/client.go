@@ -3,9 +3,10 @@
 // repositories declared under forgejo.instances in repos.yaml, using the
 // Forgejo v1 REST API (Forgejo 17 and later).
 //
-// The method signatures match the corresponding forge.Client methods so
-// callers can depend on the narrow subset they need; operations Forgejo
-// support does not yet cover are not part of this adapter.
+// File writes are conditional on the SHA of the revision the caller read,
+// so a file replaced between the read and the write causes a conflict rather
+// than an overwrite. Operations Forgejo support does not yet cover are not
+// part of this adapter.
 package forgejo
 
 import (
@@ -27,9 +28,9 @@ import (
 // maxResponseBytes bounds every API response body the client reads.
 const maxResponseBytes = 10 << 20
 
-// Client is a Forgejo API client for one instance. It is safe for
+// LiveClient is a Forgejo API client for one instance. It is safe for
 // concurrent use.
-type Client struct {
+type LiveClient struct {
 	baseURL    *url.URL
 	token      string
 	httpClient *http.Client
@@ -39,7 +40,7 @@ type Client struct {
 // include a path prefix (https://example.com/forgejo), which is preserved
 // in every API request. token is sent as the API credential; it is never
 // included in returned errors.
-func New(baseURL, token string, httpClient *http.Client) (*Client, error) {
+func New(baseURL, token string, httpClient *http.Client) (*LiveClient, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing forgejo base URL: %w", err)
@@ -57,7 +58,20 @@ func New(baseURL, token string, httpClient *http.Client) (*Client, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 60 * time.Second}
 	}
-	return &Client{baseURL: u, token: token, httpClient: httpClient}, nil
+	// Every request carries the API token, so no redirect is followed:
+	// Go would keep the Authorization header for the same host (including
+	// an https-to-http downgrade) and a redirect could point an
+	// authenticated request at a loopback or private service. The policy
+	// is applied to a copy, so a supplied client keeps its transport and
+	// timeout but cannot opt back in to following redirects.
+	guarded := *httpClient
+	guarded.CheckRedirect = refuseRedirect
+	return &LiveClient{baseURL: u, token: token, httpClient: &guarded}, nil
+}
+
+// refuseRedirect rejects every redirect of an authenticated request.
+func refuseRedirect(req *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("refusing to follow redirect to %s: authenticated Forgejo requests are never redirected", redactURL(req.URL))
 }
 
 // contentsResponse is the subset of Forgejo's ContentsResponse the client
@@ -71,7 +85,7 @@ type contentsResponse struct {
 
 // contentsURL returns the API URL of path in owner/repo. Each segment is
 // escaped so a repository path cannot address another API route.
-func (c *Client) contentsURL(owner, repo, filePath string) string {
+func (c *LiveClient) contentsURL(owner, repo, filePath string) string {
 	segs := strings.Split(strings.Trim(filePath, "/"), "/")
 	for i, s := range segs {
 		segs[i] = url.PathEscape(s)
@@ -82,7 +96,7 @@ func (c *Client) contentsURL(owner, repo, filePath string) string {
 
 // do sends an API request and decodes a JSON response into out when out
 // is non-nil. A 404 maps to forge.ErrNotFound.
-func (c *Client) do(ctx context.Context, method, rawURL string, body, out any) error {
+func (c *LiveClient) do(ctx context.Context, method, rawURL string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -133,6 +147,13 @@ type APIError struct {
 	Message    string
 }
 
+// IsTransient reports whether the response is worth retrying: rate limiting
+// or a temporary server failure. It satisfies the interface forge.IsTransient
+// checks for.
+func (e *APIError) IsTransient() bool {
+	return e.StatusCode == http.StatusTooManyRequests || (e.StatusCode >= 500 && e.StatusCode <= 504)
+}
+
 func (e *APIError) Error() string {
 	if e.Message == "" {
 		return fmt.Sprintf("%s %s: Forgejo API returned HTTP %d", e.Method, e.URL, e.StatusCode)
@@ -165,60 +186,68 @@ func redactURL(u *url.URL) string {
 }
 
 // getContents reads path on the default branch.
-func (c *Client) getContents(ctx context.Context, owner, repo, filePath string) (*contentsResponse, error) {
+func (c *LiveClient) getContents(ctx context.Context, owner, repo, filePath string) (*contentsResponse, error) {
 	var out contentsResponse
 	if err := c.do(ctx, http.MethodGet, c.contentsURL(owner, repo, filePath), nil, &out); err != nil {
 		return nil, err
 	}
 	if out.Type != "file" {
-		return nil, fmt.Errorf("%s in %s/%s is a %s, not a file", filePath, owner, repo, out.Type)
+		return nil, fmt.Errorf("%q in %q/%q is a %q, not a file", filePath, owner, repo, out.Type)
 	}
 	return &out, nil
 }
 
-// GetFileContent returns the content of path on the default branch, or an
-// error wrapping forge.ErrNotFound when it does not exist.
-func (c *Client) GetFileContent(ctx context.Context, owner, repo, filePath string) ([]byte, error) {
+// File is a file's content and the SHA of the revision that holds it.
+type File struct {
+	Content []byte
+	SHA     string
+}
+
+// GetFile returns the content of path on the default branch with the SHA of
+// that revision, or an error wrapping forge.ErrNotFound when it does not
+// exist. Pass the SHA to UpdateFile or DeleteFile to make the write
+// conditional on the revision that was read.
+func (c *LiveClient) GetFile(ctx context.Context, owner, repo, filePath string) (*File, error) {
 	out, err := c.getContents(ctx, owner, repo, filePath)
 	if err != nil {
 		return nil, err
 	}
 	if out.Encoding != "base64" {
-		return nil, fmt.Errorf("%s in %s/%s: unsupported content encoding %q", filePath, owner, repo, out.Encoding)
+		return nil, fmt.Errorf("%q in %q/%q: unsupported content encoding %q", filePath, owner, repo, out.Encoding)
 	}
 	data, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(out.Content, "\n", ""))
 	if err != nil {
-		return nil, fmt.Errorf("%s in %s/%s: decoding content: %w", filePath, owner, repo, err)
+		return nil, fmt.Errorf("%q in %q/%q: decoding content: %w", filePath, owner, repo, err)
 	}
-	return data, nil
+	return &File{Content: data, SHA: out.SHA}, nil
 }
 
-// CreateOrUpdateFile writes content to path on the default branch,
-// creating the file or replacing it when it exists.
-func (c *Client) CreateOrUpdateFile(ctx context.Context, owner, repo, filePath, message string, content []byte) error {
+// CreateFile creates path on the default branch. It fails when the file
+// already exists.
+func (c *LiveClient) CreateFile(ctx context.Context, owner, repo, filePath, message string, content []byte) error {
 	body := map[string]string{
 		"content": base64.StdEncoding.EncodeToString(content),
 		"message": message,
 	}
-	existing, err := c.getContents(ctx, owner, repo, filePath)
-	switch {
-	case err == nil:
-		body["sha"] = existing.SHA
-		return c.do(ctx, http.MethodPut, c.contentsURL(owner, repo, filePath), body, nil)
-	case forge.IsNotFound(err):
-		return c.do(ctx, http.MethodPost, c.contentsURL(owner, repo, filePath), body, nil)
-	default:
-		return err
-	}
+	return c.do(ctx, http.MethodPost, c.contentsURL(owner, repo, filePath), body, nil)
 }
 
-// DeleteFile removes path from the default branch. It returns an error
-// wrapping forge.ErrNotFound when the file does not exist.
-func (c *Client) DeleteFile(ctx context.Context, owner, repo, filePath, message string) error {
-	existing, err := c.getContents(ctx, owner, repo, filePath)
-	if err != nil {
-		return err
+// UpdateFile replaces path on the default branch. sha is the revision the
+// caller read; Forgejo rejects the write when the file has changed since.
+func (c *LiveClient) UpdateFile(ctx context.Context, owner, repo, filePath, message string, content []byte, sha string) error {
+	body := map[string]string{
+		"content": base64.StdEncoding.EncodeToString(content),
+		"message": message,
+		"sha":     sha,
 	}
-	body := map[string]string{"message": message, "sha": existing.SHA}
+	return c.do(ctx, http.MethodPut, c.contentsURL(owner, repo, filePath), body, nil)
+}
+
+// DeleteFile removes path from the default branch. sha is the revision the
+// caller read; Forgejo rejects the delete when the file has changed since.
+// It returns an error wrapping forge.ErrNotFound when the file does not
+// exist.
+func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, filePath, message, sha string) error {
+	body := map[string]string{"message": message, "sha": sha}
 	return c.do(ctx, http.MethodDelete, c.contentsURL(owner, repo, filePath), body, nil)
 }

@@ -230,15 +230,19 @@ func TestReposForgejo_UninstallModes(t *testing.T) {
 
 type failingForgejo struct{}
 
-func (failingForgejo) GetFileContent(context.Context, string, string, string) ([]byte, error) {
+func (failingForgejo) GetFile(context.Context, string, string, string) (*repos.ForgejoFile, error) {
 	return nil, os.ErrPermission
 }
 
-func (failingForgejo) CreateOrUpdateFile(context.Context, string, string, string, string, []byte) error {
+func (failingForgejo) CreateFile(context.Context, string, string, string, string, []byte) error {
 	return os.ErrPermission
 }
 
-func (failingForgejo) DeleteFile(context.Context, string, string, string, string) error {
+func (failingForgejo) UpdateFile(context.Context, string, string, string, string, []byte, string) error {
+	return os.ErrPermission
+}
+
+func (failingForgejo) DeleteFile(context.Context, string, string, string, string, string) error {
 	return os.ErrPermission
 }
 
@@ -271,15 +275,84 @@ func TestForgejoStatusError(t *testing.T) {
 	assert.ErrorContains(t, forgejoStatusError([]repos.ForgejoRepoResult{{State: repos.ForgejoStateUnmanaged}}), "1 unmanaged")
 }
 
-func TestConfirmForgejoTargets(t *testing.T) {
+func TestConfirmBulkAction_CountsForgejoSelectors(t *testing.T) {
 	printer := ui.New(&bytes.Buffer{})
-	require.NoError(t, confirmForgejoTargets(printer, "uninstall", []repos.ForgejoTarget{{Alias: "a"}}, os.Stdin))
+	manifest := &repos.Manifest{}
+	require.NoError(t, confirmBulkAction(printer, "uninstall", nil, manifest, os.Stdin, "forgejo:a/o/r"))
 	r, w, err := os.Pipe()
 	require.NoError(t, err)
 	defer r.Close()
 	_ = w.Close()
-	err = confirmForgejoTargets(printer, "uninstall", []repos.ForgejoTarget{{Alias: "a"}, {Alias: "b"}}, r)
+	err = confirmBulkAction(printer, "uninstall", nil, manifest, r, "forgejo:a/o/r", "forgejo:b/o/r")
 	assert.ErrorContains(t, err, "use --yes")
+}
+
+const mixedForgeManifest = `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  repos:
+    - name: gh/app
+    - name: gh/web
+forgejo:
+  instances:
+    - alias: home
+      url: %s
+      repos:
+        - name: org/lib
+`
+
+// A selection spanning Forgejo and github/gitlab repositories is confirmed
+// once as a whole, before anything is torn down or the manifest changes.
+func TestReposForgejo_MixedUninstallConfirmsWholeSelectionBeforeAnyChange(t *testing.T) {
+	for _, args := range [][]string{
+		{"forgejo:home/org/lib", "gh/app"},
+		{"forgejo:home/org/lib", "gh/app", "gh/web"},
+		{"forgejo:home/org/lib", "gh/*"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			home := newForgejoServer(t, "")
+			home.files["org/lib/.fullsend/config.yaml"] = "# managed by 'fullsend repos'\n"
+			p := writeTestManifest(t, strings.Replace(mixedForgeManifest, "%s", home.url(), 1))
+			before, err := os.ReadFile(p)
+			require.NoError(t, err)
+
+			// os.Stdin is not a terminal under go test, so the prompt
+			// cannot be answered and the run must fail closed.
+			var runErr error
+			captureStdout(t, func() {
+				runErr = runReposUninstall(context.Background(), &reposUninstallConfig{
+					manifest: p, concurrency: 4, testForgejo: forgejoEnv(map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"}),
+				}, args)
+			})
+			require.Error(t, runErr)
+			assert.ErrorContains(t, runErr, "use --yes")
+			assert.Zero(t, home.writes, "no Forgejo teardown before the confirmation")
+			assert.Empty(t, home.auth, "the Forgejo instance is not contacted")
+			after, err := os.ReadFile(p)
+			require.NoError(t, err)
+			assert.Equal(t, string(before), string(after), "the manifest is unchanged")
+		})
+	}
+}
+
+// A selector left for github/gitlab that the manifest does not declare must
+// fail the install before the Forgejo lifecycle writes anything.
+func TestReposForgejo_InstallValidatesRemainingSelectorsBeforeForgejoWrites(t *testing.T) {
+	home := newForgejoServer(t, "")
+	p := writeTestManifest(t, strings.Replace(mixedForgeManifest, "%s", home.url(), 1))
+	var runErr error
+	captureStdout(t, func() {
+		runErr = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest: p, concurrency: 4, repoFilter: []string{"forgejo:home/org/lib", "nope/missing"},
+			testForgejo: forgejoEnv(map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"}),
+		})
+	})
+	require.Error(t, runErr)
+	assert.ErrorContains(t, runErr, "not declared in repos.yaml")
+	assert.Zero(t, home.writes)
+	assert.Empty(t, home.files)
 }
 
 func TestOthersFilter(t *testing.T) {

@@ -61,7 +61,7 @@ func TestForgejoManifest_Validation(t *testing.T) {
 	}{
 		{"bad alias", "- alias: -x\n      url: https://a.example\n      repos: []", "alias"},
 		{"duplicate alias", "- alias: a\n      url: https://a.example\n      repos: []\n    - alias: A\n      url: https://b.example\n      repos: []", "duplicates alias"},
-		{"env collision", "- alias: a.b\n      url: https://a.example\n      repos: []\n    - alias: a_b\n      url: https://b.example\n      repos: []", "share the credential variable FULLSEND_FORGEJO_A_B_TOKEN"},
+		{"env collision", "- alias: a.b\n      url: https://a.example\n      repos: []\n    - alias: a_b\n      url: https://b.example\n      repos: []", `share the credential variable "FULLSEND_FORGEJO_A_B_TOKEN"`},
 		{"http remote", "- alias: a\n      url: http://a.example\n      repos: []", "must use https"},
 		{"no scheme", "- alias: a\n      url: a.example\n      repos: []", "absolute https URL"},
 		{"ftp", "- alias: a\n      url: ftp://a.example\n      repos: []", "absolute https URL"},
@@ -138,7 +138,7 @@ func TestSplitForgejoSelectors(t *testing.T) {
 	})
 	t.Run("undeclared qualified target", func(t *testing.T) {
 		_, err := m.SplitForgejoSelectors([]string{"forgejo:home/team/tool"})
-		assert.ErrorContains(t, err, "not declared in repos.yaml: forgejo:home/team/tool")
+		assert.ErrorContains(t, err, `not declared in repos.yaml: "forgejo:home/team/tool"`)
 	})
 	t.Run("malformed qualified selector", func(t *testing.T) {
 		_, err := m.SplitForgejoSelectors([]string{"forgejo:home/app"})
@@ -243,9 +243,15 @@ type memForgejo struct {
 	files  map[string]string
 	writes int
 	failOn string
+	// afterGet runs after a successful GetFile, to simulate a concurrent
+	// change between the ownership-checked read and the write.
+	afterGet func(files map[string]string, key string)
 }
 
-func (c *memForgejo) GetFileContent(_ context.Context, owner, repo, path string) ([]byte, error) {
+// memSHA is the revision identifier memForgejo reports for content.
+func memSHA(content string) string { return "sha:" + content }
+
+func (c *memForgejo) GetFile(_ context.Context, owner, repo, path string) (*ForgejoFile, error) {
 	if c.failOn == "get" {
 		return nil, errors.New("boom")
 	}
@@ -253,24 +259,48 @@ func (c *memForgejo) GetFileContent(_ context.Context, owner, repo, path string)
 	if !ok {
 		return nil, fmt.Errorf("get: %w", forge.ErrNotFound)
 	}
-	return []byte(v), nil
+	if c.afterGet != nil {
+		defer c.afterGet(c.files, owner+"/"+repo+"/"+path)
+	}
+	return &ForgejoFile{Content: []byte(v), SHA: memSHA(v)}, nil
 }
 
-func (c *memForgejo) CreateOrUpdateFile(_ context.Context, owner, repo, path, _ string, content []byte) error {
+func (c *memForgejo) CreateFile(_ context.Context, owner, repo, path, _ string, content []byte) error {
 	if c.failOn == "write" {
 		return errors.New("boom")
 	}
+	key := owner + "/" + repo + "/" + path
+	if _, exists := c.files[key]; exists {
+		return errors.New("create: file already exists")
+	}
 	c.writes++
-	c.files[owner+"/"+repo+"/"+path] = string(content)
+	c.files[key] = string(content)
 	return nil
 }
 
-func (c *memForgejo) DeleteFile(_ context.Context, owner, repo, path, _ string) error {
+func (c *memForgejo) UpdateFile(_ context.Context, owner, repo, path, _ string, content []byte, sha string) error {
+	if c.failOn == "write" {
+		return errors.New("boom")
+	}
+	key := owner + "/" + repo + "/" + path
+	if cur, exists := c.files[key]; !exists || memSHA(cur) != sha {
+		return errors.New("update: sha conflict")
+	}
+	c.writes++
+	c.files[key] = string(content)
+	return nil
+}
+
+func (c *memForgejo) DeleteFile(_ context.Context, owner, repo, path, _, sha string) error {
 	if c.failOn == "delete" {
 		return errors.New("boom")
 	}
+	key := owner + "/" + repo + "/" + path
+	if cur, exists := c.files[key]; !exists || memSHA(cur) != sha {
+		return errors.New("delete: sha conflict")
+	}
 	c.writes++
-	delete(c.files, owner+"/"+repo+"/"+path)
+	delete(c.files, key)
 	return nil
 }
 

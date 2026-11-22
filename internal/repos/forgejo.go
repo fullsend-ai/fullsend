@@ -100,7 +100,7 @@ func (c *ForgejoConfig) validate() error {
 		aliases[key] = inst.Alias
 		env := ForgejoTokenEnvVar(inst.Alias)
 		if prev, ok := envVars[env]; ok {
-			return fmt.Errorf("%s.alias %q and alias %q share the credential variable %s; rename one", field, inst.Alias, prev, env)
+			return fmt.Errorf("%s.alias %q and alias %q share the credential variable %q; rename one", field, inst.Alias, prev, env)
 		}
 		envVars[env] = inst.Alias
 		if err := validateForgejoURL(field+".url", inst.URL); err != nil {
@@ -276,15 +276,13 @@ func (m *Manifest) SplitForgejoSelectors(filter []string) (ForgejoSelection, err
 		if err := forgejoAmbiguity(s, matches); err != nil {
 			return ForgejoSelection{}, err
 		}
-		if m.hasNonForgejoRepos() {
-			undeclared, err := m.UndeclaredSelectors([]string{s})
-			if err != nil {
-				return ForgejoSelection{}, err
-			}
-			if len(undeclared) == 0 {
-				return ForgejoSelection{}, fmt.Errorf("selector %q is ambiguous: it matches a github/gitlab declaration and %s; qualify the Forgejo repository as forgejo:<alias>/<owner>/<repo>",
-					s, joinSelectors(matches))
-			}
+		overlaps, err := m.overlapsNonForgejo(s, matches)
+		if err != nil {
+			return ForgejoSelection{}, err
+		}
+		if overlaps {
+			return ForgejoSelection{}, fmt.Errorf("selector %q is ambiguous: it matches a github/gitlab declaration and %s; qualify the Forgejo repository as forgejo:<alias>/<owner>/<repo>",
+				s, joinSelectors(matches))
 		}
 		for _, t := range matches {
 			add(t)
@@ -296,6 +294,41 @@ func (m *Manifest) SplitForgejoSelectors(filter []string) (ForgejoSelection, err
 	}
 	sel.RunOthers = len(sel.Rest) > 0
 	return sel, nil
+}
+
+// overlapsNonForgejo reports whether a bare selector that matched the given
+// Forgejo repositories also selects a github/gitlab declaration: the
+// selector matches a declared entry name, or a declared glob entry covers
+// one of the Forgejo paths. A glob selector that matches only Forgejo
+// repositories (fj/* next to an unrelated gh/app) does not overlap.
+func (m *Manifest) overlapsNonForgejo(selector string, matches []ForgejoTarget) (bool, error) {
+	for _, platform := range []*PlatformConfig{m.GitHub, m.GitLab} {
+		if platform == nil {
+			continue
+		}
+		for _, e := range platform.Repos {
+			ok, err := matchesPattern(selector, e.Name)
+			if err != nil {
+				return false, fmt.Errorf("invalid glob pattern %q: %w", selector, err)
+			}
+			if ok {
+				return true, nil
+			}
+			if !isGlob(e.Name) {
+				continue
+			}
+			for _, t := range matches {
+				ok, err := matchesPattern(e.Name, t.Path())
+				if err != nil {
+					return false, fmt.Errorf("matching manifest entry %q against %q: %w", e.Name, t.Path(), err)
+				}
+				if ok {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
 // matchQualifiedForgejo resolves forgejo:<alias>/<owner>/<repo>.
@@ -331,7 +364,7 @@ func (m *Manifest) matchQualifiedForgejo(all []ForgejoTarget, selector string) (
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("not declared in repos.yaml: %s; declare it under the %q instance's repos first", selector, alias)
+		return nil, fmt.Errorf("not declared in repos.yaml: %q; declare it under the %q instance's repos first", selector, alias)
 	}
 	return out, nil
 }

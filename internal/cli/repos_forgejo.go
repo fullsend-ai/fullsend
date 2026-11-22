@@ -1,13 +1,10 @@
 package cli
 
 import (
-	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
-	"strings"
-
-	"golang.org/x/term"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/forgejo"
 	"github.com/fullsend-ai/fullsend/internal/repos"
@@ -21,13 +18,28 @@ type forgejoTestHooks struct {
 	lookupEnv func(string) (string, bool)
 }
 
+// liveForgejoFiles adapts the Forgejo API client to repos.ForgejoFileClient.
+type liveForgejoFiles struct{ *forgejo.LiveClient }
+
+func (c liveForgejoFiles) GetFile(ctx context.Context, owner, repo, path string) (*repos.ForgejoFile, error) {
+	f, err := c.LiveClient.GetFile(ctx, owner, repo, path)
+	if err != nil {
+		return nil, err
+	}
+	return &repos.ForgejoFile{Content: f.Content, SHA: f.SHA}, nil
+}
+
 // newForgejoLifecycle returns the Forgejo repository lifecycle for m.
 func newForgejoLifecycle(m *repos.Manifest, dryRun bool, hooks *forgejoTestHooks) *repos.ForgejoLifecycle {
 	lc := &repos.ForgejoLifecycle{
 		Manifest: m,
 		DryRun:   dryRun,
 		NewClient: func(baseURL, token string) (repos.ForgejoFileClient, error) {
-			return forgejo.New(baseURL, token, nil)
+			c, err := forgejo.New(baseURL, token, nil)
+			if err != nil {
+				return nil, err
+			}
+			return liveForgejoFiles{c}, nil
 		},
 		Lookup: os.LookupEnv,
 	}
@@ -82,28 +94,13 @@ func forgejoStatusError(results []repos.ForgejoRepoResult) error {
 		counts[repos.ForgejoStateUnmanaged], counts[repos.ForgejoStateError])
 }
 
-// confirmForgejoTargets asks before acting on more than one Forgejo
-// repository.
-func confirmForgejoTargets(printer *ui.Printer, action string, targets []repos.ForgejoTarget, stdin *os.File) error {
-	if len(targets) <= 1 {
-		return nil
-	}
-	if !term.IsTerminal(int(stdin.Fd())) {
-		return fmt.Errorf("stdin is not a terminal; use --yes to skip confirmation")
-	}
-	printer.StepWarn(fmt.Sprintf("This will %s %d Forgejo repos:", action, len(targets)))
+// forgejoSelectors returns the qualified selector of each target.
+func forgejoSelectors(targets []repos.ForgejoTarget) []string {
+	out := make([]string, 0, len(targets))
 	for _, t := range targets {
-		printer.StepInfo("  " + t.Selector())
+		out = append(out, t.Selector())
 	}
-	printer.StepInfo("Continue? [y/N]")
-	line, err := bufio.NewReader(stdin).ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("reading confirmation: %w", err)
-	}
-	if strings.TrimSpace(strings.ToLower(line)) != "y" {
-		return fmt.Errorf("aborted")
-	}
-	return nil
+	return out
 }
 
 // runForgejoUninstall tears down the selected Forgejo repositories and,

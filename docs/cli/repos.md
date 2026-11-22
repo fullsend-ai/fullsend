@@ -2047,28 +2047,29 @@ forgejo:
         - name: team/tool
 ```
 
-A repository's identity is its alias plus its path, so the same path can be declared on more than one instance. The base URL must use `https`. Plain `http` is accepted only for loopback hosts, such as a local development stack. The URL must not contain credentials, a query, or a fragment. Aliases are case-insensitively unique.
+The `forgejo:` key needs a `fullsend` CLI version that includes Forgejo support; an older binary rejects a manifest that declares it as an unknown field. A repository's identity is its alias plus its path, so the same path can be declared on more than one instance. The base URL must use `https`. Plain `http` is accepted only for loopback hosts, such as a local development stack. The URL must not contain credentials, a query, or a fragment. Aliases are case-insensitively unique.
 
 ### Selecting Forgejo repositories
 
 - `forgejo:<alias>/<owner>/<repo>` always selects that instance's repository. The `<owner>/<repo>` part may be a glob, for example `forgejo:home/org/*`.
 - A bare `owner/repo` selector or glob selects a Forgejo repository only when every path it matches is declared on exactly one instance. Otherwise the command fails before any credential lookup or write, and lists the qualified choices. With the manifest above, `team/tool` selects `forgejo:codeberg/team/tool`, while `org/app` fails and lists `forgejo:codeberg/org/app` and `forgejo:home/org/app`.
 - An unknown alias, or a repository the selected instance does not declare, is an error. The selector never falls through to another instance.
-- A bare selector that matches both a Forgejo repository and a `github`/`gitlab` declaration is ambiguous. Qualify the Forgejo repository instead.
+- A bare selector that matches both a Forgejo repository and a `github`/`gitlab` declaration is ambiguous. Qualify the Forgejo repository instead. A bare glob that matches only Forgejo repositories (such as `fj/*` next to an unrelated `github` entry) is not ambiguous.
+- `repos install` validates the whole selection, including every selector left for `github`/`gitlab`, before it writes to any forge. `repos uninstall` asks for one confirmation covering every selected repository, Forgejo and `github`/`gitlab` together, before it tears anything down.
 - With no selector, `repos install` and `repos status` act on every declared repository. `repos uninstall` always needs explicit selectors.
 
 ### Forgejo credentials
 
 Each instance reads its API token from `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN`. To normalize the alias, uppercase it and replace each run of non-alphanumeric characters with one underscore. For example, alias `home` reads `FULLSEND_FORGEJO_HOME_TOKEN` and alias `code-berg` reads `FULLSEND_FORGEJO_CODE_BERG_TOKEN`. Two aliases that normalize to the same variable are rejected. Tokens are never read from or written to `repos.yaml`.
 
-The command resolves selectors first. It then looks up a token for every selected instance, and only then makes its first Forgejo call. A missing token fails the command, names each alias and variable, and changes nothing. An unselected instance is never contacted, and one alias's token is never used for another. Interactive OAuth login is not available yet.
+The command resolves selectors first. It then looks up a token for every selected instance, and only then makes its first Forgejo call. A missing token fails the command, names each alias and variable, and changes nothing. An unselected instance is never contacted, and one alias's token is never used for another. Interactive OAuth login is not available yet. The API token is sent only to the configured URL: the Forgejo client refuses to follow any redirect, so a redirect cannot carry the token to another origin or over plain HTTP.
 
 ### Forgejo lifecycle
 
 The Fullsend-managed resource on Forgejo is the managed `.fullsend/config.yaml`. It carries the ownership marker and `defaults.config`.
 
-- `repos install` creates the file when it is missing and rewrites it when it has drifted. Running it again makes no changes. A `.fullsend/config.yaml` without the ownership marker is never overwritten: install reports an error for that repository. `--dry-run` reports what would change without writing.
-- `repos status` is read-only. Each selected repository is reported as `up-to-date`, `drift`, `not-installed`, `unmanaged` (a file without the ownership marker), or `error`, in a `FORGEJO REPO` table or in the `forgejo` array of `--json` output. Any state other than `up-to-date` gives a non-zero exit code.
+- `repos install` creates the file when it is missing and rewrites it when it has drifted. Running it again makes no changes. A `.fullsend/config.yaml` without the ownership marker is never overwritten: install reports an error for that repository. Updates and deletes are conditional on the revision whose marker was checked, so a file replaced in between causes a conflict error instead of an overwrite or delete. `--dry-run` reports what would change without writing.
+- `repos status` is read-only. Each selected repository is reported as `up-to-date`, `drift`, `not-installed`, `unmanaged` (a file without the ownership marker), or `error`, in a `FORGEJO REPO` table or in the `forgejo` array of `--json` output. Any state other than `up-to-date` gives a non-zero exit code. In `--json` output, `summary` covers only the `github`/`gitlab` repositories; Forgejo results appear only in the separate `forgejo` array, so a run that selects only Forgejo repositories has an empty `repos` array and a zeroed `summary` even when a Forgejo repository errored. Check the `forgejo` array or the exit code.
 - `repos uninstall` deletes the managed file and then removes the repository's entry from `repos.yaml`. A file without the ownership marker is never deleted. The entry is removed only when teardown succeeded. `--uninstall-only`, `--manifest-only`, `--dry-run` and `--yes` behave as they do for other forges. Forgejo file changes are committed directly to the default branch, whether or not `--direct` is set.
 
 Reusable workflow hosts, vendored agent workflows, and OAuth login for Forgejo are tracked separately under [#9642](https://github.com/fullsend-ai/fullsend/issues/9642).

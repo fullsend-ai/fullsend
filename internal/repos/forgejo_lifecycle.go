@@ -13,12 +13,21 @@ import (
 // lifecycle converges in each declared repository.
 const forgejoManagedConfigPath = ".fullsend/config.yaml"
 
-// ForgejoFileClient is the subset of forge.Client the Forgejo repository
-// lifecycle uses. Its methods have the forge.Client signatures.
+// ForgejoFile is a file's content and the SHA of the revision that holds it.
+type ForgejoFile struct {
+	Content []byte
+	SHA     string
+}
+
+// ForgejoFileClient is the file API the Forgejo repository lifecycle uses.
+// UpdateFile and DeleteFile take the SHA of the revision whose ownership
+// marker was checked, so a file replaced after that read is not overwritten
+// or deleted.
 type ForgejoFileClient interface {
-	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
-	CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
-	DeleteFile(ctx context.Context, owner, repo, path, message string) error
+	GetFile(ctx context.Context, owner, repo, path string) (*ForgejoFile, error)
+	CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
+	UpdateFile(ctx context.Context, owner, repo, path, message string, content []byte, sha string) error
+	DeleteFile(ctx context.Context, owner, repo, path, message, sha string) error
 }
 
 // ForgejoClientFunc returns the API client for an instance using token.
@@ -128,20 +137,22 @@ func (l *ForgejoLifecycle) clients(targets []ForgejoTarget) (map[string]ForgejoF
 	return out, nil
 }
 
-// inspect reads the managed file and classifies it against desired.
-func inspectForgejo(ctx context.Context, c ForgejoFileClient, t ForgejoTarget, desired []byte) (ForgejoState, error) {
-	existing, err := c.GetFileContent(ctx, t.Owner, t.Repo, forgejoManagedConfigPath)
+// inspectForgejo reads the managed file and classifies it against desired.
+// It also returns the SHA of the revision it classified, for the conditional
+// write that follows.
+func inspectForgejo(ctx context.Context, c ForgejoFileClient, t ForgejoTarget, desired []byte) (ForgejoState, string, error) {
+	existing, err := c.GetFile(ctx, t.Owner, t.Repo, forgejoManagedConfigPath)
 	switch {
 	case forge.IsNotFound(err):
-		return ForgejoStateNotInstalled, nil
+		return ForgejoStateNotInstalled, "", nil
 	case err != nil:
-		return ForgejoStateError, err
-	case !hasManagedConfigMarker(existing):
-		return ForgejoStateUnmanaged, nil
-	case managedConfigEquivalent(existing, desired):
-		return ForgejoStateUpToDate, nil
+		return ForgejoStateError, "", err
+	case !hasManagedConfigMarker(existing.Content):
+		return ForgejoStateUnmanaged, existing.SHA, nil
+	case managedConfigEquivalent(existing.Content, desired):
+		return ForgejoStateUpToDate, existing.SHA, nil
 	default:
-		return ForgejoStateDrift, nil
+		return ForgejoStateDrift, existing.SHA, nil
 	}
 }
 
@@ -168,7 +179,7 @@ func (l *ForgejoLifecycle) Status(ctx context.Context, targets []ForgejoTarget) 
 	results := make([]ForgejoRepoResult, 0, len(targets))
 	for _, t := range targets {
 		r := newForgejoResult(t)
-		state, err := inspectForgejo(ctx, clients[t.Alias], t, desired)
+		state, _, err := inspectForgejo(ctx, clients[t.Alias], t, desired)
 		if err != nil {
 			r.fail(err)
 		} else {
@@ -209,7 +220,7 @@ func (l *ForgejoLifecycle) Install(ctx context.Context, targets []ForgejoTarget)
 	for _, t := range targets {
 		r := newForgejoResult(t)
 		c := clients[t.Alias]
-		state, err := inspectForgejo(ctx, c, t, desired)
+		state, sha, err := inspectForgejo(ctx, c, t, desired)
 		switch {
 		case err != nil:
 			r.fail(err)
@@ -223,8 +234,14 @@ func (l *ForgejoLifecycle) Install(ctx context.Context, targets []ForgejoTarget)
 				next, msg = ForgejoStateUpgraded, "chore: update fullsend managed config"
 			}
 			if !l.DryRun {
-				if err := c.CreateOrUpdateFile(ctx, t.Owner, t.Repo, forgejoManagedConfigPath, msg, desired); err != nil {
-					r.fail(fmt.Errorf("writing %s: %w", forgejoManagedConfigPath, err))
+				var werr error
+				if state == ForgejoStateDrift {
+					werr = c.UpdateFile(ctx, t.Owner, t.Repo, forgejoManagedConfigPath, msg, desired, sha)
+				} else {
+					werr = c.CreateFile(ctx, t.Owner, t.Repo, forgejoManagedConfigPath, msg, desired)
+				}
+				if werr != nil {
+					r.fail(fmt.Errorf("writing %s: %w", forgejoManagedConfigPath, werr))
 					break
 				}
 			}
@@ -246,18 +263,18 @@ func (l *ForgejoLifecycle) Uninstall(ctx context.Context, targets []ForgejoTarge
 	for _, t := range targets {
 		r := newForgejoResult(t)
 		c := clients[t.Alias]
-		existing, err := c.GetFileContent(ctx, t.Owner, t.Repo, forgejoManagedConfigPath)
+		existing, err := c.GetFile(ctx, t.Owner, t.Repo, forgejoManagedConfigPath)
 		switch {
 		case forge.IsNotFound(err):
 			r.State = ForgejoStateNotInstalled
 		case err != nil:
 			r.fail(err)
-		case !hasManagedConfigMarker(existing):
+		case !hasManagedConfigMarker(existing.Content):
 			r.State = ForgejoStateUnmanaged
 			r.Detail = forgejoStatusDetail(ForgejoStateUnmanaged)
 		default:
 			if !l.DryRun {
-				if err := c.DeleteFile(ctx, t.Owner, t.Repo, forgejoManagedConfigPath, "chore: remove fullsend managed config"); err != nil && !forge.IsNotFound(err) {
+				if err := c.DeleteFile(ctx, t.Owner, t.Repo, forgejoManagedConfigPath, "chore: remove fullsend managed config", existing.SHA); err != nil && !forge.IsNotFound(err) {
 					r.fail(fmt.Errorf("removing %s: %w", forgejoManagedConfigPath, err))
 					break
 				}

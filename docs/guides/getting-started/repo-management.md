@@ -68,7 +68,9 @@ select repositories that are already declared.
 
 Each platform (`github`, `gitlab`) is a top-level key containing its
 infrastructure config and repos list. Repos are grouped under their
-platform — no per-entry forge selector is needed:
+platform — no per-entry forge selector is needed. Forgejo repositories
+are declared separately under `forgejo.instances`; see
+[Forgejo instances](#forgejo-instances) below.
 
 ```yaml
 version: 1
@@ -102,6 +104,43 @@ takes precedence for the `FULLSEND_MINT_URL` variable. When it differs
 from an explicit manifest `mint_url`, install and status report a
 conflict for that repository; see
 [Effective infrastructure values](../../cli/repos.md#effective-infrastructure-values).
+
+#### Forgejo instances
+
+Repositories on one or more Forgejo instances are declared under
+`forgejo.instances`. Each instance has an `alias`, its base `url`, and
+its `repos` as `owner/repo` paths relative to that URL. The same path can
+be declared on several instances because a repository is identified by
+its alias plus its path:
+
+```yaml
+forgejo:
+  instances:
+    - alias: home
+      url: https://git.example.com/forgejo
+      repos:
+        - name: org/app
+    - alias: codeberg
+      url: https://codeberg.org
+      repos:
+        - name: org/app
+```
+
+- **Credentials.** Each instance reads its API token from
+  `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN` (the alias uppercased, with
+  each run of non-alphanumeric characters replaced by one underscore, so
+  `code-berg` reads `FULLSEND_FORGEJO_CODE_BERG_TOKEN`). Tokens are never
+  stored in `repos.yaml`.
+- **Selectors.** `forgejo:<alias>/<owner>/<repo>` selects a repository on
+  one instance (the `<owner>/<repo>` part may be a glob). A bare
+  `owner/repo` selects a Forgejo repository only when it is declared on
+  exactly one instance and no `github`/`gitlab` declaration also matches;
+  otherwise the command fails and lists the qualified choices.
+- **Uninstall confirmation.** A selection that spans several repositories
+  is confirmed once, as a whole, before anything is torn down.
+
+See [Forgejo instances](../../cli/repos.md#forgejo-instances) in the CLI
+reference for the full lifecycle and selector rules.
 
 `github.app_set` names the GitHub App set (apps named `{app-set}-{role}`)
 and is persisted as the `FULLSEND_APP_SET` repository variable, mirroring
@@ -1097,7 +1136,9 @@ The repository runs an old shim. Upgrade it as described in
 ### Unknown field errors in repos.yaml
 
 The manifest parser strictly validates field names in all sections
-(`defaults`, `github`, `gitlab`, and top-level).
+(`defaults`, `github`, `gitlab`, `forgejo`, and top-level). A `forgejo:`
+section needs a `fullsend` CLI version that includes Forgejo support; an
+older binary rejects it as an unknown top-level field.
 Unrecognized fields are rejected with an error naming the offending key:
 
 ```
