@@ -186,7 +186,8 @@ Feature: Runner secrets resolved from Vault through the job's workload identity
       | Prove execution | write_fixture | output/dispatch-ok.json, fixtures/dispatch/ok.json |
     And an issue
     When the issue is labeled "ready-for-vault-invalid"
-    Then the harness "vault-invalid" agent did not run
+    Then the harness "vault-invalid" workflow fails with "vault_address must use https" in its logs
+    And the harness "vault-invalid" agent did not run
 
   Scenario: A pull request cannot redirect a Vault secret
     Given the Vault test server holds a synthetic "JIRA_TOKEN"
