@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -236,6 +237,34 @@ forgejo:
 	require.NoError(t, err)
 	assert.Equal(t, []string{"forgejo:home/org/a"}, selectors(sel.Targets))
 	assert.False(t, sel.RunOthers)
+}
+
+func TestSplitForgejoSelectors_SelectorMatchingGlobEntryText(t *testing.T) {
+	m := parseTestManifest(t, `version: 1
+github:
+  repos:
+    - name: org/[a-c]
+forgejo:
+  instances:
+    - alias: home
+      url: https://git.example.com
+      repos:
+        - name: org/a-b
+`)
+	// org/*-* matches the literal text of the declared org/[a-c] glob, but
+	// that glob selects only org/a, org/b and org/c, so there is no overlap.
+	sel, err := m.SplitForgejoSelectors([]string{"org/*-*"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"forgejo:home/org/a-b"}, selectors(sel.Targets))
+	assert.False(t, sel.RunOthers)
+}
+
+func TestGlobsMayIntersect_RepeatedClassRanges(t *testing.T) {
+	class := "[" + strings.Repeat("a-c", 20000) + "]"
+	start := time.Now()
+	assert.True(t, globsMayIntersect("org/"+class, "org/b"))
+	assert.False(t, globsMayIntersect("org/"+class, "org/d"))
+	assert.Less(t, time.Since(start), 2*time.Second)
 }
 
 func TestGlobsMayIntersect(t *testing.T) {

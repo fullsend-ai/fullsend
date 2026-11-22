@@ -307,14 +307,16 @@ func (m *Manifest) overlapsNonForgejo(selector string, matches []ForgejoTarget) 
 			continue
 		}
 		for _, e := range platform.Repos {
-			ok, err := matchesPattern(selector, e.Name)
-			if err != nil {
-				return false, fmt.Errorf("invalid glob pattern %q: %w", selector, err)
-			}
-			if ok {
-				return true, nil
-			}
 			if !isGlob(e.Name) {
+				// A glob entry's text is a pattern, not a name, so only a
+				// literal entry is matched against the selector by name.
+				ok, err := matchesPattern(selector, e.Name)
+				if err != nil {
+					return false, fmt.Errorf("invalid glob pattern %q: %w", selector, err)
+				}
+				if ok {
+					return true, nil
+				}
 				continue
 			}
 			// Two globs can select a repository neither pattern names

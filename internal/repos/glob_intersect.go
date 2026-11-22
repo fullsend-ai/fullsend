@@ -1,6 +1,8 @@
 package repos
 
 import (
+	"slices"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -67,20 +69,16 @@ type globToken struct {
 	star    bool
 	negated bool
 	noSlash bool
-	ranges  [][2]rune
+	ranges  [][2]rune // sorted, non-overlapping
 }
 
 func (t globToken) matches(r rune) bool {
 	if t.noSlash && r == '/' {
 		return false
 	}
-	in := false
-	for _, rg := range t.ranges {
-		if rg[0] <= r && r <= rg[1] {
-			in = true
-			break
-		}
-	}
+	// ranges is sorted and non-overlapping (see mergeGlobRanges).
+	i := sort.Search(len(t.ranges), func(i int) bool { return t.ranges[i][1] >= r })
+	in := i < len(t.ranges) && t.ranges[i][0] <= r
 	return in != t.negated
 }
 
@@ -105,7 +103,8 @@ func globCandidates(sets ...[]globToken) []rune {
 			}
 		}
 	}
-	return out
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // parseGlob tokenizes a lowercased pattern. It reports false for a pattern
@@ -145,12 +144,14 @@ func parseGlob(p string) ([]globToken, bool) {
 // parseGlobClass parses the text after `[` up to and including `]`.
 func parseGlobClass(p string) (globToken, string, bool) {
 	tok := globToken{}
+	var members [][2]rune
 	if strings.HasPrefix(p, "^") {
 		tok.negated = true
 		p = p[1:]
 	}
 	for {
-		if len(p) > 0 && p[0] == ']' && len(tok.ranges) > 0 {
+		if len(p) > 0 && p[0] == ']' && len(members) > 0 {
+			tok.ranges = mergeGlobRanges(members)
 			return tok, p[1:], true
 		}
 		lo, rest, ok := globClassRune(p)
@@ -164,9 +165,31 @@ func parseGlobClass(p string) (globToken, string, bool) {
 				return globToken{}, "", false
 			}
 		}
-		tok.ranges = append(tok.ranges, [2]rune{lo, hi})
+		members = append(members, [2]rune{lo, hi})
 		p = rest
 	}
+}
+
+// mergeGlobRanges sorts class members and merges overlapping or adjacent
+// ranges, so a class with many repeated ranges stays cheap to evaluate. A
+// reversed range such as z-a matches nothing and is dropped.
+func mergeGlobRanges(members [][2]rune) [][2]rune {
+	sorted := make([][2]rune, 0, len(members))
+	for _, rg := range members {
+		if rg[0] <= rg[1] {
+			sorted = append(sorted, rg)
+		}
+	}
+	slices.SortFunc(sorted, func(a, b [2]rune) int { return int(a[0]) - int(b[0]) })
+	var out [][2]rune
+	for _, rg := range sorted {
+		if n := len(out); n > 0 && rg[0] <= out[n-1][1]+1 {
+			out[n-1][1] = max(out[n-1][1], rg[1])
+			continue
+		}
+		out = append(out, rg)
+	}
+	return out
 }
 
 // globClassRune reads one class member, which may be a `\` escape but not a
