@@ -43,10 +43,12 @@ const codexRedactMaxLine = 8 << 20
 type codexRedactingWriter struct {
 	w   io.Writer
 	buf bytes.Buffer
+	// maxLine is codexRedactMaxLine; tests in this package lower it.
+	maxLine int
 }
 
 func newCodexRedactingWriter(w io.Writer) *codexRedactingWriter {
-	return &codexRedactingWriter{w: w}
+	return &codexRedactingWriter{w: w, maxLine: codexRedactMaxLine}
 }
 
 // Write always reports the full input as consumed: it is the tee side of an
@@ -57,7 +59,7 @@ func (c *codexRedactingWriter) Write(p []byte) (int, error) {
 	for {
 		i := bytes.IndexByte(c.buf.Bytes(), '\n')
 		if i < 0 {
-			if c.buf.Len() > codexRedactMaxLine {
+			if c.buf.Len() > c.maxLine {
 				// No newline in sight: flush what we have as text rather than
 				// grow without bound.
 				if err := c.flushBuffer(); err != nil {

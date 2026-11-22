@@ -368,14 +368,20 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		}
 		// Same allowlist checks as fullsend run: the harness allowlist must
 		// be covered by config.yaml's, and every URL reference must match
-		// one of the two. String comparison only, nothing is fetched.
-		if h.HasURLReferences() {
+		// one of the two. String comparison only, nothing is fetched. The
+		// subset check runs for URL-referencing harnesses (as before) and
+		// for every harness whose runtime fetch service can start
+		// (shouldStartFetchService: allow_runtime_fetch, URL-dir resources,
+		// or a bare allowed_remote_resources declaration) (#9291).
+		if h.HasURLReferences() || shouldStartFetchService(h) {
 			if err := h.ValidateAllowedRemoteResources(cfg.AllowedResources()); err != nil {
 				wrapped := fmt.Errorf("validating allowed remote resources for agent %q: %w", agentName, err)
 				errs = append(errs, wrapped)
 				emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 				continue
 			}
+		}
+		if h.HasURLReferences() {
 			if err := validateURLReferencesAllowed(h, cfg.AllowedResources()); err != nil {
 				wrapped := fmt.Errorf("validating allowed remote resources for agent %q: %w", agentName, err)
 				errs = append(errs, wrapped)

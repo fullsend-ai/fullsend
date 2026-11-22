@@ -52,7 +52,8 @@ For the repo admin:
   pi needs the model list below; codex and Claude Code do not need one. See
   [Claude Code § Inference gateway route](../../runtimes/claude.md#inference-gateway-route) and
   [Codex › Models through an inference gateway](../../runtimes/codex.md#models-through-an-inference-gateway-experimental).
-- The latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
+- The latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI
+  (run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later).
 
 ## The config block
 

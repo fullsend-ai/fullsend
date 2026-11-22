@@ -12,6 +12,8 @@ Execute an agent locally in a sandbox. `fullsend run` resolves the agent harness
 fullsend run <agent-name> [flags]
 ```
 
+A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration) must have every harness-level `allowed_remote_resources` prefix covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes (the defaults are included when the list is omitted or non-empty; an explicit `allowed_remote_resources: []` stays deny-all and excludes them); `fullsend run` fails naming an uncovered prefix, and fails closed when no repository config (`config.yaml` or `config.base.yaml`) exists. See the [`allow_runtime_fetch` entry](../reference/harness-reference.md) in the harness reference.
+
 ## Flags
 
 | Flag | Description |
@@ -30,6 +32,17 @@ fullsend run <agent-name> [flags]
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
+
+`--target-repo` accepts a plain directory or a valid checkout with a real root
+`.git` directory. `.git` files (linked worktrees and submodules), symlinked
+`.git` entries, and bare repositories are unsupported. Fullsend validates the
+target after the pre-script and before upload, and sanitizes and validates the
+returned tree before publication; a plain directory may come back as a plain
+directory or a valid checkout, while a checkout must come back as a checkout.
+Reftable ref storage requires Git 2.53 or newer on the host running Fullsend.
+Fullsend rejects a downloaded `.git/packed-refs` larger than 32 MiB and a
+downloaded `.git/shallow` larger than 4 MiB.
+See [SafeDownload](../guides/dev/cli-internals.md#security-sanitizedownload).
 
 ## Plan block
 
@@ -466,7 +479,8 @@ On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's work
 unset or empty it copies the pre-mint `GITHUB_TOKEN` instead. Provider
 credentials may expand `${GH_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
 pre/post/validation child environments never receive it. Outside Actions the variable is not
-derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN` and
+derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`,
+`GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` and
 `PUSH_TOKEN` still receive the minted App identity.
 
 The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
@@ -480,11 +494,16 @@ OpenShell gateway attempts its own unauthenticated pull, so public images keep w
 on other registries the runner adds no credentials. See
 [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
 
-Every mint sets both `GH_TOKEN` and `GITHUB_TOKEN` to the minted token, even when the caller
-workflow did not export `GITHUB_TOKEN`. When the mint is cleaned up, each one goes back to the value
-it held before that mint, or is unset if it was unset. A caller workflow that exports
-`GITHUB_TOKEN` for its own pre- or post-script therefore gets the minted App token in that
-variable, not the job token.
+Every mint sets `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and
+`GITHUB_ENTERPRISE_TOKEN` to the minted token, even when the caller workflow
+did not export them. `gh` reads `GH_TOKEN` and `GITHUB_TOKEN` for `github.com`
+and `*.ghe.com`, and `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` for
+any other host (GitHub Enterprise Server), so `gh` calls made after the mint
+use the minted token on every host. When the mint is cleaned up, each one goes
+back to the value it held before that mint, or is unset if it was unset. A
+caller workflow that exports any of these variables for its own pre- or
+post-script therefore gets the minted App token in that variable, not the job
+token.
 
 Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
 `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,

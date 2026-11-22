@@ -376,10 +376,19 @@ func IsRateLimitError(err error) bool {
 		return true
 	}
 	if apiErr.StatusCode == http.StatusForbidden {
-		lower := strings.ToLower(apiErr.Message)
-		return strings.Contains(lower, "rate limit")
+		return isRateLimitMessage(apiErr.Message)
 	}
 	return false
+}
+
+// isRateLimitMessage reports whether a 403 response body or error message
+// names a GitHub rate limit. Primary limits say "API rate limit exceeded"
+// and secondary limits usually say "secondary rate limit", but the
+// content-creation throttle on some endpoints (fork creation, for one)
+// says only "was submitted too quickly", with no Retry-After header.
+func isRateLimitMessage(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "rate limit") || strings.Contains(lower, "submitted too quickly")
 }
 
 // IsPATForbiddenError reports whether err is a GitHub 403 indicating
@@ -680,7 +689,7 @@ func primaryResetWait(resp *http.Response, now time.Time) (time.Duration, bool) 
 // isRetryable returns true for responses that should trigger a retry.
 // GitHub uses 429 for primary rate limits and 403 for both primary and
 // secondary rate limits. Rate-limit 403s may include a Retry-After header,
-// or may only be identifiable by the response body containing "rate limit".
+// or may only be identifiable by the response body (see isRateLimitMessage).
 // Server errors (500, 502, 503, 504) are also retried as transient failures.
 func isRetryable(resp *http.Response) (bool, []byte) {
 	if resp.StatusCode == http.StatusTooManyRequests {
@@ -699,12 +708,13 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 		}
 		// Check body for rate limit indicators without Retry-After header.
 		// GitHub returns primary rate limits as 403 with "API rate limit
-		// exceeded" and secondary rate limits with "secondary rate limit".
+		// exceeded" and secondary rate limits with "secondary rate limit"
+		// or, for content creation such as forks, "was submitted too quickly".
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) // 64KB max
 		if readErr != nil {
 			return false, nil
 		}
-		if strings.Contains(strings.ToLower(string(data)), "rate limit") {
+		if isRateLimitMessage(string(data)) {
 			return true, nil
 		}
 		// Not a rate limit — return the body so the caller can still use it.
@@ -1606,14 +1616,15 @@ func (c *LiveClient) commitFilesWithRetry(ctx context.Context, owner, repo, bran
 
 // retryCommitOp runs op up to three times while it fails with a retriable
 // commit error (see isRetriableCommitError), with a jittered delay between
-// attempts.
+// attempts that doubles on each retry (100-500ms, then 200-1000ms) so
+// replication lag has longer to settle before the last attempt.
 func retryCommitOp[T any](ctx context.Context, c *LiveClient, label string, op func() (T, error)) (T, error) {
 	const maxAttempts = 3
 	var result T
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			jitter := time.Duration(100+randutil.IntN(400)) * time.Millisecond
+			jitter := time.Duration(100+randutil.IntN(400)) * time.Millisecond << (attempt - 1)
 			select {
 			case <-ctx.Done():
 				var zero T
@@ -1808,12 +1819,13 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newTreeResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo), treePayload)
 	if err != nil {
-		// A 422 "Tree SHA does not exist" means the base_tree SHA went
-		// stale between when we read it and now — same class of race as
+		// A transient 422 (see isTransientTreeError) — a base_tree SHA
+		// that went stale, a just-created blob not yet visible, or a
+		// GitHub-side timeout — is the same class of race as a
 		// non-fast-forward on the ref update. Wrap it so
 		// commitFilesWithRetry retries the entire operation from scratch.
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isTransientTreeError(apiErr) {
 			return false, fmt.Errorf("create tree: %w: %w", forge.ErrNonFastForward, err)
 		}
 		return false, fmt.Errorf("create tree: %w", wrapForbidden(err))
@@ -1833,9 +1845,9 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newCommitResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo), commitPayload)
 	if err != nil {
-		// Same stale-SHA race as the create-tree step above.
+		// Same transient 422s as the create-tree step above.
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isTransientTreeError(apiErr) {
 			return false, fmt.Errorf("create commit: %w: %w", forge.ErrNonFastForward, err)
 		}
 		return false, fmt.Errorf("create commit: %w", wrapForbidden(err))
@@ -2015,6 +2027,23 @@ func isNonFastForwardError(apiErr *APIError) bool {
 // update and should be retried from scratch.
 func isStaleTreeSHAError(apiErr *APIError) bool {
 	return strings.Contains(lowerAPIErrorText(apiErr), "tree sha does not exist")
+}
+
+// isTransientTreeError checks whether a 422 APIError from the create-tree
+// or create-commit step is transient and worth retrying from scratch:
+//   - a stale tree SHA (see isStaleTreeSHAError);
+//   - "tree.sha <sha> is not a valid blob": a blob created moments earlier
+//     is not yet visible to the tree endpoint (replication lag);
+//   - "Sorry, your request timed out": a GitHub-side timeout.
+//
+// Other 422s (validation failures) are not transient.
+func isTransientTreeError(apiErr *APIError) bool {
+	if isStaleTreeSHAError(apiErr) {
+		return true
+	}
+	msg := lowerAPIErrorText(apiErr)
+	return strings.Contains(msg, "is not a valid blob") ||
+		strings.Contains(msg, "request timed out")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {
@@ -3437,6 +3466,40 @@ func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, num
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// newLabelColor is the color EnsureLabel gives a label it creates, the
+// same default GitHub uses for labels created by applying them to an issue.
+const newLabelColor = "ededed"
+
+// EnsureLabel creates a repository label. GitHub answers 422 with an
+// already_exists validation error when the label exists; that is success.
+func (c *LiveClient) EnsureLabel(ctx context.Context, owner, repo, name string) error {
+	path := fmt.Sprintf("/repos/%s/%s/labels", url.PathEscape(owner), url.PathEscape(repo))
+	resp, err := c.post(ctx, path, map[string]string{"name": name, "color": newLabelColor})
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && isAlreadyExistsValidationError(apiErr) {
+			return nil
+		}
+		return fmt.Errorf("create label %q: %w", name, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// isAlreadyExistsValidationError reports whether err is a 422 whose
+// validation errors include an already_exists entry.
+func isAlreadyExistsValidationError(err *APIError) bool {
+	if err.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	for _, detail := range err.Errors {
+		if detail.Code == "already_exists" {
+			return true
+		}
+	}
+	return false
 }
 
 // CloseIssue closes an issue by number.

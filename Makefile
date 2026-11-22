@@ -102,11 +102,11 @@ go-build:
 go-test:
 	GH_TOKEN= GITHUB_TOKEN= \
 	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
-	go test -race -coverprofile=cover-default.out ./...
+	go test -race -timeout 20m -coverprofile=cover-default.out ./...
 	cd internal/mintcore && \
 	GH_TOKEN= GITHUB_TOKEN= \
 	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
-	go test -race -tags github -coverprofile=../../cover-github.out ./...
+	go test -race -timeout 20m -tags github -coverprofile=../../cover-github.out ./...
 	@# Merge coverage profiles from both test runs into coverage.out.
 	@head -1 cover-default.out > coverage.out
 	@tail -n +2 cover-default.out >> coverage.out
@@ -188,6 +188,8 @@ endef
 script-test:
 	$(call run-timed,bash scripts/check-live-test-relevance-test.sh)
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
+	$(call run-timed,bash scripts/vouch-sweep-test.sh)
+	$(call run-timed,bash scripts/notify-adr-merge-test.sh)
 	$(call run-timed,bash scripts/redact-behaviour-artifacts-test.sh)
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
 	$(call run-timed,bash .github/scripts/count-fix-commits-test.sh)
@@ -225,6 +227,7 @@ script-test:
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
 	$(call run-timed,python3 -m pytest hack/check_gateway_doc_configs_test.py -q)
 	$(call run-timed,python3 -m pytest hack/tool_fetch_pins_test.py -q)
+	$(call run-timed,python3 -m pytest hack/workflow_triggers_test.py -q)
 	$(call run-timed,python3 -m pytest internal/security/hooks/ -q)
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 
@@ -238,8 +241,10 @@ ci-local:
 
 # Capabilities the runner declares for @requires:capability:<name> scenarios.
 # Declared here rather than in the e2e workflow so a PR that adds a gated
-# scenario exercises it on its own CI run (E2E Tests runs on
-# pull_request_target, whose workflow file comes from main). runtime-pi:
+# scenario exercises it on its own CI run: the Makefile always comes from the
+# PR head, while a fork PR's /ok-to-test run takes e2e.yml from main
+# (same-repo PRs run on pull_request, which takes e2e.yml from the PR merge
+# ref). runtime-pi:
 # fullsend-sandbox:latest ships pi since v0.37.0; each pi scenario costs one
 # small haiku run on the pool repo's Vertex WIF. Override to skip them:
 #   BEHAVIOUR_CAPABILITIES= make behaviour-test
@@ -273,6 +278,13 @@ ci-local:
 # BEHAVIOUR_CAPABILITIES, on dev against the fix or on stage once it is on
 # main; when that passes, declare it here. Jira AISDLC-654 tracks that
 # step and the harnessLogPollWindow confirmation.
+# fetch-allowlist-gate (features/dispatch/fetch-allowlist-gate.feature) is
+# not declared until its scenario has passed one live run. A dev run (an
+# authorized PR or the merge queue) installs the PR head's fullsend
+# binary; a stage run (push to main) takes main's. Run make behaviour-test
+# on demand with fetch-allowlist-gate added to BEHAVIOUR_CAPABILITIES, on
+# dev against the fix or on stage once it is on main; when that passes,
+# declare it here (#9291).
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:

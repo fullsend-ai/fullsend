@@ -1,7 +1,11 @@
 name: E2E Tests
 
-# PR-triggered behaviour and playback use pull_request_target for fork secrets.
-# A separate gate job authorizes PRs before either suite checks out PR-head code.
+# Same-repo PRs run behaviour and playback on pull_request (secrets available;
+# the gate job authorizes the author before either suite checks out PR head).
+# Fork PRs get no secrets on pull_request: the suites skip until a maintainer
+# comments /ok-to-test, and e2e-ok-to-test.yml calls this workflow for the
+# authorized head sha (event_name issue_comment, inputs.head_sha) (#9245).
+# No pull_request_target: GitHub blocks it by default from 2026-12-02.
 
 permissions: {}
 
@@ -42,8 +46,8 @@ on:
       - '.github/actions/check-e2e-authorization/**'
       - 'scripts/check-e2e-authorization.sh'
       - 'scripts/redact-behaviour-artifacts.sh'
-  pull_request_target:
-    # labeled / ok-to-test is handled by e2e-ok-to-test.yml via workflow_call.
+  pull_request:
+    # Fork PRs: /ok-to-test is handled by e2e-ok-to-test.yml via workflow_call.
     types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
@@ -54,27 +58,48 @@ on:
         type: boolean
         default: true
   workflow_call:
+    # Only e2e-ok-to-test.yml calls this, from an authorized /ok-to-test comment.
+    inputs:
+      pr_number:
+        description: Pull request number the comment authorized
+        type: number
+        required: true
+      head_sha:
+        description: PR head sha the comment authorized (checked out by both suites)
+        type: string
+        required: true
+    outputs:
+      behaviour_result:
+        description: behaviour job status (success, failure or cancelled)
+        value: ${{ jobs.behaviour.outputs.result }}
+      playback_result:
+        description: playback job status (success, failure or cancelled)
+        value: ${{ jobs.playback.outputs.result }}
 
 concurrency:
   group: >-
-    ${{ github.event_name == 'pull_request_target'
+    ${{ github.event_name == 'pull_request'
         && format('e2e-{0}', github.event.pull_request.number)
+        || github.event_name == 'issue_comment'
+        && format('e2e-ok-to-test-{0}', inputs.pr_number)
         || format('{0}-{1}', github.workflow, github.ref) }}
-  # Label events are auth, not a code change — never cancel an in-progress run.
+  # /ok-to-test runs are authorization, not a code change: they queue in their
+  # own group and are never cancelled (the caller reports their result).
   # Cancel for opened/synchronize/reopened and for non-main non-PR triggers.
-  # Explicit outer parens: (A && B) || (C && D).
   cancel-in-progress: >-
-    ${{ (github.event_name == 'pull_request_target'
-        && github.event.action != 'labeled')
-        || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
+    ${{ github.event_name == 'pull_request'
+        || (github.event_name != 'issue_comment' && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:
     # Separate job so pull-requests: write stays out of suite jobs that
     # check out PR-head code and run behaviour/playback tests with secrets.
     # Never checkout github.event.pull_request.head.sha here.
-    # workflow_call from e2e-ok-to-test.yml still has event_name pull_request_target.
-    if: github.event_name == 'pull_request_target'
+    # Same-repo PRs only (gh-aw's guard): a fork PR's pull_request token is
+    # read-only and it gets no secrets, so forks go through /ok-to-test.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.id == github.repository_id
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -85,7 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}  # Base branch only — never checkout PR head in gate
+          ref: ${{ github.event.pull_request.base.sha }}  # Base only — never checkout PR head in gate
 
       - name: Check PR authorization
         id: auth
@@ -107,15 +132,16 @@ jobs:
     # Gate authorization protects checkout of untrusted PR-head code with secrets.
     # Runs only on authorized PRs, merge_group (required check; treated as
     # PR-class / dev), and push to main (stage). Skip workflow_dispatch.
-    # Environment uses event_name, not github.ref: pull_request_target sets
-    # github.ref to the base branch (usually main).
+    # Environment uses event_name, not github.ref: pull_request sets
+    # github.ref to refs/pull/N/merge and issue_comment to the default branch.
     needs: gate
     if: >-
       !cancelled() &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'merge_group') ||
-        (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true')
+        (github.event_name == 'pull_request' && needs.gate.outputs.authorized == 'true') ||
+        (github.event_name == 'issue_comment' && inputs.head_sha != '')
       )
     # Scalar form keeps default deployment: true so runs list under Environments.
     environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
@@ -124,24 +150,37 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      # Read by e2e-ok-to-test.yml to complete the behaviour check run on the PR head.
+      result: ${{ steps.result.outputs.result }}
     env:
       ENVIRONMENT: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
     steps:
       - name: Check for behaviour-relevant changes
         id: changes
-        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
+        if: >-
+          github.event_name == 'pull_request' || github.event_name == 'issue_comment' ||
+          github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           REPO: ${{ github.repository }}
           MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+          # /ok-to-test runs: diff the authorized sha, not whatever the PR head is now.
+          HEAD_SHA: ${{ inputs.head_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         # SYNC-WITH: push.paths behaviour entries above
         run: |
-          if [ "$EVENT_NAME" = "merge_group" ]; then
-            FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
-              echo "::warning::Failed to fetch merge group files — running behaviour tests as a precaution"
+          if [ "$EVENT_NAME" = "merge_group" ] || [ "$EVENT_NAME" = "issue_comment" ]; then
+            if [ "$EVENT_NAME" = "merge_group" ]; then
+              RANGE="${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}"
+            else
+              RANGE="${DEFAULT_BRANCH}...${HEAD_SHA}"
+            fi
+            FILES=$(gh api "repos/${REPO}/compare/${RANGE}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch compare files — running behaviour tests as a precaution"
               echo "relevant=true" >> "$GITHUB_OUTPUT"
               exit 0
             }
@@ -171,9 +210,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.changes.outputs.relevant != 'false'
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          ref: >-
+            ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha
+                || github.event_name == 'issue_comment' && inputs.head_sha
+                || github.sha }}
           persist-credentials: false
-          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          # Fork code only after a maintainer's /ok-to-test for this exact sha.
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'issue_comment' }}
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: steps.changes.outputs.relevant != 'false'
@@ -227,7 +270,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Base-branch script only — PR head must not control artifact redaction (#5221).
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
           sparse-checkout: scripts/redact-behaviour-artifacts.sh
           path: base-scripts
           persist-credentials: false
@@ -281,10 +324,17 @@ jobs:
         if: always() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
+          name: behaviour-artifacts-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/behaviour-artifacts/
           if-no-files-found: ignore
           retention-days: 5
+
+      - name: Record job result
+        id: result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: echo "result=${JOB_STATUS}" >> "$GITHUB_OUTPUT"
 
   playback:
     # Serialize with behaviour only on stage, whose pool has a single org.
@@ -299,7 +349,8 @@ jobs:
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'merge_group') ||
         (github.event_name == 'workflow_dispatch' && inputs.run_playback) ||
-        (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true')
+        (github.event_name == 'pull_request' && needs.gate.outputs.authorized == 'true') ||
+        (github.event_name == 'issue_comment' && inputs.head_sha != '')
       )
     # Scalar form keeps default deployment: true so runs list under Environments.
     environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
@@ -308,24 +359,37 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      # Read by e2e-ok-to-test.yml to complete the playback check run on the PR head.
+      result: ${{ steps.result.outputs.result }}
     env:
       ENVIRONMENT: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
     steps:
       - name: Check for playback-relevant changes
         id: changes
-        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
+        if: >-
+          github.event_name == 'pull_request' || github.event_name == 'issue_comment' ||
+          github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           REPO: ${{ github.repository }}
           MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+          # /ok-to-test runs: diff the authorized sha, not whatever the PR head is now.
+          HEAD_SHA: ${{ inputs.head_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         # SYNC-WITH: push.paths behaviour entries above
         run: |
-          if [ "$EVENT_NAME" = "merge_group" ]; then
-            FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
-              echo "::warning::Failed to fetch merge group files — running playback tests as a precaution"
+          if [ "$EVENT_NAME" = "merge_group" ] || [ "$EVENT_NAME" = "issue_comment" ]; then
+            if [ "$EVENT_NAME" = "merge_group" ]; then
+              RANGE="${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}"
+            else
+              RANGE="${DEFAULT_BRANCH}...${HEAD_SHA}"
+            fi
+            FILES=$(gh api "repos/${REPO}/compare/${RANGE}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch compare files — running playback tests as a precaution"
               echo "relevant=true" >> "$GITHUB_OUTPUT"
               exit 0
             }
@@ -355,9 +419,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.changes.outputs.relevant != 'false'
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          ref: >-
+            ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha
+                || github.event_name == 'issue_comment' && inputs.head_sha
+                || github.sha }}
           persist-credentials: false
-          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          # Fork code only after a maintainer's /ok-to-test for this exact sha.
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'issue_comment' }}
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: steps.changes.outputs.relevant != 'false'
@@ -408,7 +476,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Base-branch script only — PR head must not control artifact redaction (#5221).
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch || github.sha }}
+          ref: >-
+            ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch
+                || github.event_name == 'pull_request' && github.event.pull_request.base.sha
+                || github.sha }}
           sparse-checkout: scripts/redact-behaviour-artifacts.sh
           path: base-scripts
           persist-credentials: false
@@ -458,7 +529,14 @@ jobs:
         if: always() && steps.tests.outcome == 'failure' && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: playback-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
+          name: playback-artifacts-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/playback-artifacts/
           if-no-files-found: ignore
           retention-days: 5
+
+      - name: Record job result
+        id: result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: echo "result=${JOB_STATUS}" >> "$GITHUB_OUTPUT"

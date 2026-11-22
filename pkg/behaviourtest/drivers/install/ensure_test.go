@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1414,16 +1415,15 @@ func TestAwaitWorkflowReady_ImmediateSuccess(t *testing.T) {
 }
 
 func TestAwaitWorkflowReady_ReportsLastPollError(t *testing.T) {
-	orig := settlePoll
-	settlePoll = 0
-	t.Cleanup(func() { settlePoll = orig })
+	speedUpSettle(t, 20*time.Millisecond)
+	apiErr := errors.New("github api: 403 forbidden")
+	sc := &stubClient{getWorkflowErr: apiErr}
 
-	sc := &stubClient{getWorkflowErr: fmt.Errorf("github api: 403 forbidden")}
 	err := awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "after 30 attempts")
-	assert.Contains(t, err.Error(), "403 forbidden", "a poll error must not be reported as a plain indexing timeout")
-	assert.Equal(t, int32(settleMaxAttempts), sc.getWorkflowCalled.Load())
+	assert.ErrorIs(t, err, apiErr, "a poll error must not be reported as a plain indexing timeout")
+	assert.Contains(t, err.Error(), "403 forbidden")
+	assert.Greater(t, sc.getWorkflowCalled.Load(), int32(1), "should keep polling until the settle window ends")
 }
 
 func TestAwaitWorkflowReady_ContextCancelled(t *testing.T) {
@@ -1434,6 +1434,172 @@ func TestAwaitWorkflowReady_ContextCancelled(t *testing.T) {
 	err := awaitWorkflowReady(ctx, sc, "org", "repo", "fullsend.yaml", t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context cancelled")
+	assert.NotErrorIs(t, err, errWorkflowNotReady, "cancellation must not trigger a repo recreate")
+}
+
+// speedUpSettle shrinks the awaitWorkflowReady polling window so the
+// tests do not wait real seconds.
+func speedUpSettle(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	origTimeout, origInitial, origMax := settleTimeout, settlePollInitial, settlePollMax
+	settleTimeout = timeout
+	settlePollInitial = time.Millisecond
+	settlePollMax = 2 * time.Millisecond
+	t.Cleanup(func() {
+		settleTimeout, settlePollInitial, settlePollMax = origTimeout, origInitial, origMax
+	})
+}
+
+// workflowResult is one scripted GetWorkflow response.
+type workflowResult struct {
+	wf  *forge.Workflow
+	err error
+}
+
+// seqWorkflowClient returns scripted GetWorkflow results in order and
+// repeats the last one once the script runs out.
+type seqWorkflowClient struct {
+	forge.Client
+	results []workflowResult
+	calls   atomic.Int32
+	// onCall, when set, runs after each GetWorkflow call.
+	onCall func(n int32)
+}
+
+func (c *seqWorkflowClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Workflow, error) {
+	n := c.calls.Add(1)
+	if c.onCall != nil {
+		defer c.onCall(n)
+	}
+	idx := min(int(n-1), len(c.results)-1)
+	return c.results[idx].wf, c.results[idx].err
+}
+
+func TestAwaitWorkflowReady_NotFoundThenActive(t *testing.T) {
+	speedUpSettle(t, time.Minute)
+	active := &forge.Workflow{State: "active"}
+	c := &seqWorkflowClient{results: []workflowResult{
+		{err: forge.ErrNotFound},
+		{err: forge.ErrNotFound},
+		{err: forge.ErrNotFound},
+		{wf: active},
+	}}
+
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, int32(4), c.calls.Load(), "should succeed on the poll after the last 404")
+}
+
+func TestAwaitWorkflowReady_WaitsForActiveState(t *testing.T) {
+	speedUpSettle(t, time.Minute)
+	c := &seqWorkflowClient{results: []workflowResult{
+		{wf: nil},
+		{wf: &forge.Workflow{State: "disabled_manually"}},
+		{wf: &forge.Workflow{State: ""}},
+		{wf: &forge.Workflow{State: "active"}},
+	}}
+
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, int32(4), c.calls.Load(), "a visible but inactive workflow is not ready")
+}
+
+func TestAwaitWorkflowReady_TimeoutIsRetryable(t *testing.T) {
+	speedUpSettle(t, 20*time.Millisecond)
+	c := &seqWorkflowClient{results: []workflowResult{
+		{wf: &forge.Workflow{State: "disabled_inactivity"}},
+		{err: forge.ErrNotFound},
+	}}
+
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errWorkflowNotReady)
+	assert.Contains(t, err.Error(), "fullsend.yaml on org/repo")
+	assert.Contains(t, err.Error(), forge.ErrNotFound.Error(), "error should report the last poll result")
+	assert.Greater(t, c.calls.Load(), int32(1), "should poll more than once before timing out")
+}
+
+func TestAwaitWorkflowReady_APIErrorIsNotRetryable(t *testing.T) {
+	speedUpSettle(t, 20*time.Millisecond)
+	apiErr := errors.New("403 forbidden")
+	c := &seqWorkflowClient{results: []workflowResult{
+		{err: forge.ErrNotFound},
+		{err: apiErr},
+	}}
+
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, apiErr, "error should report the API failure")
+	assert.NotErrorIs(t, err, errWorkflowNotReady, "an API error must not trigger a repo recreate")
+	assert.Greater(t, c.calls.Load(), int32(1), "should keep polling until the settle window ends")
+}
+
+func TestAwaitWorkflowReady_APIErrorThenActive(t *testing.T) {
+	speedUpSettle(t, time.Minute)
+	c := &seqWorkflowClient{results: []workflowResult{
+		{err: errors.New("502 bad gateway")},
+		{wf: &forge.Workflow{State: "active"}},
+	}}
+
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), c.calls.Load(), "a transient API error should not stop polling")
+}
+
+func TestAwaitWorkflowReady_CancelledMidWait(t *testing.T) {
+	speedUpSettle(t, time.Minute)
+	settlePollInitial = time.Minute
+	settlePollMax = time.Minute
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &seqWorkflowClient{
+		results: []workflowResult{{err: forge.ErrNotFound}},
+		onCall:  func(int32) { cancel() },
+	}
+
+	start := time.Now()
+	err := awaitWorkflowReady(ctx, c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, errWorkflowNotReady)
+	assert.Less(t, time.Since(start), 10*time.Second, "should return promptly instead of waiting out the poll delay")
+	assert.Equal(t, int32(1), c.calls.Load())
+}
+
+// The ensurer never recreates a slot repo: a settle timeout is returned
+// with errWorkflowNotReady in its chain so the allocator can release the
+// slot and claim a fresh repo.
+func TestDoEnsure_SettleTimeout_ReturnedWithoutRecreate(t *testing.T) {
+	speedUpValidateRetries(t)
+	sc := &stubClient{installed: false}
+	var settleCalls atomic.Int32
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+				sc.installed = true
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
+			settleCalls.Add(1)
+			return fmt.Errorf("%w: never indexed", errWorkflowNotReady)
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-settle-timeout")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errWorkflowNotReady)
+	assert.Contains(t, err.Error(), "waiting for Actions readiness on org/test-repo-settle-timeout")
+	assert.Equal(t, int32(1), settleCalls.Load())
+	assert.Zero(t, sc.createRepoCalled.Load(), "the ensurer never creates a slot repo")
+	assert.Zero(t, sc.deleteRepoCalled.Load(), "the ensurer never deletes a slot repo")
 }
 
 func TestDoEnsure_SettleCalledAfterInstall(t *testing.T) {

@@ -2,6 +2,7 @@ package jirapoll
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -168,5 +169,71 @@ func TestPropertyKeys_GitLabTargetNamespace(t *testing.T) {
 func TestGitLabInstanceSegment_Unparseable(t *testing.T) {
 	if got := gitlabInstanceSegment("not a url/"); got != "not a url" {
 		t.Errorf("gitlabInstanceSegment = %q", got)
+	}
+}
+
+// embeddingMatcher returns one triage record per event, with the event
+// embedded in the payload as the CEL matcher does.
+type embeddingMatcher struct{}
+
+func (embeddingMatcher) Match(_ context.Context, event *normevent.Event) ([]DispatchRecord, error) {
+	ne, err := json.Marshal(event)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(map[string]json.RawMessage{"_normalized_event": ne})
+	if err != nil {
+		return nil, err
+	}
+	return []DispatchRecord{{Agent: "triage", StatusNumber: event.Entity.Key, EventPayload: string(payload)}}, nil
+}
+
+// validatingDispatcher parses and validates the embedded event as the
+// GitLab output driver does, and records the events it accepts.
+type validatingDispatcher struct {
+	events []*normevent.Event
+}
+
+func (d *validatingDispatcher) Dispatch(_ context.Context, record DispatchRecord) error {
+	var payload struct {
+		NormalizedEvent json.RawMessage `json:"_normalized_event"`
+	}
+	if err := json.Unmarshal([]byte(record.EventPayload), &payload); err != nil {
+		return err
+	}
+	event, err := normevent.ParseJSON(payload.NormalizedEvent)
+	if err != nil {
+		return err
+	}
+	d.events = append(d.events, event)
+	return nil
+}
+
+// TestRunGitLabTarget_InvalidEventSkipped verifies that, with an output
+// driver, an event that fails validation is skipped with a warning and its
+// issue's checkpoint advances while the valid event dispatches. Before the
+// skip, the invalid event failed the driver, held its checkpoint and failed
+// the cycle.
+func TestRunGitLabTarget_InvalidEventSkipped(t *testing.T) {
+	mc := newMockClient()
+	seedSlashCommandIssues(mc, "PROJ-1", "PROJ-2")
+	mc.searchResult[0].ID = "not-a-number"
+	d := &validatingDispatcher{}
+	p := newTestPoller(mc, embeddingMatcher{}, gitlabTargetOptions(d))
+	logBuf := captureLog(t)
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if len(d.events) != 1 || d.events[0].Entity.Key != "PROJ-2" {
+		t.Fatalf("dispatched %v, want only PROJ-2", d.events)
+	}
+	if !strings.Contains(logBuf.String(), "WARNING: skipping event comment-50001 for issue PROJ-1") {
+		t.Errorf("log = %q, want the skip warning for PROJ-1", logBuf.String())
+	}
+	for _, key := range []string{"PROJ-1", "PROJ-2"} {
+		if got, err := p.readLastCheck(context.Background(), key); err != nil || got.IsZero() {
+			t.Errorf("%s lastCheck = %v (err %v), want advanced", key, got, err)
+		}
 	}
 }

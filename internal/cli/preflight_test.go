@@ -20,6 +20,8 @@ func TestPreflightCredentialRefused(t *testing.T) {
 	refused := []string{
 		"GH_TOKEN",
 		"GITHUB_TOKEN",
+		"GH_ENTERPRISE_TOKEN",
+		"GITHUB_ENTERPRISE_TOKEN",
 		"REVIEW_TOKEN",
 		"GITLAB_TOKEN",
 		"PUSH_TOKEN",

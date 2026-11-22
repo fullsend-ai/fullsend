@@ -606,6 +606,45 @@ func TestAddIssueLabels_MultipleLabels(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestEnsureLabel(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		assert.Equal(t, map[string]string{"name": "do-it", "color": "#ededed"}, body)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1, "name": "do-it"})
+	})
+
+	require.NoError(t, client.EnsureLabel(ctx, "myorg", "myrepo", "do-it"))
+}
+
+func TestEnsureLabel_AlreadyExists(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{"message": "Label already exists"})
+	})
+
+	require.NoError(t, client.EnsureLabel(ctx, "myorg", "myrepo", "do-it"))
+}
+
+func TestEnsureLabel_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	err := client.EnsureLabel(ctx, "myorg", "myrepo", "do-it")
+	require.ErrorContains(t, err, `create label "do-it"`)
+	require.ErrorIs(t, err, forge.ErrForbidden)
+}
+
 func TestListIssueComments(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

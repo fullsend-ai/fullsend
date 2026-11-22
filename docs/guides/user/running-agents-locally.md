@@ -18,8 +18,11 @@ Linux are supported with Podman as the container runtime.
 
 ## Download the fullsend CLI
 
-Download the latest release from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases).
-Pick the archive matching your platform:
+If you already have fullsend v0.55.0 or later, run
+[`fullsend self-update`](../../cli/self-update.md) to upgrade and skip to the
+verification step. Otherwise, download the latest release from
+[GitHub Releases](https://github.com/fullsend-ai/fullsend/releases) and pick
+the archive matching your platform:
 
 | Platform | Archive |
 |----------|---------|
@@ -208,6 +211,9 @@ First clone your target repository locally:
 ```bash
 git clone git@github:{org}/{target_repository} /tmp/target-repo
 ```
+
+The target may be a plain directory or a normal clone with a real root `.git`
+directory. See the [`--target-repo` requirements](../../cli/run.md#flags).
 
 Next clone the repository where the agent definitions live. The canonical
 source is `fullsend-ai/agents`. To learn more about custom agents visit

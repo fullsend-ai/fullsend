@@ -15,10 +15,11 @@ GitHub repositories use a different command (`fullsend github setup`). See
 
 * For Vertex agents, a GCP project with Vertex AI enabled, from
   [Getting Inference](getting-inference.md). OpenAI-only installation does not
-  need a GCP project. GitLab does **not** use
-  `fullsend inference provision` — inference credentials are written by
-  `repos install` from `--vertex-project` or a declared `inference.project`
-  (see [Inference Setup](#inference-setup) below). Unless you also supply a
+  need a GCP project. `repos install` writes the inference credentials
+  from `--vertex-project` or a declared `inference.project`
+  (see [Inference Setup](#inference-setup) below). Optionally,
+  `fullsend inference provision --forge gitlab` creates a per-project WIF
+  provider first. Unless you also supply a
   WIF provider (`--vertex-wif-provider` or a declared
   `inference.wif_provider`; a declared provider also requires a declared
   `inference.project`), `repos install` derives the
@@ -26,7 +27,8 @@ GitHub repositories use a different command (`fullsend github setup`). See
   Manager API, so the machine running `repos install` needs
   Application Default Credentials with `cloudresourcemanager.googleapis.com`
   `projects.get` access on that project.
-* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
+* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI,
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
 * A GitLab personal or group access token with `api` scope and
   Maintainer (or Owner) role on the target project. The CLI does **not**
   fall back to `glab auth token`. Set `GITLAB_TOKEN` in the environment
@@ -232,63 +234,10 @@ Install then converges the project:
   re-enable it. Leave that flag unset on repos using [Off-system
   polling](#off-system-polling), where the schedules are disabled on
   purpose.
-* Provisions the webhook fast path:
-  a pipeline trigger token stored as the protected, masked
-  `FULLSEND_TRIGGER_TOKEN` variable, a generated `FULLSEND_WEBHOOK_SECRET`,
-  and a project webhook (issues, merge requests, comments) that triggers a
-  pipeline on the protected default branch. Opening an issue dispatches
-  triage through the webhook fast path; events-mode cron polling recovers
-  the issue open if webhook delivery is missed. The agent job runs triage
-  only when the issue author has Developer access or higher; for a
-  Reporter, Guest, or non-member author it exits successfully without
-  running triage. Existing credential variables
-  are reused only when masked, protected, and wildcard-scoped; otherwise they
-  are regenerated. Only webhooks fullsend owns are updated or deleted. This
-  step is deferred until the dispatcher and its scripts are on the default
-  branch, the default branch is protected, and
-  `no_one_allowed` is verified, so on a merge-request install re-run
-  `repos install` after the scaffold merges. A project, group, or
-  instance-level CI/CD variable that redefines a predefined variable such
-  as `CI_PIPELINE_SOURCE` or `CI_COMMIT_REF_PROTECTED` also defers it.
-  Instance-level variables can only be listed with administrator access
-  and group variables with group Owner access. Every scope your
-  credential can read is checked; a scope it cannot read is skipped as
-  unverified and neither defers the fast path nor revokes an existing
-  one, so a project Maintainer can enable it without administrator or
-  group Owner access. Fullsend does not verify those scopes; see
-  [Inherited CI/CD variable trust](#inherited-cicd-variable-trust)
-  for the security assumption this relies on. Re-runs are no-ops and repair a
-  missing or drifted webhook or token; `--rotate-gitlab-trigger-token`
-  rotates the token and revokes the old one after the webhook is updated.
-  The polling schedules stay in place as the backstop. Token and secret
-  values are never printed. Once install records the trigger-account
-  dispatch activation, the webhook uses the trigger-only account's trigger
-  token instead (see [Trigger-only service account](#trigger-only-service-account)).
-  The install-time Maintainer access is used only to create and revoke
-  these resources; it is not a runtime credential. A trigger token runs
-  pipelines as its owner, so install verifies the owner's effective
-  project role when it mints a token and whenever it reuses one, and
-  rejects an owner with Maintainer or Owner access (or one it cannot look
-  up): it revokes the token, removes the managed webhook, and leaves the
-  fast path disabled. A rejected owner is reported as a deferral rather
-  than an installation failure once cleanup succeeded; owner-lookup and
-  cleanup failures are still reported as errors. For the Poller fallback
-  route, a Developer-owned trigger token also needs push or merge access to
-  the protected default branch; an owner without it defers the fast path
-  with remediation guidance. The trigger-only account instead uses its
-  default-branch deploy-key grant for repository access. The
-  webhook is enabled only after the committed wrapper, root, and
-  agent/poll templates carry the typed pipeline-input contract, and the
-  default branch must stay protected. Because GitLab ties a trigger
-  token to the Maintainer who creates it, the fast path stays disabled
-  when the only available creator is a Maintainer or Owner; the polling
-  schedules keep working, and the poller, dispatcher, and agent
-  credentials stay Developer-level. Where the project is eligible, the
-  Poller fallback trigger is owned by a fresh Poller service account that is
-  verified at Developer before its credential is published. When dispatch
-  activation is recorded, the webhook instead uses the trigger-only account's
-  published trigger; see
-  [Trigger-only service account](#trigger-only-service-account).
+* Provisions the webhook fast path, which starts triage when an issue opens
+  instead of waiting for the next poll. See
+  [Webhook fast path](#webhook-fast-path) for what install creates, when it
+  defers the fast path, and how to fix a deferral.
 * Writes inference CI/CD variables when a GCP project is supplied, by
   `--vertex-project` or a declared `inference.project` (see
   [Inference Setup](#inference-setup)).
@@ -298,6 +247,143 @@ to the default branch instead. Preview with `--dry-run`.
 
 For the full list of install flags, see the
 [CLI reference](../../cli/repos.md#repos-install).
+
+### Webhook fast path
+
+The webhook fast path starts a pipeline as soon as GitLab sends an issue,
+merge request, or comment event. The polling schedules stay in place as the
+backstop. If webhook delivery is missed, events-mode cron polling still picks
+up the issue.
+
+#### What install creates
+
+Install creates three resources:
+
+* A pipeline trigger token, stored in the protected, masked
+  `FULLSEND_TRIGGER_TOKEN` CI/CD variable.
+* A generated webhook secret, stored in the protected, masked
+  `FULLSEND_WEBHOOK_SECRET` CI/CD variable.
+* A project webhook for issue, merge request, and comment events. It triggers
+  a pipeline on the protected default branch.
+
+Opening an issue dispatches triage through the webhook. The agent job runs
+triage only when the issue author has Developer access or higher. For a
+Reporter, Guest, or non-member author, the job exits successfully without
+running triage.
+
+Install reuses an existing credential variable only when it is masked,
+protected, and wildcard-scoped. Otherwise install regenerates it. Install
+updates or deletes only webhooks that fullsend owns, and never prints token or
+secret values.
+
+Re-runs change nothing when everything is in place, and repair a missing or
+drifted webhook or token. Pass `--rotate-gitlab-trigger-token` to rotate the
+token. Install revokes the old token after it updates the webhook.
+
+#### Who owns the trigger token
+
+A trigger token runs pipelines with its owner's permissions. GitLab ties a
+trigger token to the user who creates it, and creating one needs Maintainer
+access. Fullsend keeps every runtime credential at Developer level, so the
+owner depends on the project:
+
+* **Poller route.** Where the project is eligible, a fresh Poller service
+  account owns the trigger token. Install verifies that account at Developer
+  before it publishes the account's credential. See
+  [Project service accounts](#project-service-accounts) for the steps.
+* **Trigger-account route.** Once install records the trigger-account dispatch
+  activation, the webhook uses the trigger-only account's published trigger
+  token instead. That account uses its default-branch deploy-key grant for
+  repository access. See
+  [Trigger-only service account](#trigger-only-service-account).
+* **No eligible owner.** When the only available creator is a Maintainer or
+  Owner, the fast path stays disabled. The polling schedules keep working, and
+  the poller, dispatcher, and agent credentials stay Developer-level.
+
+Install checks the owner's effective project role when it mints a token and
+whenever it reuses one. It rejects an owner with Maintainer or Owner access,
+or an owner it cannot look up. On rejection, install revokes the token,
+removes the managed webhook, and leaves the fast path disabled. Once cleanup
+succeeds, install reports the rejection as a deferral, not as an installation
+failure. Install still reports owner-lookup and cleanup failures as errors.
+
+Install uses its Maintainer access only to create and revoke these resources.
+That access is not a runtime credential.
+
+#### When install defers the fast path
+
+Install defers the fast path, and keeps polling, until all of these hold:
+
+* The dispatcher and its scripts are on the default branch. On a
+  merge-request install, re-run `repos install` after the scaffold merges.
+* The default branch is protected. It must stay protected.
+* `ci_pipeline_variables_minimum_override_role` is `no_one_allowed`.
+* The committed wrapper, root, and agent/poll templates carry the typed
+  pipeline-input contract.
+* No project, group, or instance-level CI/CD variable redefines a predefined
+  variable such as `CI_PIPELINE_SOURCE` or `CI_COMMIT_REF_PROTECTED`.
+* On the Poller route, the trigger token's owner can start pipelines on the
+  protected default branch. See
+  [Letting the Poller start pipelines on the default branch](#letting-the-poller-start-pipelines-on-the-default-branch).
+
+Only administrators can list instance-level variables, and only group Owners
+can list group variables. Install checks every scope your credential can
+read. It skips a scope it cannot read as unverified. A skipped scope neither
+defers the fast path nor revokes an existing one, so a project Maintainer can
+enable the fast path without administrator or group Owner access. Fullsend
+does not verify the skipped scopes. See
+[Inherited CI/CD variable trust](#inherited-cicd-variable-trust) for the
+security assumption this relies on.
+
+#### Letting the Poller start pipelines on the default branch
+
+GitLab lets an account start a pipeline on a protected branch only when that
+account may merge or push to the branch. A Developer-level Poller therefore
+needs an **Allowed to merge** entry on the protected default branch, unless
+the branch rule already lets Developers merge or push.
+
+Fullsend does not add that entry for a replacement Poller service account.
+Adding it would widen who may merge to the default branch. Fullsend also
+records no owner for individual merge entries, so it could not later tell its
+own entry from an administrator's. Instead, install defers the fast path and
+prints the steps to follow, for example:
+
+```text
+webhook fast-path blocked: the replacement GitLab Poller service account
+@service_account_project_123_abc (user ID 37178) cannot start pipelines on
+protected branch "main". ...
+```
+
+To let the replacement Poller start pipelines:
+
+1. Note the username in the message, for example
+   `@service_account_project_123_abc`. Every Poller generation has the display
+   name `fullsend-poller`, so during a rotation two accounts share that name.
+   The username tells them apart. If the message shows only a user ID, open
+   `https://<gitlab-host>/api/v4/users/<user-id>` while signed in to GitLab to
+   read the account's `username`.
+2. In the GitLab project, open **Settings → Repository → Protected branches**.
+3. Find the rule that protects the default branch. The message names the rule,
+   which can be a wildcard rule.
+4. Under **Allowed to merge**, add the account with that username.
+5. Re-run `repos install`. Install mints the trigger as the replacement Poller
+   and cuts over to it.
+
+If your GitLab tier does not let you select individual users under **Allowed to
+merge**, do not widen the rule as a routine fix. Leave the polling schedules in
+effect, which keep dispatching agents without the webhook fast path, or use the
+trigger-account route described above.
+
+> [!WARNING]
+> Allowing **Developers + Maintainers** to merge is a security-policy change,
+> not a fix for this message. It lets every Developer-level identity on the
+> project merge to the protected branch, including the accounts that run
+> agents. When the rule is a wildcard, it applies to every branch the wildcard
+> matches, not only the default branch. Make this change only if your
+> organization accepts that exposure.
+
+When the superseded Poller is later retired, install reports any merge entry
+still listed for it. Remove that entry if no one else needs it.
 
 ### Least-privilege dispatch contract
 
@@ -659,7 +745,9 @@ no drain barrier for requests accepted before revocation. Install:
    elevation when the existing policy (for example a protected default branch
    that only lists individual users) excludes the replacement Poller; it never
    writes a merge grant (an individual user's entry under **Allowed to merge**
-   on a protected branch) for the replacement account.
+   on a protected branch) for the replacement account. To add that entry
+   yourself, see
+   [Letting the Poller start pipelines on the default branch](#letting-the-poller-start-pipelines-on-the-default-branch).
 2. Creates an installer-only bootstrap personal access token for the
    replacement account. The bootstrap token is never stored in a CI/CD
    variable, log, or agent environment.
@@ -1092,13 +1180,14 @@ Pick the route that matches what you can change in GCP:
 
 | You can | Route |
 |---------|-------|
-| Create a Workload Identity provider and grant roles in your GCP project | Your own `gitlab-oidc` provider: the steps directly below. If Google cannot reach your GitLab instance, add [Private OIDC issuers (uploaded JWKS)](#private-oidc-issuers-uploaded-jwks) |
+| Create a Workload Identity provider and grant roles in your GCP project | Your own provider: a per-project provider from [the CLI](#provisioning-a-per-project-provider-with-the-cli), or the shared `gitlab-oidc` provider from [the manual steps](#creating-the-shared-provider-manually). If Google cannot reach your GitLab instance, add [Private OIDC issuers (uploaded JWKS)](#private-oidc-issuers-uploaded-jwks) |
 | Only manage a service account, while a platform team runs a provider that trusts your GitLab instance | [Using an existing WIF provider](#using-an-existing-wif-provider); skip the own-provider steps below |
 | Skip GCP entirely | OpenAI with an API key; see [Installing Fullsend](#installing-fullsend) |
 
 **Own-provider route.** From here up to
 [Using an existing WIF provider](#using-an-existing-wif-provider), this
-section applies only when you run the `gitlab-oidc` provider yourself.
+section applies only when you run your own provider: a per-project
+`gl-<project-path>` provider or the shared `gitlab-oidc` provider.
 
 Pass `--vertex-project`, or declare `inference.project` in the managed
 configuration (for example
@@ -1109,19 +1198,64 @@ CI/CD variables from it, and a `--vertex-project` value that disagrees with
 it fails before any write. **This only writes CI/CD variables
 that reference the shared `gitlab-oidc` provider's resource name — it
 does not create the Workload Identity Pool, the `gitlab-oidc`
-provider, or its IAM bindings.** GitLab has no equivalent of
-`fullsend inference provision` (which auto-provisions that
-infrastructure for GitHub); a platform operator must create the
+provider, or its IAM bindings.** A platform operator must create the
 shared `gitlab-oidc` provider once per GCP project before agent jobs
 can exchange tokens through it, or the CI/CD variables above will
 point at a provider that doesn't exist and token exchange will fail
-at runtime even though install succeeds. Creating the provider once
+at runtime even though install succeeds. To skip the manual recipe,
+see [Provisioning a per-project provider with the CLI](#provisioning-a-per-project-provider-with-the-cli).
+Creating the provider once
 per project does not by itself trust every repo on that project — the
 default recipe below scopes trust to a single repo; see
 [Authorizing multiple specific projects](#authorizing-multiple-specific-projects-alternative)
 if you're installing more than one repo against the same GCP project.
 
-To create it, add a GitLab-specific provider to the same
+### Provisioning a per-project provider with the CLI
+
+`fullsend inference provision --forge gitlab` creates a dedicated
+provider for one GitLab project. It applies the same mapping,
+audience, condition, and IAM binding as the manual recipe below. Run
+it once per project:
+
+```bash
+fullsend inference provision "<group/project>" \
+  --forge gitlab \
+  --gitlab-project-id "<numeric-id>" \
+  --gitlab-url "https://gitlab.com" \
+  --project "<gcp-project>"
+```
+
+The command creates or updates these resources in the
+`fullsend-inference` pool:
+
+- a provider named `gl-<project-path>`, with `/` replaced by `-`,
+  lowercased, and truncated to 32 characters;
+- a `roles/aiplatform.user` binding on
+  `attribute.project_path/<group/project>`.
+
+The command needs the numeric project ID (**Settings → General**)
+but no GitLab token. Set `--gitlab-url` to the instance that signs
+the project's `id_tokens`. Add `--dry-run` to preview the provider
+without calling GCP. A re-run rewrites the provider only when its
+configuration differs.
+
+The provider is not the shared `gitlab-oidc` provider that install
+derives by default. Pass the printed resource name to install with
+`--vertex-wif-provider`, or declare it as `inference.wif_provider`:
+
+```bash
+fullsend repos install "<group/project>" \
+  --vertex-project "<gcp-project>" \
+  --vertex-wif-provider "projects/<number>/locations/global/workloadIdentityPools/fullsend-inference/providers/gl-<project-path>"
+```
+
+See [`fullsend inference provision`](../../cli/inference.md#inference-provision)
+for the full flag reference. To configure the shared `gitlab-oidc`
+provider by hand instead, follow the steps below.
+
+### Creating the shared provider manually
+
+To create the shared `gitlab-oidc` provider, add a GitLab-specific provider to the same
 `fullsend-inference` pool described in
 [Advanced setup → Custom inference WIF configuration](../infrastructure/advanced-setup.md#custom-inference-wif-configuration).
 The GitHub recipe there does not carry over as-is: it points the issuer
@@ -1961,7 +2095,7 @@ external scheduler instead — see [Off-system polling](#off-system-polling)
 | Bot identity | Per-role GitHub Apps | Role-specific project service accounts (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`), with project access tokens as the fallback; Free tier must enroll these via `--gitlab-role-token` since runtime authentication never falls back to the shared PAT or `fullsend-bot` |
 | Token mint | Required for App installation tokens | Not used — GitLab uses the stored PAT |
 | Event dispatch | Native Actions webhooks | Cron polling (`fullsend slash poll` / `fullsend event poll`) |
-| Inference WIF | Per-repo provider from `inference provision` | Operator-created shared `gitlab-oidc` provider, referenced via `--vertex-project` or a declared `inference.project` |
+| Inference WIF | Per-repo provider from `inference provision` | Per-project provider from `inference provision --forge gitlab`, referenced via `--vertex-wif-provider` or a declared `inference.wif_provider`; or an operator-created shared `gitlab-oidc` provider, referenced via `--vertex-project` or a declared `inference.project` |
 | CI entrypoint | `.github/workflows/fullsend.yaml` | `.gitlab/ci/fullsend-*.yml` included from `.gitlab-ci.yml` |
 
 ### `workflow:` block and `auto_cancel`

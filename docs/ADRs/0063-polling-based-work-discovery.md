@@ -43,6 +43,12 @@ durable retry or proven rediscovery for provisional entity-source handoffs. The
 `lastCheck` advance-on-schedule rule below remains for legacy event
 reconstruction.
 
+[ADR 0160](0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)
+refines the candidate selection step below: per-cycle slots are spent only
+on candidates whose Jira `updated` is newer than their checkpoint, and M and
+N become configurable within bounds. The lock protocol and the random pick
+among candidates remain.
+
 ## Context
 
 Fullsend's primary dispatch path is **event-driven**: forge webhooks are normalized

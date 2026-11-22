@@ -31,6 +31,10 @@ type handoffServer struct {
 	protectedStatus int
 	protectedRule   map[string]any
 	jobs            []map[string]any
+	// accounts and accountsStatus model the service-account inventory read
+	// that labels branch-access remediation with the account's username.
+	accounts       []map[string]any
+	accountsStatus int
 
 	createdNames []string
 	members      []map[string]any
@@ -57,6 +61,18 @@ func (s *handoffServer) start(t *testing.T) *TriggerOwner {
 	mux := http.NewServeMux()
 	s.pats.register(t, mux)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if s.accountsStatus != 0 {
+				writeTestJSON(t, w, s.accountsStatus, map[string]any{"message": "accounts"})
+				return
+			}
+			accounts := s.accounts
+			if accounts == nil {
+				accounts = []map[string]any{}
+			}
+			writeTestJSON(t, w, http.StatusOK, accounts)
+			return
+		}
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, "admin-token", r.Header.Get("PRIVATE-TOKEN"))
 		var body map[string]any
@@ -267,12 +283,44 @@ func TestEnsureReplacementPollerAccess(t *testing.T) {
 		s := newHandoffServer()
 		s.protectedStatus = http.StatusOK
 		s.protectedRule = maintainerOnly
+		s.accounts = []map[string]any{
+			{"id": 5, "name": gitlabroles.PollerTokenName, "username": "service_account_old"},
+			{"id": 77, "name": gitlabroles.PollerTokenName, "username": "service_account_new"},
+		}
 		err := s.start(t).EnsureReplacementPollerAccess(ctx, "g", "p", 77)
-		var unsafe *repos.PollerGenerationUnsafeError
-		require.ErrorAs(t, err, &unsafe)
-		assert.Contains(t, unsafe.Reason, "cannot start pipelines on protected branch")
-		assert.Contains(t, unsafe.Reason, "does not broaden branch protection")
+		var denied *repos.ReplacementPollerBranchAccessError
+		require.ErrorAs(t, err, &denied)
+		assert.Equal(t, int64(77), denied.UserID)
+		assert.Equal(t, "service_account_new", denied.Username, "the replacement is named by username, not the superseded Poller")
+		assert.Equal(t, "main", denied.Branch)
+		assert.Equal(t, "main", denied.RuleName)
+		assert.Contains(t, err.Error(), `@service_account_new (user ID 77) cannot start pipelines on protected branch "main"`)
+		assert.Contains(t, err.Error(), "Settings > Repository > Protected branches")
+		assert.Contains(t, err.Error(), `add @service_account_new under "Allowed to merge"`)
 		assert.Zero(t, s.branchWrites, "a replacement is never granted merge access")
+	})
+	t.Run("username lookup failure falls back to the user ID", func(t *testing.T) {
+		s := newHandoffServer()
+		s.protectedStatus = http.StatusOK
+		s.protectedRule = maintainerOnly
+		s.accountsStatus = http.StatusInternalServerError
+		err := s.start(t).EnsureReplacementPollerAccess(ctx, "g", "p", 77)
+		var denied *repos.ReplacementPollerBranchAccessError
+		require.ErrorAs(t, err, &denied)
+		assert.Empty(t, denied.Username)
+		assert.Contains(t, err.Error(), "service account with user ID 77")
+		assert.Zero(t, s.branchWrites)
+	})
+	t.Run("account missing from the inventory falls back to the user ID", func(t *testing.T) {
+		s := newHandoffServer()
+		s.protectedStatus = http.StatusOK
+		s.protectedRule = maintainerOnly
+		s.accounts = []map[string]any{{"id": 5, "name": gitlabroles.PollerTokenName, "username": "service_account_old"}}
+		err := s.start(t).EnsureReplacementPollerAccess(ctx, "g", "p", 77)
+		var denied *repos.ReplacementPollerBranchAccessError
+		require.ErrorAs(t, err, &denied)
+		assert.Empty(t, denied.Username)
+		assert.NotContains(t, err.Error(), "service_account_old")
 	})
 	t.Run("unreadable branch policy is an error, not a deferral", func(t *testing.T) {
 		s := newHandoffServer()

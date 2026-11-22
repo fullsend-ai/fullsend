@@ -1106,6 +1106,29 @@ func clearYAMLComments(node *yaml.Node) {
 	}
 }
 
+// gitlabPreviousInputDefinitions records, per input name, the spec:inputs
+// definitions earlier fullsend releases rendered into the root
+// .gitlab-ci.yml. mergeSpecInputs replaces an existing input that matches
+// one of these with the current contract definition, so upgrading an
+// existing install converges instead of reporting a conflict. Append the
+// outgoing definition here whenever a release changes an input's contract.
+var gitlabPreviousInputDefinitions = map[string][]string{
+	// v0.52.0 and earlier, before Jira work-item keys were admitted (#8924).
+	"resource_key": {`{default: '', regex: '^((issue|mr)-[0-9]+)?$'}`},
+}
+
+// isPreviousGitLabInputDefinition reports whether decoded equals a
+// definition an earlier fullsend release shipped for the named input.
+func isPreviousGitLabInputDefinition(name string, decoded any) bool {
+	for _, previous := range gitlabPreviousInputDefinitions[name] {
+		var want any
+		if yaml.Unmarshal([]byte(previous), &want) == nil && reflect.DeepEqual(decoded, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeSpecInputs(existing, fixture *yaml.Node) error {
 	if existing.Kind != yaml.MappingNode {
 		return fmt.Errorf("GitLab spec header must be a mapping")
@@ -1139,7 +1162,15 @@ func mergeSpecInputs(existing, fixture *yaml.Node) error {
 				return fmt.Errorf("decoding wrapper input %q: %w", name, err)
 			}
 			if !reflect.DeepEqual(a, b) {
-				return fmt.Errorf("existing input %q conflicts with the fullsend dispatch contract", name)
+				// An input rendered by an earlier fullsend release is
+				// fullsend-owned: upgrade it in place. Anything else is a
+				// user-modified input and still conflicts. An input another
+				// node aliases is left alone, since replacing it would
+				// orphan that alias.
+				if !isPreviousGitLabInputDefinition(name, a) || yamlSubtreeHasSurvivingAlias(existing, found) {
+					return fmt.Errorf("existing input %q conflicts with the fullsend dispatch contract", name)
+				}
+				inputs.Content[findMappingKeyIndex(inputs, name)+1] = definition
 			}
 			continue
 		}

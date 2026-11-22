@@ -130,13 +130,18 @@ func (p *Poller) resolveEventRoles(ctx context.Context, events []JiraEvent) erro
 	var listActors, roleActors []string
 	needRoster := false
 	for _, event := range events {
+		// An event that fails validation is skipped after this, so it must
+		// not make the cycle depend on the roster or group lookups. Ask
+		// Validate itself: toNormalizedEvent reads only what is already
+		// loaded, and before roles resolve actor.role is external or none,
+		// never empty, so the verdict here is the one processIssue gets.
+		if ne := p.toNormalizedEvent(event); ne.Validate() != nil {
+			continue
+		}
+		aid := actorID(event)
 		source := p.roleSourceFor(event)
 		if source == roleFromProjectRoles {
 			needRoster = true
-		}
-		aid := actorID(event)
-		if aid == "" {
-			continue
 		}
 		switch source {
 		case roleFromLists:

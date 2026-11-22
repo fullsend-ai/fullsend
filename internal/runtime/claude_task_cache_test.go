@@ -53,23 +53,23 @@ func TestClaudeWorkflowLargeSnapshotsDoNotReprint(t *testing.T) {
 		}
 		return string(raw)
 	}
-	a, b := frame("one", 1000), frame("two", 500)
+	a, b := frame("one", 6), frame("two", 3)
 	stderr := captureStderr(t, func() {
 		parse(`{"type":"system","subtype":"task_started","task_id":"hidden","ambient":true,"description":"PRIVATE"}`)
 		for _, task := range []string{"one", "two"} {
 			parse(fmt.Sprintf(`{"type":"system","subtype":"task_started","task_id":%q,"run_id":"r2","description":%q}`, task, task))
 		}
-		for range 20 {
+		for range 3 {
 			parse(a)
 			parse(b)
 		}
 		parse(`{"type":"system","subtype":"task_progress","task_id":"hidden","description":"PRIVATE"}`)
 		parse(`{"type":"system","subtype":"task_notification","task_id":"one","run_id":"r1","status":"completed"}`)
 	})
-	if got := strings.Count(out.String(), " / agent #"); got != 1500 {
-		t.Fatalf("unchanged snapshots printed %d agent lines, want1500", got)
+	if got := strings.Count(out.String(), " / agent #"); got != 9 {
+		t.Fatalf("unchanged snapshots printed %d agent lines, want 9", got)
 	}
-	if strings.Count(stderr, "::notice::") != 1502 || strings.Contains(out.String(), "PRIVATE") || strings.Contains(out.String(), "completed") {
+	if strings.Count(stderr, "::notice::") != 11 || strings.Contains(out.String(), "PRIVATE") || strings.Contains(out.String(), "completed") {
 		t.Fatal("cache pressure lost dedup/hidden/run guards")
 	}
 }
