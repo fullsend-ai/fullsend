@@ -107,6 +107,45 @@ func TestAwaitGitLabAccessLevel_CanceledContextIsNotSuccess(t *testing.T) {
 	assert.Less(t, time.Since(start), 10*time.Second, "the wait returns promptly once the context ends")
 }
 
+// A read that blocks until its context ends must not outlive the convergence
+// budget, and the last completed observation is still reported.
+func TestAwaitGitLabAccessLevel_BlockedReadIsBoundedByBudget(t *testing.T) {
+	old := gitlabMembershipConvergeWait
+	gitlabMembershipConvergeWait = 100 * time.Millisecond
+	t.Cleanup(func() { gitlabMembershipConvergeWait = old })
+
+	reads := 0
+	start := time.Now()
+	level, err := awaitGitLabAccessLevel(context.Background(), forge.GitLabAccessLevelDeveloper, func(ctx context.Context) (int, error) {
+		reads++
+		if reads == 1 {
+			return forge.GitLabAccessLevelMaintainer, nil
+		}
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+	require.NoError(t, err, "the last observation is reported, not the budget expiry")
+	assert.Equal(t, forge.GitLabAccessLevelMaintainer, level)
+	assert.Equal(t, 2, reads, "no read starts after the budget expires")
+	assert.Less(t, time.Since(start), 5*time.Second)
+}
+
+// Cancellation of the caller's context while a read blocks is reported as the
+// caller's error, not as the budget expiring.
+func TestAwaitGitLabAccessLevel_BlockedReadCanceledByCaller(t *testing.T) {
+	old := gitlabMembershipConvergeWait
+	gitlabMembershipConvergeWait = time.Minute
+	t.Cleanup(func() { gitlabMembershipConvergeWait = old })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := awaitGitLabAccessLevel(ctx, forge.GitLabAccessLevelDeveloper, func(rctx context.Context) (int, error) {
+		cancel()
+		<-rctx.Done()
+		return 0, rctx.Err()
+	})
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 // trigLaggingAPI models GitLab answering membership reads with the previous
 // access level for lag reads after each accepted membership change.
 type trigLaggingAPI struct {
