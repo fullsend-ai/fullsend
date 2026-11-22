@@ -89,6 +89,8 @@ func newReviewDedupCmd() *cobra.Command {
 type reviewDedupResult struct {
 	Skip     bool
 	PriorURL string
+	Reason   string
+	Warning  bool
 }
 
 func splitReviewRepo(repo string) (string, string, error) {
@@ -107,6 +109,13 @@ func writeReviewDedupOutput(cmd *cobra.Command, result reviewDedupResult) {
 		fmt.Fprintln(cmd.OutOrStdout(), "skip=true")
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "skip=false")
+		if result.Reason != "" {
+			level := "::notice::"
+			if result.Warning {
+				level = "::warning::"
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "%sReview dedup: %s; running review\n", level, result.Reason)
+		}
 	}
 }
 
@@ -114,51 +123,82 @@ func decideReviewDedup(ctx context.Context, client forge.Client, owner, repo str
 	var result reviewDedupResult
 	before, err := client.GetPullRequestInfo(ctx, owner, repo, pr)
 	if err != nil {
+		result.Reason, result.Warning = "pull request metadata unavailable", true
 		return result // fail open
 	}
-	if before.BaseSHA == "" || before.HeadSHA == "" || before.ChangedFiles <= 0 || appClientID == "" {
+	if before.BaseSHA == "" || before.HeadSHA == "" || before.ChangedFiles <= 0 {
+		result.Reason = "pull request metadata is incomplete"
+		return result
+	}
+	if appClientID == "" {
+		result.Reason = "review app client ID is unavailable"
 		return result
 	}
 
 	diffs, diffErr := client.ListPullRequestFileDiffs(ctx, owner, repo, pr)
-	if diffErr != nil || len(diffs) != before.ChangedFiles {
+	if diffErr != nil {
+		result.Reason, result.Warning = "pull request diff is unavailable", true
+		return result
+	}
+	if len(diffs) != before.ChangedFiles {
+		result.Reason = "pull request diff is incomplete"
 		return result
 	}
 	currentHash, err := pullRequestDiffHashFromDiffs(diffs, diffErr)
 	if err != nil || currentHash == "" {
+		result.Reason = "pull request diff hash is unavailable"
 		return result
 	}
 
 	after, err := client.GetPullRequestInfo(ctx, owner, repo, pr)
-	if err != nil || after.BaseSHA != before.BaseSHA || after.HeadSHA != before.HeadSHA {
+	if err != nil {
+		result.Reason, result.Warning = "pull request changed while reading the diff", true
+		return result
+	}
+	if after.BaseSHA != before.BaseSHA || after.HeadSHA != before.HeadSHA {
+		result.Reason = "pull request changed while reading the diff"
 		return result
 	}
 
 	comments, err := client.ListIssueComments(ctx, owner, repo, pr)
 	if err != nil {
+		result.Reason, result.Warning = "review skip comments are unavailable", true
 		return result
 	}
 	prior := latestVerifiedReviewComment(comments, owner, appSet, appClientID)
 	if prior == nil {
+		result.Reason = "no app-verified previous review found"
 		return result
 	}
 	priorHash, priorHead := reviewHashAndHead(prior.Body)
 	if priorHash == "" || priorHead == "" {
+		result.Reason = "previous review has no complete diff hash"
 		return result
 	}
 
 	reviews, err := client.ListPullRequestReviews(ctx, owner, repo, pr)
-	if err != nil || !hasApprovedReview(reviews, owner, appSet, priorHead) {
+	if err != nil {
+		result.Reason, result.Warning = "formal reviews are unavailable", true
+		return result
+	}
+	if !hasApprovedReview(reviews, owner, appSet, priorHead) {
+		result.Reason = "no approved bot review for the reviewed head"
 		return result
 	}
 	if priorHash != currentHash {
+		result.Reason = "effective diff changed since the previous review"
 		return result
 	}
 	// The review can be updated while comments and formal reviews are being
 	// read. Re-read both refs immediately before skipping so a concurrent push
 	// cannot turn a matching intermediate snapshot into a false skip.
 	final, err := client.GetPullRequestInfo(ctx, owner, repo, pr)
-	if err != nil || final.BaseSHA != after.BaseSHA || final.HeadSHA != after.HeadSHA {
+	if err != nil {
+		result.Reason, result.Warning = "pull request changed before deduplication could be confirmed", true
+		return result
+	}
+	if final.BaseSHA != after.BaseSHA || final.HeadSHA != after.HeadSHA {
+		result.Reason = "pull request changed before deduplication could be confirmed"
 		return result
 	}
 	result.Skip = true

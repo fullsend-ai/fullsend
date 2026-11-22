@@ -389,6 +389,7 @@ func TestListIssueComments_PaginationLimitFailsOpen(t *testing.T) {
 	comments, err := client.ListIssueComments(context.Background(), "owner", "repo", 5)
 	assert.Error(t, err)
 	assert.Nil(t, comments)
+	assert.ErrorIs(t, err, forge.ErrPaginationLimit)
 	assert.Equal(t, 100, page)
 }
 
@@ -725,6 +726,7 @@ func TestListPullRequestReviews_PaginationLimitFailsOpen(t *testing.T) {
 	reviews, err := client.ListPullRequestReviews(context.Background(), "owner", "repo", 3)
 	assert.Error(t, err)
 	assert.Nil(t, reviews)
+	assert.ErrorIs(t, err, forge.ErrPaginationLimit)
 	assert.Equal(t, 100, page)
 }
 

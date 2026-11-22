@@ -26,6 +26,11 @@ func TestReviewDedupHelpers(t *testing.T) {
 	writeReviewDedupOutput(cmd, reviewDedupResult{Skip: true, PriorURL: "https://example.test/review"})
 	assert.Contains(t, stdout.String(), "prior_url=https://example.test/review")
 	assert.Contains(t, stdout.String(), "skip=true")
+	stdout.Reset()
+	stderr.Reset()
+	writeReviewDedupOutput(cmd, reviewDedupResult{Reason: "no approved bot review for the reviewed head"})
+	assert.Contains(t, stdout.String(), "skip=false")
+	assert.Contains(t, stderr.String(), "::notice::Review dedup: no approved bot review for the reviewed head; running review")
 }
 
 func TestReviewDedupCommandValidation(t *testing.T) {

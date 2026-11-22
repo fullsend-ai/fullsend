@@ -4017,7 +4017,7 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 			return result, nil
 		}
 	}
-	return nil, fmt.Errorf("list issue comments exceeded pagination limit")
+	return nil, fmt.Errorf("list issue comments: %w", forge.ErrPaginationLimit)
 }
 
 // GetIssueComment fetches a single comment by its numeric ID. GitHub
@@ -4615,7 +4615,7 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 			return result, nil
 		}
 	}
-	return nil, fmt.Errorf("list pull request reviews exceeded pagination limit")
+	return nil, fmt.Errorf("list pull request reviews: %w", forge.ErrPaginationLimit)
 }
 
 // ListPullRequestReviewThreads returns the pull request's review threads and

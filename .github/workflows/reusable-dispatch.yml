@@ -570,7 +570,7 @@ jobs:
 
       - name: Restore fullsend CLI cache for review dedup
         id: review-cli-cache
-        if: steps.review-cli-mode.outcome == 'success'
+        if: steps.review-cli-mode.outcome == 'success' && steps.review-cli-mode.outputs.mode == 'upstream'
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -579,7 +579,7 @@ jobs:
 
       - name: Validate cached fullsend CLI for review dedup
         id: review-cli-cache-validation
-        if: steps.review-cli-cache.outputs.cache-hit == 'true'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && steps.review-cli-cache.outputs.cache-hit == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -591,7 +591,7 @@ jobs:
           fi
 
       - name: Install review dedup CLI (vendored)
-        if: steps.review-cli-mode.outputs.mode == 'vendored' && (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true')
+        if: steps.review-cli-mode.outputs.mode == 'vendored'
         continue-on-error: true
         shell: bash
         run: |
@@ -629,7 +629,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for review dedup
-        if: steps.review-cli-cache-validation.outputs.valid == 'true'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && steps.review-cli-cache-validation.outputs.valid == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -641,7 +641,7 @@ jobs:
 
       - name: Prepare fullsend CLI cache artifact for review dedup
         id: review-cli-cache-prepare
-        if: steps.review-cli-mode.outcome == 'success' && (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true')
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
         shell: bash
         run: |
@@ -656,7 +656,7 @@ jobs:
           echo "ready=true" >> "${GITHUB_OUTPUT}"
 
       - name: Save fullsend CLI cache for review dedup
-        if: (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true') && steps.review-cli-cache-prepare.outcome == 'success' && steps.review-cli-cache-prepare.outputs.ready == 'true'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true') && steps.review-cli-cache-prepare.outcome == 'success' && steps.review-cli-cache-prepare.outputs.ready == 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1838,6 +1838,7 @@ jobs:
 
       - name: Restore fullsend CLI cache for review job
         id: review-job-cli-cache
+        if: steps.review-cli-mode.outputs.mode == 'upstream'
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1846,7 +1847,7 @@ jobs:
 
       - name: Validate cached fullsend CLI for review job
         id: review-job-cli-cache-validation
-        if: steps.review-job-cli-cache.outputs.cache-hit == 'true'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && steps.review-job-cli-cache.outputs.cache-hit == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -1858,7 +1859,7 @@ jobs:
           fi
 
       - name: Install review dedup CLI (vendored)
-        if: steps.review-cli-mode.outputs.mode == 'vendored' && (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true')
+        if: steps.review-cli-mode.outputs.mode == 'vendored'
         continue-on-error: true
         shell: bash
         run: |
@@ -1896,7 +1897,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for review job
-        if: steps.review-job-cli-cache-validation.outputs.valid == 'true'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && steps.review-job-cli-cache-validation.outputs.valid == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -1908,7 +1909,7 @@ jobs:
 
       - name: Prepare fullsend CLI cache artifact for review job
         id: review-job-cli-cache-prepare
-        if: steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
         shell: bash
         run: |
@@ -1923,7 +1924,7 @@ jobs:
           echo "ready=true" >> "${GITHUB_OUTPUT}"
 
       - name: Save fullsend CLI cache for review job
-        if: (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true') && steps.review-job-cli-cache-prepare.outcome == 'success' && steps.review-job-cli-cache-prepare.outputs.ready == 'true'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true') && steps.review-job-cli-cache-prepare.outcome == 'success' && steps.review-job-cli-cache-prepare.outputs.ready == 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
