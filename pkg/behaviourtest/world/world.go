@@ -249,6 +249,20 @@ type World struct {
 	// CleanupScenario deletes it before the leased repo is deallocated.
 	RunnerSecretsSecretSet bool
 
+	// VaultServer is the feature-scoped OpenBao server the scenario's
+	// Vault steps use (ADR 0155). It is shared by the feature's
+	// scenarios and stopped at job cleanup, not by CleanupScenario.
+	VaultServer install.VaultServer
+	// VaultScenarioID prefixes the scenario's synthetic secret paths on
+	// the shared server, so scenarios never read each other's secrets.
+	VaultScenarioID string
+	// VaultSecrets maps a secret name to the synthetic value and KV v2
+	// read path the scenario stored, and VaultOverrideValues to the
+	// value an untrusted override pointed at. The values are registered
+	// with the redactor; steps compare their fingerprints only.
+	VaultSecrets        map[string]VaultSecret
+	VaultOverrideValues map[string]string
+
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
 	// CleanupScenario removes both.
@@ -593,4 +607,11 @@ const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"
 // BT is per-repo only; config always lives under .fullsend/.
 func (w *World) BehaviourScriptPath() string {
 	return filepath.Join(".fullsend", BehaviourScriptRepoPath)
+}
+
+// VaultSecret is one synthetic secret a Vault scenario stored: the value
+// a consumer should receive and the KV v2 path it was written to.
+type VaultSecret struct {
+	Value string
+	Path  string
 }

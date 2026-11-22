@@ -14,3 +14,10 @@ features/runtime/pi-gateway.feature:23 # @requires:capability:runtime-pi-gateway
 features/runtime/pi-openai.feature:19 # @requires:capability:runtime-pi-openai
 features/runtime/pi.feature:17 # @requires:capability:runtime-pi
 features/runtime/playback.feature:29 # @playback, run by the playback job
+features/platform/vault-runner-secrets.feature:26 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job
+features/platform/vault-runner-secrets.feature:55 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job
+features/platform/vault-runner-secrets.feature:87 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job
+features/platform/vault-runner-secrets.feature:121 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job
+features/platform/vault-runner-secrets.feature:158 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job
+features/platform/vault-runner-secrets.feature:192 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job
+features/platform/vault-runner-secrets.feature:222 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job

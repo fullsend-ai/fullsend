@@ -1317,9 +1317,22 @@ start it.
 4. Start a Cloudflare quick tunnel to give the server a public HTTPS address,
    as Vault connections require. The address goes into trusted base
    configuration as the connection's `vault_address`.
-5. Log the startup time and the server container's memory use
+5. Enable a stdout audit device and record the `traceparent` and `tracestate`
+   request headers unhashed. OpenBao has no OpenTelemetry support, so this
+   is how a request is correlated with a trace: the Fullsend Vault client
+   sends the run's W3C trace context on every request. The audit log is
+   diagnostic. If OpenBao refuses the audit device, the server logs a
+   warning and starts without it.
+6. Log the startup time and the server container's memory use
    (`podman stats`), so the cost on the behaviour-test runner is visible in
    the job log.
+
+`Stop` saves the server log, audit entries included, and a
+`measurements.json` file under `openbao/<container>/` in
+`BEHAVIOUR_ARTIFACT_DIR`. `measurements.json` holds the startup time and the
+memory use at start and at stop. Both files have the root token masked and
+mode `0600`. The log is read before the container is removed. If reading it
+fails, the container is kept and the next `Stop` call retries.
 
 `AllowRepo` writes the default `fullsend-runner` role. The role binds the
 default Fullsend Vault audience (`https://fullsend.sh/vault`) and the job
@@ -1338,6 +1351,37 @@ in GitHub Actions with Podman available, because the tested workflows need a
 job-issued OIDC token. Otherwise `StartVaultServer` returns a skip reason, so
 local runs skip them. Set it to `true` to make a missing prerequisite an error
 instead of a skip, or `false` to turn the scenarios off.
+
+`features/platform/vault-runner-secrets.feature` exercises the server. Its
+steps live in `pkg/behaviourtest/steps/vault.go`:
+
+- `Given the Vault test server is running` binds the feature's server to the
+  scenario. The registry is keyed by feature file. The first scenario of a
+  feature starts the server, and the feature's later scenarios reuse it. A
+  failed start is remembered, so later scenarios do not retry it.
+  `steps.StopVaultServers`, registered with `t.Cleanup` in the suite runner,
+  stops every server at job cleanup. The step skips the scenario when
+  `BEHAVIOUR_OPENBAO` disables the Vault scenarios.
+- `the Vault test server holds a synthetic "<NAME>"` stores a random value
+  shaped for the secret's consumer, under a per-scenario prefix.
+  `the trusted base configuration selects the Vault test server for "<NAME>"`
+  declares the `bt-openbao` connection and selects that path in the leased
+  repository's `config.base.yaml`.
+- The scenarios commit a host-side `pre_script`
+  (`a Vault fingerprint script "<path>"`). For each secret it received through
+  `env.runner`, the script prints `vault-fingerprint <NAME>=<fp>`: the first 16
+  hex digits of `sha256("fullsend-bt-vault:" + value)`. The fingerprint steps
+  compare that line, so no secret value reaches the logs.
+- The trace scenario stores the trace collector's headers in OpenBao and
+  replaces the repository's native `OTEL_EXPORTER_OTLP_TRACES_HEADERS` secret
+  with a wrong token. It then waits for a trace file from the harness run.
+  It is skipped when no trace collector is running.
+
+The scenarios are listed in `github-emulator/not-sharded.txt`: the emulator
+issues no GitHub Actions job OIDC token, so they run only in the live
+behaviour job. To debug a failure, find the run's trace ID in its trace file
+or job log. Then search `openbao/<container>/openbao.log` for that ID in the
+`traceparent` header of each login and read request.
 
 ### Rate-limit observability
 
