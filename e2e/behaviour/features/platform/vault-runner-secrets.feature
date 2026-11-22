@@ -187,7 +187,7 @@ Feature: Runner secrets resolved from Vault through the job's workload identity
     And an issue
     When the issue is labeled "ready-for-vault-invalid"
     Then the harness "vault-invalid" workflow fails with "vault_address must use https" in its logs
-    And the harness "vault-invalid" agent did not run
+    And the harness "vault-invalid" workflow logs do not contain "Creating sandbox:"
 
   Scenario: A pull request cannot redirect a Vault secret
     Given the Vault test server holds a synthetic "JIRA_TOKEN"
