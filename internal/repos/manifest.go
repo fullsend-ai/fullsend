@@ -114,6 +114,9 @@ type Manifest struct {
 	Defaults DefaultsConfig  `yaml:"defaults,omitempty"`
 	GitHub   *PlatformConfig `yaml:"github,omitempty"`
 	GitLab   *PlatformConfig `yaml:"gitlab,omitempty"`
+	// Forgejo declares named Forgejo instances and the repositories each
+	// one manages (see ForgejoConfig).
+	Forgejo *ForgejoConfig `yaml:"forgejo,omitempty"`
 
 	// sourceRemote and sourceDir are set only when the manifest is loaded
 	// through LoadManifest. They keep config preset paths tied to the
@@ -908,6 +911,10 @@ func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) er
 		if err := m.validatePlatformRepos(ForgeGitLab, m.GitLab, allSeen); err != nil {
 			return err
 		}
+	}
+
+	if err := m.Forgejo.validate(); err != nil {
+		return err
 	}
 
 	if err := validateManifestManaged(m); err != nil {
