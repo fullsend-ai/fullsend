@@ -7322,13 +7322,7 @@ type syncGateInputs struct {
 // hasTerminalRunError reports whether runTerminalError will return a non-nil
 // error for these run outcomes.
 func (g syncGateInputs) hasTerminalRunError() bool {
-	if g.HasValidationLoop {
-		return !g.ValidationPassed
-	}
-	if g.TimedOut {
-		return true
-	}
-	return g.ExitCode != 0 && !(g.ExitCode > 0 && isBehavioralExitSubtype(g.ExitReason))
+	return runTerminalError(g.HasValidationLoop, g.ValidationPassed, g.TimedOut, g.ExitCode, g.ExitReason, g.RunCount, 0, 0) != nil
 }
 
 // targetRepoSyncInput bundles the gate state, paths, security settings, and
@@ -7918,18 +7912,6 @@ func renameCaseOnlyPath(oldPath, newPath string) error {
 		return err
 	}
 	return nil
-}
-
-// syncTargetRepoDirWithManifest mirrors additions, modifications, and deletions from
-// srcDir into dstDir without a UI printer.
-func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, preRunManifest map[string]string) error {
-	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, nil, nil, nil, nil)
-}
-
-// syncTargetRepoDirWithPrinter mirrors additions, modifications, and deletions from
-// srcDir into dstDir, warning through printer when skipping non-regular entries.
-func syncTargetRepoDirWithPrinter(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) error {
-	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, nil, printer, nil, nil)
 }
 
 // syncTargetRepoDirWithReport mirrors additions, modifications, and deletions from

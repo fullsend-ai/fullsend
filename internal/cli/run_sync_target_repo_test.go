@@ -31,6 +31,11 @@ func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 	return syncTargetRepoDirWithManifest(srcDir, dstDir, excludes, manifest)
 }
 
+func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, preRunManifest map[string]string) error {
+	_, err := syncTargetRepoDirWithReport(srcDir, dstDir, excludes, preRunManifest, nil, nil)
+	return err
+}
+
 func TestRunCommand_HasSyncTargetRepoFlag(t *testing.T) {
 	cmd := newRunCmd()
 	flag := cmd.Flags().Lookup("sync-target-repo")
@@ -1563,14 +1568,15 @@ func TestSyncTargetRepoDirWithManifest_SkipsNonRegularFilesWithoutBlocking(t *te
 	var buf bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		done <- syncTargetRepoDirWithPrinter(srcDir, dstDir, []string{".git"}, manifest, ui.New(&buf))
+		_, syncErr := syncTargetRepoDirWithReport(srcDir, dstDir, []string{".git"}, manifest, nil, ui.New(&buf))
+		done <- syncErr
 	}()
 
 	select {
 	case err = <-done:
 		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("syncTargetRepoDirWithPrinter hung while encountering a FIFO in srcDir")
+		t.Fatal("syncTargetRepoDirWithReport hung while encountering a FIFO in srcDir")
 	}
 
 	assert.Contains(t, buf.String(), "Skipping non-regular file during target repo sync: test.fifo")
@@ -2141,6 +2147,8 @@ func TestRunAgent_SyncTargetRepo_SkippedWhenOnlyPostLoopSweepPasses(t *testing.T
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "scripts", "validate.sh"), []byte(valScript), 0o755))
 
 	outputDir := filepath.Join(t.TempDir(), "output")
+	downloadTmp := t.TempDir()
+	t.Setenv("TMPDIR", downloadTmp)
 	var buf bytes.Buffer
 
 	err := runAgent(context.Background(), "code", dir, outputDir, repoDir, fakeSandboxBinary(t), nil, false, "", "", "",
@@ -2151,6 +2159,12 @@ func TestRunAgent_SyncTargetRepo_SkippedWhenOnlyPostLoopSweepPasses(t *testing.T
 
 	assert.Contains(t, buf.String(), "skipped (validation passed only in post-loop sweep without TARGET_REPO_DIR)")
 	assert.Contains(t, buf.String(), "(retained because target repo sync did not complete)")
+	matches, globErr := filepath.Glob(filepath.Join(downloadTmp, "fs-*"))
+	require.NoError(t, globErr)
+	require.Len(t, matches, 1, "download dir must be retained on disk after runAgent defer completes")
+	dlData, dlReadErr := os.ReadFile(filepath.Join(matches[0], "app.go"))
+	require.NoError(t, dlReadErr)
+	assert.Equal(t, "v2-invalid-repo", string(dlData))
 	data, readErr := os.ReadFile(filepath.Join(repoDir, "app.go"))
 	require.NoError(t, readErr)
 	assert.Equal(t, "v1", string(data), "target repo must not be synced when inline validation with TARGET_REPO_DIR failed")
@@ -2204,6 +2218,8 @@ func TestRunAgent_SyncTargetRepo_SkippedOnTranscriptOverrideWithPassingValidatio
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "scripts", "validate.sh"), []byte(valScript), 0o755))
 
 	outputDir := filepath.Join(t.TempDir(), "output")
+	downloadTmp := t.TempDir()
+	t.Setenv("TMPDIR", downloadTmp)
 	var buf bytes.Buffer
 
 	err := runAgent(context.Background(), "code", dir, outputDir, repoDir, fakeSandboxBinary(t), nil, false, "", "", "",
@@ -2214,6 +2230,12 @@ func TestRunAgent_SyncTargetRepo_SkippedOnTranscriptOverrideWithPassingValidatio
 
 	assert.Contains(t, buf.String(), "skipped (transcript error)")
 	assert.Contains(t, buf.String(), "(retained because target repo sync did not complete)")
+	matches, globErr := filepath.Glob(filepath.Join(downloadTmp, "fs-*"))
+	require.NoError(t, globErr)
+	require.Len(t, matches, 1, "download dir must be retained on disk after runAgent defer completes")
+	dlData, dlReadErr := os.ReadFile(filepath.Join(matches[0], "app.go"))
+	require.NoError(t, dlReadErr)
+	assert.Equal(t, "v2-transcript-err", string(dlData))
 	data, readErr := os.ReadFile(filepath.Join(repoDir, "app.go"))
 	require.NoError(t, readErr)
 	assert.Equal(t, "v1", string(data), "target repo must not be synced when transcriptErrorOverride is set")
