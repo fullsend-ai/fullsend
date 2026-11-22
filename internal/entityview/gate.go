@@ -33,6 +33,13 @@ func (b *builder) entity(e *normentity.Entity) {
 	b.body(e)
 
 	comments, commentReasons := map[string]Outcome{}, map[string]string{}
+	if b.stale(e.Comments.Coverage) {
+		// filterList drops a stale collection without visiting its members, so
+		// record why those comments are unresolved for thread membership.
+		for _, c := range e.Comments.Known {
+			commentReasons[c.ID] = ReasonStaleSourceRevision
+		}
+	}
 	filterList(b, "comments", &e.Comments, func(c *normentity.Comment) (Outcome, string) {
 		o, r := b.action(&c.Action)
 		if w := worst(o, outcomeOr(comments, c.ID, Admitted)); w != comments[c.ID] {

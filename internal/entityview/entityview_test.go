@@ -408,6 +408,8 @@ func TestStaleEvidence(t *testing.T) {
 		require.Len(t, e.Threads.Known, 1)
 		assert.Empty(t, e.Threads.Known[0].CommentIDs.Known)
 		assert.Equal(t, normentity.CoverageUnknown, e.Threads.Known[0].CommentIDs.Coverage.Status)
+		assert.Equal(t, ReasonStaleSourceRevision, e.Threads.Known[0].CommentIDs.Coverage.Reason,
+			"membership reports the stale comments collection, not unresolved attribution")
 	})
 	t.Run("complete coverage without a revision is not complete at this revision", func(t *testing.T) {
 		doc := workItem(t)
