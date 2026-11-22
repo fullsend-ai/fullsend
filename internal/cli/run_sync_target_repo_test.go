@@ -18,6 +18,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/envfile"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -583,21 +584,6 @@ func TestSyncTargetRepoDir_PermissionUpdatesOnExistingFiles(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o644), info2.Mode().Perm())
 }
 
-func TestShouldSyncTargetRepo(t *testing.T) {
-	// Gating criteria:
-	// syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr, exitCode
-	assert.True(t, shouldSyncTargetRepo(true, true, false, false, false, false, 0), "all success with no validation loop")
-	assert.True(t, shouldSyncTargetRepo(true, true, true, true, false, false, 0), "all success with passing validation loop")
-
-	assert.False(t, shouldSyncTargetRepo(false, true, false, false, false, false, 0), "disabled sync")
-	assert.False(t, shouldSyncTargetRepo(true, false, false, false, false, false, 0), "repo extraction failed")
-	assert.False(t, shouldSyncTargetRepo(true, true, true, false, false, false, 0), "validation failed")
-	assert.False(t, shouldSyncTargetRepo(true, true, false, false, true, false, 0), "iteration timed out")
-	assert.False(t, shouldSyncTargetRepo(true, true, false, false, false, true, 0), "transcript error override")
-	assert.False(t, shouldSyncTargetRepo(true, true, false, false, false, false, 1), "non-zero agent exit code")
-	assert.False(t, shouldSyncTargetRepo(true, true, false, false, false, true, 1), "transcript error and non-zero exit")
-}
-
 func TestRunOverrides_EnvFileEnablesSyncTargetRepo(t *testing.T) {
 	envFile := filepath.Join(t.TempDir(), "test.env")
 	require.NoError(t, os.WriteFile(envFile, []byte("FULLSEND_SYNC_TARGET_REPO=true\n"), 0o644))
@@ -800,57 +786,152 @@ func TestDoInjectClaudeMDPointer_ReturnsInjectionSuccess(t *testing.T) {
 
 func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 	cases := []struct {
-		name             string
-		syncEnabled      bool
-		repoExtractedOK  bool
-		hasLoop          bool
-		validationPass   bool
-		inlineValidation bool
-		timedOut         bool
-		transcriptErr    bool
-		exitCode         int
-		exitReason       string
-		validatedIter    int
-		runCount         int
-		wantSync         bool
-		wantReason       string
+		name       string
+		gate       syncGateInputs
+		wantSync   bool
+		wantReason string
 	}{
-		{name: "disabled", syncEnabled: false, wantSync: false, wantReason: ""},
-		{name: "transcript error", syncEnabled: true, repoExtractedOK: true, transcriptErr: true, wantSync: false, wantReason: "transcript error"},
-		{name: "loop timeout", syncEnabled: true, repoExtractedOK: true, hasLoop: true, timedOut: true, wantSync: false, wantReason: "timed out"},
-		{name: "loop validation failed", syncEnabled: true, repoExtractedOK: true, hasLoop: true, validationPass: false, wantSync: false, wantReason: "validation did not pass"},
-		{name: "loop passed only via post-loop sweep without TARGET_REPO_DIR", syncEnabled: true, repoExtractedOK: true, hasLoop: true, validationPass: true, inlineValidation: false, validatedIter: 1, runCount: 1, wantSync: false, wantReason: "validation passed only in post-loop sweep without TARGET_REPO_DIR"},
-		{name: "loop validated earlier iteration", syncEnabled: true, repoExtractedOK: true, hasLoop: true, validationPass: true, inlineValidation: true, validatedIter: 1, runCount: 2, wantSync: false, wantReason: "validated iteration 1 is not the last downloaded iteration 2"},
-		{name: "no loop timeout", syncEnabled: true, repoExtractedOK: true, timedOut: true, wantSync: false, wantReason: "timed out"},
-		{name: "no loop non-zero exit", syncEnabled: true, repoExtractedOK: true, exitCode: 2, wantSync: false, wantReason: "agent exited with code 2"},
-		{name: "no loop behavioral subtype still syncs", syncEnabled: true, repoExtractedOK: true, exitCode: 1, exitReason: "error_max_turns", wantSync: true},
-		{name: "loop passed non-zero exit still syncs", syncEnabled: true, repoExtractedOK: true, hasLoop: true, validationPass: true, inlineValidation: true, exitCode: 1, validatedIter: 1, runCount: 1, wantSync: true},
-		{name: "extraction failed", syncEnabled: true, repoExtractedOK: false, wantSync: false, wantReason: "repository extraction failed"},
-		{name: "loop success on last iter", syncEnabled: true, repoExtractedOK: true, hasLoop: true, validationPass: true, inlineValidation: true, validatedIter: 2, runCount: 2, wantSync: true},
+		{name: "disabled", gate: syncGateInputs{Enabled: false, RepoExtractedOK: true}, wantSync: false, wantReason: ""},
+		{name: "no loop clean success", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true}, wantSync: true},
+		{name: "transcript error", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, TranscriptErr: true}, wantSync: false, wantReason: "transcript error"},
+		{name: "transcript error and non-zero exit", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, TranscriptErr: true, ExitCode: 1}, wantSync: false, wantReason: "transcript error"},
+		{name: "loop timeout", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, TimedOut: true}, wantSync: false, wantReason: "timed out"},
+		{name: "loop validation failed", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: false}, wantSync: false, wantReason: "validation did not pass"},
+		{name: "loop passed only via post-loop sweep without TARGET_REPO_DIR", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: false, ValidatedIter: 1, RunCount: 1}, wantSync: false, wantReason: "validation passed only in post-loop sweep without TARGET_REPO_DIR"},
+		{name: "loop validated earlier iteration", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: true, ValidatedIter: 1, RunCount: 2}, wantSync: false, wantReason: "validated iteration 1 is not the last downloaded iteration 2"},
+		{name: "no loop timeout", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, TimedOut: true}, wantSync: false, wantReason: "timed out"},
+		{name: "no loop non-zero exit", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, ExitCode: 2}, wantSync: false, wantReason: "agent exited with code 2"},
+		{name: "no loop behavioral subtype still syncs", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, ExitCode: 1, ExitReason: "error_max_turns"}, wantSync: true},
+		{name: "loop passed non-zero exit still syncs", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: true, ExitCode: 1, ValidatedIter: 1, RunCount: 1}, wantSync: true},
+		{name: "extraction failed", gate: syncGateInputs{Enabled: true, RepoExtractedOK: false}, wantSync: false, wantReason: "repository extraction failed"},
+		{name: "loop success on last iter", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: true, ValidatedIter: 2, RunCount: 2}, wantSync: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotSync, gotReason := syncTargetRepoSkipReason(tc.syncEnabled, tc.repoExtractedOK, tc.hasLoop, tc.validationPass, tc.inlineValidation, tc.timedOut, tc.transcriptErr, tc.exitCode, tc.exitReason, tc.validatedIter, tc.runCount)
+			gotSync, gotReason := syncTargetRepoSkipReason(tc.gate)
 			assert.Equal(t, tc.wantSync, gotSync)
 			assert.Equal(t, tc.wantReason, gotReason)
 		})
 	}
 
+	// When the run itself already has a terminal error (runTerminalError != nil),
+	// skipping sync must not set a separate sync error or retain downloadDir.
+	skipOnFailingRunCases := []struct {
+		name       string
+		gate       syncGateInputs
+		wantReason string
+	}{
+		{
+			name:       "validation did not pass",
+			gate:       syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: false, RunCount: 1},
+			wantReason: "validation did not pass",
+		},
+		{
+			name:       "no loop timed out",
+			gate:       syncGateInputs{Enabled: true, RepoExtractedOK: true, TimedOut: true, RunCount: 1},
+			wantReason: "timed out",
+		},
+		{
+			name:       "no loop non-zero exit",
+			gate:       syncGateInputs{Enabled: true, RepoExtractedOK: true, ExitCode: 2, RunCount: 1},
+			wantReason: "agent exited with code 2",
+		},
+	}
+	for _, tc := range skipOnFailingRunCases {
+		t.Run("skip_on_failing_run/"+tc.name, func(t *testing.T) {
+			var skipBuf bytes.Buffer
+			syncCalled := false
+			got := runTargetRepoSync(targetRepoSyncInput{
+				Gate:        tc.gate,
+				DownloadDir: "/src",
+				TargetDir:   "/dst",
+				OutputBase:  "/dst/out",
+				Printer:     ui.New(&skipBuf),
+				SyncFn: func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
+					syncCalled = true
+					return &syncChanges{}, nil
+				},
+			})
+			assert.False(t, syncCalled)
+			assert.Equal(t, fmt.Sprintf("skipped (%s)", tc.wantReason), got.status)
+			assert.False(t, got.preserveDownloadDir)
+			assert.NoError(t, got.err)
+			assert.Contains(t, skipBuf.String(), "Skipping target repository synchronization: "+tc.wantReason)
+		})
+	}
+
 	var buf bytes.Buffer
-	called := false
-	res := runTargetRepoSync(true, true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", "", nil, nil, nil, false, false, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
-		called = true
-		return &syncChanges{}, nil
-	})
-	assert.False(t, called)
-	assert.Equal(t, "skipped (validation did not pass)", res.status)
-	assert.False(t, res.preserveDownloadDir)
-	assert.NoError(t, res.err)
-	assert.Contains(t, buf.String(), "Skipping target repository synchronization: validation did not pass")
+
+	// When sync is requested and skipped on a run that would otherwise exit 0
+	// (runTerminalError == nil), runTargetRepoSync must return *targetRepoSyncError
+	// and preserve the download directory whenever extraction succeeded.
+	skipOnZeroExitCases := []struct {
+		name         string
+		gate         syncGateInputs
+		wantReason   string
+		wantPreserve bool
+	}{
+		{
+			name:         "post-loop sweep pass without TARGET_REPO_DIR",
+			gate:         syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: false, ValidatedIter: 1, RunCount: 1},
+			wantReason:   "validation passed only in post-loop sweep without TARGET_REPO_DIR",
+			wantPreserve: true,
+		},
+		{
+			name:         "validated iteration earlier than last downloaded",
+			gate:         syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: true, ValidatedIter: 1, RunCount: 2},
+			wantReason:   "validated iteration 1 is not the last downloaded iteration 2",
+			wantPreserve: true,
+		},
+		{
+			name:         "transcript error with passing validation",
+			gate:         syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: true, TranscriptErr: true, ExitCode: 1, ValidatedIter: 1, RunCount: 1},
+			wantReason:   "transcript error",
+			wantPreserve: true,
+		},
+		{
+			name:         "repository extraction failed on passing run",
+			gate:         syncGateInputs{Enabled: true, RepoExtractedOK: false, HasValidationLoop: false, ExitCode: 0, RunCount: 1},
+			wantReason:   "repository extraction failed",
+			wantPreserve: false,
+		},
+	}
+	for _, tc := range skipOnZeroExitCases {
+		t.Run("skip_exits_nonzero/"+tc.name, func(t *testing.T) {
+			var skipBuf bytes.Buffer
+			syncCalled := false
+			got := runTargetRepoSync(targetRepoSyncInput{
+				Gate:        tc.gate,
+				DownloadDir: "/src",
+				TargetDir:   "/dst",
+				OutputBase:  "/dst/out",
+				Printer:     ui.New(&skipBuf),
+				SyncFn: func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
+					syncCalled = true
+					return &syncChanges{}, nil
+				},
+			})
+			assert.False(t, syncCalled)
+			assert.Equal(t, fmt.Sprintf("skipped (%s)", tc.wantReason), got.status)
+			assert.Equal(t, tc.wantPreserve, got.preserveDownloadDir)
+			var syncErr *targetRepoSyncError
+			require.ErrorAs(t, got.err, &syncErr)
+			assert.Equal(t, "target repository synchronization skipped: "+tc.wantReason, got.err.Error())
+		})
+	}
 
 	buf.Reset()
-	res = runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", "", []string{"AGENTS.md"}, map[string]string{}, nil, false, false, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
-		return nil, errors.New("boom")
+	res := runTargetRepoSync(targetRepoSyncInput{
+		Gate:                   syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+		DownloadDir:            "/src",
+		TargetDir:              "/dst",
+		OutputBase:             "/dst/out",
+		RunnerInjectedExcludes: []string{"AGENTS.md"},
+		PreRunManifest:         map[string]string{},
+		Printer:                ui.New(&buf),
+		SyncFn: func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
+			return nil, errors.New("boom")
+		},
 	})
 	assert.Equal(t, "failed (boom)", res.status)
 	assert.True(t, res.preserveDownloadDir, "sync failure must preserve download directory")
@@ -859,10 +940,17 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 	assert.Contains(t, buf.String(), "Target repository synchronization failed: boom")
 
 	buf.Reset()
-	called = false
-	res = runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", "", nil, nil, nil, false, false, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
-		called = true
-		return &syncChanges{}, nil
+	called := false
+	res = runTargetRepoSync(targetRepoSyncInput{
+		Gate:        syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+		DownloadDir: "/src",
+		TargetDir:   "/dst",
+		OutputBase:  "/dst/out",
+		Printer:     ui.New(&buf),
+		SyncFn: func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
+			called = true
+			return &syncChanges{}, nil
+		},
 	})
 	assert.False(t, called)
 	assert.Equal(t, "skipped (pre-run manifest snapshot unavailable)", res.status)
@@ -877,10 +965,20 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 	manifest := map[string]string{"a.txt": "sha256:test"}
 	targetDir := t.TempDir()
 	runDir := t.TempDir()
-	res = runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1, "/src", targetDir, filepath.Join(targetDir, "output"), runDir, []string{"AGENTS.md", "CLAUDE.md"}, manifest, nil, false, false, nil, ui.New(&buf), func(_, _ string, excludes []string, preRun map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
-		gotExcludes = excludes
-		gotManifest = preRun
-		return &syncChanges{Added: []string{"new.go"}, Modified: []string{"a.txt"}}, nil
+	res = runTargetRepoSync(targetRepoSyncInput{
+		Gate:                   syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+		DownloadDir:            "/src",
+		TargetDir:              targetDir,
+		OutputBase:             filepath.Join(targetDir, "output"),
+		RunDir:                 runDir,
+		RunnerInjectedExcludes: []string{"AGENTS.md", "CLAUDE.md"},
+		PreRunManifest:         manifest,
+		Printer:                ui.New(&buf),
+		SyncFn: func(_, _ string, excludes []string, preRun map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
+			gotExcludes = excludes
+			gotManifest = preRun
+			return &syncChanges{Added: []string{"new.go"}, Modified: []string{"a.txt"}}, nil
+		},
 	})
 	assert.Equal(t, "synchronized to "+targetDir, res.status)
 	assert.False(t, res.preserveDownloadDir)
@@ -1831,13 +1929,21 @@ func TestRunTargetRepoSync_PreSyncContextScan(t *testing.T) {
 
 		var buf bytes.Buffer
 		syncCalled := false
-		res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, true, nil, ui.New(&buf),
-			func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
+		res := runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  true,
+			Printer:         ui.New(&buf),
+			SyncFn: func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
 				syncCalled = true
 				return syncTargetRepoDirWithReport(src, dst, ex, m, stripped, p)
-			})
+			},
+		})
 
 		assert.False(t, syncCalled, "sync must not run when fail_mode: closed blocks on critical context finding")
 		assert.Equal(t, "blocked (critical injection findings in downloaded context files)", res.status)
@@ -1866,9 +1972,18 @@ func TestRunTargetRepoSync_PreSyncContextScan(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(downloadDir, "CLAUDE.md"), []byte(injectionPayload), 0o644))
 
 		var buf bytes.Buffer
-		res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, false, nil, ui.New(&buf), syncTargetRepoDirWithReport)
+		res := runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  false,
+			Printer:         ui.New(&buf),
+			SyncFn:          syncTargetRepoDirWithReport,
+		})
 
 		assert.Equal(t, "synchronized to "+targetDir, res.status)
 		assert.False(t, res.preserveDownloadDir)
@@ -1893,9 +2008,19 @@ func TestRunTargetRepoSync_PreSyncContextScan(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(downloadDir, "app.go"), []byte("clean"), 0o644))
 
 		var buf bytes.Buffer
-		res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, true, preRunFindings, ui.New(&buf), syncTargetRepoDirWithReport)
+		res := runTargetRepoSync(targetRepoSyncInput{
+			Gate:                  syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:           downloadDir,
+			TargetDir:             targetDir,
+			OutputBase:            filepath.Join(targetDir, "output"),
+			RunDir:                runDir,
+			PreRunManifest:        manifest,
+			SecurityEnabled:       true,
+			FailModeClosed:        true,
+			PreRunContextFindings: preRunFindings,
+			Printer:               ui.New(&buf),
+			SyncFn:                syncTargetRepoDirWithReport,
+		})
 
 		assert.Equal(t, "synchronized to "+targetDir, res.status)
 		assert.NoError(t, res.err)
@@ -1923,9 +2048,16 @@ func TestRunTargetRepoSync_WritesSyncedFilesManifestIncludingGitignoredPaths(t *
 	require.NoError(t, os.WriteFile(filepath.Join(downloadDir, "node_modules", ".bin", "helper"), []byte("#!/bin/sh\n"), 0o755))
 
 	var buf bytes.Buffer
-	res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-		downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-		nil, manifest, nil, false, false, nil, ui.New(&buf), syncTargetRepoDirWithReport)
+	res := runTargetRepoSync(targetRepoSyncInput{
+		Gate:           syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+		DownloadDir:    downloadDir,
+		TargetDir:      targetDir,
+		OutputBase:     filepath.Join(targetDir, "output"),
+		RunDir:         runDir,
+		PreRunManifest: manifest,
+		Printer:        ui.New(&buf),
+		SyncFn:         syncTargetRepoDirWithReport,
+	})
 
 	assert.Equal(t, "synchronized to "+targetDir, res.status)
 	assert.NoError(t, res.err)
@@ -2013,14 +2145,80 @@ func TestRunAgent_SyncTargetRepo_SkippedWhenOnlyPostLoopSweepPasses(t *testing.T
 
 	err := runAgent(context.Background(), "code", dir, outputDir, repoDir, fakeSandboxBinary(t), nil, false, "", "", "",
 		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&buf), false, runOverrideFlags{syncTargetRepo: true, syncTargetRepoSet: true})
-	require.NoError(t, err, "run succeeds because post-loop sweep validated iteration output")
+	var syncErr *targetRepoSyncError
+	require.ErrorAs(t, err, &syncErr, "requested sync skipped on an otherwise exit-0 run must return *targetRepoSyncError")
+	assert.Contains(t, err.Error(), "target repository synchronization skipped: validation passed only in post-loop sweep without TARGET_REPO_DIR")
 
 	assert.Contains(t, buf.String(), "skipped (validation passed only in post-loop sweep without TARGET_REPO_DIR)")
+	assert.Contains(t, buf.String(), "(retained because target repo sync did not complete)")
 	data, readErr := os.ReadFile(filepath.Join(repoDir, "app.go"))
 	require.NoError(t, readErr)
 	assert.Equal(t, "v1", string(data), "target repo must not be synced when inline validation with TARGET_REPO_DIR failed")
 	_, postErr := os.Stat(postMarker)
 	assert.NoError(t, postErr, "post_script must still run when post-loop sweep passed")
+}
+
+type transcriptOverrideStub struct {
+	agentruntime.TranscriptHandler
+	err agentruntime.TranscriptError
+}
+
+func (s transcriptOverrideStub) ParseTranscriptFile(_ string) (agentruntime.TranscriptError, bool) {
+	return s.err, true
+}
+
+func TestRunAgent_SyncTargetRepo_SkippedOnTranscriptOverrideWithPassingValidation(t *testing.T) {
+	t.Setenv("FULLSEND_RUNTIME", "dummy")
+	t.Setenv("FULLSEND_SYNC_TARGET_REPO", "")
+
+	repoDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "app.go"), []byte("v1"), 0o644))
+	sandboxRepo := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(sandboxRepo, "app.go"), []byte("v2-transcript-err"), 0o644))
+
+	installOpenshellDownloadWrapper(t, filepath.Base(repoDir), sandboxRepo)
+
+	prev := resolveRunBackendFn
+	resolveRunBackendFn = func(o runOverrides, rc runConfig, agentName string) (agentruntime.Backend, string, error) {
+		b, src, err := prev(o, rc, agentName)
+		if err != nil {
+			return b, src, err
+		}
+		b.Transcripts = transcriptOverrideStub{
+			TranscriptHandler: b.Transcripts,
+			err: agentruntime.TranscriptError{
+				IsError:      true,
+				Subtype:      "success",
+				ErrorMessage: "API Error: injected transcript failure",
+			},
+		}
+		return b, src, nil
+	}
+	t.Cleanup(func() { resolveRunBackendFn = prev })
+
+	postMarker := filepath.Join(t.TempDir(), "post-ran")
+	dir := setupDummySyncRunHarness(t, postMarker)
+	harnessYAML := "agent: agents/code.md\nrole: code\npolicy: policies/base.yaml\npost_script: scripts/post.sh\nvalidation_loop:\n  script: scripts/validate.sh\n  max_iterations: 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(harnessYAML), 0o644))
+	valScript := "#!/bin/sh\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "scripts", "validate.sh"), []byte(valScript), 0o755))
+
+	outputDir := filepath.Join(t.TempDir(), "output")
+	var buf bytes.Buffer
+
+	err := runAgent(context.Background(), "code", dir, outputDir, repoDir, fakeSandboxBinary(t), nil, false, "", "", "",
+		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&buf), false, runOverrideFlags{syncTargetRepo: true, syncTargetRepoSet: true})
+	var syncErr *targetRepoSyncError
+	require.ErrorAs(t, err, &syncErr, "requested sync skipped on transcript override with passing validation must return *targetRepoSyncError")
+	assert.Contains(t, err.Error(), "target repository synchronization skipped: transcript error")
+
+	assert.Contains(t, buf.String(), "skipped (transcript error)")
+	assert.Contains(t, buf.String(), "(retained because target repo sync did not complete)")
+	data, readErr := os.ReadFile(filepath.Join(repoDir, "app.go"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "v1", string(data), "target repo must not be synced when transcriptErrorOverride is set")
+	_, postErr := os.Stat(postMarker)
+	assert.True(t, os.IsNotExist(postErr), "transcriptErrorOverride must continue to suppress post_script")
 }
 
 func TestSyncTargetRepoDirWithManifest_PruneFailsClosedWhenHostFileUnreadable(t *testing.T) {
@@ -2150,12 +2348,18 @@ func TestSyncTargetRepoDirWithReport_PartialChangesOnMidMutationError(t *testing
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-		srcDir, dstDir, filepath.Join(dstDir, "output"), runDir,
-		nil, manifest, nil, false, false, nil, ui.New(&buf),
-		func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
+	res := runTargetRepoSync(targetRepoSyncInput{
+		Gate:           syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+		DownloadDir:    srcDir,
+		TargetDir:      dstDir,
+		OutputBase:     filepath.Join(dstDir, "output"),
+		RunDir:         runDir,
+		PreRunManifest: manifest,
+		Printer:        ui.New(&buf),
+		SyncFn: func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
 			return &syncChanges{Modified: []string{"a_first.txt"}}, errors.New("disk full\non device")
-		})
+		},
+	})
 	require.Error(t, res.err)
 	assert.Contains(t, res.status, "failed (disk full")
 	assert.True(t, res.preserveDownloadDir)
@@ -2230,13 +2434,22 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 
 				var buf bytes.Buffer
 				syncCalled := false
-				res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-					downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-					tc.runnerExcludes, manifest, nil, true, true, nil, ui.New(&buf),
-					func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
+				res := runTargetRepoSync(targetRepoSyncInput{
+					Gate:                   syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+					DownloadDir:            downloadDir,
+					TargetDir:              targetDir,
+					OutputBase:             filepath.Join(targetDir, "output"),
+					RunDir:                 runDir,
+					RunnerInjectedExcludes: tc.runnerExcludes,
+					PreRunManifest:         manifest,
+					SecurityEnabled:        true,
+					FailModeClosed:         true,
+					Printer:                ui.New(&buf),
+					SyncFn: func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
 						syncCalled = true
 						return syncTargetRepoDirWithReport(src, dst, ex, m, stripped, p)
-					})
+					},
+				})
 
 				assert.False(t, syncCalled, "sync must be blocked for %s", tc.relPath)
 				assert.Equal(t, "blocked (critical injection findings in downloaded context files)", res.status)
@@ -2272,13 +2485,21 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 
 				var buf bytes.Buffer
 				syncCalled := false
-				res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-					downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-					nil, manifest, nil, true, true, nil, ui.New(&buf),
-					func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
+				res := runTargetRepoSync(targetRepoSyncInput{
+					Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+					DownloadDir:     downloadDir,
+					TargetDir:       targetDir,
+					OutputBase:      filepath.Join(targetDir, "output"),
+					RunDir:          runDir,
+					PreRunManifest:  manifest,
+					SecurityEnabled: true,
+					FailModeClosed:  true,
+					Printer:         ui.New(&buf),
+					SyncFn: func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
 						syncCalled = true
 						return syncTargetRepoDirWithReport(src, dst, ex, m, stripped, p)
-					})
+					},
+				})
 
 				assert.False(t, syncCalled, "sync must be blocked for %s", relPath)
 				assert.Equal(t, "blocked (critical injection findings in downloaded context files)", res.status)
@@ -2309,9 +2530,18 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(downloadDir, "app.go"), []byte("v2"), 0o644))
 
 		var buf bytes.Buffer
-		res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, true, nil, ui.New(&buf), syncTargetRepoDirWithReport)
+		res := runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  true,
+			Printer:         ui.New(&buf),
+			SyncFn:          syncTargetRepoDirWithReport,
+		})
 		assert.NoError(t, res.err, "unchanged pre-existing oversized context file must not block sync")
 		assert.Equal(t, "synchronized to "+targetDir, res.status)
 
@@ -2328,13 +2558,22 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 
 		buf.Reset()
 		syncCalled := false
-		res = runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir2, targetDir2, filepath.Join(targetDir2, "output"), runDir2,
-			nil, manifest2, nil, true, true, preRunFindings, ui.New(&buf),
-			func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
+		res = runTargetRepoSync(targetRepoSyncInput{
+			Gate:                  syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:           downloadDir2,
+			TargetDir:             targetDir2,
+			OutputBase:            filepath.Join(targetDir2, "output"),
+			RunDir:                runDir2,
+			PreRunManifest:        manifest2,
+			SecurityEnabled:       true,
+			FailModeClosed:        true,
+			PreRunContextFindings: preRunFindings,
+			Printer:               ui.New(&buf),
+			SyncFn: func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
 				syncCalled = true
 				return syncTargetRepoDirWithReport(src, dst, ex, m, stripped, p)
-			})
+			},
+		})
 		assert.False(t, syncCalled, "modified oversized context file must block under fail_mode: closed")
 		assert.Equal(t, "blocked (unscannable downloaded context files)", res.status)
 		assert.True(t, res.preserveDownloadDir)
@@ -2343,9 +2582,19 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 
 		// 3. Under fail_mode: open, oversized added context file warns and proceeds.
 		buf.Reset()
-		res = runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir2, targetDir2, filepath.Join(targetDir2, "output"), runDir2,
-			nil, manifest2, nil, true, false, preRunFindings, ui.New(&buf), syncTargetRepoDirWithReport)
+		res = runTargetRepoSync(targetRepoSyncInput{
+			Gate:                  syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:           downloadDir2,
+			TargetDir:             targetDir2,
+			OutputBase:            filepath.Join(targetDir2, "output"),
+			RunDir:                runDir2,
+			PreRunManifest:        manifest2,
+			SecurityEnabled:       true,
+			FailModeClosed:        false,
+			PreRunContextFindings: preRunFindings,
+			Printer:               ui.New(&buf),
+			SyncFn:                syncTargetRepoDirWithReport,
+		})
 		assert.NoError(t, res.err)
 		assert.Equal(t, "synchronized to "+targetDir2, res.status)
 		assert.Contains(t, buf.String(), "fail_mode: open")
@@ -2370,13 +2619,21 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 
 		var buf bytes.Buffer
 		syncCalled := false
-		res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, true, nil, ui.New(&buf),
-			func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
+		res := runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  true,
+			Printer:         ui.New(&buf),
+			SyncFn: func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
 				syncCalled = true
 				return syncTargetRepoDirWithReport(src, dst, ex, m, stripped, p)
-			})
+			},
+		})
 		assert.False(t, syncCalled, "unreadable added context file must block under fail_mode: closed")
 		assert.Equal(t, "blocked (unscannable downloaded context files)", res.status)
 		require.Error(t, res.err)
@@ -2405,9 +2662,18 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(downloadDir, "app.go"), []byte("v2"), 0o644))
 
 		var buf bytes.Buffer
-		res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, true, nil, ui.New(&buf), syncTargetRepoDirWithReport)
+		res := runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  true,
+			Printer:         ui.New(&buf),
+			SyncFn:          syncTargetRepoDirWithReport,
+		})
 		assert.NoError(t, res.err, "unchanged pre-existing symlink and skipped unsafe symlink must not block")
 
 		// Now add a new safe symlink SKILL.md -> notes.txt with injected payload + an oversized file.
@@ -2418,25 +2684,41 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 
 		buf.Reset()
 		syncCalled := false
-		res = runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir2, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, true, nil, ui.New(&buf),
-			func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
+		res = runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir2,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  true,
+			Printer:         ui.New(&buf),
+			SyncFn: func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
 				syncCalled = true
 				return syncTargetRepoDirWithReport(src, dst, ex, m, stripped, p)
-			})
+			},
+		})
 		assert.False(t, syncCalled)
 		assert.Equal(t, "blocked (critical injection findings and unscannable downloaded context files)", res.status)
 		require.Error(t, res.err)
 
 		// Under fail_mode: open with both critical + unscannable findings, warning includes BOTH counts.
 		buf.Reset()
-		res = runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir2, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, false, nil, ui.New(&buf),
-			func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
+		res = runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir2,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  false,
+			Printer:         ui.New(&buf),
+			SyncFn: func(_, _ string, _ []string, _ map[string]string, _ []string, _ *ui.Printer) (*syncChanges, error) {
 				return &syncChanges{}, nil
-			})
+			},
+		})
 		assert.NoError(t, res.err)
 		assert.Contains(t, buf.String(), "new critical finding(s) and 1 unscannable downloaded context file(s)")
 	})
@@ -2463,13 +2745,21 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 
 		var buf bytes.Buffer
 		syncCalled := false
-		res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, true, nil, ui.New(&buf),
-			func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
+		res := runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  true,
+			Printer:         ui.New(&buf),
+			SyncFn: func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
 				syncCalled = true
 				return syncTargetRepoDirWithReport(src, dst, ex, m, stripped, p)
-			})
+			},
+		})
 		assert.False(t, syncCalled, "intermediate symlink retargeting to injected file must block under fail_mode: closed")
 		assert.Equal(t, "blocked (critical injection findings in downloaded context files)", res.status)
 		require.Error(t, res.err)
@@ -2490,13 +2780,21 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 
 		var buf bytes.Buffer
 		syncCalled := false
-		res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, true, nil, ui.New(&buf),
-			func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
+		res := runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  true,
+			Printer:         ui.New(&buf),
+			SyncFn: func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
 				syncCalled = true
 				return syncTargetRepoDirWithReport(src, dst, ex, m, stripped, p)
-			})
+			},
+		})
 		assert.False(t, syncCalled, "sub/CLAUDE\\u200c.md must be scanned and blocked under fail_mode: closed")
 		assert.Equal(t, "blocked (critical injection findings in downloaded context files)", res.status)
 		require.Error(t, res.err)
@@ -2521,13 +2819,21 @@ func TestRunTargetRepoSync_PreSyncContextScan_EdgeCases(t *testing.T) {
 
 		var buf bytes.Buffer
 		syncCalled := false
-		res := runTargetRepoSync(true, true, false, false, false, false, false, 0, "", 0, 1,
-			downloadDir, targetDir, filepath.Join(targetDir, "output"), runDir,
-			nil, manifest, nil, true, true, nil, ui.New(&buf),
-			func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
+		res := runTargetRepoSync(targetRepoSyncInput{
+			Gate:            syncGateInputs{Enabled: true, RepoExtractedOK: true, RunCount: 1},
+			DownloadDir:     downloadDir,
+			TargetDir:       targetDir,
+			OutputBase:      filepath.Join(targetDir, "output"),
+			RunDir:          runDir,
+			PreRunManifest:  manifest,
+			SecurityEnabled: true,
+			FailModeClosed:  true,
+			Printer:         ui.New(&buf),
+			SyncFn: func(src, dst string, ex []string, m map[string]string, stripped []string, p *ui.Printer) (*syncChanges, error) {
 				syncCalled = true
 				return syncTargetRepoDirWithReport(src, dst, ex, m, stripped, p)
-			})
+			},
+		})
 		assert.False(t, syncCalled, "unreadable non-excluded directory must block under fail_mode: closed")
 		assert.Equal(t, "blocked (unscannable downloaded context files)", res.status)
 		require.Error(t, res.err)

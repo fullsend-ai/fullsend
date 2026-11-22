@@ -3567,31 +3567,33 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 9g. Synchronize sandbox changes to target repository if requested.
-	syncResult := runTargetRepoSync(
-		overrides.syncTargetRepo,
-		repoExtractedOK,
-		h.ValidationLoop != nil,
-		validationPassed,
-		inlineValidationPassed,
-		lastIterTimedOut,
-		transcriptErrorOverride,
-		lastExitCode,
-		agentExitReason,
-		validatedIterNum,
-		runCount,
-		hostRepositoryDownloadDir,
-		hostRepositoryDir,
-		outputBase,
-		runDir,
-		runnerInjectedSyncExcludes,
-		preRunSyncManifest,
-		lastDownloadStrippedSymlinks,
-		h.SecurityEnabled(),
-		h.FailModeClosed(),
-		preRunContextFindings,
-		printer,
-		syncTargetRepoDirFn,
-	)
+	syncResult := runTargetRepoSync(targetRepoSyncInput{
+		Gate: syncGateInputs{
+			Enabled:                overrides.syncTargetRepo,
+			RepoExtractedOK:        repoExtractedOK,
+			HasValidationLoop:      h.ValidationLoop != nil,
+			ValidationPassed:       validationPassed,
+			InlineValidationPassed: inlineValidationPassed,
+			TimedOut:               lastIterTimedOut,
+			TranscriptErr:          transcriptErrorOverride,
+			ExitCode:               lastExitCode,
+			ExitReason:             agentExitReason,
+			ValidatedIter:          validatedIterNum,
+			RunCount:               runCount,
+		},
+		DownloadDir:            hostRepositoryDownloadDir,
+		TargetDir:              hostRepositoryDir,
+		OutputBase:             outputBase,
+		RunDir:                 runDir,
+		RunnerInjectedExcludes: runnerInjectedSyncExcludes,
+		PreRunManifest:         preRunSyncManifest,
+		StrippedSymlinks:       lastDownloadStrippedSymlinks,
+		SecurityEnabled:        h.SecurityEnabled(),
+		FailModeClosed:         h.FailModeClosed(),
+		PreRunContextFindings:  preRunContextFindings,
+		Printer:                printer,
+		SyncFn:                 syncTargetRepoDirFn,
+	})
 	if syncResult.preserveDownloadDir {
 		preserveDownloadDir = true
 	}
@@ -4431,9 +4433,10 @@ func (e *agentFailedError) Error() string {
 	return fmt.Sprintf("agent failed with exit code %d", e.exitCode)
 }
 
-// targetRepoSyncError ends an otherwise eligible run whose target repository
-// synchronization failed or was blocked. The post-script gate still allows
-// post_script to run while runAgent returns this non-nil error.
+// targetRepoSyncError ends an otherwise passing run whose requested target
+// repository synchronization was skipped, failed, or blocked. The post-script
+// gate still allows post_script to run (unless suppressed by a transcript
+// error override) while runAgent returns this non-nil error.
 type targetRepoSyncError struct {
 	message string
 }
@@ -7300,48 +7303,84 @@ func isSandboxEntryUnchanged(preRunManifest map[string]string, manifestKey, srcD
 // without modifying the host filesystem permissions or failing upstream steps.
 var syncTargetRepoDirFn = syncTargetRepoDirWithReport
 
-// shouldSyncTargetRepo returns whether sandbox changes should be synchronized
-// back to the host repository. Synchronization is strictly gated: the user must
-// have enabled it, repository extraction must have succeeded, validation must
-// have passed (if configured), and neither timeouts, transcript errors, nor
-// non-zero exit codes must have occurred.
-func shouldSyncTargetRepo(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool, exitCode int) bool {
-	ok, _ := syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, validationPassed, timedOut, transcriptErr, exitCode, "", 0, 0)
-	return ok
+// syncGateInputs holds the run-outcome fields evaluated to decide whether
+// target repository synchronization may proceed.
+type syncGateInputs struct {
+	Enabled                bool
+	RepoExtractedOK        bool
+	HasValidationLoop      bool
+	ValidationPassed       bool
+	InlineValidationPassed bool
+	TimedOut               bool
+	TranscriptErr          bool
+	ExitCode               int
+	ExitReason             string
+	ValidatedIter          int
+	RunCount               int
+}
+
+// hasTerminalRunError reports whether runTerminalError will return a non-nil
+// error for these run outcomes.
+func (g syncGateInputs) hasTerminalRunError() bool {
+	if g.HasValidationLoop {
+		return !g.ValidationPassed
+	}
+	if g.TimedOut {
+		return true
+	}
+	return g.ExitCode != 0 && !(g.ExitCode > 0 && isBehavioralExitSubtype(g.ExitReason))
+}
+
+// targetRepoSyncInput bundles the gate state, paths, security settings, and
+// callbacks for runTargetRepoSync.
+type targetRepoSyncInput struct {
+	Gate                   syncGateInputs
+	DownloadDir            string
+	TargetDir              string
+	OutputBase             string
+	RunDir                 string
+	RunnerInjectedExcludes []string
+	PreRunManifest         map[string]string
+	StrippedSymlinks       []string
+	SecurityEnabled        bool
+	FailModeClosed         bool
+	PreRunContextFindings  []security.Finding
+	Printer                *ui.Printer
+	SyncFn                 func(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, strippedSymlinks []string, printer *ui.Printer) (*syncChanges, error)
 }
 
 // syncTargetRepoSkipReason evaluates whether target repo sync should proceed,
 // aligning its terminal outcome check with runTerminalError and returning a
 // human-readable skip reason when synchronization is bypassed.
-func syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, inlineValidationPassed, timedOut, transcriptErr bool, exitCode int, exitReason string, validatedIter, runCount int) (bool, string) {
-	if !syncEnabled {
+func syncTargetRepoSkipReason(g syncGateInputs) (bool, string) {
+	if !g.Enabled {
 		return false, ""
 	}
-	if transcriptErr {
+	if g.TranscriptErr {
 		return false, "transcript error"
 	}
-	if hasValidationLoop {
-		if !validationPassed {
-			if timedOut {
+	if g.HasValidationLoop {
+		if !g.ValidationPassed {
+			if g.TimedOut {
 				return false, "timed out"
 			}
 			return false, "validation did not pass"
 		}
-		if !inlineValidationPassed {
+		if !g.InlineValidationPassed {
 			return false, "validation passed only in post-loop sweep without TARGET_REPO_DIR"
 		}
-		if validatedIter > 0 && validatedIter != runCount {
-			return false, fmt.Sprintf("validated iteration %d is not the last downloaded iteration %d", validatedIter, runCount)
+		if g.ValidatedIter > 0 && g.ValidatedIter != g.RunCount {
+			return false, fmt.Sprintf("validated iteration %d is not the last downloaded iteration %d", g.ValidatedIter, g.RunCount)
 		}
 	} else {
-		if timedOut {
+		if g.TimedOut {
 			return false, "timed out"
 		}
-		if exitCode != 0 && !(exitCode > 0 && isBehavioralExitSubtype(exitReason)) {
-			return false, fmt.Sprintf("agent exited with code %d", exitCode)
+		if g.ExitCode != 0 && !(g.ExitCode > 0 && isBehavioralExitSubtype(g.ExitReason)) {
+			return false, fmt.Sprintf("agent exited with code %d", g.ExitCode)
 		}
 	}
-	if !repoExtractedOK {
+	if !g.RepoExtractedOK {
 		return false, "repository extraction failed"
 	}
 	return true, ""
@@ -7351,51 +7390,48 @@ func syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, v
 // OK, returning the status, synced-files manifest path, download-directory
 // retention flag, and any *targetRepoSyncError for runAgent to surface after
 // post_script runs.
-func runTargetRepoSync(
-	syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, inlineValidationPassed, timedOut, transcriptErr bool,
-	exitCode int, exitReason string, validatedIter, runCount int,
-	downloadDir, targetDir, outputBase, runDir string,
-	runnerInjectedExcludes []string, preRunManifest map[string]string, strippedSymlinks []string,
-	securityEnabled, failModeClosed bool, preRunContextFindings []security.Finding,
-	printer *ui.Printer,
-	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, strippedSymlinks []string, printer *ui.Printer) (*syncChanges, error),
-) targetRepoSyncResult {
-	if !syncEnabled {
+func runTargetRepoSync(in targetRepoSyncInput) targetRepoSyncResult {
+	if !in.Gate.Enabled {
 		return targetRepoSyncResult{}
 	}
-	shouldSync, skipReason := syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, inlineValidationPassed, timedOut, transcriptErr, exitCode, exitReason, validatedIter, runCount)
+	shouldSync, skipReason := syncTargetRepoSkipReason(in.Gate)
 	if !shouldSync {
-		printer.StepWarn("Skipping target repository synchronization: " + skipReason)
-		return targetRepoSyncResult{status: fmt.Sprintf("skipped (%s)", skipReason)}
+		in.Printer.StepWarn("Skipping target repository synchronization: " + skipReason)
+		res := targetRepoSyncResult{status: fmt.Sprintf("skipped (%s)", skipReason)}
+		if !in.Gate.hasTerminalRunError() {
+			res.preserveDownloadDir = in.Gate.RepoExtractedOK
+			res.err = &targetRepoSyncError{message: "target repository synchronization skipped: " + skipReason}
+		}
+		return res
 	}
-	if preRunManifest == nil {
+	if in.PreRunManifest == nil {
 		const reason = "pre-run manifest snapshot unavailable"
-		printer.StepWarn("Skipping target repository synchronization: " + reason)
+		in.Printer.StepWarn("Skipping target repository synchronization: " + reason)
 		return targetRepoSyncResult{
 			status:              fmt.Sprintf("skipped (%s)", reason),
-			preserveDownloadDir: repoExtractedOK,
+			preserveDownloadDir: in.Gate.RepoExtractedOK,
 			err:                 &targetRepoSyncError{message: "target repository synchronization skipped: " + reason},
 		}
 	}
 
 	syncExcludes := []string{".git"}
-	if rel, ok := syncOutputExcludeRel(targetDir, outputBase); ok {
+	if rel, ok := syncOutputExcludeRel(in.TargetDir, in.OutputBase); ok {
 		syncExcludes = append(syncExcludes, rel)
 	}
-	syncExcludes = append(syncExcludes, runnerInjectedExcludes...)
+	syncExcludes = append(syncExcludes, in.RunnerInjectedExcludes...)
 
 	// Scan added/modified downloaded context files BEFORE writing anything into
 	// targetDir so fail_mode: closed blocks sync before untrusted or unscannable
 	// context files hit disk.
-	if securityEnabled {
+	if in.SecurityEnabled {
 		downloadFindings := filterExcludedContextFindings(
-			scanSyncChangedContextFiles(downloadDir, targetDir, syncExcludes, preRunManifest),
+			scanSyncChangedContextFiles(in.DownloadDir, in.TargetDir, syncExcludes, in.PreRunManifest),
 			syncExcludes,
 		)
-		newFindings := diffNewContextFindings(downloadFindings, preRunContextFindings)
+		newFindings := diffNewContextFindings(downloadFindings, in.PreRunContextFindings)
 		critCount, unscannableCount := countPreSyncBlockingFindings(newFindings)
 		if critCount > 0 || unscannableCount > 0 {
-			if failModeClosed {
+			if in.FailModeClosed {
 				var status, stepMsg, errMsg string
 				switch {
 				case critCount > 0 && unscannableCount > 0:
@@ -7411,57 +7447,57 @@ func runTargetRepoSync(
 					stepMsg = fmt.Sprintf("BLOCKED: %d unscannable downloaded context file(s) (oversized or unreadable); skipping target repository sync", unscannableCount)
 					errMsg = fmt.Sprintf("target repository synchronization blocked: %d unscannable downloaded context file(s) (oversized or unreadable)", unscannableCount)
 				}
-				printer.StepFail(stepMsg)
+				in.Printer.StepFail(stepMsg)
 				return targetRepoSyncResult{
 					status:              status,
-					preserveDownloadDir: repoExtractedOK,
+					preserveDownloadDir: in.Gate.RepoExtractedOK,
 					err:                 &targetRepoSyncError{message: errMsg},
 				}
 			}
 			switch {
 			case critCount > 0 && unscannableCount > 0:
-				printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new critical finding(s) and %d unscannable downloaded context file(s) (oversized or unreadable, fail_mode: open); inspect before building or running tools", critCount, unscannableCount))
+				in.Printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new critical finding(s) and %d unscannable downloaded context file(s) (oversized or unreadable, fail_mode: open); inspect before building or running tools", critCount, unscannableCount))
 			case critCount > 0:
-				printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new critical finding(s) in downloaded context files (fail_mode: open); inspect before building or running tools", critCount))
+				in.Printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new critical finding(s) in downloaded context files (fail_mode: open); inspect before building or running tools", critCount))
 			default:
-				printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d unscannable downloaded context file(s) (oversized or unreadable, fail_mode: open); inspect before building or running tools", unscannableCount))
+				in.Printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d unscannable downloaded context file(s) (oversized or unreadable, fail_mode: open); inspect before building or running tools", unscannableCount))
 			}
 		} else if len(newFindings) > 0 {
-			printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new finding(s) in downloaded context files", len(newFindings)))
+			in.Printer.StepWarn(fmt.Sprintf("Pre-sync security scan: %d new finding(s) in downloaded context files", len(newFindings)))
 		}
 	}
 
 	syncStart := time.Now()
-	printer.StepStart("Synchronizing sandbox changes to target repository")
-	changes, err := syncFn(downloadDir, targetDir, syncExcludes, preRunManifest, strippedSymlinks, printer)
+	in.Printer.StepStart("Synchronizing sandbox changes to target repository")
+	changes, err := in.SyncFn(in.DownloadDir, in.TargetDir, syncExcludes, in.PreRunManifest, in.StrippedSymlinks, in.Printer)
 	if err != nil {
-		printer.StepWarn("Target repository synchronization failed: " + err.Error())
+		in.Printer.StepWarn("Target repository synchronization failed: " + err.Error())
 		res := targetRepoSyncResult{
 			status:              fmt.Sprintf("failed (%v)", err),
-			preserveDownloadDir: repoExtractedOK,
+			preserveDownloadDir: in.Gate.RepoExtractedOK,
 			err:                 &targetRepoSyncError{message: fmt.Sprintf("target repository synchronization failed: %v", err)},
 		}
-		if runDir != "" && changes.hasChanges() {
-			manifestPath := filepath.Join(runDir, "synced-files.txt")
+		if in.RunDir != "" && changes.hasChanges() {
+			manifestPath := filepath.Join(in.RunDir, "synced-files.txt")
 			singleLineErr := strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(err.Error())
 			header := fmt.Sprintf("# sync aborted: %s; partial changes below\n", singleLineErr)
 			if writeErr := os.WriteFile(manifestPath, []byte(header+changes.formatManifest()), 0o644); writeErr != nil {
-				printer.StepWarn("Could not write partial synced files manifest: " + writeErr.Error())
+				in.Printer.StepWarn("Could not write partial synced files manifest: " + writeErr.Error())
 			} else {
 				res.changesPath = fmt.Sprintf("%s (%s; partial — sync aborted)", manifestPath, changes.summary())
 			}
 		}
 		return res
 	}
-	printer.StepDone(fmt.Sprintf("Target repository synchronized to %s (%s, %.1fs)", targetDir, changes.summary(), time.Since(syncStart).Seconds()))
+	in.Printer.StepDone(fmt.Sprintf("Target repository synchronized to %s (%s, %.1fs)", in.TargetDir, changes.summary(), time.Since(syncStart).Seconds()))
 
 	res := targetRepoSyncResult{
-		status: fmt.Sprintf("synchronized to %s", targetDir),
+		status: fmt.Sprintf("synchronized to %s", in.TargetDir),
 	}
-	if runDir != "" {
-		manifestPath := filepath.Join(runDir, "synced-files.txt")
+	if in.RunDir != "" {
+		manifestPath := filepath.Join(in.RunDir, "synced-files.txt")
 		if writeErr := os.WriteFile(manifestPath, []byte(changes.formatManifest()), 0o644); writeErr != nil {
-			printer.StepWarn("Could not write synced files manifest: " + writeErr.Error())
+			in.Printer.StepWarn("Could not write synced files manifest: " + writeErr.Error())
 		} else {
 			res.changesPath = fmt.Sprintf("%s (%s)", manifestPath, changes.summary())
 		}
