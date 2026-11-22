@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge/forgejo"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -268,6 +269,117 @@ func TestReposForgejo_InstallFailureAndSelectorErrors(t *testing.T) {
 	_, err := runForgejoStatus(t, p, []string{"forgejo:home/org/lib"}, &forgejoTestHooks{lookupEnv: func(string) (string, bool) { return "", false }}, false)
 	assert.ErrorContains(t, err, "FULLSEND_FORGEJO_HOME_TOKEN")
 }
+
+// cliForgejoOAuth is a repos.ForgejoOAuth that records each login.
+type cliForgejoOAuth struct {
+	cached map[string]string
+	logins []string
+}
+
+func (o *cliForgejoOAuth) CachedToken(_ context.Context, req repos.ForgejoOAuthRequest) (string, string, error) {
+	if tok := o.cached[req.Alias]; tok != "" {
+		return tok, "", nil
+	}
+	return "", "no cached OAuth token", nil
+}
+
+func (o *cliForgejoOAuth) Login(_ context.Context, req repos.ForgejoOAuthRequest) (string, error) {
+	o.logins = append(o.logins, req.Alias)
+	return "oauth-" + req.Alias, nil
+}
+
+func TestReposForgejo_OAuthLoginOnlyForSelectedInstances(t *testing.T) {
+	home := newForgejoServer(t, "/forgejo")
+	other := newForgejoServer(t, "")
+	manifest := `version: 1
+forgejo:
+  instances:
+    - alias: home
+      url: ` + home.url() + `
+      oauth:
+        client_id: home-client
+      repos:
+        - name: org/app
+    - alias: other
+      url: ` + other.url() + `
+      oauth:
+        client_id: other-client
+      repos:
+        - name: org/app
+`
+	manifestPath := writeTestManifest(t, manifest)
+	oauth := &cliForgejoOAuth{}
+	hooks := &forgejoTestHooks{lookupEnv: func(string) (string, bool) { return "", false }, oauth: oauth, interactive: true}
+
+	var runErr error
+	stdout := captureStdout(t, func() {
+		runErr = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest: manifestPath, concurrency: 4, repoFilter: []string{"forgejo:home/org/app"}, testForgejo: hooks,
+		})
+	})
+	require.NoError(t, runErr)
+	assert.Equal(t, []string{"home"}, oauth.logins, "only the selected instance is asked to log in")
+	assert.Equal(t, map[string]bool{"token oauth-home": true}, home.auth)
+	assert.Empty(t, other.auth, "the unselected instance is never contacted")
+	assert.NotContains(t, stdout, "oauth-home")
+	data, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "oauth-home", "the OAuth token is never written to repos.yaml")
+
+	// A cached token is reused without a prompt, also non-interactively.
+	oauth.cached = map[string]string{"home": "oauth-home"}
+	hooks.interactive = false
+	_, err = runForgejoStatus(t, manifestPath, []string{"forgejo:home/org/app"}, hooks, false)
+	require.NoError(t, err)
+	assert.Len(t, oauth.logins, 1)
+
+	// Without a cached token a non-interactive command fails and names
+	// the variable, before contacting the instance.
+	_, err = runForgejoStatus(t, manifestPath, []string{"forgejo:other/org/app"}, hooks, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_FORGEJO_OTHER_TOKEN")
+	assert.Contains(t, err.Error(), "rerun in a terminal to log in with OAuth")
+	assert.Len(t, oauth.logins, 1)
+	assert.Empty(t, other.auth)
+}
+
+func TestNewForgejoLifecycle_Wiring(t *testing.T) {
+	m := &repos.Manifest{}
+	lc := newForgejoLifecycle(m, false, nil)
+	assert.IsType(t, liveForgejoOAuth{}, lc.OAuth, "production uses the keyring-backed OAuth fallback")
+
+	oauth := &cliForgejoOAuth{}
+	lc = newForgejoLifecycle(m, false, &forgejoTestHooks{oauth: oauth, interactive: true})
+	assert.Same(t, oauth, lc.OAuth)
+	assert.True(t, lc.Interactive)
+	assert.Nil(t, newForgejoLifecycle(m, false, &forgejoTestHooks{}).OAuth, "test hooks never reach the OS keyring")
+}
+
+func TestLiveForgejoOAuth_Adapter(t *testing.T) {
+	store := &cliMemStore{values: map[string]string{}}
+	o := liveForgejoOAuth{&forgejo.OAuth{Store: store, In: strings.NewReader("n\n"), Out: &bytes.Buffer{}}}
+	req := repos.ForgejoOAuthRequest{Alias: "home", BaseURL: "https://git.example.com", ClientID: "c", TokenEnvVar: "FULLSEND_FORGEJO_HOME_TOKEN"}
+	tok, reason, err := o.CachedToken(context.Background(), req)
+	require.NoError(t, err)
+	assert.Empty(t, tok)
+	assert.Equal(t, "no cached OAuth token", reason)
+	_, err = o.Login(context.Background(), req)
+	assert.ErrorContains(t, err, "declined")
+}
+
+type cliMemStore struct{ values map[string]string }
+
+func (s *cliMemStore) Get(key string) (string, error) {
+	v, ok := s.values[key]
+	if !ok {
+		return "", forgejo.ErrTokenNotStored
+	}
+	return v, nil
+}
+
+func (s *cliMemStore) Set(key, value string) error { s.values[key] = value; return nil }
+
+func (s *cliMemStore) Delete(key string) error { delete(s.values, key); return nil }
 
 func TestForgejoStatusError(t *testing.T) {
 	assert.NoError(t, forgejoStatusError(nil))

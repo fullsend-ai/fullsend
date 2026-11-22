@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -336,17 +337,144 @@ func TestResolveForgejoCredentials(t *testing.T) {
 		v, ok := env[k]
 		return v, ok
 	}
-	tokens, err := ResolveForgejoCredentials(targets, lookup)
+	ctx := context.Background()
+	tokens, err := ForgejoCredentials{Lookup: lookup}.Resolve(ctx, targets)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"home": "h", "code-berg": "c"}, tokens)
 	assert.Equal(t, []string{"FULLSEND_FORGEJO_HOME_TOKEN", "FULLSEND_FORGEJO_CODE_BERG_TOKEN"}, looked, "each selected alias is looked up once")
 
 	delete(env, "FULLSEND_FORGEJO_CODE_BERG_TOKEN")
 	env["FULLSEND_FORGEJO_HOME_TOKEN"] = "h"
-	_, err = ResolveForgejoCredentials(targets, lookup)
+	_, err = ForgejoCredentials{Lookup: lookup}.Resolve(ctx, targets)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "code-berg (set FULLSEND_FORGEJO_CODE_BERG_TOKEN)")
 	assert.NotContains(t, err.Error(), "home (")
+	assert.Contains(t, err.Error(), "oauth.client_id", "an instance without a client ID is told how to enable browser login")
+	assert.Contains(t, err.Error(), "full Forgejo user permissions")
+}
+
+// fakeForgejoOAuth records which instances the OAuth fallback was asked
+// about.
+type fakeForgejoOAuth struct {
+	cached   map[string]string
+	cacheErr error
+	loginTok map[string]string
+	loginErr error
+	checked  []string
+	logins   []ForgejoOAuthRequest
+}
+
+func (f *fakeForgejoOAuth) CachedToken(_ context.Context, req ForgejoOAuthRequest) (string, string, error) {
+	f.checked = append(f.checked, req.Alias)
+	if f.cacheErr != nil {
+		return "", "", f.cacheErr
+	}
+	if tok := f.cached[req.Alias]; tok != "" {
+		return tok, "", nil
+	}
+	return "", "no cached OAuth token", nil
+}
+
+func (f *fakeForgejoOAuth) Login(_ context.Context, req ForgejoOAuthRequest) (string, error) {
+	f.logins = append(f.logins, req)
+	if f.loginErr != nil {
+		return "", f.loginErr
+	}
+	return f.loginTok[req.Alias], nil
+}
+
+func TestForgejoCredentials_OAuthFallback(t *testing.T) {
+	ctx := context.Background()
+	home := ForgejoTarget{Alias: "home", BaseURL: "https://git.example.com/forgejo", ClientID: "home-client", Owner: "org", Repo: "app"}
+	cb := ForgejoTarget{Alias: "code-berg", BaseURL: "https://codeberg.org", ClientID: "cb-client", Owner: "org", Repo: "app"}
+	noOAuth := ForgejoTarget{Alias: "plain", BaseURL: "https://plain.example", Owner: "org", Repo: "app"}
+	envOf := func(env map[string]string) func(string) (string, bool) {
+		return func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+	}
+
+	t.Run("environment token wins over cache and login", func(t *testing.T) {
+		oauth := &fakeForgejoOAuth{cached: map[string]string{"home": "cached"}}
+		tokens, err := ForgejoCredentials{Lookup: envOf(map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "env"}), OAuth: oauth, Interactive: true}.Resolve(ctx, []ForgejoTarget{home})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"home": "env"}, tokens)
+		assert.Empty(t, oauth.checked, "the keyring is not consulted")
+		assert.Empty(t, oauth.logins)
+	})
+	t.Run("cached token is used without a prompt, even non-interactively", func(t *testing.T) {
+		oauth := &fakeForgejoOAuth{cached: map[string]string{"home": "cached"}}
+		tokens, err := ForgejoCredentials{Lookup: envOf(nil), OAuth: oauth}.Resolve(ctx, []ForgejoTarget{home, home})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"home": "cached"}, tokens)
+		assert.Equal(t, []string{"home"}, oauth.checked)
+		assert.Empty(t, oauth.logins)
+	})
+	t.Run("only the selected instance lacking a token logs in", func(t *testing.T) {
+		oauth := &fakeForgejoOAuth{loginTok: map[string]string{"code-berg": "fresh"}}
+		tokens, err := ForgejoCredentials{Lookup: envOf(map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "env"}), OAuth: oauth, Interactive: true}.Resolve(ctx, []ForgejoTarget{home, cb})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"home": "env", "code-berg": "fresh"}, tokens)
+		require.Len(t, oauth.logins, 1)
+		assert.Equal(t, ForgejoOAuthRequest{Alias: "code-berg", BaseURL: "https://codeberg.org", ClientID: "cb-client", TokenEnvVar: "FULLSEND_FORGEJO_CODE_BERG_TOKEN"}, oauth.logins[0])
+	})
+	t.Run("non-interactive without a token fails naming the variable", func(t *testing.T) {
+		oauth := &fakeForgejoOAuth{}
+		_, err := ForgejoCredentials{Lookup: envOf(nil), OAuth: oauth}.Resolve(ctx, []ForgejoTarget{home})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "home (no cached OAuth token; set FULLSEND_FORGEJO_HOME_TOKEN, or rerun in a terminal to log in with OAuth)")
+		assert.Contains(t, err.Error(), "nothing was changed")
+		assert.Empty(t, oauth.logins, "no browser login without a terminal")
+	})
+	t.Run("an instance that cannot log in fails the selection before any login", func(t *testing.T) {
+		oauth := &fakeForgejoOAuth{loginTok: map[string]string{"home": "fresh"}}
+		_, err := ForgejoCredentials{Lookup: envOf(nil), OAuth: oauth, Interactive: true}.Resolve(ctx, []ForgejoTarget{home, noOAuth})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "plain (set FULLSEND_FORGEJO_PLAIN_TOKEN)")
+		assert.Empty(t, oauth.logins, "no prompt when the command fails anyway")
+		assert.NotContains(t, oauth.checked, "plain")
+	})
+	t.Run("cache check failure stops resolution", func(t *testing.T) {
+		oauth := &fakeForgejoOAuth{cacheErr: errors.New("connection refused")}
+		_, err := ForgejoCredentials{Lookup: envOf(nil), OAuth: oauth, Interactive: true}.Resolve(ctx, []ForgejoTarget{home})
+		require.ErrorContains(t, err, `forgejo instance "home": checking the cached OAuth token: connection refused`)
+		assert.Empty(t, oauth.logins)
+	})
+	t.Run("login failure names the token alternative", func(t *testing.T) {
+		oauth := &fakeForgejoOAuth{loginErr: errors.New("authorization was not granted (access_denied)")}
+		_, err := ForgejoCredentials{Lookup: envOf(nil), OAuth: oauth, Interactive: true}.Resolve(ctx, []ForgejoTarget{home})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "OAuth login failed: authorization was not granted (access_denied)")
+		assert.Contains(t, err.Error(), "Set FULLSEND_FORGEJO_HOME_TOKEN")
+	})
+	t.Run("without an OAuth fallback a client ID is not enough", func(t *testing.T) {
+		_, err := ForgejoCredentials{Lookup: envOf(nil), Interactive: true}.Resolve(ctx, []ForgejoTarget{home})
+		require.ErrorContains(t, err, "home (set FULLSEND_FORGEJO_HOME_TOKEN)")
+		assert.NotContains(t, err.Error(), "oauth.client_id", "the instance already configures a client ID")
+	})
+}
+
+func TestForgejoManifest_OAuthClientID(t *testing.T) {
+	m := parseTestManifest(t, "version: 1\nforgejo:\n  instances:\n    - alias: home\n      url: https://git.example.com\n      oauth:\n        client_id: 7d2b0c1e-0000-4000-8000-000000000001\n      repos:\n        - name: org/app\n    - alias: plain\n      url: https://plain.example\n      repos:\n        - name: org/app\n")
+	sel, err := m.SplitForgejoSelectors(nil)
+	require.NoError(t, err)
+	require.Len(t, sel.Targets, 2)
+	assert.Equal(t, "7d2b0c1e-0000-4000-8000-000000000001", sel.Targets[0].ClientID)
+	assert.Empty(t, sel.Targets[1].ClientID)
+
+	data, err := yaml.Marshal(m)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "client_id: 7d2b0c1e-0000-4000-8000-000000000001")
+	assert.NotContains(t, string(data), "token", "no credential field is written to the manifest")
+
+	for name, client := range map[string]string{"empty": `""`, "spaces": `"a b"`, "slash": "a/b"} {
+		t.Run(name, func(t *testing.T) {
+			var bad Manifest
+			require.NoError(t, parseManifestBytes([]byte("version: 1\nforgejo:\n  instances:\n    - alias: a\n      url: https://a.example\n      oauth:\n        client_id: "+client+"\n      repos: []\n"), &bad))
+			assert.ErrorContains(t, bad.Validate(), "forgejo.instances[0].oauth.client_id")
+		})
+	}
+	var secret Manifest
+	err = parseManifestBytes([]byte("version: 1\nforgejo:\n  instances:\n    - alias: a\n      url: https://a.example\n      oauth:\n        client_id: x\n        client_secret: s\n      repos: []\n"), &secret)
+	assert.ErrorContains(t, err, "client_secret", "a client secret is never accepted in the manifest")
 }
 
 // memForgejo is an in-memory ForgejoFileClient.

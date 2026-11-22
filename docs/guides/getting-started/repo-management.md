@@ -130,7 +130,14 @@ forgejo:
   `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN` (the alias uppercased, with
   each run of non-alphanumeric characters replaced by one underscore, so
   `code-berg` reads `FULLSEND_FORGEJO_CODE_BERG_TOKEN`). Tokens are never
-  stored in `repos.yaml`.
+  stored in `repos.yaml`. When the variable is unset and the instance sets
+  `oauth.client_id` (the client ID of a public OAuth application
+  registered on it), an interactive command asks you to log in through
+  your browser. It does this only for the selected instances that need
+  it, and caches the token in your operating-system keyring. Forgejo does
+  not implement OAuth scopes, so that token carries your full Forgejo
+  user permissions; a scoped access token is preferred. See
+  [Forgejo credentials](../../cli/repos.md#forgejo-credentials).
 - **Selectors.** `forgejo:<alias>/<owner>/<repo>` selects a repository on
   one instance (the `<owner>/<repo>` part may be a glob). A bare
   `owner/repo` selects a Forgejo repository only when it is declared on
