@@ -14,6 +14,8 @@ on:
       - ".dockerignore"
       - ".github/workflows/runner-image.yml"
       - ".github/scripts/openshell-version.sh"
+      - "internal/security/mlscan*.go"
+      - "internal/security/onnxguard*.go"
       - go.mod
       - go.sum
   pull_request:
@@ -22,6 +24,8 @@ on:
       - ".dockerignore"
       - ".github/workflows/runner-image.yml"
       - ".github/scripts/openshell-version.sh"
+      - "internal/security/mlscan*.go"
+      - "internal/security/onnxguard*.go"
       - go.mod
       - go.sum
   workflow_dispatch:
