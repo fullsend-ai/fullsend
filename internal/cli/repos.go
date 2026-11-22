@@ -783,10 +783,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// The Forgejo lifecycle writes only once the whole selection, including
 	// every selector left for github/gitlab, has validated: an undeclared
 	// remaining selector must not leave Forgejo repositories installed.
+	//
+	// A Forgejo failure is held, like selectionMatchErr, until containment-only
+	// recovery has been attempted for every selected GitLab repository: an
+	// unrelated Forgejo failure (missing token, unreachable instance) must not
+	// leave an interrupted GitLab bootstrap's elevated access in place.
+	var forgejoErr error
 	if selectionMatchErr == nil {
-		if err := installForgejo(); err != nil {
-			return err
-		}
+		forgejoErr = installForgejo()
 	}
 
 	// Containment-only recovery of an interrupted GitLab trigger-account
@@ -833,6 +837,13 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 	if selectionMatchErr != nil {
 		errs := []error{fmt.Errorf("matching repository selection: %w; repos install only selects repositories the manifest declares; nothing was changed. Declare a missing repository first, for example:\n  fullsend repos set 'github.repos[\"owner/repo\"]' '{}'", selectionMatchErr)}
+		for _, r := range containFailedRepos {
+			errs = append(errs, r.Error)
+		}
+		return errors.Join(errs...)
+	}
+	if forgejoErr != nil {
+		errs := []error{forgejoErr}
 		for _, r := range containFailedRepos {
 			errs = append(errs, r.Error)
 		}

@@ -192,6 +192,52 @@ forgejo:
 	assert.ErrorContains(t, err, "matches a github/gitlab declaration and forgejo:home/home/lib")
 }
 
+func TestSplitForgejoSelectors_IntersectingGlobs(t *testing.T) {
+	m := parseTestManifest(t, `version: 1
+github:
+  repos:
+    - name: org/b*
+forgejo:
+  instances:
+    - alias: home
+      url: https://git.example.com
+      repos:
+        - name: org/az
+`)
+	// org/*z matches org/az on Forgejo and, through the declared org/b*
+	// glob, can match org/bz on GitHub, though neither pattern matches the
+	// other's text.
+	_, err := m.SplitForgejoSelectors([]string{"org/*z"})
+	assert.ErrorContains(t, err, "ambiguous")
+
+	// A glob whose fixed prefix cannot meet the declared glob's does not
+	// overlap.
+	sel, err := m.SplitForgejoSelectors([]string{"org/a*"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"forgejo:home/org/az"}, selectors(sel.Targets))
+	assert.False(t, sel.RunOthers)
+}
+
+func TestGlobsMayIntersect(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"org/*z", "org/b*", true},
+		{"org/a*", "org/b*", false},
+		{"org/*z", "org/*y", false},
+		{"org/*", "org/b*", true},
+		{"org/[ab]x", "org/b*", true},
+		{"other/*", "org/*", false},
+		{`org/a\*`, "org/b*", false},
+		{`org/*\z`, "org/*y", true},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, globsMayIntersect(tt.a, tt.b), "%s vs %s", tt.a, tt.b)
+		assert.Equal(t, tt.want, globsMayIntersect(tt.b, tt.a), "%s vs %s", tt.b, tt.a)
+	}
+}
+
 func TestSplitForgejoSelectors_NoForgejoSection(t *testing.T) {
 	m := &Manifest{Version: 1}
 	sel, err := m.SplitForgejoSelectors([]string{"a/b"})

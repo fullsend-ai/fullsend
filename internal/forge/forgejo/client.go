@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -161,8 +162,11 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s: Forgejo API returned HTTP %d: %s", e.Method, e.URL, e.StatusCode, e.Message)
 }
 
-// apiMessage extracts Forgejo's error message, bounded so an unexpected
-// body cannot flood the terminal.
+// apiMessage extracts Forgejo's error message. The text is server-controlled,
+// so it is bounded and sanitized where the error is built: control characters
+// (newlines, ANSI escapes) are replaced and the workflow-command delimiter is
+// broken up, so a malicious or compromised server cannot inject terminal
+// sequences or GitHub Actions workflow commands into CLI output.
 func apiMessage(data []byte) string {
 	var body struct {
 		Message string `json:"message"`
@@ -171,8 +175,19 @@ func apiMessage(data []byte) string {
 	if json.Unmarshal(data, &body) == nil {
 		msg = body.Message
 	}
+	truncated := false
 	if len(msg) > 300 {
-		msg = msg[:300] + "..."
+		msg, truncated = strings.ToValidUTF8(msg[:300], ""), true
+	}
+	msg = strings.Map(func(r rune) rune {
+		if r == ' ' || unicode.IsPrint(r) {
+			return r
+		}
+		return '?'
+	}, msg)
+	msg = strings.ReplaceAll(msg, "::", ": :")
+	if truncated {
+		msg += "..."
 	}
 	return msg
 }

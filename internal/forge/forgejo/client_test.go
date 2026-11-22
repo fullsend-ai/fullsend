@@ -150,6 +150,36 @@ func TestClient_APIErrorOmitsToken(t *testing.T) {
 	assert.NotContains(t, err.Error(), "secret-token")
 }
 
+func TestClient_APIErrorSanitizesServerMessage(t *testing.T) {
+	tests := []struct {
+		name, body string
+		want       string
+	}{
+		{"newline workflow command", `{"message":"boom\n::add-mask::secret"}`, "boom?: :add-mask: :secret"},
+		{"ansi escape", `{"message":"red\u001b[31mtext\u001b]0;title\u0007"}`, "red?[31mtext?]0;title?"},
+		{"carriage return", `{"message":"a\r::error::b"}`, "a?: :error: :b"},
+		{"truncated multibyte", `{"message":"` + strings.Repeat("é", 200) + `"}`, strings.Repeat("é", 150) + "..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+			c, err := New(srv.URL, "t", srv.Client())
+			require.NoError(t, err)
+			_, err = c.GetFile(context.Background(), "acme", "app", "x")
+			var apiErr *APIError
+			require.True(t, errors.As(err, &apiErr))
+			assert.Equal(t, tt.want, apiErr.Message)
+			assert.NotContains(t, err.Error(), "\n")
+			assert.NotContains(t, err.Error(), "\x1b")
+			assert.NotContains(t, err.Error(), "::")
+		})
+	}
+}
+
 func TestClient_RejectsNonFileAndBadEncoding(t *testing.T) {
 	resp := `{"type":"dir"}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
