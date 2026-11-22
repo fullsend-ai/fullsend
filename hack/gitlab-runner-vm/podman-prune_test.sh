@@ -100,7 +100,9 @@ KEEP
 run_prune() {
   RUN_PRUNE_RC=0
   RUN_PRUNE_OUT=$(
-    FULLSEND_PODMAN_KEEP_IMAGES="${KEEP_FILE}" bash "${PRUNE}"
+    FULLSEND_PODMAN_KEEP_IMAGES="${KEEP_FILE}" \
+    FULLSEND_PODMAN_LOW_DISK_KIB="${FULLSEND_PODMAN_LOW_DISK_KIB-0}" \
+    bash "${PRUNE}"
   ) && RUN_PRUNE_RC=0 || RUN_PRUNE_RC=$?
 }
 
@@ -199,6 +201,45 @@ elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'openshell-abc'; then
   pass "running openshell-* container skips prune"
 else
   fail "running openshell-* did not report skip: ${RUN_PRUNE_OUT}"
+fi
+
+reset_prune_fixtures
+printf 'fs-agent-42|running|openshell.managed=true\n' > "${PS_A_FILE}"
+run_prune
+if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
+  fail "in-flight fs-* container should skip with rc=0 (rc=${RUN_PRUNE_RC})"
+elif logged 'container prune' || logged 'rmi'; then
+  fail "in-flight fs-* container still pruned: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'fs-agent-42'; then
+  pass "running fs-* container skips prune"
+else
+  fail "running fs-* did not report skip: ${RUN_PRUNE_OUT}"
+fi
+
+reset_prune_fixtures
+printf 'fs-agent-43|created|openshell.managed=true\n' > "${PS_A_FILE}"
+run_prune
+if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
+  fail "created fs-* should skip with rc=0 (rc=${RUN_PRUNE_RC})"
+elif logged 'container prune' || logged 'rmi'; then
+  fail "created fs-* still pruned (would race prepare.sh): $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'fs-agent-43 (created)'; then
+  pass "created fs-* container skips prune (prepare.sh create→start race)"
+else
+  fail "created fs-* did not report skip: ${RUN_PRUNE_OUT}"
+fi
+
+reset_prune_fixtures
+printf 'fs-other|running\n' > "${PS_A_FILE}"
+run_prune
+if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
+  fail "unrelated fs-* container should not fail (rc=${RUN_PRUNE_RC}): ${RUN_PRUNE_OUT}"
+elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'skipping prune'; then
+  fail "unrelated fs-* container without openshell.managed=true skipped prune: ${RUN_PRUNE_OUT}"
+elif logged 'container prune'; then
+  pass "unrelated running fs-* container without openshell.managed=true does not skip prune"
+else
+  fail "unrelated fs-* container without openshell.managed=true path did not prune: $(tr '\n' '|' < "${PODMAN_LOG}")"
 fi
 
 reset_prune_fixtures
@@ -389,6 +430,79 @@ elif logged 'container prune -f --filter until=30m'; then
   pass "unrelated running container does not skip prune"
 else
   fail "unrelated container path did not prune: $(tr '\n' '|' < "${PODMAN_LOG}")"
+fi
+
+echo "== low-disk emergency reclamation =="
+reset_prune_fixtures
+printf 'runner-9|exited\n' > "${PS_A_FILE}"
+RUN_PRUNE_RC=0
+RUN_PRUNE_OUT=$(
+  FULLSEND_PODMAN_KEEP_IMAGES="${KEEP_FILE}" \
+  FULLSEND_PODMAN_LOW_DISK_KIB=999999999999 \
+  bash "${PRUNE}"
+) && RUN_PRUNE_RC=0 || RUN_PRUNE_RC=$?
+if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
+  fail "low-disk prune should succeed (rc=${RUN_PRUNE_RC}): ${RUN_PRUNE_OUT}"
+elif ! logged 'container prune -f --filter until=0s'; then
+  fail "low-disk prune did not bypass CONTAINER_UNTIL window (until=0s): $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif ! printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'low disk space on /'; then
+  fail "low-disk prune did not log warning message: ${RUN_PRUNE_OUT}"
+else
+  pass "low disk space bypasses CONTAINER_UNTIL grace window with until=0s"
+fi
+
+reset_prune_fixtures
+printf 'runner-9|exited\n' > "${PS_A_FILE}"
+RUN_PRUNE_RC=0
+RUN_PRUNE_OUT=$(
+  FULLSEND_PODMAN_KEEP_IMAGES="${KEEP_FILE}" \
+  FULLSEND_PODMAN_LOW_DISK_KIB=0 \
+  bash "${PRUNE}"
+) && RUN_PRUNE_RC=0 || RUN_PRUNE_RC=$?
+if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
+  fail "disabled low-disk threshold should succeed (rc=${RUN_PRUNE_RC}): ${RUN_PRUNE_OUT}"
+elif ! logged 'container prune -f --filter until=30m'; then
+  fail "disabled low-disk threshold did not retain 30m window: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'low disk space on /'; then
+  fail "disabled low-disk threshold should not log low disk warning: ${RUN_PRUNE_OUT}"
+else
+  pass "FULLSEND_PODMAN_LOW_DISK_KIB=0 disables low-disk bypass (retains until=30m)"
+fi
+
+reset_prune_fixtures
+printf 'runner-9|exited\n' > "${PS_A_FILE}"
+RUN_PRUNE_RC=0
+RUN_PRUNE_OUT=$(
+  FULLSEND_PODMAN_KEEP_IMAGES="${KEEP_FILE}" \
+  FULLSEND_PODMAN_LOW_DISK_KIB=invalid \
+  bash "${PRUNE}"
+) && RUN_PRUNE_RC=0 || RUN_PRUNE_RC=$?
+if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
+  fail "non-numeric low-disk threshold should succeed (rc=${RUN_PRUNE_RC}): ${RUN_PRUNE_OUT}"
+elif ! logged 'container prune -f --filter until=30m'; then
+  fail "non-numeric low-disk threshold did not retain 30m window: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'low disk space on /'; then
+  fail "non-numeric low-disk threshold should not log low disk warning: ${RUN_PRUNE_OUT}"
+else
+  pass "non-numeric FULLSEND_PODMAN_LOW_DISK_KIB safely falls back (retains until=30m)"
+fi
+
+reset_prune_fixtures
+printf 'runner-9|exited\n' > "${PS_A_FILE}"
+RUN_PRUNE_RC=0
+RUN_PRUNE_OUT=$(
+  FULLSEND_PODMAN_KEEP_IMAGES="${KEEP_FILE}" \
+  FULLSEND_PODMAN_LOW_DISK_KIB="" \
+  bash "${PRUNE}"
+) && RUN_PRUNE_RC=0 || RUN_PRUNE_RC=$?
+if [ "${RUN_PRUNE_RC}" -ne 0 ]; then
+  fail "empty low-disk threshold should succeed (rc=${RUN_PRUNE_RC}): ${RUN_PRUNE_OUT}"
+elif ! logged 'container prune -f --filter until=30m'; then
+  fail "empty low-disk threshold did not retain 30m window: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif printf '%s' "${RUN_PRUNE_OUT}" | grep -Fq 'low disk space on /'; then
+  fail "empty low-disk threshold should not log low disk warning: ${RUN_PRUNE_OUT}"
+else
+  pass "FULLSEND_PODMAN_LOW_DISK_KIB=\"\" disables low-disk bypass (retains until=30m)"
 fi
 
 echo "== lock held by prepare.sh skips the timer's run =="
