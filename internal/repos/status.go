@@ -184,6 +184,9 @@ type StatusResult struct {
 	Repos    []RepoStatus  `json:"repos"`
 	Summary  StatusSummary `json:"summary"`
 	Warnings []string      `json:"warnings,omitempty"`
+	// Forgejo reports the declared Forgejo repositories the command
+	// selected (see ForgejoLifecycle.Status).
+	Forgejo []ForgejoRepoResult `json:"forgejo,omitempty"`
 }
 
 // Status compares the manifest's desired state against the actual forge

@@ -137,7 +137,8 @@ type reposStatusConfig struct {
 	concurrency int
 
 	// Test overrides
-	testClient forge.Client
+	testClient  forge.Client
+	testForgejo *forgejoTestHooks
 }
 
 func newReposStatusCmd() *cobra.Command {
@@ -177,19 +178,37 @@ func runReposStatus(cmd *cobra.Command, opts *reposStatusConfig) error {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
-	var clients repos.ForgeClientFactory
-	if opts.testClient != nil {
-		clients = newSingleClientFactory(opts.testClient)
-	} else {
-		clients = newForgeClientFactory(getGitLabToken(cmd), m)
-	}
-
-	upstreamRef, upstreamTag := resolveUpstreamRef()
-	result, err := repos.Status(ctx, m, clients, opts.concurrency, opts.repoFilter, repos.DriftConfig{UpstreamRef: upstreamRef, UpstreamTag: upstreamTag})
+	// Forgejo selectors resolve before any credential lookup or forge
+	// call; an ambiguous or undeclared selector fails here.
+	sel, err := m.SplitForgejoSelectors(opts.repoFilter)
 	if err != nil {
 		return err
 	}
-	annotateGitLabRoleLifecycle(ctx, clients, result)
+	var forgejoResults []repos.ForgejoRepoResult
+	if len(sel.Targets) > 0 {
+		forgejoResults, err = newForgejoLifecycle(m, false, opts.testForgejo).Status(ctx, sel.Targets)
+		if err != nil {
+			return err
+		}
+	}
+
+	result := &repos.StatusResult{Repos: []repos.RepoStatus{}}
+	if sel.RunOthers {
+		var clients repos.ForgeClientFactory
+		if opts.testClient != nil {
+			clients = newSingleClientFactory(opts.testClient)
+		} else {
+			clients = newForgeClientFactory(getGitLabToken(cmd), m)
+		}
+
+		upstreamRef, upstreamTag := resolveUpstreamRef()
+		result, err = repos.Status(ctx, m, clients, opts.concurrency, othersFilter(opts.repoFilter, sel), repos.DriftConfig{UpstreamRef: upstreamRef, UpstreamTag: upstreamTag})
+		if err != nil {
+			return err
+		}
+		annotateGitLabRoleLifecycle(ctx, clients, result)
+	}
+	result.Forgejo = forgejoResults
 
 	return renderStatusResult(cmd, result, opts.jsonOutput)
 }
@@ -202,13 +221,23 @@ func renderStatusResult(cmd *cobra.Command, result *repos.StatusResult, jsonOutp
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(b))
 	} else {
-		printStatusTable(cmd, result)
+		if len(result.Repos) > 0 || len(result.Forgejo) == 0 {
+			printStatusTable(cmd, result)
+		}
+		printForgejoResults(cmd.OutOrStdout(), result.Forgejo)
 	}
 
+	var errs []error
 	if result.Summary.Drifted > 0 || result.Summary.NotInstalled > 0 || result.Summary.Errored > 0 {
+		errs = append(errs, fmt.Errorf("%d installed, %d drifted, %d not installed, %d errored",
+			result.Summary.Installed, result.Summary.Drifted, result.Summary.NotInstalled, result.Summary.Errored))
+	}
+	if err := forgejoStatusError(result.Forgejo); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
 		cmd.SilenceUsage = true
-		return fmt.Errorf("%d installed, %d drifted, %d not installed, %d errored",
-			result.Summary.Installed, result.Summary.Drifted, result.Summary.NotInstalled, result.Summary.Errored)
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -440,6 +469,7 @@ type reposInstallConfig struct {
 	// Test overrides
 	testClient               forge.Client
 	testFactory              repos.ForgeClientFactory
+	testForgejo              *forgejoTestHooks
 	testGitLabTokenInventory repos.ProjectAccessTokenClient
 	testGitLabTriggerOwner   repos.GitLabTriggerOwner
 	testProjectNumberFn      func(ctx context.Context, projectID string) (string, error)
@@ -690,6 +720,32 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
+
+	// Forgejo selectors resolve first: an ambiguous, unknown-alias or
+	// undeclared selector fails before any credential lookup or write.
+	// The Forgejo lifecycle then resolves every selected instance's token
+	// before its first write and never contacts an unselected instance.
+	sel, err := manifest.SplitForgejoSelectors(opts.repoFilter)
+	if err != nil {
+		return err
+	}
+	if len(sel.Targets) > 0 {
+		printer.StepStart(fmt.Sprintf("Installing %d Forgejo repos", len(sel.Targets)))
+		results, err := newForgejoLifecycle(manifest, opts.dryRun, opts.testForgejo).Install(ctx, sel.Targets)
+		printForgejoResults(os.Stdout, results)
+		if err != nil {
+			return fmt.Errorf("forgejo install: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Converged %d Forgejo repos", len(results)))
+	}
+	if !sel.RunOthers {
+		return nil
+	}
+	if len(opts.repoFilter) > 0 {
+		narrowed := *opts
+		narrowed.repoFilter = sel.Rest
+		opts = &narrowed
+	}
 
 	// Positional repositories only select entries already declared in
 	// repos.yaml (#8219): an undeclared selection fails here, before any
@@ -1575,6 +1631,7 @@ type reposUninstallConfig struct {
 	testClient       forge.Client
 	testFactory      repos.ForgeClientFactory
 	testGitLabTokens repos.ProjectAccessTokenClient
+	testForgejo      *forgejoTestHooks
 }
 
 func newReposUninstallCmd() *cobra.Command {
@@ -1642,6 +1699,33 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
+
+	// Forgejo selectors resolve before any credential lookup or write.
+	sel, err := manifest.SplitForgejoSelectors(repoArgs)
+	if err != nil {
+		return err
+	}
+	if len(sel.Targets) > 0 {
+		if !opts.manifestOnly && !opts.uninstallOnly && repos.ManifestReadOnly(manifest, opts.manifest) {
+			return fmt.Errorf("manifest %s is read-only and the uninstall must remove Forgejo repositories from it; no changes were made. "+
+				"Run with --uninstall-only to tear down without editing the manifest", opts.manifest)
+		}
+		if !opts.yes && !opts.dryRun {
+			if err := confirmForgejoTargets(printer, "uninstall", sel.Targets, os.Stdin); err != nil {
+				return err
+			}
+		}
+		lc := newForgejoLifecycle(manifest, opts.dryRun, opts.testForgejo)
+		if err := runForgejoUninstall(opts, printer, manifest, sel.Targets, func() ([]repos.ForgejoRepoResult, error) {
+			return lc.Uninstall(ctx, sel.Targets)
+		}); err != nil {
+			return err
+		}
+	}
+	if !sel.RunOthers {
+		return nil
+	}
+	repoArgs = sel.Rest
 
 	matched, matchErr := repos.MatchManifestRepos(manifest, repoArgs)
 	if matchErr != nil {

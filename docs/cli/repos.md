@@ -1784,7 +1784,7 @@ The command returns a non-zero exit code when any repo has drift, is not install
 
 ### Authentication
 
-Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass `--gitlab-token` to the `repos` command group.
+Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass `--gitlab-token` to the `repos` command group. For Forgejo repos, set the per-instance variable described in [Forgejo credentials](#forgejo-credentials).
 
 ## `repos uninstall`
 
@@ -2027,6 +2027,51 @@ Differences to watch for in scripts:
 - `gitlab.runner_tags` can no longer be set; set `gitlab.agent_runner_tags` instead.
 - Keys outside the old list, including `defaults.config.*`, `github.config.*`, `gitlab.config.*`, and repository entries, can now be set directly.
 - `repos set` edits the file in place and validates the whole result, so it rejects an edit that leaves the manifest invalid (for example adding a GitLab entry before `gitlab.url` is set).
+
+## Forgejo instances
+
+`repos install`, `repos status` and `repos uninstall` also manage repositories declared on named Forgejo instances. Declare each instance under `forgejo.instances` with an alias, its base URL, and its repositories as `owner/repo` paths relative to that URL:
+
+```yaml
+version: 1
+forgejo:
+  instances:
+    - alias: home
+      url: https://git.example.com/forgejo   # a path prefix is preserved
+      repos:
+        - name: org/app
+    - alias: codeberg
+      url: https://codeberg.org
+      repos:
+        - name: org/app
+        - name: team/tool
+```
+
+A repository's identity is its alias plus its path, so the same path can be declared on more than one instance. The base URL must use `https`. Plain `http` is accepted only for loopback hosts, such as a local development stack. The URL must not contain credentials, a query, or a fragment. Aliases are case-insensitively unique.
+
+### Selecting Forgejo repositories
+
+- `forgejo:<alias>/<owner>/<repo>` always selects that instance's repository. The `<owner>/<repo>` part may be a glob, for example `forgejo:home/org/*`.
+- A bare `owner/repo` selector or glob selects a Forgejo repository only when every path it matches is declared on exactly one instance. Otherwise the command fails before any credential lookup or write, and lists the qualified choices. With the manifest above, `team/tool` selects `forgejo:codeberg/team/tool`, while `org/app` fails and lists `forgejo:codeberg/org/app` and `forgejo:home/org/app`.
+- An unknown alias, or a repository the selected instance does not declare, is an error. The selector never falls through to another instance.
+- A bare selector that matches both a Forgejo repository and a `github`/`gitlab` declaration is ambiguous. Qualify the Forgejo repository instead.
+- With no selector, `repos install` and `repos status` act on every declared repository. `repos uninstall` always needs explicit selectors.
+
+### Forgejo credentials
+
+Each instance reads its API token from `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN`. To normalize the alias, uppercase it and replace each run of non-alphanumeric characters with one underscore. For example, alias `home` reads `FULLSEND_FORGEJO_HOME_TOKEN` and alias `code-berg` reads `FULLSEND_FORGEJO_CODE_BERG_TOKEN`. Two aliases that normalize to the same variable are rejected. Tokens are never read from or written to `repos.yaml`.
+
+The command resolves selectors first. It then looks up a token for every selected instance, and only then makes its first Forgejo call. A missing token fails the command, names each alias and variable, and changes nothing. An unselected instance is never contacted, and one alias's token is never used for another. Interactive OAuth login is not available yet.
+
+### Forgejo lifecycle
+
+The Fullsend-managed resource on Forgejo is the managed `.fullsend/config.yaml`. It carries the ownership marker and `defaults.config`.
+
+- `repos install` creates the file when it is missing and rewrites it when it has drifted. Running it again makes no changes. A `.fullsend/config.yaml` without the ownership marker is never overwritten: install reports an error for that repository. `--dry-run` reports what would change without writing.
+- `repos status` is read-only. Each selected repository is reported as `up-to-date`, `drift`, `not-installed`, `unmanaged` (a file without the ownership marker), or `error`, in a `FORGEJO REPO` table or in the `forgejo` array of `--json` output. Any state other than `up-to-date` gives a non-zero exit code.
+- `repos uninstall` deletes the managed file and then removes the repository's entry from `repos.yaml`. A file without the ownership marker is never deleted. The entry is removed only when teardown succeeded. `--uninstall-only`, `--manifest-only`, `--dry-run` and `--yes` behave as they do for other forges. Forgejo file changes are committed directly to the default branch, whether or not `--direct` is set.
+
+Reusable workflow hosts, vendored agent workflows, and OAuth login for Forgejo are tracked separately under [#9642](https://github.com/fullsend-ai/fullsend/issues/9642).
 
 ## See also
 
