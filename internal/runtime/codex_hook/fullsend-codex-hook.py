@@ -18,7 +18,7 @@ redirect it: the scripts live in `hooks/` next to this file, and
 CodexRuntime.Run checks this file's SHA-256 against the copy embedded in the
 fullsend binary before every iteration.
 
-Wire translation (codex `rust-v0.166.0`, verified against
+Wire translation (codex `rust-v0.170.0`, verified against
 codex-rs/hooks/src/{schema.rs,engine/output_parser.rs,events/*.rs} and
 codex-rs/core/src/tools/registry.rs function_hook_tool_name):
 

@@ -837,7 +837,7 @@ func TestCodexRun_DelegatingWithoutSpawnHasParentEntry(t *testing.T) {
 
 	assert.Equal(t, 0, exit)
 	assert.Equal(t, map[string]ModelUsage{
-		"gpt-5.6-luna": {Requests: 1, InputTokens: 8298, OutputTokens: 274, CacheCreationInputTokens: 0, CacheReadInputTokens: 49024},
+		"gpt-5.6-luna": {Requests: 1, InputTokens: 28665, OutputTokens: 271, CacheCreationInputTokens: 0, CacheReadInputTokens: 50048},
 	}, metrics.PerModelUsage, "the numbers TestApplyCodexMetrics pins for basic_run.ndjson")
 	assertCodexUsageSumsToTotals(t, metrics)
 	assert.NotContains(t, log, codexChildUsageMarker, "no id, no sandbox command")
@@ -1148,7 +1148,6 @@ func TestCodexRuntime_ClearIterationArtifacts_KeepsTheFindingsLog(t *testing.T) 
 		filepath.Join(ws, ".security", "findings.jsonl"),
 		filepath.Join(ws, "output", "result.txt"),
 		filepath.Join(cfg, "sessions", "2026", "10", "22", "rollout-x.jsonl"),
-		filepath.Join(cfg, codexLastMessageFile),
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
 		require.NoError(t, os.WriteFile(p, []byte("x\n"), 0o600))
@@ -1158,7 +1157,6 @@ func TestCodexRuntime_ClearIterationArtifacts_KeepsTheFindingsLog(t *testing.T) 
 	assert.FileExists(t, filepath.Join(ws, ".security", "findings.jsonl"), "the admissions of earlier iterations stay")
 	assert.NoFileExists(t, filepath.Join(ws, "output", "result.txt"))
 	assert.NoFileExists(t, filepath.Join(cfg, "sessions", "2026", "10", "22", "rollout-x.jsonl"), "the iteration's rollouts go")
-	assert.NoFileExists(t, filepath.Join(cfg, codexLastMessageFile))
 }
 
 func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
@@ -1175,8 +1173,9 @@ func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
 	}
 	assert.Equal(t, 2, d.Dropped, "one per line, however the writes split it")
 	assert.Equal(t, whole, sink.String(), "every byte still reaches the runner's stderr")
-	// Every backfill marker counts: the paginated thread's two (a failed
-	// page, a looping cursor) and the legacy-mode thread's read.
+	// Every backfill marker counts: the paginated thread's three (a failed
+	// page, a looping cursor, an incomplete item) and the legacy-mode
+	// thread's read.
 	for _, m := range codexBackfillFailedMarkers {
 		_, err := d.Write([]byte("WARN codex_exec: " + m + ": boom\n"))
 		require.NoError(t, err)
