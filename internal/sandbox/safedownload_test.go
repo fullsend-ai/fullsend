@@ -15,13 +15,1466 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// markerHook writes an executable hook that leaves a marker file when Git runs
+// it, which is how these tests prove an agent hook never executes on the host.
+func markerHook(t *testing.T, dir, name, marker string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\nprintf ran > "+marker+"\n"), 0o755))
+	return path
+}
+
+// TestSafeDownload_DropsExecutableGitConfig proves a sandbox-written config is
+// discarded: identity and origin are restored from the trusted snapshot, every
+// executable setting is gone, and real host Git operations do not run anything.
+func TestSafeDownload_DropsExecutableGitConfig(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	head := r.commitFile("file.txt", "content")
+	r.git("config", "remote.origin.url", "https://example.invalid/org/repo")
+	r.git("config", "--add", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	require.True(t, snapshot.isCheckout)
+	require.NotEmpty(t, snapshot.config, "trusted identity and origin must be captured")
+
+	marker := filepath.Join(t.TempDir(), "executed")
+	hookDir := t.TempDir()
+	markerHook(t, hookDir, "pre-commit", marker)
+	include := writeFile(t, t.TempDir(), "evil.inc", "[core]\n\thooksPath = "+hookDir+"\n")
+	for key, value := range map[string]string{
+		"core.hooksPath":               hookDir,
+		"core.fsmonitor":               "printf ran > " + marker,
+		"filter.evil.clean":            "printf ran > " + marker + "; cat",
+		"credential.helper":            "!printf ran > " + marker,
+		"diff.external":                "printf ran > " + marker,
+		"include.path":                 include,
+		"remote.origin.url":            "ext::sh -c true",
+		"core.repositoryformatversion": "0",
+	} {
+		r.git("config", key, value)
+	}
+	markerHook(t, filepath.Join(r.dir, ".git", "hooks"), "pre-commit", marker)
+
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	assert.Equal(t, "Test", r.gitAt(localDir, "config", "--local", "--get", "user.name"))
+	assert.Equal(t, "https://example.invalid/org/repo", r.gitAt(localDir, "config", "--local", "--get", "remote.origin.url"))
+	assert.Equal(t, "+refs/heads/*:refs/remotes/origin/*", r.gitAt(localDir, "config", "--local", "--get", "remote.origin.fetch"))
+	for _, key := range []string{
+		"core.hooksPath", "core.fsmonitor", "filter.evil.clean",
+		"credential.helper", "diff.external", "include.path",
+	} {
+		_, err := runGit(t, localDir, r.env, "config", "--local", "--get", key)
+		assert.Error(t, err, "%s must not be restored", key)
+	}
+
+	assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"))
+	assert.Empty(t, r.gitAt(localDir, "status", "--porcelain"))
+	r.gitAt(localDir, "commit", "--quiet", "--allow-empty", "-m", "after download")
+	assert.NoFileExists(t, marker, "no downloaded hook, filter, fsmonitor, or helper may run")
+}
+
+// TestSafeDownload_DropsDownloadedWorktreeAndSSHCommand proves an agent-written
+// worktree redirect and SSH command never reach the published checkout.
+func TestSafeDownload_DropsDownloadedWorktreeAndSSHCommand(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	head := r.commitFile("file.txt", "content")
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	outside := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "executed")
+	r.git("config", "core.worktree", outside)
+	r.git("config", "core.sshCommand", "printf ran > "+marker)
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"))
+	assert.Empty(t, r.gitAt(localDir, "status", "--porcelain"),
+		"the trusted worktree must be used, not the downloaded core.worktree")
+	for _, key := range []string{"core.worktree", "core.sshCommand"} {
+		_, err := runGit(t, localDir, r.env, "config", "--local", "--get", key)
+		assert.Error(t, err, "%s must not be restored", key)
+	}
+	assert.NoFileExists(t, marker)
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "the downloaded worktree redirect must not touch its target")
+}
+
+// TestSanitizeDownload_RemovesHooksAtAnyDepthAndVariant removes hook entries in
+// the root .git, module stores, nested checkouts, case variants, and as
+// symlinks, without deleting an in-tree symlink target.
+func TestSanitizeDownload_RemovesHooksAtAnyDepthAndVariant(t *testing.T) {
+	newRoot := func(t *testing.T) string {
+		root := t.TempDir()
+		writeFile(t, root, ".git/config", "[core]\n")
+		writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+		return root
+	}
+	assertRemoved := func(t *testing.T, root string, rels ...string) {
+		t.Helper()
+		for _, rel := range rels {
+			_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
+			assert.True(t, os.IsNotExist(err), "%s must be removed", rel)
+		}
+	}
+
+	t.Run("case variant and module store", func(t *testing.T) {
+		root := newRoot(t)
+		writeFile(t, root, ".git/HOOKS/pre-commit", "#!/bin/sh\necho bad\n")
+		writeFile(t, root, ".git/modules/dep/config", "[core]\n")
+		writeFile(t, root, ".git/modules/dep/HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "modules", "dep", "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "modules", "dep", "refs"), 0o755))
+		writeFile(t, root, ".git/modules/dep/hooks/pre-commit", "#!/bin/sh\necho bad\n")
+
+		require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
+
+		assertRemoved(t, root, ".git/HOOKS", ".git/modules/dep/hooks")
+		moduleConfig, err := os.ReadFile(filepath.Join(root, ".git", "modules", "dep", "config"))
+		require.NoError(t, err)
+		assert.Contains(t, string(moduleConfig), "repositoryformatversion", "module store config must be rebuilt")
+	})
+
+	t.Run("symlinked hooks entry", func(t *testing.T) {
+		root := newRoot(t)
+		writeFile(t, root, "shared-hooks/pre-commit", "#!/bin/sh\necho bad\n")
+		require.NoError(t, os.Symlink("../shared-hooks", filepath.Join(root, ".git", "hooks")))
+
+		require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
+
+		assertRemoved(t, root, ".git/hooks")
+		assert.DirExists(t, filepath.Join(root, "shared-hooks"), "an in-tree symlink target must not be deleted")
+	})
+
+	t.Run("nested checkout", func(t *testing.T) {
+		root := newRoot(t)
+		writeFile(t, root, "vendor/nested/.git/config", "[core]\n")
+		writeFile(t, root, "vendor/nested/.git/hooks/post-checkout", "#!/bin/sh\necho bad\n")
+
+		require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
+
+		assertRemoved(t, root, "vendor/nested/.git/hooks")
+	})
+}
+
+// TestSafeDownload_RemovesCaseVariantHooksEndToEnd downloads a checkout whose
+// git dir and hooks entry use case variants, then proves real Git runs no hook
+// marker while HEAD, refs, config, and format survive. It runs only on a
+// case-insensitive filesystem, where those variants name the same entries.
+func TestSafeDownload_RemovesCaseVariantHooksEndToEnd(t *testing.T) {
+	requireGit(t)
+	probe := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(probe, "caseprobe"), []byte("x\n"), 0o644))
+	if _, err := os.Lstat(filepath.Join(probe, "CASEPROBE")); err != nil {
+		t.Skip("filesystem is case-sensitive")
+	}
+	dirNames := func(t *testing.T, dir string) []string {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		return names
+	}
+
+	t.Run("root git dir and hooks", func(t *testing.T) {
+		r := newGitRepo(t)
+		head := r.commitFile("file.txt", "content")
+		r.git("config", "remote.origin.url", "https://example.invalid/org/repo")
+		refs := r.git("for-each-ref")
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+
+		// Simulate a download whose git dir and hooks entry carry other casing;
+		// the filesystem treats them as the same entries.
+		require.NoError(t, os.Rename(filepath.Join(r.dir, ".git"), filepath.Join(r.dir, ".GIT")))
+		require.Contains(t, dirNames(t, r.dir), ".GIT")
+		require.NoError(t, os.RemoveAll(filepath.Join(r.dir, ".GIT", "hooks")))
+		marker := filepath.Join(t.TempDir(), "executed")
+		markerHook(t, filepath.Join(r.dir, ".GIT", "HOOKS"), "pre-commit", marker)
+		markerHook(t, filepath.Join(r.dir, ".GIT", "hooks"), "post-checkout", marker)
+		assert.Contains(t, dirNames(t, filepath.Join(r.dir, ".GIT")), "HOOKS",
+			"fixture must create an upper-case hooks entry")
+
+		serveDownloadFrom(t, r.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+		assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"))
+		assert.Equal(t, refs, r.gitAt(localDir, "for-each-ref"))
+		assert.Equal(t, "Test", r.gitAt(localDir, "config", "--local", "--get", "user.name"))
+		assert.Equal(t, "https://example.invalid/org/repo", r.gitAt(localDir, "config", "--local", "--get", "remote.origin.url"))
+		assert.Equal(t, "0", r.gitAt(localDir, "config", "--local", "--get", "core.repositoryformatversion"))
+		assert.Equal(t, "sha1", r.gitAt(localDir, "rev-parse", "--show-object-format"))
+		_, err = os.Lstat(filepath.Join(localDir, ".git", "HOOKS"))
+		assert.True(t, os.IsNotExist(err), "a case-variant hooks entry must be removed")
+
+		r.gitAt(localDir, "commit", "--quiet", "--allow-empty", "-m", "after download")
+		r.gitAt(localDir, "checkout", "--quiet", "-b", "after-download")
+		assert.NoFileExists(t, marker, "no downloaded case-variant hook may run")
+	})
+
+	t.Run("nested module store", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dependency")
+		super := newGitRepo(t)
+		super.commitFile("file.txt", "content")
+		super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+		super.git("commit", "--quiet", "-m", "add submodule")
+		submodule := filepath.Join(super.dir, "vendor", "dep")
+		subHead := super.gitAt(submodule, "rev-parse", "HEAD")
+		storeURL := super.gitAt(submodule, "config", "--local", "--get", "remote.origin.url")
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+
+		require.NoError(t, os.Rename(filepath.Join(super.dir, ".git"), filepath.Join(super.dir, ".GIT")))
+		require.NoError(t, os.Rename(filepath.Join(super.dir, ".GIT", "modules"), filepath.Join(super.dir, ".GIT", "MODULES")))
+		store := filepath.Join(super.dir, ".GIT", "MODULES", "vendor", "dep")
+		require.NoError(t, os.RemoveAll(filepath.Join(store, "hooks")))
+		marker := filepath.Join(t.TempDir(), "executed")
+		markerHook(t, filepath.Join(store, "HOOKS"), "pre-commit", marker)
+		assert.Contains(t, dirNames(t, store), "HOOKS",
+			"fixture must create an upper-case module store hooks entry")
+
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+		localSub := filepath.Join(localDir, "vendor", "dep")
+		assert.Equal(t, subHead, super.gitAt(localSub, "rev-parse", "HEAD"))
+		assert.Equal(t, storeURL, super.gitAt(localSub, "config", "--local", "--get", "remote.origin.url"))
+		localStore := filepath.Join(localDir, ".git", "modules", "vendor", "dep")
+		_, err = os.Lstat(filepath.Join(localStore, "HOOKS"))
+		assert.True(t, os.IsNotExist(err), "a case-variant module store hooks entry must be removed")
+
+		super.gitAt(localSub, "commit", "--quiet", "--allow-empty", "-m", "after download")
+		assert.NoFileExists(t, marker, "no downloaded module store case-variant hook may run")
+	})
+}
+
+// TestSanitizeDownload_PreservesRefsNamedLikeMetadata keeps branches and tags
+// whose names look like git metadata; only real metadata entries are removed.
+func TestSanitizeDownload_PreservesRefsNamedLikeMetadata(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	for _, name := range []string{"hooks", "feature/config.worktree", "modules"} {
+		r.git("branch", name)
+	}
+	r.git("tag", "hooks")
+	before := r.git("show-ref")
+
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
+
+	assert.Equal(t, before, r.git("show-ref"), "refs must be preserved byte for byte")
+	assert.Empty(t, r.git("status", "--porcelain"))
+}
+
+// TestSanitizeDownload_PreservesInitializedSubmodule keeps a normal submodule
+// working after sanitization while its store config is rebuilt and its hooks
+// are removed.
+func TestSanitizeDownload_PreservesInitializedSubmodule(t *testing.T) {
+	requireGit(t)
+	sub := newGitRepo(t)
+	subHead := sub.commitFile("dep.txt", "dependency")
+	super := newGitRepo(t)
+	super.commitFile("file.txt", "content")
+	super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.dir, "vendor/dep")
+	super.git("commit", "--quiet", "-m", "add submodule")
+
+	store := filepath.Join(super.dir, ".git", "modules", "vendor", "dep")
+	marker := filepath.Join(t.TempDir(), "executed")
+	markerHook(t, filepath.Join(store, "hooks"), "pre-commit", marker)
+
+	require.NoError(t, sanitizeDownload(super.dir, RepositorySnapshot{}))
+
+	assert.FileExists(t, filepath.Join(super.dir, "vendor", "dep", ".git"))
+	depDir := filepath.Join(super.dir, "vendor", "dep")
+	assert.Equal(t, subHead, super.gitAt(depDir, "rev-parse", "HEAD"))
+	assert.Empty(t, super.gitAt(depDir, "status", "--porcelain"))
+	storeConfig, err := os.ReadFile(filepath.Join(store, "config"))
+	require.NoError(t, err)
+	assert.Contains(t, string(storeConfig), "repositoryformatversion")
+	_, err = os.Lstat(filepath.Join(store, "hooks"))
+	assert.True(t, os.IsNotExist(err), "module store hooks must be removed")
+
+	super.gitAt(depDir, "commit", "--quiet", "--allow-empty", "-m", "after sanitize")
+	assert.NoFileExists(t, marker)
+}
+
+// TestSanitizeDownload_RejectsNestedGitfileRedirect rejects an initialized
+// submodule gitfile whose target is not inside the owning checkout's module
+// store.
+func TestSanitizeDownload_RejectsNestedGitfileRedirect(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".git/config", "[core]\n")
+	writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, root, "outside/config", "[core]\n")
+	writeFile(t, root, "outside/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, root, "outside/refs/heads/main", testOID+"\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "outside", "objects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "modules"), 0o755))
+	writeFile(t, root, "vendor/dep/.git", "gitdir: ../../outside\n")
+
+	err := sanitizeDownload(root, RepositorySnapshot{})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	assert.Contains(t, err.Error(), "redirects outside")
+}
+
+// TestSafeDownload_PreservesRepositoryFormat keeps sha256 and reftable storage
+// declared after the config rebuild.
+func TestSafeDownload_PreservesRepositoryFormat(t *testing.T) {
+	requireGit(t)
+
+	t.Run("sha256", func(t *testing.T) {
+		dir := t.TempDir()
+		r := &gitRepo{t: t, dir: dir, env: gitTestEnv(t.TempDir())}
+		out, err := r.tryGit("init", "--quiet", "--initial-branch=main", "--object-format=sha256", ".")
+		if err != nil {
+			t.Skipf("git does not support sha256: %s", out)
+		}
+		r.git("config", "user.name", "Test")
+		r.git("config", "user.email", "test@example.invalid")
+		head := r.commitFile("f.txt", "x")
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+
+		serveDownloadFrom(t, r.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+		assert.Equal(t, "sha256", r.gitAt(localDir, "config", "--local", "--get", "extensions.objectFormat"))
+		assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"))
+		assert.Equal(t, "Test", r.gitAt(localDir, "config", "--local", "--get", "user.name"))
+		assert.Empty(t, r.gitAt(localDir, "status", "--porcelain"))
+	})
+
+	t.Run("reftable", func(t *testing.T) {
+		requireReftableSanitization(t)
+		r := newReftableRepo(t)
+		head := r.commitFile("f.txt", "x")
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+
+		serveDownloadFrom(t, r.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+		assert.Equal(t, "reftable", r.gitAt(localDir, "config", "--local", "--get", "extensions.refStorage"))
+		assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"))
+		assert.Empty(t, r.gitAt(localDir, "status", "--porcelain"))
+	})
+}
+
+// TestSanitizeDownload_RejectsUnsafeNestedGitfile fails clearly for nested
+// gitfiles that Git cannot resolve, that no checkout owns, or whose owning
+// checkout has no module store.
+func TestSanitizeDownload_RejectsUnsafeNestedGitfile(t *testing.T) {
+	t.Run("not a gitfile", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, root, ".git/config", "[core]\n")
+		writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "modules"), 0o755))
+		writeFile(t, root, "vendor/dep/.git", "not a gitdir redirect\n")
+
+		err := sanitizeDownload(root, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	})
+
+	// A resolvable gitdir is required to reach the ownership checks.
+	makeStore := func(t *testing.T, dir string) {
+		writeFile(t, dir, "config", "[core]\n\trepositoryformatversion = 0\n")
+		writeFile(t, dir, "HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "refs"), 0o755))
+	}
+
+	t.Run("no owning checkout", func(t *testing.T) {
+		root := t.TempDir()
+		makeStore(t, filepath.Join(root, "store"))
+		writeFile(t, root, "vendor/dep/.git", "gitdir: ../../store\n")
+
+		err := sanitizeDownload(root, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+		assert.Contains(t, err.Error(), "no owning git directory")
+	})
+
+	t.Run("no module store", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, root, ".git/config", "[core]\n")
+		writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+		makeStore(t, filepath.Join(root, "store"))
+		writeFile(t, root, "vendor/dep/.git", "gitdir: ../../store\n")
+
+		err := sanitizeDownload(root, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "module store directory")
+	})
+}
+
+// TestSafeDownload_PreservesOriginPushURL keeps every trusted push destination
+// in order while discarding the agent's edits.
+func TestSafeDownload_PreservesOriginPushURL(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	r.git("config", "remote.origin.url", "https://example.invalid/org/fetch.git")
+	r.git("config", "--add", "remote.origin.pushurl", "https://push.invalid/org/one.git")
+	r.git("config", "--add", "remote.origin.pushurl", "ssh://git@push.invalid/org/two.git")
+	r.git("config", "--add", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"https://push.invalid/org/one.git",
+		"ssh://git@push.invalid/org/two.git",
+	}, entriesFor(snapshot.config, "remote.origin.pushurl"))
+
+	// The agent redirects push; the trusted destinations must win.
+	r.git("config", "--replace-all", "remote.origin.pushurl", "ext::sh -c true")
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	assert.Equal(t, []string{
+		"https://push.invalid/org/one.git",
+		"ssh://git@push.invalid/org/two.git",
+	}, strings.Split(r.gitAt(localDir, "config", "--local", "--get-all", "remote.origin.pushurl"), "\n"))
+	assert.Equal(t, "https://example.invalid/org/fetch.git", r.gitAt(localDir, "config", "--local", "--get", "remote.origin.url"))
+}
+
+// TestSanitizeDownload_RejectsSymlinkedModuleStore refuses a module store or
+// module container that reaches Git through a symlink, which would bypass the
+// config and hook sanitization this walk performs.
+func TestSanitizeDownload_RejectsSymlinkedModuleStore(t *testing.T) {
+	makeStore := func(t *testing.T, dir string) {
+		writeFile(t, dir, "config", "[core]\n\trepositoryformatversion = 0\n")
+		writeFile(t, dir, "HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "refs"), 0o755))
+	}
+
+	t.Run("symlinked modules container", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, root, ".git/config", "[core]\n")
+		writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+		makeStore(t, filepath.Join(root, "project", "dep"))
+		require.NoError(t, os.Symlink(filepath.Join("..", "..", "project"), filepath.Join(root, ".git", "modules")))
+		writeFile(t, root, "vendor/dep/.git", "gitdir: ../../.git/modules/dep\n")
+
+		err := sanitizeDownload(root, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	})
+
+	t.Run("symlinked module ancestor", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, root, ".git/config", "[core]\n")
+		writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "modules"), 0o755))
+		makeStore(t, filepath.Join(root, "src", "dep"))
+		require.NoError(t, os.Symlink(filepath.Join("..", "..", "src"), filepath.Join(root, ".git", "modules", "vendor")))
+		writeFile(t, root, "vendor/dep/.git", "gitdir: ../../.git/modules/vendor/dep\n")
+
+		err := sanitizeDownload(root, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+	})
+}
+
+// TestSanitizeDownload_SanitizesModuleStoreMetadata applies the redirect and
+// ancestry rules to module stores, not just the root .git.
+func TestSanitizeDownload_SanitizesModuleStoreMetadata(t *testing.T) {
+	newRoot := func(t *testing.T) (string, string) {
+		root := t.TempDir()
+		writeFile(t, root, ".git/config", "[core]\n")
+		writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+		store := filepath.Join(root, ".git", "modules", "dep")
+		writeFile(t, store, "config", "[core]\n\trepositoryformatversion = 0\n")
+		writeFile(t, store, "HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.MkdirAll(filepath.Join(store, "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(store, "refs", "heads"), 0o755))
+		return root, store
+	}
+
+	t.Run("commondir", func(t *testing.T) {
+		root, store := newRoot(t)
+		writeFile(t, store, "commondir", "../elsewhere\n")
+		err := sanitizeDownload(root, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "redirect")
+	})
+
+	t.Run("alternates", func(t *testing.T) {
+		root, store := newRoot(t)
+		writeFile(t, store, "objects/info/alternates", "/elsewhere/objects\n")
+		err := sanitizeDownload(root, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "alternate object store")
+	})
+
+	t.Run("ancestry", func(t *testing.T) {
+		root, store := newRoot(t)
+		writeFile(t, store, "refs/replace/"+testOID, testOID+"\n")
+		writeFile(t, store, "refs/heads/main", testOID+"\n")
+		writeFile(t, store, "info/grafts", testOID+" "+testOID+"\n")
+		writeFile(t, store, "packed-refs", testOID+" refs/replace/"+testOID+"\n^"+testOID+"\n"+testOID+" refs/tags/v1\n")
+
+		require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
+
+		for _, rel := range []string{"refs/replace", "info/grafts"} {
+			_, err := os.Lstat(filepath.Join(store, filepath.FromSlash(rel)))
+			assert.True(t, os.IsNotExist(err), "%s must be removed from a module store", rel)
+		}
+		assert.FileExists(t, filepath.Join(store, "refs", "heads", "main"))
+		packed, err := os.ReadFile(filepath.Join(store, "packed-refs"))
+		require.NoError(t, err)
+		assert.Equal(t, testOID+" refs/tags/v1\n", string(packed))
+	})
+}
+
+// TestSafeDownload_PreservesTrustedFormatWithEmptyConfig restores the trusted
+// format even when the snapshot has no allowlisted config values.
+func TestSafeDownload_PreservesTrustedFormatWithEmptyConfig(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	r := &gitRepo{t: t, dir: dir, env: gitTestEnv(t.TempDir())}
+	out, err := r.tryGit("init", "--quiet", "--initial-branch=main", "--object-format=sha256", ".")
+	if err != nil {
+		t.Skipf("git does not support sha256: %s", out)
+	}
+	head := r.commitFile("f.txt", "x")
+	// Leave only the format declarations so the trusted entry list is empty.
+	writeFile(t, dir, ".git/config", "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n")
+
+	snapshot, err := CaptureRepositorySnapshot(dir)
+	require.NoError(t, err)
+	require.Empty(t, snapshot.config, "no allowlisted defaults may be captured")
+	assert.Equal(t, "sha256", snapshot.format.objectFormat)
+
+	require.NoError(t, os.Remove(filepath.Join(dir, ".git", "config")))
+	serveDownloadFrom(t, dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	assert.Equal(t, "sha256", r.gitAt(localDir, "config", "--local", "--get", "extensions.objectFormat"))
+	assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"))
+}
+
+// TestSafeDownload_RejectsAgentFormatChange rejects a download whose root
+// format differs from the trusted one before any native reftable processing.
+func TestSafeDownload_RejectsAgentFormatChange(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	require.Equal(t, "files", snapshot.format.refStorage)
+
+	// The agent claims reftable storage and leaves a store behind; the trusted
+	// format must be compared first.
+	cfgPath := filepath.Join(r.dir, ".git", "config")
+	data, err := os.ReadFile(cfgPath)
+	require.NoError(t, err)
+	changed := strings.Replace(string(data), "repositoryformatversion = 0", "repositoryformatversion = 1", 1) +
+		"\n[extensions]\n\trefStorage = reftable\n"
+	require.NoError(t, os.WriteFile(cfgPath, []byte(changed), 0o644))
+	writeFile(t, r.dir, ".git/reftable/bogus", "not a table\n")
+	serveDownloadFrom(t, r.dir)
+
+	localDir := filepath.Join(t.TempDir(), "repo")
+	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	assert.Contains(t, err.Error(), "trusted checkout is")
+	assert.NoDirExists(t, localDir)
+}
+
+// TestSanitizeDownload_ReftableModuleStoreCleaned applies the native reftable
+// check to a dormant module store, not just the root .git.
+func TestSanitizeDownload_ReftableModuleStoreCleaned(t *testing.T) {
+	requireReftableSanitization(t)
+
+	root := newGitRepo(t)
+	root.commitFile("f.txt", "x")
+	dep := newReftableRepo(t)
+	depHead := dep.commitFile("dep.txt", "dep")
+	tree := dep.git("rev-parse", depHead+"^{tree}")
+	orphan := dep.git("commit-tree", tree, "-m", "dep orphan")
+	bridge := dep.git("commit-tree", tree, "-p", depHead, "-m", "dep bridge")
+	dep.git("replace", orphan, bridge)
+
+	store := filepath.Join(root.dir, ".git", "modules", "dep")
+	require.NoError(t, os.MkdirAll(filepath.Dir(store), 0o755))
+	require.NoError(t, os.Rename(filepath.Join(dep.dir, ".git"), store))
+
+	require.NoError(t, sanitizeDownload(root.dir, RepositorySnapshot{}))
+
+	out, err := runGit(t, root.dir, root.env, "--git-dir="+store, "replace", "--list")
+	require.NoError(t, err, out)
+	assert.Empty(t, out, "replacement refs must be removed from a module store")
+}
+
+// TestSafeDownload_ReftableDeletedConfigIsRejected proves a reftable checkout
+// whose downloaded config was deleted fails closed as a deterministic
+// rejection: an undeclared storage format is agent-controlled content, not an
+// uncertain validation failure the loop should retry.
+func TestSafeDownload_ReftableDeletedConfigIsRejected(t *testing.T) {
+	requireReftableSanitization(t)
+
+	repo := newReftableRepo(t)
+	repo.commitFile("f.txt", "x")
+	snapshot, err := CaptureRepositorySnapshot(repo.dir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.Remove(filepath.Join(repo.dir, ".git", "config")))
+	serveDownloadFrom(t, repo.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	assert.NoDirExists(t, localDir)
+}
+
+// TestSanitizeDownload_IgnoresFakeHeadInMetadataDirs keeps a HEAD file planted
+// in info/ or a ref namespace from promoting that directory to a git dir, so
+// real metadata such as info/grafts cannot hide behind it.
+func TestSanitizeDownload_IgnoresFakeHeadInMetadataDirs(t *testing.T) {
+	t.Run("root info", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, root, ".git/config", "[core]\n")
+		writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+		writeFile(t, root, ".git/info/HEAD", "planted\n")
+		writeFile(t, root, ".git/info/grafts", testOID+" "+testOID+"\n")
+
+		require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
+
+		_, err := os.Lstat(filepath.Join(root, ".git", "info", "grafts"))
+		assert.True(t, os.IsNotExist(err), "info/grafts must be removed despite info/HEAD")
+	})
+
+	t.Run("module store info", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, root, ".git/config", "[core]\n")
+		writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+		store := filepath.Join(root, ".git", "modules", "dep")
+		writeFile(t, store, "config", "[core]\n")
+		writeFile(t, store, "HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.MkdirAll(filepath.Join(store, "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(store, "refs"), 0o755))
+		writeFile(t, store, "info/HEAD", "planted\n")
+		writeFile(t, store, "info/grafts", testOID+" "+testOID+"\n")
+
+		require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
+
+		_, err := os.Lstat(filepath.Join(store, "info", "grafts"))
+		assert.True(t, os.IsNotExist(err), "module store info/grafts must be removed despite info/HEAD")
+	})
+}
+
+// TestSanitizeDownload_PreservesModuleRefsNamedHeadAndHooks keeps module-store
+// refs whose names look like metadata; a ref named HEAD must not turn its
+// namespace into a git dir.
+func TestSanitizeDownload_PreservesModuleRefsNamedHeadAndHooks(t *testing.T) {
+	requireGit(t)
+	dep := newGitRepo(t)
+	dep.commitFile("dep.txt", "dependency")
+	super := newGitRepo(t)
+	super.commitFile("file.txt", "content")
+	super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+	super.git("commit", "--quiet", "-m", "add submodule")
+	store := filepath.Join(super.dir, ".git", "modules", "vendor", "dep")
+	for _, name := range []string{"feature/hooks", "feature/HEAD"} {
+		out, err := runGit(t, super.dir, super.env, "--git-dir="+store, "branch", name, "HEAD")
+		require.NoError(t, err, out)
+	}
+
+	require.NoError(t, sanitizeDownload(super.dir, RepositorySnapshot{}))
+
+	for _, name := range []string{"feature/hooks", "feature/HEAD"} {
+		out, err := runGit(t, super.dir, super.env, "--git-dir="+store, "rev-parse", "refs/heads/"+name)
+		require.NoError(t, err, "module ref %s must survive: %s", name, out)
+	}
+}
+
+// TestSanitizeDownload_RejectsGitfileWhoseRawTargetEscapes validates the exact
+// path Git opens: a symlink followed by ".." must not be textually collapsed
+// into the module store.
+func TestSanitizeDownload_RejectsGitfileWhoseRawTargetEscapes(t *testing.T) {
+	requireGit(t)
+	root := t.TempDir()
+	writeFile(t, root, ".git/config", "[core]\n")
+	writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+	makeStore := func(dir string) {
+		writeFile(t, dir, "config", "[core]\n\trepositoryformatversion = 0\n")
+		writeFile(t, dir, "HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "refs"), 0o755))
+	}
+	makeStore(filepath.Join(root, ".git", "modules", "dep"))
+	outside := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(outside, "x"), 0o755))
+	makeStore(filepath.Join(outside, ".git", "modules", "dep"))
+	// zz-link sorts after vendor/, so it still exists when the gitfile is
+	// validated: its target's raw path escapes while filepath.Clean would
+	// collapse it into .git/modules/dep.
+	require.NoError(t, os.Symlink(filepath.Join(outside, "x"), filepath.Join(root, "zz-link")))
+	writeFile(t, root, "vendor/dep/.git", "gitdir: ../../zz-link/../.git/modules/dep\n")
+
+	gitDir, err := runGit(t, filepath.Join(root, "vendor", "dep"), gitTestEnv(t.TempDir()), "rev-parse", "--git-dir")
+	require.NoError(t, err, gitDir)
+	assert.Contains(t, gitDir, filepath.Join(outside, ".git", "modules", "dep"),
+		"real Git must open the target outside the checkout")
+
+	err = sanitizeDownload(root, RepositorySnapshot{})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	// Deferred validation runs after the walk has removed absolute symlinks,
+	// so the error may be "redirects outside" (one-pass) or "not a valid
+	// gitdir redirect" / "target is not reachable" (deferred, symlink gone).
+	// Either is a secure rejection; the raw-path escape must not be cleaned.
+	assert.True(t, strings.Contains(err.Error(), "redirects outside") || strings.Contains(err.Error(), "not a valid gitdir redirect") || strings.Contains(err.Error(), "target is not reachable"),
+		"want symlink-escape rejection, got %v", err)
+}
+
+// TestSafeDownload_PreservesRemotesTrackingAndModuleRemotes keeps every trusted
+// remote destination (including push URLs and an IPv6 URL), branch tracking,
+// and the submodule store's remote, while discarding agent edits.
+func TestSafeDownload_PreservesRemotesTrackingAndModuleRemotes(t *testing.T) {
+	requireGit(t)
+	dep := newGitRepo(t)
+	dep.commitFile("dep.txt", "dependency")
+	super := newGitRepo(t)
+	super.commitFile("file.txt", "content")
+	super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+	super.git("commit", "--quiet", "-m", "add submodule")
+	depDir := filepath.Join(super.dir, "vendor", "dep")
+	storeURL := super.gitAt(depDir, "config", "--local", "--get", "remote.origin.url")
+	ipv6 := "https://[2001:db8::1]/org/up.git"
+
+	super.git("config", "remote.upstream.url", ipv6)
+	super.git("config", "--add", "remote.upstream.fetch", "+refs/heads/*:refs/remotes/upstream/*")
+	super.git("config", "--add", "remote.origin.pushurl", "https://push.invalid/org/one.git")
+	super.git("config", "--add", "remote.origin.pushurl", "ssh://git@push.invalid/org/two.git")
+	super.git("config", "branch.main.remote", "upstream")
+	super.git("config", "branch.main.merge", "refs/heads/up-main")
+
+	snapshot, err := CaptureRepositorySnapshot(super.dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"https://push.invalid/org/one.git",
+		"ssh://git@push.invalid/org/two.git",
+	}, entriesFor(snapshot.config, "remote.origin.pushurl"))
+	assert.Equal(t, []string{ipv6}, entriesFor(snapshot.config, "remote.upstream.url"),
+		"an IPv6 URL must be captured, not mistaken for a transport helper")
+	assert.Equal(t, []string{"upstream"}, entriesFor(snapshot.config, "branch.main.remote"))
+	assert.Contains(t, snapshot.stores[".git/modules/vendor/dep"].config,
+		configEntry{Key: "remote.origin.url", Value: storeURL})
+
+	// Agent edits every destination; trusted values must win.
+	super.git("config", "--replace-all", "remote.origin.pushurl", "ext::sh -c true")
+	super.git("config", "remote.upstream.url", "https://evil.invalid/up.git")
+	super.git("config", "branch.main.remote", "origin")
+	super.gitAt(depDir, "config", "remote.origin.url", "ext::sh -c true")
+	serveDownloadFrom(t, super.dir)
+
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	assert.Equal(t, []string{
+		"https://push.invalid/org/one.git",
+		"ssh://git@push.invalid/org/two.git",
+	}, strings.Split(super.gitAt(localDir, "config", "--local", "--get-all", "remote.origin.pushurl"), "\n"))
+	assert.Equal(t, ipv6, super.gitAt(localDir, "config", "--local", "--get", "remote.upstream.url"))
+	assert.Equal(t, ipv6, super.gitAt(localDir, "remote", "get-url", "upstream"),
+		"real Git must accept the restored IPv6 destination")
+	assert.Equal(t, "upstream", super.gitAt(localDir, "config", "--local", "--get", "branch.main.remote"))
+	assert.Equal(t, "refs/heads/up-main", super.gitAt(localDir, "config", "--local", "--get", "branch.main.merge"))
+	localDep := filepath.Join(localDir, "vendor", "dep")
+	assert.Equal(t, storeURL, super.gitAt(localDep, "config", "--local", "--get", "remote.origin.url"),
+		"the submodule store remote must be restored")
+	assert.Empty(t, super.gitAt(localDep, "status", "--porcelain"))
+}
+
+// TestSanitizeDownload_RejectsGitfileTargetNotSanitized refuses a nested gitfile
+// whose target the walk never recorded as a sanitized git dir, and proves an
+// ordinary initialized submodule still works.
+func TestSanitizeDownload_RejectsGitfileTargetNotSanitized(t *testing.T) {
+	requireGit(t)
+	writeStore := func(t *testing.T, dir string, withConfig bool) {
+		t.Helper()
+		if withConfig {
+			writeFile(t, dir, "config", "[core]\n\trepositoryformatversion = 0\n")
+		}
+		writeFile(t, dir, "HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "refs"), 0o755))
+	}
+	newRoot := func(t *testing.T) string {
+		t.Helper()
+		root := t.TempDir()
+		writeFile(t, root, ".git/config", "[core]\n")
+		writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+		return root
+	}
+
+	t.Run("under another store objects", func(t *testing.T) {
+		root := newRoot(t)
+		writeStore(t, filepath.Join(root, ".git", "modules", "parent"), true)
+		evil := filepath.Join(root, ".git", "modules", "parent", "objects", "evil")
+		writeStore(t, evil, true)
+		marker := filepath.Join(t.TempDir(), "executed")
+		markerHook(t, filepath.Join(evil, "hooks"), "pre-commit", marker)
+		writeFile(t, root, "vendor/dep/.git", "gitdir: ../../.git/modules/parent/objects/evil\n")
+
+		gitDir, err := runGit(t, filepath.Join(root, "vendor", "dep"), gitTestEnv(t.TempDir()), "rev-parse", "--git-dir")
+		require.NoError(t, err, gitDir)
+		assert.Contains(t, gitDir, filepath.Join("parent", "objects", "evil"),
+			"real Git must use the unsanitized target")
+
+		err = sanitizeDownload(root, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+		assert.Contains(t, err.Error(), "not a sanitized git dir")
+		assert.NoFileExists(t, marker, "no agent hook may run while rejecting the download")
+	})
+
+	t.Run("configless target", func(t *testing.T) {
+		root := newRoot(t)
+		writeStore(t, filepath.Join(root, ".git", "modules", "dep"), false)
+		writeFile(t, root, "vendor/dep/.git", "gitdir: ../../.git/modules/dep\n")
+
+		err := sanitizeDownload(root, RepositorySnapshot{})
+		require.Error(t, err)
+		// The walk rejects the configless store before the deferred gitfile
+		// validation runs: git adopts a store without a config file.
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+		assert.Contains(t, err.Error(), "module store layout")
+	})
+
+	t.Run("ordinary initialized submodule", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dependency")
+		super := newGitRepo(t)
+		super.commitFile("f.txt", "x")
+		super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+		super.git("commit", "--quiet", "-m", "add submodule")
+
+		require.NoError(t, sanitizeDownload(super.dir, RepositorySnapshot{}))
+		assert.Empty(t, super.gitAt(filepath.Join(super.dir, "vendor", "dep"), "status", "--porcelain"))
+	})
+}
+
+// TestSafeDownload_PreservesPushSettings keeps the trusted push configuration
+// (push refspecs, pushDefault, pushRemote, push.default) and discards agent
+// edits, so push behaviour is not silently changed.
+func TestSafeDownload_PreservesPushSettings(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	r.git("config", "--add", "remote.origin.push", "refs/heads/main:refs/heads/main")
+	r.git("config", "--add", "remote.origin.push", ":refs/heads/old")
+	r.git("config", "remote.pushDefault", "origin")
+	r.git("config", "branch.main.pushRemote", "origin")
+	r.git("config", "push.default", "upstream")
+	r.git("config", "remote.origin.mirror", "true")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"refs/heads/main:refs/heads/main", ":refs/heads/old"},
+		entriesFor(snapshot.config, "remote.origin.push"))
+	assert.Equal(t, []string{"origin"}, entriesFor(snapshot.config, "remote.pushdefault"))
+	assert.Equal(t, []string{"upstream"}, entriesFor(snapshot.config, "push.default"))
+	assert.Equal(t, []string{"origin"}, entriesFor(snapshot.config, "branch.main.pushremote"))
+	assert.Equal(t, []string{"true"}, entriesFor(snapshot.config, "remote.origin.mirror"))
+
+	r.git("config", "--replace-all", "remote.origin.push", ":refs/heads/main")
+	r.git("config", "remote.pushDefault", "evil")
+	r.git("config", "branch.main.pushRemote", "evil")
+	r.git("config", "push.default", "matching")
+	r.git("config", "remote.origin.mirror", "false")
+	serveDownloadFrom(t, r.dir)
+
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	assert.Equal(t, []string{"refs/heads/main:refs/heads/main", ":refs/heads/old"},
+		strings.Split(r.gitAt(localDir, "config", "--local", "--get-all", "remote.origin.push"), "\n"))
+	assert.Equal(t, "origin", r.gitAt(localDir, "config", "--local", "--get", "remote.pushDefault"))
+	assert.Equal(t, "origin", r.gitAt(localDir, "config", "--local", "--get", "branch.main.pushRemote"))
+	assert.Equal(t, "upstream", r.gitAt(localDir, "config", "--local", "--get", "push.default"))
+	assert.Equal(t, "true", r.gitAt(localDir, "config", "--local", "--get", "remote.origin.mirror"))
+}
+
+// TestSafeDownload_PreservesBareMirror keeps Git's boolean mirror semantics: a
+// valueless key is true and a later empty value is false, so neither is dropped
+// or replayed with the wrong meaning.
+func TestSafeDownload_PreservesBareMirror(t *testing.T) {
+	requireGit(t)
+	appendSection := func(t *testing.T, repo *gitRepo, section string) {
+		t.Helper()
+		path := filepath.Join(repo.dir, ".git", "config")
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, append(data, []byte("\n"+section)...), 0o644))
+	}
+
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	r.git("config", "remote.origin.url", "https://example.invalid/org/repo")
+	appendSection(t, r, "[remote \"origin\"]\n\tmirror\n")
+	assert.Equal(t, "true", r.git("config", "--get", "--bool", "remote.origin.mirror"),
+		"native Git treats a bare mirror key as true")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"true"}, entriesFor(snapshot.config, "remote.origin.mirror"))
+
+	// The agent turns mirroring off; the trusted bare key must still mean true.
+	r.git("config", "remote.origin.mirror", "false")
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+	assert.Equal(t, "true", r.gitAt(localDir, "config", "--get", "--bool", "remote.origin.mirror"))
+
+	t.Run("empty worktree value overrides to false", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("f.txt", "x")
+		r.git("config", "remote.origin.url", "https://example.invalid/org/repo")
+		r.git("config", "extensions.worktreeConfig", "true")
+		appendSection(t, r, "[remote \"origin\"]\n\tmirror\n")
+		writeFile(t, r.dir, ".git/config.worktree", "[remote \"origin\"]\n\tmirror =\n")
+		assert.Equal(t, "false", r.git("config", "--get", "--bool", "remote.origin.mirror"),
+			"native Git treats an empty boolean as false")
+
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"false"}, entriesFor(snapshot.config, "remote.origin.mirror"),
+			"a single-valued boolean captures only its final value")
+
+		writeFile(t, r.dir, ".git/config.worktree", "[remote \"origin\"]\n\tmirror = true\n")
+		serveDownloadFrom(t, r.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+		assert.Equal(t, "false", r.gitAt(localDir, "config", "--get", "--bool", "remote.origin.mirror"))
+	})
+}
+
+// TestSafeDownload_PreservesBareAndEmptyWorkingCopyBooleans keeps native Git
+// boolean meaning for working-copy hints: an empty value is false and a bare
+// key is true.
+func TestSafeDownload_PreservesBareAndEmptyWorkingCopyBooleans(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	_, _ = r.tryGit("config", "--unset-all", "core.ignorecase")
+	r.git("config", "core.filemode", "")
+	configPath := filepath.Join(r.dir, ".git", "config")
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, append(data, []byte("\n[core]\n\tignorecase\n")...), 0o644))
+	assert.Equal(t, "false", r.git("config", "--local", "--bool", "--get", "core.filemode"))
+	assert.Equal(t, "true", r.git("config", "--local", "--bool", "--get", "core.ignorecase"))
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"false"}, entriesFor(snapshot.config, "core.filemode"))
+	assert.Equal(t, []string{"true"}, entriesFor(snapshot.config, "core.ignorecase"))
+
+	r.git("config", "core.filemode", "true")
+	r.git("config", "core.ignorecase", "false")
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	assert.Equal(t, "false", r.gitAt(localDir, "config", "--local", "--get", "core.filemode"))
+	assert.Equal(t, "true", r.gitAt(localDir, "config", "--local", "--get", "core.ignorecase"))
+	assert.Equal(t, "false", r.gitAt(localDir, "config", "--local", "--bool", "--get", "core.filemode"))
+	assert.Equal(t, "true", r.gitAt(localDir, "config", "--local", "--bool", "--get", "core.ignorecase"))
+}
+
+// TestSafeDownload_PreservesDistinctMirrorSubsectionCase keeps Git's
+// case-sensitive remote subsection names apart when both set mirrors.
+func TestSafeDownload_PreservesDistinctMirrorSubsectionCase(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	r.git("config", "remote.ReviewProbe.mirror", "true")
+	r.git("config", "remote.reviewprobe.mirror", "false")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"true"}, entriesFor(snapshot.config, "remote.ReviewProbe.mirror"))
+	assert.Equal(t, []string{"false"}, entriesFor(snapshot.config, "remote.reviewprobe.mirror"),
+		"distinct case-sensitive remote subsections must not be conflated")
+
+	r.git("config", "--replace-all", "remote.ReviewProbe.mirror", "false")
+	r.git("config", "--replace-all", "remote.reviewprobe.mirror", "true")
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	assert.Equal(t, "true", r.gitAt(localDir, "config", "--local", "--get", "remote.ReviewProbe.mirror"))
+	assert.Equal(t, "false", r.gitAt(localDir, "config", "--local", "--get", "remote.reviewprobe.mirror"))
+}
+
+// TestSafeDownload_RejectsModuleStoreFormatChange compares every initialized
+// module store format with the trusted snapshot before native reftable
+// handling, and fails closed when the download declares another one.
+func TestSafeDownload_RejectsModuleStoreFormatChange(t *testing.T) {
+	requireGit(t)
+	newSubmodule := func(t *testing.T, dep *gitRepo) (*gitRepo, string) {
+		t.Helper()
+		super := newGitRepo(t)
+		super.commitFile("f.txt", "x")
+		super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+		super.git("commit", "--quiet", "-m", "add submodule")
+		return super, filepath.Join(super.dir, ".git", "modules", "vendor", "dep", "config")
+	}
+
+	t.Run("sha1 store declares sha256", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dep")
+		super, storeConfig := newSubmodule(t, dep)
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+		assert.Equal(t, "sha1", snapshot.stores[".git/modules/vendor/dep"].format.objectFormat)
+
+		writeFile(t, filepath.Dir(storeConfig), "config",
+			"[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n")
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+		assert.Contains(t, err.Error(), "trusted checkout is")
+		assert.NoDirExists(t, localDir)
+	})
+
+	t.Run("sha1 store declares reftable", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dep")
+		super, storeConfig := newSubmodule(t, dep)
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+
+		storeDir := filepath.Dir(storeConfig)
+		writeFile(t, storeDir, "config",
+			"[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefStorage = reftable\n")
+		// A malformed store would fail native reftable handling; the trusted
+		// format comparison must reject first.
+		writeFile(t, storeDir, "reftable/bogus", "not a table\n")
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "trusted checkout is")
+		assert.NoDirExists(t, localDir)
+	})
+
+	t.Run("sha256 store declares sha1", func(t *testing.T) {
+		// Git requires a submodule and its superproject to share the object
+		// format, so the sha256 store is created in a sha256 checkout.
+		dep := &gitRepo{t: t, dir: t.TempDir(), env: gitTestEnv(t.TempDir())}
+		out, err := dep.tryGit("init", "--quiet", "--initial-branch=main", "--object-format=sha256", ".")
+		if err != nil {
+			t.Skipf("git does not support sha256: %s", out)
+		}
+		dep.git("config", "user.name", "Test")
+		dep.git("config", "user.email", "test@example.invalid")
+		dep.commitFile("dep.txt", "dep")
+
+		super := &gitRepo{t: t, dir: t.TempDir(), env: gitTestEnv(t.TempDir())}
+		out, err = super.tryGit("init", "--quiet", "--initial-branch=main", "--object-format=sha256", ".")
+		require.NoError(t, err, out)
+		super.git("config", "user.name", "Test")
+		super.git("config", "user.email", "test@example.invalid")
+		super.commitFile("f.txt", "x")
+		if out, err = super.tryGit("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep"); err != nil {
+			t.Skipf("cannot create a sha256 submodule store: %s (%v)", out, err)
+		}
+		super.git("commit", "--quiet", "-m", "add submodule")
+		storeConfig := filepath.Join(super.dir, ".git", "modules", "vendor", "dep", "config")
+
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+		assert.Equal(t, "sha256", snapshot.stores[".git/modules/vendor/dep"].format.objectFormat)
+
+		writeFile(t, filepath.Dir(storeConfig), "config",
+			"[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha1\n")
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+		assert.NoDirExists(t, localDir)
+	})
+}
+
+// TestSafeDownload_RejectsCaseVariantModuleFormatChange proves a case-varied
+// module path still resolves to the trusted store format: a changed agent
+// format is rejected before native Git processing, while an ordinary submodule
+// and its refs still round-trip.
+func TestSafeDownload_RejectsCaseVariantModuleFormatChange(t *testing.T) {
+	requireGit(t)
+	probe := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(probe, "caseprobe"), []byte("x\n"), 0o644))
+	if _, err := os.Lstat(filepath.Join(probe, "CASEPROBE")); err != nil {
+		t.Skip("filesystem is case-sensitive")
+	}
+	newSubmodule := func(t *testing.T) *gitRepo {
+		t.Helper()
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dependency")
+		super := newGitRepo(t)
+		super.commitFile("file.txt", "content")
+		super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+		super.git("commit", "--quiet", "-m", "add submodule")
+		return super
+	}
+
+	t.Run("case-varied module format change is rejected", func(t *testing.T) {
+		super := newSubmodule(t)
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+		require.Equal(t, "sha1", snapshot.stores[".git/modules/vendor/dep"].format.objectFormat)
+
+		require.NoError(t, os.Rename(filepath.Join(super.dir, ".git"), filepath.Join(super.dir, ".GIT")))
+		require.NoError(t, os.Rename(filepath.Join(super.dir, ".GIT", "modules"), filepath.Join(super.dir, ".GIT", "MODULES")))
+		caseStore := filepath.Join(super.dir, ".GIT", "MODULES", "vendor", "dep")
+		require.DirExists(t, caseStore)
+		writeFile(t, caseStore, "config",
+			"[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n")
+
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+		assert.Contains(t, err.Error(), "trusted checkout is")
+		assert.NoDirExists(t, localDir, "rejection must happen before publishing native Git output")
+	})
+
+	t.Run("ordinary submodule and refs are preserved", func(t *testing.T) {
+		super := newSubmodule(t)
+		superRefs := super.git("for-each-ref")
+		sub := filepath.Join(super.dir, "vendor", "dep")
+		subRefs := super.gitAt(sub, "for-each-ref")
+		subHead := super.gitAt(sub, "rev-parse", "HEAD")
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+		assert.Equal(t, superRefs, super.gitAt(localDir, "for-each-ref"))
+		localSub := filepath.Join(localDir, "vendor", "dep")
+		assert.Equal(t, subRefs, super.gitAt(localSub, "for-each-ref"))
+		assert.Equal(t, subHead, super.gitAt(localSub, "rev-parse", "HEAD"))
+		assert.Empty(t, super.gitAt(localSub, "status", "--porcelain"))
+	})
+}
+
+// TestSafeDownload_PreservesWorktreePushDestination merges the trusted
+// per-worktree config in Git's precedence order, so a push destination it sets
+// is restored instead of falling back to the origin URL.
+func TestSafeDownload_PreservesWorktreePushDestination(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	r.git("config", "extensions.worktreeConfig", "true")
+	r.git("config", "remote.origin.url", "https://example.invalid/main.git")
+	r.git("config", "remote.origin.pushurl", "https://push.invalid/main.git")
+	writeFile(t, r.dir, ".git/config.worktree",
+		"[remote \"origin\"]\n\tpushurl = https://push.invalid/worktree.git\n")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"https://push.invalid/main.git",
+		"https://push.invalid/worktree.git",
+	}, entriesFor(snapshot.config, "remote.origin.pushurl"),
+		"worktree config values are appended in Git's precedence order")
+
+	// The agent replaces the destinations; the trusted list must win.
+	r.git("config", "--replace-all", "remote.origin.pushurl", "ext::sh -c true")
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	assert.Equal(t, []string{
+		"https://push.invalid/main.git",
+		"https://push.invalid/worktree.git",
+	}, strings.Split(r.gitAt(localDir, "config", "--local", "--get-all", "remote.origin.pushurl"), "\n"))
+
+	t.Run("disabled extension is ignored", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("f.txt", "x")
+		writeFile(t, r.dir, ".git/config.worktree",
+			"[remote \"origin\"]\n\tpushurl = https://push.invalid/ignored.git\n")
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+		assert.Empty(t, entriesFor(snapshot.config, "remote.origin.pushurl"),
+			"Git does not read worktree config without extensions.worktreeConfig")
+	})
+
+	t.Run("non-regular worktree config fails closed", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("f.txt", "x")
+		r.git("config", "extensions.worktreeConfig", "true")
+		require.NoError(t, os.Mkdir(filepath.Join(r.dir, ".git", "config.worktree"), 0o755))
+		// Git's own checkout validation already refuses a directory named
+		// config.worktree while the extension is enabled; capture must not
+		// fall back to another destination.
+		_, err := CaptureRepositorySnapshot(r.dir)
+		require.Error(t, err)
+	})
+
+	t.Run("module store worktree push destination", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dep")
+		super := newGitRepo(t)
+		super.commitFile("f.txt", "x")
+		super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+		super.git("commit", "--quiet", "-m", "add dep")
+		store := filepath.Join(super.dir, ".git", "modules", "vendor", "dep")
+		submodule := filepath.Join(super.dir, "vendor", "dep")
+		super.gitAt(submodule, "config", "extensions.worktreeConfig", "true")
+		writeFile(t, store, "config.worktree",
+			"[remote \"origin\"]\n\tpushurl = https://push.invalid/module-worktree.git\n")
+
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+		assert.Contains(t, snapshot.stores[".git/modules/vendor/dep"].config,
+			configEntry{Key: "remote.origin.pushurl", Value: "https://push.invalid/module-worktree.git"},
+			"a module store worktree config must be captured")
+
+		// The agent replaces the value; the trusted one must win and the
+		// downloaded worktree config must be discarded.
+		writeFile(t, store, "config.worktree", "[remote \"origin\"]\n\tpushurl = ext::sh -c true\n")
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+		localStore := filepath.Join(localDir, ".git", "modules", "vendor", "dep")
+		assert.Equal(t, "https://push.invalid/module-worktree.git",
+			super.gitAt(filepath.Join(localDir, "vendor", "dep"), "config", "--get", "remote.origin.pushurl"))
+		assert.NoFileExists(t, filepath.Join(localStore, "config.worktree"),
+			"the downloaded module worktree config must be discarded")
+	})
+}
+
+// TestSafeDownload_FailsClosedWhenTrustedStorePresentButNotSanitized proves
+// finding 1: a trusted module store whose config is deleted in the download
+// still leaves hooks and ancestry unsanitized, so the checkout must be
+// rejected before the trusted config is restored. Even if the worktree gitfile
+// is removed, the store's malicious metadata survives. Legitimate deletions
+// (store absent) are preserved.
+func TestSafeDownload_FailsClosedWhenTrustedStorePresentButNotSanitized(t *testing.T) {
+	requireGit(t)
+	dep := newGitRepo(t)
+	dep.commitFile("dep.txt", "dependency")
+	super := newGitRepo(t)
+	super.commitFile("file.txt", "content")
+	super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+	super.git("commit", "--quiet", "-m", "add submodule")
+	snapshot, err := CaptureRepositorySnapshot(super.dir)
+	require.NoError(t, err)
+	require.Contains(t, snapshot.stores, ".git/modules/vendor/dep")
+
+	// Legitimate deletion: store removed entirely should be preserved.
+	t.Run("legitimate deletion preserved", func(t *testing.T) {
+		dep2 := newGitRepo(t)
+		dep2.commitFile("dep.txt", "dependency")
+		super2 := newGitRepo(t)
+		super2.commitFile("file.txt", "content")
+		super2.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep2.dir, "vendor/dep")
+		super2.git("commit", "--quiet", "-m", "add submodule")
+		snapshot2, err := CaptureRepositorySnapshot(super2.dir)
+		require.NoError(t, err)
+		require.Contains(t, snapshot2.stores, ".git/modules/vendor/dep")
+		require.NoError(t, os.RemoveAll(filepath.Join(super2.dir, "vendor/dep")))
+		require.NoError(t, os.RemoveAll(filepath.Join(super2.dir, ".git", "modules", "vendor", "dep")))
+		serveDownloadFrom(t, super2.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot2))
+		_, err = os.Lstat(filepath.Join(localDir, ".git", "modules", "vendor", "dep"))
+		assert.True(t, os.IsNotExist(err), "legitimately deleted store must stay deleted")
+		_, err = os.Lstat(filepath.Join(localDir, "vendor", "dep", ".git"))
+		assert.True(t, os.IsNotExist(err))
+	})
+
+	// Adversarial: store present with deleted config plus malicious metadata,
+	// even if worktree gitfile is removed.
+	store := filepath.Join(super.dir, ".git", "modules", "vendor", "dep")
+	require.NoError(t, os.Remove(filepath.Join(store, "config")))
+	// Empty/deleted layout: leave store dir present but config missing.
+	// Modified layout: also test with config replaced by directory.
+	marker := filepath.Join(t.TempDir(), "executed")
+	markerHook(t, filepath.Join(store, "hooks"), "pre-commit", marker)
+	writeFile(t, store, "info/grafts", testOID+" "+testOID+"\n")
+	writeFile(t, store, "refs/replace/"+testOID, testOID+"\n")
+	writeFile(t, store, "objects/info/commit-graph", "malicious\n")
+	// Remove worktree gitfile to simulate hidden store.
+	require.NoError(t, os.Remove(filepath.Join(super.dir, "vendor", "dep", ".git")))
+
+	serveDownloadFrom(t, super.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+	require.Error(t, err, "a present trusted store with deleted config must fail closed before restoration")
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	// The walk rejects the configless store before the post-walk trusted
+	// check can name it: git adopts a store without a config file.
+	assert.Contains(t, err.Error(), "module store layout")
+	assert.NoDirExists(t, localDir)
+	assert.NoFileExists(t, marker)
+}
+
+// TestSanitizeDownload_ValidHiddenDirSubmodule proves finding 3: a valid
+// submodule at a dot-prefixed path `.config/dep/.git` sorts before
+// `.git/modules`, so one-pass gitfile validation would reject before the
+// module store is known. Deferring validation until the entire walk has
+// collected gitDirs must keep it valid.
+func TestSanitizeDownload_ValidHiddenDirSubmodule(t *testing.T) {
+	requireGit(t)
+	dep := newGitRepo(t)
+	depHead := dep.commitFile("dep.txt", "dependency")
+	super := newGitRepo(t)
+	super.commitFile("file.txt", "content")
+	super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, ".config/dep")
+	super.git("commit", "--quiet", "-m", "add submodule")
+	// Direct sanitize should succeed even though .config/dep/.git sorts before .git/modules.
+	require.NoError(t, sanitizeDownload(super.dir, RepositorySnapshot{}))
+	snapshot, err := CaptureRepositorySnapshot(super.dir)
+	require.NoError(t, err)
+	require.Contains(t, snapshot.stores, ".git/modules/.config/dep")
+	serveDownloadFrom(t, super.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+	localDep := filepath.Join(localDir, ".config", "dep")
+	assert.Equal(t, depHead, super.gitAt(localDep, "rev-parse", "HEAD"))
+	assert.Empty(t, super.gitAt(localDep, "status", "--porcelain"))
+	assert.Equal(t, depHead, super.gitAt(filepath.Join(localDir, ".config", "dep"), "rev-parse", "HEAD"))
+}
+
+// TestSanitizeDownload_PlantedGitUnderMetadataExclusionIsSanitizedOrRejected
+// proves finding 2: a .git directory planted under a metadata exclusion
+// (e.g., .git/modules/x/objects/.git) can be recognized as a root, but its
+// direct config, hooks, and ancestry must still be sanitized or the checkout
+// rejected.
+func TestSanitizeDownload_PlantedGitUnderMetadataExclusionIsSanitizedOrRejected(t *testing.T) {
+	requireGit(t)
+	root := t.TempDir()
+	writeFile(t, root, ".git/config", "[core]\n\trepositoryformatversion = 0\n")
+	writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+	// Create a legitimate store shell so the reported path is relevant.
+	storeShell := filepath.Join(root, ".git", "modules", "x")
+	writeFile(t, storeShell, "config", "[core]\n\trepositoryformatversion = 0\n")
+	writeFile(t, storeShell, "HEAD", "ref: refs/heads/main\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(storeShell, "objects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(storeShell, "refs"), 0o755))
+	// Plant a valid git directory inside the store's objects metadata.
+	planted := filepath.Join(storeShell, "objects", ".git")
+	writeFile(t, planted, "config", "[core]\n\thooksPath = /evil\n[filter \"evil\"]\n\tclean = cat\n")
+	writeFile(t, planted, "HEAD", "ref: refs/heads/main\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(planted, "objects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(planted, "refs"), 0o755))
+	marker := filepath.Join(t.TempDir(), "executed")
+	markerHook(t, filepath.Join(planted, "hooks"), "pre-commit", marker)
+	writeFile(t, planted, "info/grafts", testOID+" "+testOID+"\n")
+	writeFile(t, planted, "refs/replace/"+testOID, testOID+"\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(planted, "objects", "info"), 0o755))
+	writeFile(t, planted, "objects/info/commit-graph", "malicious\n")
+	writeFile(t, planted, "packed-refs", testOID+" refs/replace/"+testOID+"\n")
+	// In-checkout gitfile targeting the planted directory makes it a valid
+	// worktree-style target; it must be sanitized or rejected.
+	gitfile := filepath.Join(root, "vendor", "x", ".git")
+	writeFile(t, root, "vendor/x/.git", "gitdir: ../../.git/modules/x/objects/.git\n")
+
+	// Prove native Git resolves fixture's gitfile to the planted .git before sanitization.
+	env := gitTestEnv(t.TempDir())
+	out, err := runGit(t, filepath.Join(root, "vendor", "x"), env, "rev-parse", "--resolve-git-dir", gitfile)
+	require.NoError(t, err, "fixture gitfile must be resolvable by native Git before sanitization: %s", out)
+	assert.Contains(t, out, filepath.Join("modules", "x", "objects", ".git"), "native Git must resolve gitfile to planted .git, got %q", out)
+
+	err = sanitizeDownload(root, RepositorySnapshot{})
+	if err != nil {
+		require.True(t, errors.Is(err, ErrRepositoryRejected), "planted .git under metadata exclusion must be rejected as ErrRepositoryRejected, got %v", err)
+		lower := strings.ToLower(err.Error())
+		// Relevant rejections for this layout are about unsanitized target or outside module store, not arbitrary Git failure.
+		assert.True(t, strings.Contains(lower, "sanitized") || strings.Contains(lower, "redirects outside") || strings.Contains(lower, "module store"),
+			"rejection must be relevant to planted store, got %v", err)
+		return
+	}
+	// If accepted, direct metadata must be sanitized. Use Lstat/NoDirExists
+	// so directories are not falsely passing.
+	_, err = os.Lstat(filepath.Join(planted, "hooks"))
+	assert.True(t, os.IsNotExist(err), "planted hooks must be removed")
+	assert.NoDirExists(t, filepath.Join(planted, "hooks"))
+	_, err = os.Lstat(filepath.Join(planted, "info", "grafts"))
+	assert.True(t, os.IsNotExist(err), "planted grafts must be removed")
+	_, err = os.Lstat(filepath.Join(planted, "refs", "replace"))
+	assert.True(t, os.IsNotExist(err), "planted refs/replace must be removed")
+	_, err = os.Lstat(filepath.Join(planted, "objects", "info", "commit-graph"))
+	assert.True(t, os.IsNotExist(err), "planted commit-graph must be removed")
+	cfg, err := os.ReadFile(filepath.Join(planted, "config"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(cfg), "hooksPath", "planted config must be rebuilt")
+	assert.NotContains(t, string(cfg), "filter", "planted filter must be rebuilt")
+	assert.Contains(t, string(cfg), "repositoryformatversion")
+	// Packed refs replacement must be filtered.
+	if data, err := os.ReadFile(filepath.Join(planted, "packed-refs")); err == nil {
+		assert.NotContains(t, string(data), "refs/replace", "planted packed replacement ref must be removed")
+	} else {
+		assert.True(t, os.IsNotExist(err), "packed-refs should be sanitized or absent")
+	}
+}
+
+// TestSafeDownload_MissingRootGitDiagnostic verifies finding 5: when the
+// downloaded checkout has its root .git deleted, the error is a clear
+// targeted diagnostic that the input was a checkout and the downloaded .git
+// is missing, preserves ErrRepositoryRejected, and does not publish.
+func TestSafeDownload_MissingRootGitDiagnostic(t *testing.T) {
+	requireGit(t)
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "content")
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	require.True(t, snapshot.isCheckout)
+	require.NoError(t, os.RemoveAll(filepath.Join(r.dir, ".git")))
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	lower := strings.ToLower(err.Error())
+	assert.Contains(t, lower, "downloaded .git")
+	assert.Contains(t, lower, "missing")
+	assert.Contains(t, lower, "input was a git checkout")
+	assert.NoDirExists(t, localDir)
+}
+
 func TestSanitizeDownload_RemovesAbsoluteSymlinks(t *testing.T) {
 	dir := t.TempDir()
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "real.txt"), []byte("ok"), 0o644))
 	require.NoError(t, os.Symlink("/nonexistent/target", filepath.Join(dir, "danger")))
 
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	require.NoError(t, err)
 
 	_, err = os.Stat(filepath.Join(dir, "real.txt"))
@@ -39,7 +1492,7 @@ func TestSanitizeDownload_KeepsRelativeSymlinksInsideRepo(t *testing.T) {
 	// Relative symlink: sub/link -> ../target.txt (stays inside dir)
 	require.NoError(t, os.Symlink("../target.txt", filepath.Join(dir, "sub", "link")))
 
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	require.NoError(t, err)
 
 	_, err = os.Lstat(filepath.Join(dir, "sub", "link"))
@@ -58,7 +1511,7 @@ func TestSanitizeDownload_RemovesSymlinkChainEscape(t *testing.T) {
 	//   EvalSymlinks follows: sub/dirlink → dir/real → ../../etc/passwd → outside dir (escapes)
 	require.NoError(t, os.Symlink("sub/dirlink/../../etc/passwd", filepath.Join(dir, "escape")))
 
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	require.NoError(t, err)
 
 	_, err = os.Lstat(filepath.Join(dir, "sub", "dirlink"))
@@ -75,7 +1528,7 @@ func TestSanitizeDownload_RemovesRelativeSymlinksEscapingRepo(t *testing.T) {
 	// Relative symlink that traverses above dir root.
 	require.NoError(t, os.Symlink("../../etc/passwd", filepath.Join(dir, "sub", "escape")))
 
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	require.NoError(t, err)
 
 	_, err = os.Lstat(filepath.Join(dir, "sub", "escape"))
@@ -97,7 +1550,7 @@ func TestSanitizeDownload_RemovesDirSymlinkIndirection(t *testing.T) {
 	require.NoError(t, os.Symlink(".", filepath.Join(repo, "d", "x")))
 	require.NoError(t, os.Symlink("d/x/../../secret", filepath.Join(repo, "e")))
 
-	require.NoError(t, sanitizeDownload(repo))
+	require.NoError(t, sanitizeDownload(repo, RepositorySnapshot{}))
 
 	_, err := os.Lstat(filepath.Join(repo, "e"))
 	assert.True(t, os.IsNotExist(err), "dir-symlink indirection escape should have been removed")
@@ -114,7 +1567,7 @@ func TestSanitizeDownload_RemovesGitHooks(t *testing.T) {
 	// Create a safe file under .git/.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "config"), []byte("[core]"), 0o644))
 
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	require.NoError(t, err)
 
 	// .git/hooks/ should be removed entirely.
@@ -135,7 +1588,7 @@ func TestSanitizeDownload_NestedSymlinks(t *testing.T) {
 	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(dir, "a", "b", "link")))
 	require.NoError(t, os.Symlink("/etc/shadow", filepath.Join(dir, "a", "top-link")))
 
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	require.NoError(t, err)
 
 	// Real file survives.
@@ -160,7 +1613,7 @@ func TestSanitizeDownload_RemovesSubmoduleGitHooks(t *testing.T) {
 	// Create a safe file in the submodule .git/.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "vendor", "dep", ".git", "config"), []byte("[core]"), 0o644))
 
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	require.NoError(t, err)
 
 	// Submodule .git/hooks/ should be removed.
@@ -174,7 +1627,7 @@ func TestSanitizeDownload_RemovesSubmoduleGitHooks(t *testing.T) {
 
 func TestSanitizeDownload_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	assert.NoError(t, err)
 }
 
@@ -202,9 +1655,9 @@ func TestSanitizeDownload_RemovesAncestryMetadata(t *testing.T) {
 	writeFile(t, root, ".git/objects/info/commit-graph", "graph\n")
 	writeFile(t, root, ".git/objects/info/commit-graphs/chain", "graph chain\n")
 	writeFile(t, root, ".git/modules/dep/config", "[core]\n")
-	writeFile(t, root, ".git/worktrees/wt/HEAD", "ref: refs/heads/wt\n")
+	writeFile(t, root, ".git/logs/wt/HEAD", "ref: refs/heads/wt\n")
 
-	require.NoError(t, sanitizeDownload(root))
+	require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
 
 	for _, rel := range []string{
 		".git/HEAD", ".git/config", ".git/index",
@@ -213,7 +1666,7 @@ func TestSanitizeDownload_RemovesAncestryMetadata(t *testing.T) {
 		".git/refs/tags/v1", ".git/refs/stash", ".git/refs/notes/commits",
 		".git/refs/bisect/good", ".git/refs/custom/x",
 		".git/info/exclude", ".git/info/refs", ".git/objects/info/packs",
-		".git/modules/dep/config", ".git/worktrees/wt/HEAD",
+		".git/modules/dep/config", ".git/logs/wt/HEAD",
 	} {
 		_, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
 		assert.NoError(t, err, "%s must be retained", rel)
@@ -238,7 +1691,7 @@ func TestSanitizeDownload_PreservesLiteralBackslashNames(t *testing.T) {
 	name := `.git/objects\info\commit-graph`
 	writeFile(t, root, name, "graph\n")
 
-	require.NoError(t, sanitizeDownload(root))
+	require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
 
 	_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(name)))
 	require.NoError(t, err, "literal backslash name must survive sanitization")
@@ -304,7 +1757,7 @@ func TestSanitizeDownload_RejectsSymlinkedGitMetadata(t *testing.T) {
 			root := t.TempDir()
 			tc.setup(t, root)
 
-			err := sanitizeDownload(root)
+			err := sanitizeDownload(root, RepositorySnapshot{})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "git metadata")
 		})
@@ -329,7 +1782,7 @@ func TestSanitizeDownload_RejectsRedirectedRootGitMetadata(t *testing.T) {
 			}
 
 			assert.Equal(t, head, r.git("rev-parse", "HEAD"), "Git must recognize the redirected layout")
-			require.Error(t, sanitizeDownload(r.dir), "redirected Git metadata must be rejected")
+			require.Error(t, sanitizeDownload(r.dir, RepositorySnapshot{}), "redirected Git metadata must be rejected")
 		})
 	}
 }
@@ -341,19 +1794,19 @@ func TestSanitizeDownload_AcceptsReftableGitStorage(t *testing.T) {
 	r := newReftableRepo(t)
 	head := r.commitFile("file.txt", "original")
 	configPath := filepath.Join(r.dir, ".git", "config")
-	configBefore, err := os.ReadFile(configPath)
-	require.NoError(t, err)
 
-	require.NoError(t, sanitizeDownload(r.dir))
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 
 	assert.Equal(t, head, r.git("rev-parse", "HEAD"))
 	assert.Equal(t, "main", r.git("symbolic-ref", "--short", "HEAD"))
 	assert.Equal(t, head, r.git("rev-parse", "main"))
-	_, err = os.Stat(filepath.Join(r.dir, ".git", "reftable", "tables.list"))
+	_, err := os.Stat(filepath.Join(r.dir, ".git", "reftable", "tables.list"))
 	require.NoError(t, err, "reftable tables must survive sanitization")
 	configAfter, err := os.ReadFile(configPath)
 	require.NoError(t, err)
-	assert.Equal(t, configBefore, configAfter, "repository config bytes must be preserved")
+	assert.NotContains(t, string(configAfter), "user", "untrusted config values must be dropped")
+	assert.Equal(t, "reftable", r.git("config", "--local", "--get", "extensions.refStorage"),
+		"the declared ref storage must survive the rebuild")
 }
 
 // TestSanitizeDownload_RemovesReftableReplacementRefs removes a forged
@@ -368,7 +1821,7 @@ func TestSanitizeDownload_RemovesReftableReplacementRefs(t *testing.T) {
 	r.git("replace", orphan, bridge)
 
 	require.True(t, r.isAncestor(human, orphan))
-	require.NoError(t, sanitizeDownload(r.dir))
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 
 	assert.False(t, r.isAncestor(human, orphan), "forged ancestry must not survive")
 	assert.Empty(t, r.git("replace", "--list"))
@@ -385,7 +1838,7 @@ func TestSanitizeDownload_ReftableSymbolicReplacementRemovesLinkOnly(t *testing.
 	r.git("symbolic-ref", link, "refs/heads/main")
 	require.Equal(t, "refs/heads/main", r.git("symbolic-ref", link))
 
-	require.NoError(t, sanitizeDownload(r.dir))
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 
 	_, err := r.tryGit("show-ref", "--verify", link)
 	require.Error(t, err, "symbolic replacement ref must be removed")
@@ -398,7 +1851,7 @@ func TestSanitizeDownload_ReftableUnbornChecksOut(t *testing.T) {
 	requireReftableSanitization(t)
 	r := newReftableRepo(t)
 
-	require.NoError(t, sanitizeDownload(r.dir))
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 
 	assert.Equal(t, "refs/heads/main", r.git("symbolic-ref", "HEAD"))
 	assert.Empty(t, r.git("for-each-ref", "refs/heads/"))
@@ -419,7 +1872,7 @@ func TestSanitizeDownload_ReftableShallowBoundary(t *testing.T) {
 	shallowBefore, err := os.ReadFile(filepath.Join(r.dir, ".git", "shallow"))
 	require.NoError(t, err, "fixture must be shallow")
 
-	require.NoError(t, sanitizeDownload(r.dir))
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 
 	shallowAfter, err := os.ReadFile(filepath.Join(r.dir, ".git", "shallow"))
 	require.NoError(t, err)
@@ -457,17 +1910,17 @@ func TestSanitizeDownload_ReftableIgnoresEvilConfig(t *testing.T) {
 		r.git("config", key, value)
 	}
 	configPath := filepath.Join(r.dir, ".git", "config")
-	configBefore, err := os.ReadFile(configPath)
-	require.NoError(t, err)
 	assert.NoFileExists(t, marker, "hook must not run during setup")
 
-	require.NoError(t, sanitizeDownload(r.dir))
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 
 	assert.NoFileExists(t, marker, "repository hook must never execute")
 	assert.Empty(t, r.git("replace", "--list"), "repository fsck config must not weaken cleanup")
 	configAfter, err := os.ReadFile(configPath)
 	require.NoError(t, err)
-	assert.Equal(t, configBefore, configAfter, "repository config bytes must be preserved")
+	assert.NotContains(t, string(configAfter), "hooksPath", "executable config must be dropped")
+	assert.NotContains(t, string(configAfter), "fsck", "repository fsck overrides must be dropped")
+	assert.Equal(t, "reftable", r.git("config", "--local", "--get", "extensions.refStorage"))
 }
 
 // TestSafeDownload_ReftableIgnoresConfigHooks proves repository config cannot
@@ -524,7 +1977,7 @@ func TestSanitizeDownload_ReftableCorruptTableFailsClosed(t *testing.T) {
 	data[4] ^= 0xff // corrupt the table format version
 	require.NoError(t, os.WriteFile(tables[0], data, 0o644))
 
-	require.Error(t, sanitizeDownload(r.dir), "corrupt reftable bytes must fail closed")
+	require.Error(t, sanitizeDownload(r.dir, RepositorySnapshot{}), "corrupt reftable bytes must fail closed")
 
 	serveDownloadFrom(t, r.dir)
 	localDir := filepath.Join(t.TempDir(), "repo")
@@ -625,7 +2078,7 @@ func TestSanitizeDownload_ReftableVersionAndQueryFailures(t *testing.T) {
 			r.commitFile("file.txt", "original")
 			installGitShim(t, tc.body)
 
-			require.Error(t, sanitizeDownload(r.dir))
+			require.Error(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 		})
 	}
 }
@@ -637,7 +2090,7 @@ func TestSanitizeDownload_ReftableListingFailureFailsClosed(t *testing.T) {
 	r.commitFile("file.txt", "original")
 	installGitShim(t, "for a in \"$@\"; do\n  if [ \"$a\" = replace ]; then exit 2; fi\ndone")
 
-	require.Error(t, sanitizeDownload(r.dir))
+	require.Error(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 }
 
 // TestSanitizeDownload_ReftableDeleteFailureFailsClosed rejects the download
@@ -651,7 +2104,7 @@ func TestSanitizeDownload_ReftableDeleteFailureFailsClosed(t *testing.T) {
 	r.git("replace", orphan, bridge)
 	installGitShim(t, "for a in \"$@\"; do\n  if [ \"$a\" = update-ref ]; then exit 2; fi\ndone")
 
-	require.Error(t, sanitizeDownload(r.dir))
+	require.Error(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 	assert.NotEmpty(t, r.git("replace", "--list"), "failed deletion must not drop the replacement refs")
 }
 
@@ -711,7 +2164,7 @@ func TestSanitizeDownload_ReftableLayoutMatrix(t *testing.T) {
 			root := t.TempDir()
 			tc.setup(t, root)
 
-			err := sanitizeDownload(root)
+			err := sanitizeDownload(root, RepositorySnapshot{})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "reftable")
 		})
@@ -757,7 +2210,7 @@ func TestSanitizeDownload_ReftableRejectsNonRegularHEAD(t *testing.T) {
 			r.commitFile("file.txt", "original")
 			tc.setup(t, filepath.Join(r.dir, ".git", "HEAD"))
 
-			err := sanitizeDownload(r.dir)
+			err := sanitizeDownload(r.dir, RepositorySnapshot{})
 			require.Error(t, err)
 			assert.Equal(t, tc.wantRejected, errors.Is(err, ErrRepositoryRejected), "got %v", err)
 			if tc.wantNotExist {
@@ -774,6 +2227,301 @@ func TestRemoveReplacementRefs_MissingStoreFailsClosed(t *testing.T) {
 	require.Error(t, removeReplacementRefs(t.TempDir(), filepath.Join(t.TempDir(), "missing")))
 }
 
+// TestSafeDownload_ReconcilesStoreShallowBoundaries proves a module store's
+// shallow boundary round-trips from the trusted snapshot, an agent-added
+// cutoff is rejected, and a store the snapshot does not name loses its
+// boundary.
+func TestSafeDownload_ReconcilesStoreShallowBoundaries(t *testing.T) {
+	newSetup := func(t *testing.T) (*gitRepo, string) {
+		dep := newGitRepo(t)
+		head := dep.commitFile("dep.txt", "dep")
+		dep.commitFile("dep2.txt", "dep2")
+		super := newGitRepo(t)
+		super.commitFile("file.txt", "x")
+		super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "dep")
+		super.git("commit", "--quiet", "-m", "add dep")
+		// A shallow submodule store: the boundary names the checked-out commit.
+		writeFile(t, super.dir, ".git/modules/dep/shallow", head+"\n")
+		return super, head
+	}
+
+	t.Run("trusted boundary round-trips", func(t *testing.T) {
+		super, head := newSetup(t)
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+		require.True(t, snapshot.stores[".git/modules/dep"].shallow.Present,
+			"a store boundary must be captured")
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+		data, err := os.ReadFile(filepath.Join(localDir, ".git", "modules", "dep", "shallow"))
+		require.NoError(t, err)
+		assert.Equal(t, head+"\n", string(data))
+	})
+
+	t.Run("agent-added cutoff is rejected", func(t *testing.T) {
+		super, _ := newSetup(t)
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+		// The sandbox adds a boundary commit the host never trusted.
+		other := newGitRepo(t)
+		otherHead := other.commitFile("other.txt", "other")
+		writeFile(t, super.dir, ".git/modules/dep/shallow", otherHead+"\n")
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+		assert.Contains(t, err.Error(), "shallow boundary")
+		assert.NoDirExists(t, localDir)
+	})
+
+	t.Run("store initialized during the run is rejected, not corrupted", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dep")
+		dep.commitFile("dep2.txt", "dep2")
+		super := newGitRepo(t)
+		super.commitFile("file.txt", "x")
+		snapshot, err := CaptureRepositorySnapshot(super.dir)
+		require.NoError(t, err)
+		require.Empty(t, snapshot.stores, "the submodule is not initialized on the host")
+
+		// The agent initializes the submodule shallowly during the run. A
+		// module store is a bare-style git dir, so the shallow boundary
+		// lands directly inside it.
+		store := filepath.Join(super.dir, ".git", "modules", "dep")
+		require.NoError(t, os.MkdirAll(filepath.Join(super.dir, ".git", "modules"), 0o755))
+		_, err = runGit(t, filepath.Join(super.dir, ".git", "modules"), super.env,
+			"clone", "--quiet", "--bare", "--depth", "1", "file://"+dep.dir, "dep")
+		require.NoError(t, err)
+		require.FileExists(t, filepath.Join(store, "shallow"), "fixture must be genuinely shallow")
+		writeFile(t, super.dir, "dep/.git", "gitdir: ../.git/modules/dep\n")
+
+		serveDownloadFrom(t, super.dir)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+		assert.Contains(t, err.Error(), "shallow boundary")
+		assert.NoDirExists(t, localDir)
+	})
+}
+
+// TestSanitizeDownload_RejectsBareShapedDirectory rejects an agent-returned
+// Git-shaped directory wherever it sits — outside .git, inside .git, or
+// named with a lowercase head — because Git adopts it as a repository and
+// its executable config would reach a post-script that runs Git inside it.
+func TestSanitizeDownload_RejectsBareShapedDirectory(t *testing.T) {
+	for _, tc := range []struct{ name, dir, head string }{
+		{"outside git", "vendor/payload", "HEAD"},
+		{"inside git", ".git/payload", "HEAD"},
+		{"lowercase head", "vendor/lower", "head"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newGitRepo(t)
+			r.commitFile("file.txt", "x")
+			bare := filepath.Join(r.dir, filepath.FromSlash(tc.dir))
+			require.NoError(t, os.MkdirAll(filepath.Join(bare, "objects"), 0o755))
+			require.NoError(t, os.MkdirAll(filepath.Join(bare, "refs"), 0o755))
+			writeFile(t, r.dir, tc.dir+"/"+tc.head, "ref: refs/heads/main\n")
+			writeFile(t, r.dir, tc.dir+"/config", "[core]\n\tfsmonitor = /tmp/pwn\n")
+			writeFile(t, r.dir, tc.dir+"/hooks/pre-commit", "#!/bin/sh\n")
+
+			err := sanitizeDownload(r.dir, RepositorySnapshot{})
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+			assert.Contains(t, err.Error(), "bare-style Git directory")
+		})
+	}
+
+	t.Run("worktree symlink to it", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		bare := filepath.Join(r.dir, ".git", "payload")
+		require.NoError(t, os.MkdirAll(filepath.Join(bare, "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(bare, "refs"), 0o755))
+		writeFile(t, r.dir, ".git/payload/HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.Symlink("../.git/payload", filepath.Join(r.dir, "evil")))
+
+		err := sanitizeDownload(r.dir, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bare-style Git directory")
+	})
+}
+
+// TestSanitizeDownload_NestedCheckoutKeepsBoundary locks the regression a
+// review found: a nested checkout's shallow file is ordinary worktree
+// content and must survive the walk, not be stripped as an untrusted module
+// store boundary. A host-present nested checkout is rejected before upload,
+// so the nested checkout here is agent-added.
+func TestSanitizeDownload_NestedCheckoutKeepsBoundary(t *testing.T) {
+	r := newGitRepo(t)
+	human := r.commitFile("file.txt", "x")
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	nested := filepath.Join(r.dir, "vendor", "x", ".git")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	writeFile(t, r.dir, "vendor/x/.git/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, r.dir, "vendor/x/.git/shallow", human+"\n")
+
+	require.NoError(t, sanitizeDownload(r.dir, snapshot))
+	assert.FileExists(t, filepath.Join(nested, "shallow"), "a nested checkout keeps its boundary")
+}
+
+// TestCaptureRepositorySnapshot_RejectsBareFixtureAndForeignGitfile fails
+// before upload for the layouts the download walk rejects: a committed bare
+// fixture such as testdata/x.git, and a gitfile whose target lies outside
+// the target's own module store.
+func TestCaptureRepositorySnapshot_RejectsBareFixtureAndForeignGitfile(t *testing.T) {
+	t.Run("bare fixture in a checkout", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		bare := filepath.Join(r.dir, "testdata", "x.git")
+		require.NoError(t, os.MkdirAll(filepath.Join(bare, "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(bare, "refs"), 0o755))
+		writeFile(t, r.dir, "testdata/x.git/HEAD", "ref: refs/heads/main\n")
+
+		_, err := CaptureRepositorySnapshot(r.dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bare-style Git directory")
+	})
+
+	t.Run("bare fixture in a plain target", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, root, "plain.txt", "x")
+		bare := filepath.Join(root, "testdata", "x.git")
+		require.NoError(t, os.MkdirAll(filepath.Join(bare, "objects"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(bare, "refs"), 0o755))
+		writeFile(t, root, "testdata/x.git/HEAD", "ref: refs/heads/main\n")
+
+		_, err := CaptureRepositorySnapshot(root)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bare-style Git directory")
+	})
+
+	t.Run("foreign gitfile", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dep")
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		require.NoError(t, os.MkdirAll(filepath.Join(r.dir, "vendor"), 0o755))
+		writeFile(t, r.dir, "vendor/dep/.git", "gitdir: "+filepath.Join(dep.dir, ".git")+"\n")
+
+		_, err := CaptureRepositorySnapshot(r.dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "module store")
+	})
+
+	t.Run("submodule gitfile still captures", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dep")
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		r.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+		r.git("commit", "--quiet", "-m", "add submodule")
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+		assert.Contains(t, snapshot.stores, ".git/modules/vendor/dep")
+	})
+}
+
+// TestCaptureRepositorySnapshot_RejectsNestedCheckoutInCheckoutTarget fails
+// before upload when a checkout target already contains a nested .git
+// directory, like a vendored clone: the round trip would strip its config
+// and corrupt its shallow state, so it gets the same early rejection a
+// plain target gets. Gitfile submodules are the supported layout.
+func TestCaptureRepositorySnapshot_RejectsNestedCheckoutInCheckoutTarget(t *testing.T) {
+	dep := newGitRepo(t)
+	dep.commitFile("dep.txt", "dep")
+	super := newGitRepo(t)
+	super.commitFile("file.txt", "x")
+	require.NoError(t, os.MkdirAll(filepath.Join(super.dir, "vendor"), 0o755))
+	clone := filepath.Join(super.dir, "vendor", "x")
+	_, err := runGit(t, filepath.Join(super.dir, "vendor"), super.env, "clone", "--quiet", "file://"+dep.dir, "x")
+	require.NoError(t, err)
+	require.DirExists(t, filepath.Join(clone, ".git"), "fixture must contain a nested checkout")
+
+	_, err = CaptureRepositorySnapshot(super.dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nested Git directory")
+
+	// A gitfile submodule in the same position still captures.
+	dep2 := newGitRepo(t)
+	dep2.commitFile("dep.txt", "dep")
+	super2 := newGitRepo(t)
+	super2.commitFile("file.txt", "x")
+	super2.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep2.dir, "vendor/dep")
+	super2.git("commit", "--quiet", "-m", "add submodule")
+	snapshot, err := CaptureRepositorySnapshot(super2.dir)
+	require.NoError(t, err)
+	assert.Contains(t, snapshot.stores, ".git/modules/vendor/dep")
+}
+
+// TestSanitizeDownload_RejectsUnrecognizedModuleStore proves a directory
+// under modules/ that this walk does not recognize as a store cannot keep
+// its metadata: git adopts a store with HEAD, objects, and refs alone (config
+// is optional), so an agent-planted store would otherwise keep its hooks
+// until a host `git submodule update --init` runs them. Store names derive
+// from the submodule path and may contain slashes.
+func TestSanitizeDownload_RejectsUnrecognizedModuleStore(t *testing.T) {
+	for _, name := range []string{"dep", "a/b", "a/b/c", "vendor/dep", "a/.git/b", "a/.GIT/b"} {
+		t.Run(name, func(t *testing.T) {
+			r := newGitRepo(t)
+			human := r.commitFile("file.txt", "x")
+			writeFile(t, r.dir, ".gitmodules", "[submodule \"dep\"]\n\tpath = dep\n\turl = https://example.invalid/dep.git\n")
+			writeFile(t, r.dir, ".git/modules/"+name+"/HEAD", "ref: refs/heads/main\n")
+			writeFile(t, r.dir, ".git/modules/"+name+"/commondir", "../..\n")
+			writeFile(t, r.dir, ".git/modules/"+name+"/objects/info/exclude", "")
+			writeFile(t, r.dir, ".git/modules/"+name+"/refs/heads/main", human+"\n")
+			writeFile(t, r.dir, ".git/modules/"+name+"/hooks/post-checkout", "#!/bin/sh\n")
+
+			err := sanitizeDownload(r.dir, RepositorySnapshot{})
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+			assert.Contains(t, err.Error(), "module store layout")
+		})
+	}
+}
+
+// TestSanitizeDownload_RemovesLegacyRemoteFiles removes the legacy remotes/
+// and branches/ files, which define remotes for names missing from the
+// rebuilt config.
+func TestSanitizeDownload_RemovesLegacyRemoteFiles(t *testing.T) {
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "x")
+	writeFile(t, r.dir, ".git/remotes/origin", "https://example.invalid/origin.git\n")
+	writeFile(t, r.dir, ".git/branches/main", "https://example.invalid/main.git\n")
+
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
+	assert.NoFileExists(t, filepath.Join(r.dir, ".git", "remotes"))
+	assert.NoFileExists(t, filepath.Join(r.dir, ".git", "branches"))
+}
+
+// TestSafeDownload_PreservesSubmoduleActivation proves an initialised
+// submodule is still initialised after the round trip: the store and gitfile
+// survive sanitization, and the restored activation keys keep git from
+// reporting the submodule as inactive.
+func TestSafeDownload_PreservesSubmoduleActivation(t *testing.T) {
+	dep := newGitRepo(t)
+	dep.commitFile("dep.txt", "dep")
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "x")
+	r.git("-c", "protocol.file.allow=always", "submodule", "add", "--quiet", "file://"+dep.dir, "dep")
+	r.git("commit", "--quiet", "-m", "add dep")
+	require.FileExists(t, filepath.Join(r.dir, "dep", ".git"), "submodule gitfile must exist")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+
+	out, err := runGit(t, localDir, gitTestEnv(t.TempDir()), "submodule", "status")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "dep")
+	assert.NotContains(t, out, "-", "submodule must not come back inactive")
+}
+
 // TestSanitizeDownload_RejectsReftableWorktreeMetadata rejects registered
 // worktree metadata for reftable, where extra ref stores could live.
 func TestSanitizeDownload_RejectsReftableWorktreeMetadata(t *testing.T) {
@@ -783,7 +2531,25 @@ func TestSanitizeDownload_RejectsReftableWorktreeMetadata(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "outside")
 	require.NoFileExists(t, sentinel)
 
-	err := sanitizeDownload(r.dir)
+	err := sanitizeDownload(r.dir, RepositorySnapshot{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worktree")
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	assert.NoFileExists(t, sentinel, "worktree manifest must not be followed")
+}
+
+// TestSanitizeDownload_RejectsWorktreeMetadata rejects registered worktree
+// metadata in files-based git dirs too: the private directories under
+// .git/worktrees/ carry hooks, per-worktree config, and commondir redirects
+// that the walk does not sanitize.
+func TestSanitizeDownload_RejectsWorktreeMetadata(t *testing.T) {
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "original")
+	writeFile(t, r.dir, ".git/worktrees/wt/gitdir", "../outside\n")
+	sentinel := filepath.Join(t.TempDir(), "outside")
+	require.NoFileExists(t, sentinel)
+
+	err := sanitizeDownload(r.dir, RepositorySnapshot{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "worktree")
 	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
@@ -808,7 +2574,7 @@ func TestSanitizeDownload_ReftableNestedStoresCleaned(t *testing.T) {
 	nestedBridge := nested.git("commit-tree", nestedTree, "-p", nestedHuman, "-m", "dep bridge")
 	nested.git("replace", nestedOrphan, nestedBridge)
 
-	require.NoError(t, sanitizeDownload(root.dir))
+	require.NoError(t, sanitizeDownload(root.dir, RepositorySnapshot{}))
 
 	assert.Empty(t, root.git("replace", "--list"), "root replacement refs must be removed")
 	assert.Empty(t, nested.git("replace", "--list"), "nested replacement refs must be removed")
@@ -894,7 +2660,7 @@ func TestSanitizeDownload_PackedRefsDropsReplacements(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			writeFile(t, root, ".git/packed-refs", tc.in)
-			require.NoError(t, sanitizeDownload(root))
+			require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
 			got, err := os.ReadFile(filepath.Join(root, ".git", "packed-refs"))
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, string(got))
@@ -905,7 +2671,7 @@ func TestSanitizeDownload_PackedRefsDropsReplacements(t *testing.T) {
 		root := t.TempDir()
 		content := "^" + testOID + "\n"
 		writeFile(t, root, ".git/packed-refs", content)
-		require.NoError(t, sanitizeDownload(root))
+		require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
 		got, err := os.ReadFile(filepath.Join(root, ".git", "packed-refs"))
 		require.NoError(t, err)
 		assert.Equal(t, content, string(got))
@@ -918,7 +2684,7 @@ func TestSanitizeDownload_PackedRefsDropsReplacements(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
 		require.NoError(t, os.Symlink(external, filepath.Join(root, ".git", "packed-refs")))
 
-		require.NoError(t, sanitizeDownload(root))
+		require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
 		_, err := os.Lstat(filepath.Join(root, ".git", "packed-refs"))
 		assert.True(t, os.IsNotExist(err), "symlinked packed-refs must be dropped")
 		_, err = os.Stat(external)
@@ -936,7 +2702,7 @@ func TestSanitizeDownload_PackedRefsDropsReplacements(t *testing.T) {
 			t.Skipf("hardlinks unavailable: %v", err)
 		}
 
-		require.NoError(t, sanitizeDownload(root))
+		require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
 		shared, err := os.ReadFile(external)
 		require.NoError(t, err)
 		assert.Equal(t, content, string(shared), "hardlink target must not be truncated")
@@ -954,7 +2720,7 @@ func TestSanitizeDownload_PackedRefsDropsReplacements(t *testing.T) {
 		require.NoError(t, os.Chmod(packed, 0o000))
 		t.Cleanup(func() { _ = os.Chmod(packed, 0o644) })
 
-		err := sanitizeDownload(root)
+		err := sanitizeDownload(root, RepositorySnapshot{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "packed-refs")
 	})
@@ -962,7 +2728,7 @@ func TestSanitizeDownload_PackedRefsDropsReplacements(t *testing.T) {
 	t.Run("directory is rejected", func(t *testing.T) {
 		root := t.TempDir()
 		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "packed-refs"), 0o755))
-		err := sanitizeDownload(root)
+		err := sanitizeDownload(root, RepositorySnapshot{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "packed-refs")
 	})
@@ -1038,7 +2804,7 @@ func TestSanitizeDownload_RejectsAlternateObjectStores(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			writeFile(t, root, ".git/objects/info/"+name, "/elsewhere/objects\n")
-			err := sanitizeDownload(root)
+			err := sanitizeDownload(root, RepositorySnapshot{})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "git metadata")
 		})
@@ -1053,7 +2819,7 @@ func TestSanitizeDownload_RejectsAlternateObjectStores(t *testing.T) {
 		r.gitAt(parent, "clone", "--quiet", "--shared", r.dir, "clone")
 		_, err := runGit(t, cloneDir, r.env, "cat-file", "-e", head)
 		require.NoError(t, err, "Git must read objects through the alternate store")
-		require.Error(t, sanitizeDownload(cloneDir), "alternate object stores must be rejected")
+		require.Error(t, sanitizeDownload(cloneDir, RepositorySnapshot{}), "alternate object stores must be rejected")
 	})
 }
 
@@ -1070,15 +2836,18 @@ func TestSanitizeDownload_NestedGitCompatibility(t *testing.T) {
 	// establish safety for Git operations inside submodules or linked worktrees.
 	gitfile := writeFile(t, root, "vendor/other/.git", "gitdir: ../../.git/modules/other\n")
 	writeFile(t, root, ".git/modules/other/config", "[core]\n")
-	writeFile(t, root, ".git/worktrees/wt/HEAD", "ref: refs/heads/wt\n")
+	writeFile(t, root, ".git/modules/other/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, root, ".git/modules/other/objects/info/exclude", "")
+	writeFile(t, root, ".git/modules/other/refs/heads/main", testOID+"\n")
+	writeFile(t, root, ".git/logs/wt/HEAD", "ref: refs/heads/wt\n")
 
-	require.NoError(t, sanitizeDownload(root))
+	require.NoError(t, sanitizeDownload(root, RepositorySnapshot{}))
 
 	_, err := os.Lstat(filepath.Join(root, "vendor", "dep", ".git", "refs", "replace"))
 	assert.True(t, os.IsNotExist(err), "nested replace refs must be filtered")
 	data, err := os.ReadFile(filepath.Join(root, "vendor", "dep", ".git", "config"))
 	require.NoError(t, err)
-	assert.Equal(t, "[core]\n", string(data))
+	assert.Contains(t, string(data), "repositoryformatversion", "nested config must be rebuilt")
 
 	data, err = os.ReadFile(gitfile)
 	require.NoError(t, err)
@@ -1099,7 +2868,7 @@ func TestSanitizeDownload_PreservesNormalRepo(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(r.dir, "untracked.txt"), []byte("new\n"), 0o644))
 
 	before := r.snapshot()
-	require.NoError(t, sanitizeDownload(r.dir))
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 	assert.Equal(t, before, r.snapshot())
 
 	r.git("commit", "--quiet", "-m", "after sanitize")
@@ -1147,7 +2916,7 @@ func TestSanitizeDownload_BlocksInventedGitAncestry(t *testing.T) {
 			tc.inject(t, r, orphan, bridge)
 
 			assert.True(t, r.isAncestor(human, orphan))
-			require.NoError(t, sanitizeDownload(r.dir))
+			require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 			assert.False(t, r.isAncestor(human, orphan))
 			assert.Equal(t, human, r.git("rev-parse", "main"))
 		})
@@ -1169,7 +2938,7 @@ func TestSanitizeDownload_LocalPlainPushRejectsInventedAncestry(t *testing.T) {
 	r.git("replace", orphan, bridge)
 	require.True(t, r.isAncestor(human, orphan))
 
-	require.NoError(t, sanitizeDownload(r.dir))
+	require.NoError(t, sanitizeDownload(r.dir, RepositorySnapshot{}))
 	require.False(t, r.isAncestor(human, orphan))
 
 	_, err := r.tryGit("push", "--quiet", remote, orphan+":main")
@@ -1232,7 +3001,7 @@ func TestSanitizeDownload_RemoveFailureReturnsErrSymlink(t *testing.T) {
 		os.Chmod(sub, 0o755) // restore for TempDir cleanup
 	})
 
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	require.Error(t, err)
 
 	var symErr *errSymlink
@@ -1743,7 +3512,7 @@ func TestSafeDownload_RejectsPlainOutputForCheckoutInput(t *testing.T) {
 		t.Helper()
 		serveDownloadFrom(t, downloaded)
 		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
-			RepositorySnapshot{IsCheckout: true})
+			RepositorySnapshot{isCheckout: true})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "must remain a git checkout")
 		assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
@@ -1780,7 +3549,7 @@ func TestSafeDownload_AcceptsCheckoutForCheckoutInput(t *testing.T) {
 	serveDownloadFrom(t, r.dir)
 	localDir := filepath.Join(t.TempDir(), "repo")
 	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
-		RepositorySnapshot{IsCheckout: true}))
+		RepositorySnapshot{isCheckout: true}))
 
 	got, err := runGit(t, localDir, r.env, "rev-parse", "HEAD")
 	require.NoError(t, err)
@@ -1788,7 +3557,7 @@ func TestSafeDownload_AcceptsCheckoutForCheckoutInput(t *testing.T) {
 }
 
 // TestSafeDownload_PlainInputMayPublishCheckout keeps the plain-to-checkout
-// path: without IsCheckout, a plain host input may come back as a valid
+// path: without isCheckout, a plain host input may come back as a valid
 // checkout that keeps the normal sanitization and validation.
 func TestSafeDownload_PlainInputMayPublishCheckout(t *testing.T) {
 	requireGit(t)
@@ -1918,8 +3687,12 @@ func TestSafeDownload_CheckoutQueryFailures(t *testing.T) {
 		script := fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n  /bin/cp -R \"%s/.\" \"$5/\"\nfi\nexit 0\n", r.dir)
 		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 		if gitBody != "" {
-			require.NoError(t, os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\n"+gitBody+"\n"), 0o755))
+			installGitQueryShim(t, binDir, gitBody)
+			t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+			return
 		}
+		// No git at all: config sanitization fails closed before the layout
+		// query, so only publication must be checked.
 		t.Setenv("PATH", binDir)
 	}
 
@@ -1929,8 +3702,8 @@ func TestSafeDownload_CheckoutQueryFailures(t *testing.T) {
 		want    string
 	}{
 		{"status failure", "exit 129", "checking git checkout"},
-		{"malformed output", "printf 'junk\\n'", "git directory resolved to"},
-		{"git unavailable", "", "checking git checkout"},
+		{"malformed output", "printf 'junk\\n'; exit 0", "git directory resolved to"},
+		{"git unavailable", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1939,7 +3712,10 @@ func TestSafeDownload_CheckoutQueryFailures(t *testing.T) {
 			err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
 				RepositorySnapshot{})
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.want)
+			if tc.want != "" {
+				assert.Contains(t, err.Error(), tc.want)
+			}
+			assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
 			_, statErr := os.Lstat(localDir)
 			assert.True(t, os.IsNotExist(statErr), "a failed query must not publish")
 		})
@@ -2019,7 +3795,7 @@ func TestSafeDownload_PreservesTrustedShallowBoundary(t *testing.T) {
 			}
 			trusted := RepositorySnapshot{}
 			if tc.trusted != "" {
-				trusted = RepositorySnapshot{Shallow: ShallowState{Present: true, Data: []byte(oid(tc.trusted) + "\n")}}
+				trusted = RepositorySnapshot{shallow: shallowState{Present: true, Data: []byte(oid(tc.trusted) + "\n")}}
 			}
 			serveDownloadFrom(t, r.dir)
 			localDir := filepath.Join(t.TempDir(), "repo")
@@ -2036,12 +3812,12 @@ func TestSafeDownload_PreservesTrustedShallowBoundary(t *testing.T) {
 			require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, trusted))
 			assert.Equal(t, tc.wantCount, shallowCommitCount(t, localDir, env))
 			got, err := os.ReadFile(filepath.Join(localDir, ".git", "shallow"))
-			if !trusted.Shallow.Present {
+			if !trusted.shallow.Present {
 				assert.True(t, os.IsNotExist(err), "untrusted shallow metadata must not be published")
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, trusted.Shallow.Data, got)
+			assert.Equal(t, trusted.shallow.Data, got)
 		})
 	}
 }
@@ -2070,7 +3846,7 @@ func TestSafeDownload_RejectsShallowCloneAddedCutoff(t *testing.T) {
 	assert.Equal(t, "1", r.git("rev-list", "--count", "HEAD"),
 		"Git must read the downloaded repository with its own marker")
 
-	trusted := RepositorySnapshot{Shallow: ShallowState{Present: true, Data: []byte(middle + "\n")}}
+	trusted := RepositorySnapshot{shallow: shallowState{Present: true, Data: []byte(middle + "\n")}}
 	serveDownloadFrom(t, downloaded)
 	localDir := filepath.Join(t.TempDir(), "repo")
 	require.NoError(t, os.MkdirAll(localDir, 0o755))
@@ -2115,8 +3891,8 @@ func TestSafeDownload_FailurePhaseMarkers(t *testing.T) {
 		binDir := t.TempDir()
 		download := fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n  /bin/cp -R \"%s/.\" \"$5/\"\nfi\nexit 0\n", r.dir)
 		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(download), 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\nexit 129\n"), 0o755))
-		t.Setenv("PATH", binDir)
+		installGitQueryShim(t, binDir, "exit 129")
+		t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
 
 		localDir := filepath.Join(t.TempDir(), "repo")
 		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
@@ -2213,14 +3989,14 @@ func TestSafeDownload_RestoresTrustedShallowWhenBoundaryCommitIsRewritten(t *tes
 			wantSubjects := tc.rewrite(t, r, one, middle)
 			head := r.git("rev-parse", "HEAD")
 
-			trusted := RepositorySnapshot{Shallow: ShallowState{Present: true, Data: []byte(middle + "\n")}}
+			trusted := RepositorySnapshot{shallow: shallowState{Present: true, Data: []byte(middle + "\n")}}
 			serveDownloadFrom(t, r.dir)
 			localDir := filepath.Join(t.TempDir(), "repo")
 			require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, trusted))
 
 			got, err := os.ReadFile(filepath.Join(localDir, ".git", "shallow"))
 			require.NoError(t, err)
-			assert.Equal(t, trusted.Shallow.Data, got)
+			assert.Equal(t, trusted.shallow.Data, got)
 
 			assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"),
 				"rewritten candidate commit must survive the download")
@@ -2244,7 +4020,7 @@ func TestSafeDownload_RejectsTrustedShallowWithoutGitMetadata(t *testing.T) {
 
 	localDir := filepath.Join(t.TempDir(), "repo")
 	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
-		RepositorySnapshot{Shallow: ShallowState{Present: true, Data: []byte("0123456789012345678901234567890123456789\n")}})
+		RepositorySnapshot{shallow: shallowState{Present: true, Data: []byte("0123456789012345678901234567890123456789\n")}})
 	require.Error(t, err)
 	// A plain output is a supported root, but a trusted shallow boundary needs
 	// git metadata, so restoration fails closed rather than creating it.
@@ -2302,7 +4078,7 @@ func TestSanitizeDownload_RemovesAppleDoubleInGitDir(t *testing.T) {
 	// Create an AppleDouble file outside .git/ — should NOT be removed.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "._regular.txt"), []byte("ok"), 0o644))
 
-	err := sanitizeDownload(dir)
+	err := sanitizeDownload(dir, RepositorySnapshot{})
 	require.NoError(t, err)
 
 	// Normal pack file survives.

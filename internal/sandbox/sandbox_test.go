@@ -289,6 +289,17 @@ const (
 
 // serveDownloadFrom makes the fake openshell download copy src's contents
 // into the destination directory, so SafeDownload processes a real repository.
+// installGitQueryShim puts a git wrapper first on PATH that runs body for
+// rev-parse and forwards every other command to the real git, so a test can
+// fail the layout query without also failing config sanitization.
+func installGitQueryShim(t *testing.T, binDir, body string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	script := "#!/bin/sh\ncase \"$*\" in\n*rev-parse*) " + body + " ;;\nesac\nexec \"" + realGit + "\" \"$@\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o755))
+}
+
 func serveDownloadFrom(t *testing.T, src string) {
 	t.Helper()
 	binDir := t.TempDir()
@@ -2889,6 +2900,19 @@ func initReftableRepoFormat(t *testing.T, dir, objectFormat string) *gitRepo {
 		}
 		require.NoError(t, err, out)
 	}
+	r.git("config", "user.name", "Test")
+	r.git("config", "user.email", "test@example.invalid")
+	return r
+}
+
+// initRepoAt initializes a normal repository at an explicit path, for tests
+// that need repos at known locations relative to each other.
+func initRepoAt(t *testing.T, dir string) *gitRepo {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	r := &gitRepo{t: t, dir: dir, env: gitTestEnv(t.TempDir())}
+	_, err := runGit(t, dir, r.env, "init", "--quiet", "--initial-branch=main", ".")
+	require.NoError(t, err)
 	r.git("config", "user.name", "Test")
 	r.git("config", "user.email", "test@example.invalid")
 	return r

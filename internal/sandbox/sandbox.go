@@ -104,14 +104,6 @@ const (
 	// ("provider was modified concurrently").
 	providerRetries      = 3
 	providerRetryBackoff = 500 * time.Millisecond
-
-	// safeDownloadAttempts is the number of full download attempts
-	// SafeDownload makes into a fresh staging directory. OpenShell retries
-	// every tar-extraction failure internally, including deterministic
-	// failures, and directory retries unpack into the same destination. The
-	// outer attempt can recover only when the earlier failure was transient;
-	// a deterministic failure will repeat. Track NVIDIA/OpenShell#4805 and
-	// remove this workaround once upstream stages each directory retry.
 )
 
 // RetrySleepFn is the function called between retry attempts in

@@ -33,7 +33,7 @@ root of `--fullsend-dir`. A run that finds it only in a sibling
 | `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi, codex, and opencode — codex takes OpenAI ids and `gateway/<model>` only); also `FULLSEND_MODEL` |
 | `--effort` | Override the harness effort level for this run (`low`…`max`); also `FULLSEND_EFFORT` |
 | `--output-dir` | Base directory for run output (default: `/tmp/fullsend`) |
-| `--target-repo` | Path to the target repository |
+| `--target-repo` | Path to the target repository; see the layout and setting restrictions below |
 | `--fullsend-binary` | Path to a Linux fullsend binary to copy into the sandbox |
 | `--env-file` | Load environment variables from a dotenv file (repeatable) |
 | `--no-post-script` | Skip post-script execution |
@@ -44,11 +44,32 @@ root of `--fullsend-dir`. A run that finds it only in a sibling
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
 
 `--target-repo` accepts a plain directory or a valid checkout with a real root
-`.git` directory. `.git` files (linked worktrees and submodules), symlinked
-`.git` entries, and bare repositories are unsupported. Fullsend validates the
-target after the pre-script and before upload, and sanitizes and validates the
-returned tree before publication; a plain directory may come back as a plain
-directory or a valid checkout, while a checkout must come back as a checkout.
+`.git` directory. A root `.git` file (for example a linked worktree), a
+symlinked `.git` entry, a bare repository, and a checkout with registered
+worktrees are unsupported; normal submodules inside the checkout are supported
+through their in-tree gitfiles. A plain directory that already contains a
+nested Git checkout is rejected. So is a checkout containing a nested `.git`
+directory of its own (a vendored clone or an unabsorbed embedded repository),
+and any Git-shaped subdirectory — one holding `HEAD` plus `objects` and
+`refs`, such as a committed `testdata/x.git` fixture: absorb the clone as a
+registered submodule, or store the fixture as an archive or create it in a
+pre-script. Destinations naming the `ext` transport helper are rejected.
+Fullsend validates the target after the
+pre-script and before upload, and sanitizes and validates the returned tree
+before publication; a plain directory may come back as a plain directory or a
+valid checkout, while a checkout must come back as a checkout. Fullsend
+discards downloaded Git configuration and restores selected settings from the
+host checkout, including identity, remote destinations, submodule activation,
+and sparse-checkout settings. Settings outside the restored list, including
+`filter.lfs.*` and `core.sshCommand`, are discarded; an LFS checkout therefore
+comes back with its filters unset. Partial clones are rejected in both their
+forms, as is a relative local submodule destination that does not resolve on
+the host; re-apply dropped settings such as LFS filters in a post-script if a
+workflow needs them. To migrate a rejected layout, replace a linked-worktree
+target with a fresh normal checkout of the same commit — commit or stash its
+local changes first, since `git worktree remove` deletes a worktree rather
+than converting it — use absolute submodule URLs, and replace a bare or
+nested-checkout target with a normal `.git` checkout or a plain directory.
 Reftable ref storage requires Git 2.53 or newer on the host running Fullsend.
 Fullsend rejects a downloaded `.git/packed-refs` larger than 32 MiB and a
 downloaded `.git/shallow` larger than 4 MiB.

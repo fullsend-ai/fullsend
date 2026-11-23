@@ -607,9 +607,9 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
 │  │ Extract output    │ SafeDownload() with sanitization:        │
-│  │                   │ - Remove dangerous symlinks (escape)     │
-│  │                   │ - Remove .git/hooks/ (hook injection)    │
-│  │                   │ - Filter ancestry metadata               │
+│  │                   │ - Sanitize tree and rebuild Git config   │
+│  │                   │ - Restore host settings and shallow      │
+│  │                   │ - Validate root; reject unknown layouts  │
 │  │                   │ With validation_loop: failures clean up  │
 │  │                   │ the repo dir and retry; a validation     │
 │  │                   │ failure may get feedback for another     │
@@ -736,47 +736,101 @@ details, see [Agent runtimes](../../runtimes.md).
 | `Upload()` | `openshell sandbox upload ...` | Copy files into sandbox |
 | `UploadDir()` | tar -czf + Upload + Exec extract | Copy directory preserving symlinks |
 | `Download()` | `openshell sandbox download ...` | Copy files out of sandbox |
-| `SafeDownload()` | Staged download + sanitize | Retry into a fresh staging directory, remove dangerous symlinks (absolute or repo-escaping) and real `.git/hooks/` directories, remove known ancestry overrides, reject redirecting Git layouts and bare-shaped directories, require a valid root `.git` when present, then publish the sanitized tree |
+| `SafeDownload()` | Staged download + sanitize | Retry into a fresh staging directory, remove unsupported symlinks, hook entries and per-worktree config, rebuild Git configuration, remove ancestry overrides, restore host settings and the storage format, reject redirecting or unsupported Git layouts, then publish the sanitized tree |
 | `CollectLogs()` | Download logs dir | Extract sandbox logs |
 | `ExtractTranscripts()` | Download transcripts | Extract conversation transcripts |
 | `Delete()` | `openshell sandbox delete` | Destroy container |
 
 ### Security: sanitizeDownload()
 
-After downloading files from the sandbox, `sanitizeDownload()` removes:
-- **Dangerous symlinks** (absolute targets or targets that escape the repo) — Prevents sandbox escape via symlink-to-host-path attacks; relative in-repo symlinks are kept
-- **.git/hooks/** — Prevents hook injection that would execute on the host
-- **Ancestry overrides** — Removes `.git/refs/replace/`, `.git/info/grafts`,
-  and `.git/objects/info/commit-graph*`, and filters replacement refs from
-  `.git/packed-refs`. These are the ancestry paths this walker knows about;
-  the check is not a complete defense against hostile Git configuration.
+After downloading files from the sandbox, `sanitizeDownload()` walks and
+validates the whole tree, including Git metadata. It:
 
-It rejects downloads with a non-directory root `.git`, `.git/commondir`
-redirects, or alternate object stores configured through
-`.git/objects/info/alternates` or `http-alternates`. A symlinked `.git`
-is rejected wherever the walk treats it as a repository root: the download
-root and the outermost `.git` of a nested checkout. A `.git` nested inside
-another `.git` is not treated as a separate repository root.
+- **Removes unsupported symlinks** — absolute targets and targets that
+  resolve outside the repository are removed; relative in-repo symlinks are
+  kept.
+- **Removes hooks and per-worktree config** — deletes `hooks` entries and
+  `config.worktree` files by case-insensitive name in the supported `.git/`
+  directories and recognized submodule stores, whether they are directories,
+  files, or symlinks.
+- **Removes ancestry overrides and redirects** — deletes `.git/refs/replace/`,
+  `.git/info/grafts`, and `.git/objects/info/commit-graph*`, filters
+  replacement records out of `.git/packed-refs`, and rejects `commondir`
+  redirects and alternate object stores (`objects/info/alternates` and
+  `http-alternates`). These checks apply to the supported `.git/` directories
+  and recognized submodule stores.
+- **Rebuilds Git configuration** — the downloaded configuration is never
+  reused. Each repository and submodule store keeps only its declared storage
+  format (`repositoryformatversion`, plus the object and ref storage
+  extensions); includes, hook paths, fsmonitor commands, filters, credential
+  helpers, aliases, URL rewrites, and other executable or credential
+  settings are dropped.
+
+Sanitization covers the supported `.git/` directories and recognized submodule
+stores. A bare-shaped subdirectory — one holding `HEAD`, `objects`, and `refs`
+but no `.git` component — is rejected: Git adopts such a directory as a
+repository, and its executable configuration would reach the host. Bare
+repositories are not a supported target, and a checkout target containing a
+nested `.git` directory, such as a vendored clone, is rejected before upload;
+submodules through `.git/modules` are the supported nested layout.
+
+Before upload, Fullsend captures a small set of settings from the host
+checkout and restores them after download: the commit identity, the
+working-copy hints (including the sparse-checkout booleans), every remote's
+fetch and push destinations and push settings, branch tracking, submodule
+activation (`submodule.<name>.url` and `.active`, whose destinations are
+checked like remote destinations), and the repository storage format. Remote
+and push destinations are restored in their original order, so push behaviour
+is not silently changed. A relative local destination in the target checkout
+is restored as the absolute target it named on the host; a relative local
+destination in a submodule's own config fails the run instead of being
+rebased to a different path, and values from the host's per-worktree config
+are included. A relative local submodule destination is resolved against the
+trusted checkout that owns it, so it keeps naming the same host path after
+the download. Settings outside this list (for example
+`remote.<name>.tagOpt`, `submodule.<name>.update`, and `core.worktree`) are
+dropped, as are executable settings such as `filter.lfs.*` and
+`core.sshCommand`; an LFS checkout therefore comes back with its filters
+unset. A destination naming the `ext` transport helper — whose address is an
+arbitrary command — or a relative local destination that does not exist on
+the host, fails the run rather than being carried over. Other helper
+transports are named binaries Git resolves from the host PATH, like unknown
+URL schemes, and are restored like any other host-chosen destination.
+
+It rejects downloads with a non-directory or symlinked root `.git`, a root
+`.git` file, registered worktrees (`.git/worktrees/`), `.git/commondir`
+redirects, alternate object stores, a symlinked module store, a module store
+whose declared storage format changed, an unrecognised directory under
+`.git/modules/` that Git could still adopt as a store, and repository
+extensions it cannot reproduce (such as partial clone or precious objects). A
+normal initialized submodule is supported: its in-tree `.git` gitfile must
+resolve into the owning checkout's `.git/modules` store, which is sanitized
+like the rest of the repository. A gitfile anywhere else, or one naming a
+store layout this code does not support, is rejected.
 
 The selected target may be a plain directory or a normal, non-bare checkout
-with a real root `.git` directory; a `.git` file (linked worktree or submodule)
-or a symlinked `.git` is unsupported. A target without `.git` is a plain
-directory unless it has the bare or redirected shape: `HEAD` plus either
+with a real root `.git` directory; a root `.git` file (for example a linked
+worktree) or a symlinked `.git` is unsupported. Normal submodules inside the
+checkout use the in-tree gitfiles described above. A target without `.git` is a
+plain directory unless it has the bare or redirected shape: `HEAD` plus either
 `commondir` or both `objects` and `refs`. That shape is detected by presence
 alone, without reading Git metadata. These names can occur in ordinary trees,
-so only the full combination is rejected. Fullsend validates the host target
-after the pre-script and before upload, then sanitizes and validates the
-returned tree after download and before publication, because the agent can
-alter `.git`. A plain target may return either a plain directory or a valid
-checkout; a checkout target must return a valid checkout. Otherwise, the
-download is rejected and the local destination is left unchanged. With a
-`validation_loop` and `feedback_mode: append`, a repository-validation failure
-sends fixed feedback for the next iteration, when one remains. Without
-`append`, directly rejected repository output stops the retries, while other
-validation, transport, and publication failures keep the ordinary
-clean-up-and-retry behavior. A timed-out iteration or the last iteration stops
-retries either way. Extracted output files stay in place for the output-only
-post-loop sweep.
+so only the full combination is rejected. A plain target that already contains
+a nested Git checkout is rejected; use a plain directory without Git metadata
+or a normal checkout. Fullsend validates the host target after the pre-script
+and before upload, then sanitizes and validates the returned tree after
+download and before publication, because the agent can alter `.git`. A plain
+target may return either a plain directory or a valid checkout; a checkout
+target must return a valid checkout. A plain target has no
+host settings to restore, so the returned checkout keeps only its declared
+storage format. Otherwise, the download is rejected and the local destination
+is left unchanged. With a `validation_loop` and `feedback_mode: append`, a
+repository-validation failure sends fixed feedback for the next iteration, when
+one remains. Without `append`, directly rejected repository output stops the
+retries, while other validation, transport, and publication failures keep the
+ordinary clean-up-and-retry behavior. A timed-out iteration or the last
+iteration stops retries either way. Extracted output files stay in place for
+the output-only post-loop sweep.
 
 Git metadata outside the target's root `.git/` directory—for example, selected
 through `GIT_DIR` or `--git-dir`—is outside this sanitization guarantee.
@@ -792,16 +846,18 @@ operations use a temporary Git directory with host-created configuration, so
 downloaded configuration cannot run hooks during sanitization.
 
 Shallow state is handled separately from sanitization. Fullsend snapshots the
-root repository's trusted `.git/shallow` state immediately before upload, then
-restores its exact bytes (or absence) before publication, host validation, and
-the post-script. Returned markers containing boundary commits absent from that
-snapshot are rejected before publication: agent-chosen cutoffs cannot be
-trusted. This includes sandbox `git fetch --depth` or `--deepen` operations
-that introduce a new boundary. Removing entries or unshallowing is allowed,
-but the original trusted marker is restored; fetching objects without changing
-the boundary is also allowed. Restoration does not undo history rewrites or
-recover missing objects. A plain target contributes no trusted marker, so a
-checkout created in the sandbox must not introduce a shallow boundary.
+root repository's and every module store's trusted `.git/shallow` state
+immediately before upload, then restores its exact bytes (or absence) before
+publication, host validation, and the post-script. Returned markers containing
+boundary commits absent from that snapshot are rejected before publication:
+agent-chosen cutoffs cannot be trusted. This includes sandbox `git fetch
+--depth` or `--deepen` operations that introduce a new boundary. Removing
+entries or unshallowing is allowed, but the original trusted marker is
+restored; fetching objects without changing the boundary is also allowed.
+Restoration does not undo history rewrites or recover missing objects. A store
+the snapshot does not name keeps its content but loses its boundary, and a
+plain target contributes no trusted marker, so a checkout created in the
+sandbox must not introduce a shallow boundary.
 
 ---
 
