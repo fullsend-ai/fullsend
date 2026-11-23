@@ -44,7 +44,10 @@
 #   (internal/repos/gitlab_pipeline_var_restriction.go) verifies
 #   no_one_allowed before delivering runnable typed jobs and fails
 #   closed otherwise; automatic changes to the setting stay behind an
-#   opt-in environment variable (see that file). See
+#   opt-in environment variable (see that file). A project whose
+#   manifest sets allow_insecure_pipeline_variables (ADR 0175) accepts
+#   a weaker setting, and with it the loss of this control: a caller
+#   at the allowed role can outrank these values. See
 #   docs/contributing/gitlab-role-credentials.md ("How a job selects
 #   its credential") and the ADR 0125 security-gate status table in
 #   docs/normative/normalized-event/v1/README.md.
@@ -435,7 +438,9 @@ fullsend_pin_ci_job_identity() {
 # ci_pipeline_variables_minimum_override_role is no_one_allowed (the install
 # lifecycle defers otherwise and contains a published token when the setting
 # weakens), so a pipeline it creates cannot carry a variable that overrides
-# this ledger.
+# this ledger. The exception is a project opted in through
+# allow_insecure_pipeline_variables (ADR 0175), where any caller at the
+# allowed role can already override it.
 fullsend_gitlab_trigger_account_id() {
   # The ledger and activation are passed as raw strings and parsed with
   # `fromjson` (try/catch to null): a value that is not exactly one JSON

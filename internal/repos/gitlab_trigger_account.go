@@ -681,14 +681,17 @@ func (op *gitLabTriggerAccountOp) containBootstrap(ctx context.Context) error {
 // overrideRoleDeferral returns a reason when the live pipeline-variable
 // override role is not no_one_allowed. A live trigger credential is only safe
 // to publish while overrides are disabled, so a trigger request cannot inject
-// variables. The lifecycle verifies the live setting itself rather than relying
+// variables. A project whose manifest sets allow_insecure_pipeline_variables
+// accepts its reported weaker setting: the Poller token that setting already
+// exposes can start pipelines with variables, so the trigger credential adds
+// nothing. The lifecycle verifies the live setting itself rather than relying
 // on its caller having applied the restriction.
 func (op *gitLabTriggerAccountOp) overrideRoleDeferral(ctx context.Context) (string, error) {
 	role, err := op.opts.State.GetPipelineVariablesMinimumOverrideRole(ctx, op.opts.Owner, op.opts.Repo)
 	if err != nil {
 		return "", safeAPIError("reading the pipeline-variable override role", err)
 	}
-	if role != forge.PipelineVarOverrideNoOneAllowed {
+	if !gitlabPipelineVarRoleAccepted(ctx, op.opts.Owner, op.opts.Repo, role) {
 		return fmt.Sprintf("ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; fullsend does not publish a trigger credential while pipeline variable overrides are allowed. Stop legacy polling, migrate schedule variables, and apply the restriction to enable the trigger account (to apply it, %s)", displayPipelineVarRole(role), gitlabPipelineVarRestrictionHint), nil
 	}
 	return "", nil

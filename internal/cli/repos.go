@@ -184,6 +184,13 @@ func runReposStatus(cmd *cobra.Command, opts *reposStatusConfig) error {
 	if err != nil {
 		return err
 	}
+
+	// ADR 0175: record the saved allow_insecure_pipeline_variables opt-ins
+	// for every GitLab check this command runs. repos.Status seeds only its
+	// own local copy, so without this the GitLab role-lifecycle annotation
+	// that runs after it would report a saved opt-in as drift.
+	ctx = repos.WithGitLabPipelineVarOptIns(ctx, m)
+
 	var forgejoResults []repos.ForgejoRepoResult
 	if len(sel.Targets) > 0 {
 		forgejoResults, err = newForgejoLifecycle(m, false, opts.testForgejo).Status(ctx, sel.Targets)
@@ -720,6 +727,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
+	// ADR 0175: record the saved allow_insecure_pipeline_variables opt-ins
+	// for every GitLab check this command runs, and warn about each one.
+	ctx = repos.WithGitLabPipelineVarOptIns(ctx, manifest)
+	for _, name := range repos.GitLabPipelineVarOptInRepos(manifest) {
+		printer.StepWarn(repos.GitLabPipelineVarOptInWarning(name))
+	}
 
 	// Forgejo selectors resolve first: an ambiguous, unknown-alias or
 	// undeclared selector fails before any credential lookup or write.

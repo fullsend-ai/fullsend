@@ -195,6 +195,9 @@ type StatusResult struct {
 // The optional release supplies the running binary's ref/tag for matching
 // embedded scaffold templates after release-default manifest writeback.
 func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string, release ...DriftConfig) (*StatusResult, error) {
+	// ADR 0175: status treats a saved allow_insecure_pipeline_variables
+	// opt-in as expected, the same way install does.
+	ctx = WithGitLabPipelineVarOptIns(ctx, manifest)
 	resolved, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
