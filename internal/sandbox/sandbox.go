@@ -133,9 +133,9 @@ var ErrRepositoryRejected = errors.New("repository rejected")
 func rejectRepository(err error) error { return fmt.Errorf("%w: %w", ErrRepositoryRejected, err) }
 
 // RetrySleepFn is the function called between retry attempts in
-// CreateWithRetry. It defaults to time.Sleep. Override in tests to
-// avoid real delays.
-var RetrySleepFn = time.Sleep
+// CreateWithRetry. When nil (the default) the backoff is a cancellable
+// timer. Override in tests to avoid real delays.
+var RetrySleepFn func(time.Duration)
 
 // errSymlink wraps symlink-related os.Remove failures during
 // sanitizeDownload with the symlink path and target, so error messages
@@ -1467,6 +1467,35 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 // sandbox could not be deleted, so it may still exist.
 var ErrCleanupFailed = errors.New("cleanup failed")
 
+// waitBackoff waits for d, returning ctx.Err() as soon as ctx is cancelled.
+// By default it uses a timer, so no goroutine outlives the call. A test hook
+// in RetrySleepFn takes no context, so it runs in a goroutine that is waited
+// for beside ctx; the hook is read once, before the goroutine starts, so a
+// later reassignment of RetrySleepFn cannot race with it.
+func waitBackoff(ctx context.Context, d time.Duration) error {
+	if sleep := RetrySleepFn; sleep != nil {
+		slept := make(chan struct{})
+		go func() {
+			sleep(d)
+			close(slept)
+		}()
+		select {
+		case <-slept:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // CreateWithRetryContext is CreateWithRetry with cancellation. Cancelling ctx
 // stops polling and further attempts, then deletes the sandbox (the delete
 // does not use ctx, so it still runs) and returns an error wrapping
@@ -1527,17 +1556,8 @@ func CreateWithRetryContext(ctx context.Context, name string, providers []string
 				backoff = retryMaxBackoff
 			}
 			fmt.Fprintf(os.Stderr, "  Sandbox creation attempt %d/%d failed (%v), retrying in %s...\n", attempt, maxAttempts, lastErr, backoff)
-			// RetrySleepFn takes no context, so wait for it beside ctx and
-			// stop at once when the caller cancels during the backoff.
-			slept := make(chan struct{})
-			go func() {
-				RetrySleepFn(backoff)
-				close(slept)
-			}()
-			select {
-			case <-slept:
-			case <-ctx.Done():
-				return fmt.Errorf("sandbox creation canceled: %w: %w", ctx.Err(), lastErr)
+			if err := waitBackoff(ctx, backoff); err != nil {
+				return fmt.Errorf("sandbox creation canceled: %w: %w", err, lastErr)
 			}
 		}
 	}

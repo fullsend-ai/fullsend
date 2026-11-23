@@ -105,16 +105,30 @@ exit 0
 func TestCreateWithRetryContext_CancelStopsBackoff(t *testing.T) {
 	callsFile := writeCreateContextOpenshell(t, "", false)
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	RetrySleepFn = func(time.Duration) { <-release }
+	entered := make(chan struct{})
+	exited := make(chan struct{})
+	RetrySleepFn = func(time.Duration) {
+		defer close(exited)
+		close(entered)
+		<-release
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
+	defer cancel()
 
 	done := make(chan error, 1)
 	go func() {
 		done <- CreateWithRetryContext(ctx, "test-sandbox", nil, "", "", 3, 5*time.Second, false)
 	}()
+
+	// Cancel only once the backoff is in progress, so the test does not
+	// depend on timing.
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("retry backoff never started")
+	}
+	cancel()
 
 	select {
 	case err := <-done:
@@ -123,6 +137,30 @@ func TestCreateWithRetryContext_CancelStopsBackoff(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("cancellation did not interrupt the retry backoff")
 	}
+
+	// Let the hook return and wait for it, so no goroutine outlives the test
+	// or reads RetrySleepFn after the helper's cleanup restores it.
+	close(release)
+	<-exited
+
+	data, readErr := os.ReadFile(callsFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(data), "create\n"), "no attempt after cancellation")
+}
+
+func TestCreateWithRetryContext_CancelStopsDefaultBackoff(t *testing.T) {
+	callsFile := writeCreateContextOpenshell(t, "", false)
+	RetrySleepFn = nil // use the real, cancellable timer
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	start := time.Now()
+	err := CreateWithRetryContext(ctx, "test-sandbox", nil, "", "", 3, 5*time.Second, false)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, time.Since(start), retryInitialBackoff-time.Second, "cancellation must not wait out the backoff")
 	data, readErr := os.ReadFile(callsFile)
 	require.NoError(t, readErr)
 	assert.Equal(t, 1, strings.Count(string(data), "create\n"), "no attempt after cancellation")
