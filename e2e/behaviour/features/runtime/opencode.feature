@@ -8,10 +8,11 @@
 #
 # OpenCode requires security.enabled: true; see docs/runtimes/opencode.md.
 #
-# Gated on the `runtime-opencode` capability, which the Makefile does not
-# declare: fullsend-sandbox:latest carries OpenCode only once the image change
-# is published from main. Enable with BEHAVIOUR_CAPABILITIES=runtime-opencode
-# (costs one small haiku run on Vertex).
+# The disabled-security scenario runs without a capability tag: validation
+# rejects the configuration before sandbox creation. Only the model-call
+# scenario is gated on `runtime-opencode`, which the Makefile does not declare
+# until the OpenCode image is published from main. Enable that scenario with
+# BEHAVIOUR_CAPABILITIES=runtime-opencode (one small haiku run on Vertex).
 Feature: OpenCode runtime runs an agent unattended
 
   Scenario: opencode rejects disabled sandbox security before sandbox creation
