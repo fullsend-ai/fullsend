@@ -101,3 +101,29 @@ exit 0
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Less(t, time.Since(start), 20*time.Second, "cancellation must not wait for the ready timeout")
 }
+
+func TestCreateWithRetryContext_CancelStopsBackoff(t *testing.T) {
+	callsFile := writeCreateContextOpenshell(t, "", false)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	RetrySleepFn = func(time.Duration) { <-release }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- CreateWithRetryContext(ctx, "test-sandbox", nil, "", "", 3, 5*time.Second, false)
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancellation did not interrupt the retry backoff")
+	}
+	data, readErr := os.ReadFile(callsFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(data), "create\n"), "no attempt after cancellation")
+}

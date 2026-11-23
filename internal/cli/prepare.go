@@ -489,8 +489,8 @@ func writePreflightPolicy() (path string, remove func(), err error) {
 }
 
 // warmPrepareImage pre-pulls a private image the way fullsend run does
-// (pullGHCRImage: ghcr.io image, GitHub Actions workflow token, private auth
-// file, redacted output), and records on img what happened in this host's
+// (pullSandboxImage: the CI job's registry credential, private auth file,
+// redacted output), and records on img what happened in this host's
 // Podman store. It does not say the gateway's image store is warm: the
 // gateway pulls into its own store when the preflight sandbox starts, which
 // is what confirms the image. A failed pull is a warning, as in fullsend run,
@@ -500,11 +500,11 @@ func warmPrepareImage(ctx context.Context, img *prepareImage, workflowToken stri
 		img.Detail = "no image configured; the gateway uses its default sandbox image"
 		return
 	}
-	switch pullGHCRImage(ctx, img.Ref, workflowToken, printer) {
+	switch pullSandboxImage(ctx, img.Ref, workflowToken, printer) {
 	case localPullCached:
 		img.Detail = "already in the local Podman store"
 	case localPullPulled:
-		img.Detail = "pulled into the local Podman store with the workflow token"
+		img.Detail = "pulled into the local Podman store with the job's registry credential"
 	case localPullFailed:
 		img.Detail = "the local pull did not complete; the gateway pulls the image without registry credentials"
 	default:
@@ -592,7 +592,7 @@ func classifyPrepareFailure(msg string) (kind, hint string) {
 	case containsAny("no space left on device", "disk quota exceeded"):
 		return prepareErrDiskSpace, "the host running the gateway's image store is out of disk space; free space (for example with 'podman system prune') or use a runner with a larger disk"
 	case containsAny("unauthorized", "authentication required", "access to the resource is denied", "403 forbidden"):
-		return prepareErrAuth, "the registry refused the pull; make the image public or, on GitHub Actions, provide the workflow token (GH_WORKFLOW_TOKEN or the job's GH_TOKEN/GITHUB_TOKEN, with packages: read for ghcr.io)"
+		return prepareErrAuth, "the registry refused the pull; make the image public or provide the CI job's registry credential (on GitHub Actions the workflow token, GH_WORKFLOW_TOKEN or the job's GH_TOKEN/GITHUB_TOKEN, with packages: read for ghcr.io; on GitLab CI CI_REGISTRY_USER and CI_REGISTRY_PASSWORD for an image on CI_REGISTRY). The credential is applied to this host's Podman store, so a gateway on another host still pulls without it"
 	case containsAny("manifest unknown", "name unknown", "invalid reference format", "no such host", "not found: manifest", "repository does not exist"):
 		return prepareErrUnresolvable, "the image reference could not be resolved; check the harness image: field and FULLSEND_SANDBOX_IMAGE"
 	}

@@ -1527,7 +1527,18 @@ func CreateWithRetryContext(ctx context.Context, name string, providers []string
 				backoff = retryMaxBackoff
 			}
 			fmt.Fprintf(os.Stderr, "  Sandbox creation attempt %d/%d failed (%v), retrying in %s...\n", attempt, maxAttempts, lastErr, backoff)
-			RetrySleepFn(backoff)
+			// RetrySleepFn takes no context, so wait for it beside ctx and
+			// stop at once when the caller cancels during the backoff.
+			slept := make(chan struct{})
+			go func() {
+				RetrySleepFn(backoff)
+				close(slept)
+			}()
+			select {
+			case <-slept:
+			case <-ctx.Done():
+				return fmt.Errorf("sandbox creation canceled: %w: %w", ctx.Err(), lastErr)
+			}
 		}
 	}
 	return fmt.Errorf("sandbox creation failed after %d attempts: %w", maxAttempts, lastErr)

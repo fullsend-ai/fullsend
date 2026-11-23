@@ -877,3 +877,11 @@ func TestPrepareError(t *testing.T) {
 	assert.Equal(t, "boom\nhint: do this", err.Error())
 	assert.ErrorIs(t, err, base)
 }
+
+func TestClassifyPrepareFailure_AuthHintNamesEachForgeCredential(t *testing.T) {
+	_, hint := classifyPrepareFailure("Error: unauthorized: authentication required")
+
+	for _, want := range []string{"GH_WORKFLOW_TOKEN", "packages: read", "CI_REGISTRY_USER", "CI_REGISTRY_PASSWORD", "another host"} {
+		assert.Contains(t, hint, want)
+	}
+}

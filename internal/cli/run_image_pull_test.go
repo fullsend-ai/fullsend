@@ -109,10 +109,10 @@ func TestIsGHCRImage(t *testing.T) {
 	}
 }
 
-func TestPrePullGHCRImage_PullsWithRunScopedAuthFile(t *testing.T) {
+func TestPrePullSandboxImage_PullsWithRunScopedAuthFile(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
 
-	prePullGHCRImage(context.Background(), privateImage, printer)
+	prePullSandboxImage(context.Background(), privateImage, printer)
 
 	require.Equal(t, []string{"image", "pull"}, fake.subcommands())
 	assert.Equal(t, []string{"image", "exists", privateImage}, fake.calls[0])
@@ -142,11 +142,11 @@ func TestPrePullGHCRImage_PullsWithRunScopedAuthFile(t *testing.T) {
 	assert.NotContains(t, buf.String(), testWorkflowToken)
 }
 
-func TestPrePullGHCRImage_PullFailureRedactsTokenAndCleansUp(t *testing.T) {
+func TestPrePullSandboxImage_PullFailureRedactsTokenAndCleansUp(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
 	fake.respond("pull", "Error: initializing source: unauthorized "+testWorkflowToken, errors.New("exit status 125"))
 
-	prePullGHCRImage(context.Background(), privateImage, printer)
+	prePullSandboxImage(context.Background(), privateImage, printer)
 
 	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
 	out := buf.String()
@@ -160,16 +160,16 @@ func TestPrePullGHCRImage_PullFailureRedactsTokenAndCleansUp(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "auth directory must be removed after a failed pull")
 }
 
-func TestPrePullGHCRImage_SkipsImageAlreadyPresent(t *testing.T) {
+func TestPrePullSandboxImage_SkipsImageAlreadyPresent(t *testing.T) {
 	fake, _, printer := setupImagePull(t)
 	fake.respond("image", "", nil)
 
-	prePullGHCRImage(context.Background(), privateImage, printer)
+	prePullSandboxImage(context.Background(), privateImage, printer)
 
 	assert.Equal(t, []string{"image"}, fake.subcommands())
 }
 
-func TestPrePullGHCRImage_NoAttempt(t *testing.T) {
+func TestPrePullSandboxImage_NoAttempt(t *testing.T) {
 	tests := []struct {
 		name    string
 		image   string
@@ -187,7 +187,7 @@ func TestPrePullGHCRImage_NoAttempt(t *testing.T) {
 			t.Setenv("GITHUB_ACTIONS", tc.actions)
 			t.Setenv(workflowTokenEnv, tc.token)
 
-			prePullGHCRImage(context.Background(), tc.image, printer)
+			prePullSandboxImage(context.Background(), tc.image, printer)
 
 			assert.Empty(t, fake.calls)
 			assert.Empty(t, buf.String())
@@ -195,21 +195,21 @@ func TestPrePullGHCRImage_NoAttempt(t *testing.T) {
 	}
 }
 
-func TestPrePullGHCRImage_PodmanMissing(t *testing.T) {
+func TestPrePullSandboxImage_PodmanMissing(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
 	imagePullLookPathFn = func(string) (string, error) { return "", errors.New("not found") }
 
-	prePullGHCRImage(context.Background(), privateImage, printer)
+	prePullSandboxImage(context.Background(), privateImage, printer)
 
 	assert.Empty(t, fake.calls)
 	assert.Contains(t, buf.String(), "podman not found")
 }
 
-func TestPrePullGHCRImage_TempDirFailure(t *testing.T) {
+func TestPrePullSandboxImage_TempDirFailure(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "does-not-exist"))
 
-	prePullGHCRImage(context.Background(), privateImage, printer)
+	prePullSandboxImage(context.Background(), privateImage, printer)
 
 	assert.Equal(t, []string{"image"}, fake.subcommands())
 	assert.Contains(t, buf.String(), "creating registry auth directory failed")
@@ -264,41 +264,41 @@ func TestPreparedWorkflowToken(t *testing.T) {
 	}
 }
 
-func TestPullGHCRImage_ReportsLocalOutcome(t *testing.T) {
+func TestPullSandboxImage_ReportsLocalOutcome(t *testing.T) {
 	t.Run("pulled", func(t *testing.T) {
 		_, _, printer := setupImagePull(t)
-		assert.Equal(t, localPullPulled, pullGHCRImage(context.Background(), privateImage, testWorkflowToken, printer))
+		assert.Equal(t, localPullPulled, pullSandboxImage(context.Background(), privateImage, testWorkflowToken, printer))
 	})
 	t.Run("already present", func(t *testing.T) {
 		fake, _, printer := setupImagePull(t)
 		fake.respond("image", "", nil)
-		assert.Equal(t, localPullCached, pullGHCRImage(context.Background(), privateImage, testWorkflowToken, printer))
+		assert.Equal(t, localPullCached, pullSandboxImage(context.Background(), privateImage, testWorkflowToken, printer))
 	})
 	t.Run("pull failed", func(t *testing.T) {
 		fake, _, printer := setupImagePull(t)
 		fake.respond("pull", "Error: unauthorized", errors.New("exit status 125"))
-		assert.Equal(t, localPullFailed, pullGHCRImage(context.Background(), privateImage, testWorkflowToken, printer))
+		assert.Equal(t, localPullFailed, pullSandboxImage(context.Background(), privateImage, testWorkflowToken, printer))
 	})
 	t.Run("podman missing", func(t *testing.T) {
 		_, _, printer := setupImagePull(t)
 		imagePullLookPathFn = func(string) (string, error) { return "", errors.New("not found") }
-		assert.Equal(t, localPullFailed, pullGHCRImage(context.Background(), privateImage, testWorkflowToken, printer))
+		assert.Equal(t, localPullFailed, pullSandboxImage(context.Background(), privateImage, testWorkflowToken, printer))
 	})
 	t.Run("no credential applies", func(t *testing.T) {
 		fake, _, printer := setupImagePull(t)
-		assert.Equal(t, localPullNone, pullGHCRImage(context.Background(), privateImage, "", printer))
-		assert.Equal(t, localPullNone, pullGHCRImage(context.Background(), "quay.io/org/img:tag", testWorkflowToken, printer))
+		assert.Equal(t, localPullNone, pullSandboxImage(context.Background(), privateImage, "", printer))
+		assert.Equal(t, localPullNone, pullSandboxImage(context.Background(), "quay.io/org/img:tag", testWorkflowToken, printer))
 		assert.Empty(t, fake.calls)
 	})
 }
 
 // prepare supplies the token it resolved without minting; the pull must use
 // that token, not the environment's, and still keep it out of argv.
-func TestPullGHCRImage_UsesSuppliedToken(t *testing.T) {
+func TestPullSandboxImage_UsesSuppliedToken(t *testing.T) {
 	const supplied = "supplied-token-for-tests"
 	fake, buf, printer := setupImagePull(t)
 
-	require.Equal(t, localPullPulled, pullGHCRImage(context.Background(), privateImage, supplied, printer))
+	require.Equal(t, localPullPulled, pullSandboxImage(context.Background(), privateImage, supplied, printer))
 
 	var authFile struct {
 		Auths map[string]struct{ Auth string } `json:"auths"`
@@ -311,4 +311,96 @@ func TestPullGHCRImage_UsesSuppliedToken(t *testing.T) {
 		assert.NotContains(t, strings.Join(c, " "), supplied)
 	}
 	assert.NotContains(t, buf.String(), supplied)
+}
+
+const (
+	testGitLabRegistry = "gitlab.example.com:5050"
+	testGitLabPassword = "fake-gitlab-registry-password"
+	gitLabImage        = testGitLabRegistry + "/group/project/sandbox:1"
+)
+
+// setGitLabCI makes the environment look like a GitLab CI job with
+// registry credentials, and not like GitHub Actions.
+func setGitLabCI(t *testing.T) {
+	t.Helper()
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv(workflowTokenEnv, "")
+	t.Setenv("GITLAB_CI", "true")
+	t.Setenv("CI_REGISTRY", testGitLabRegistry)
+	t.Setenv("CI_REGISTRY_USER", "gitlab-ci-token")
+	t.Setenv("CI_REGISTRY_PASSWORD", testGitLabPassword)
+}
+
+func TestSandboxImageCredential_GitLabCI(t *testing.T) {
+	t.Run("job registry image", func(t *testing.T) {
+		setupImagePull(t)
+		setGitLabCI(t)
+		cred, ok := sandboxImageCredential(gitLabImage, "")
+		require.True(t, ok)
+		assert.Equal(t, testGitLabRegistry, cred.registry)
+		assert.Equal(t, "gitlab-ci-token", cred.username)
+		assert.Equal(t, testGitLabPassword, cred.secret)
+	})
+	t.Run("other registry", func(t *testing.T) {
+		setupImagePull(t)
+		setGitLabCI(t)
+		_, ok := sandboxImageCredential("quay.io/org/img:tag", "")
+		assert.False(t, ok)
+	})
+	t.Run("missing password", func(t *testing.T) {
+		setupImagePull(t)
+		setGitLabCI(t)
+		t.Setenv("CI_REGISTRY_PASSWORD", "")
+		_, ok := sandboxImageCredential(gitLabImage, "")
+		assert.False(t, ok)
+	})
+	t.Run("not on GitLab CI", func(t *testing.T) {
+		setupImagePull(t)
+		setGitLabCI(t)
+		t.Setenv("GITLAB_CI", "")
+		_, ok := sandboxImageCredential(gitLabImage, "")
+		assert.False(t, ok)
+	})
+	t.Run("workflow token does not apply to the GitLab registry", func(t *testing.T) {
+		setupImagePull(t)
+		t.Setenv("GITHUB_ACTIONS", "true")
+		t.Setenv("GITLAB_CI", "")
+		_, ok := sandboxImageCredential(gitLabImage, testWorkflowToken)
+		assert.False(t, ok)
+	})
+}
+
+func TestPrePullSandboxImage_GitLabCIRegistry(t *testing.T) {
+	fake, buf, printer := setupImagePull(t)
+	setGitLabCI(t)
+
+	prePullSandboxImage(context.Background(), gitLabImage, printer)
+
+	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
+	assert.Equal(t, os.FileMode(0o600), fake.authMode)
+	var authFile struct {
+		Auths map[string]struct{ Auth string } `json:"auths"`
+	}
+	require.NoError(t, json.Unmarshal(fake.authJSON, &authFile))
+	require.Contains(t, authFile.Auths, testGitLabRegistry)
+	decoded, err := base64.StdEncoding.DecodeString(authFile.Auths[testGitLabRegistry].Auth)
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab-ci-token:"+testGitLabPassword, string(decoded))
+	for _, c := range fake.calls {
+		assert.NotContains(t, strings.Join(c, " "), testGitLabPassword)
+	}
+	assert.NotContains(t, buf.String(), testGitLabPassword)
+	_, statErr := os.Stat(filepath.Dir(fake.authFiles[0]))
+	assert.True(t, os.IsNotExist(statErr), "auth directory must be removed after the pull")
+}
+
+func TestPrePullSandboxImage_GitLabCIPullFailureRedactsPassword(t *testing.T) {
+	fake, buf, printer := setupImagePull(t)
+	setGitLabCI(t)
+	fake.respond("pull", "denied for "+testGitLabPassword, errors.New("exit status 125"))
+
+	prePullSandboxImage(context.Background(), gitLabImage, printer)
+
+	assert.Contains(t, buf.String(), "without registry credentials")
+	assert.NotContains(t, buf.String(), testGitLabPassword)
 }

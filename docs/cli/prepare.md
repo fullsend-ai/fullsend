@@ -6,8 +6,9 @@ sidebar_label: fullsend prepare
 
 Prepare the environment for an agent without running it. `fullsend prepare`
 resolves the agent's sandbox image the same way [`fullsend run`](run.md) does.
-It pre-pulls a private `ghcr.io` image with the workflow token, as `fullsend run`
-does. Then it creates and deletes a minimal sandbox. The OpenShell gateway pulls
+It pre-pulls a private image with the CI job's registry credential (the workflow
+token for `ghcr.io` on GitHub Actions, the job's registry login for the
+instance's container registry on GitLab CI), as `fullsend run` does. Then it creates and deletes a minimal sandbox. The OpenShell gateway pulls
 the image into its own image store when that sandbox starts, which also checks
 that the gateway can start one.
 
@@ -48,8 +49,8 @@ that the runs use. The image can depend on all of them.
 3. Checks that the OpenShell CLI is installed and that a gateway is running.
 4. Pre-pulls the image the way `fullsend run` does (see
    [Registry credentials](#registry-credentials)). This applies only to a
-   private image on `ghcr.io` on GitHub Actions, and only into the local Podman
-   store. It does not warm the gateway's image store, and `fullsend prepare`
+   private image on `ghcr.io` on GitHub Actions or on the instance's container
+   registry on GitLab CI, and only into the local Podman store. It does not warm the gateway's image store, and `fullsend prepare`
    does not try to find out where that store is:
    - With no credential, or for any other image, nothing is pulled locally.
    - With a credential, an image already in the local Podman store is not
@@ -82,6 +83,8 @@ that `fullsend run` uses before it creates a sandbox:
   set, the job's `GH_TOKEN` (or, when that is empty, `GITHUB_TOKEN`), which must
   look like a token. It does not export the token. See
   [GitHub Packages credentials](run.md#github-packages-credentials).
+- On GitLab CI, the job's `CI_REGISTRY_USER` and `CI_REGISTRY_PASSWORD` for an
+  image on the instance's container registry (`CI_REGISTRY`).
 
 The credential is written to an auth file in a private temporary directory
 and removed after the pull. It is redacted from every message.
@@ -127,7 +130,7 @@ With `--json`, stdout holds one JSON object, also when the command fails:
       "ref": "ghcr.io/fullsend-ai/fullsend-code:latest",
       "source": "harness",
       "status": "ready",
-      "detail": "pulled into the local Podman store with the workflow token; the preflight sandbox started from it, so the gateway has pulled it"
+      "detail": "pulled into the local Podman store with the job's registry credential; the preflight sandbox started from it, so the gateway has pulled it"
     }
   ],
   "preflight": {
