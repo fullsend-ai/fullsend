@@ -290,14 +290,14 @@ lines in that side's version of the file.
 | Field | Meaning | GitHub source | GitLab source |
 |-------|---------|---------------|---------------|
 | `side` | Diff side that `line` and `original_line` refer to (`left` or `right`) | `diffSide`, lowercased | `right` when `new_line` is set, otherwise `left` when `old_line` is set |
-| `line` | Last line of the thread's range on `side` in the current diff; `null` when the thread no longer maps onto the current diff | `line` (`null` for outdated threads) | `new_line` on the right side, `old_line` on the left side |
+| `line` | Last line of the thread's range on `side` in the current diff; `null` when the thread no longer maps onto the current diff or is not confirmed current | `line` (`null` for outdated threads) | `new_line` on the right side, `old_line` on the left side, only when `is_outdated` is `false` |
 | `start_side` | Side of the first line of a multi-line range; `null` for single-line threads | `startDiffSide`, lowercased | `line_range.start.type` (`old` is `left`, `new` is `right`), otherwise the same rule as `side` |
-| `start_line` | First line of a multi-line range on `start_side`; `null` for single-line threads and for outdated multi-line GitHub threads (which keep `start_side` and `original_start_line`) | `startLine` | `line_range.start` line on `start_side`, when it differs from the end |
+| `start_line` | First line of a multi-line range on `start_side`; `null` for single-line threads and for outdated or unconfirmed multi-line threads (which keep `start_side`) | `startLine` | `line_range.start` line on `start_side`, when it differs from the end and `is_outdated` is `false` |
 | `original_line` | Line on `side` in the diff the thread was created against | `originalLine` | Always `null` (not exposed) |
 | `original_start_line` | Start line on `start_side` in the diff the thread was created against; for cross-side ranges this is a different file version than `original_line` | `originalStartLine` | Always `null` (not exposed) |
-| `old_line` | Current line number in the old (left) file | `line` when `side` is `left` | `old_line` |
-| `new_line` | Current line number in the new (right) file | `line` when `side` is `right` | `new_line` |
-| `is_outdated` | Whether later pushes made the thread outdated | `isOutdated` | Always `null` (not exposed) |
+| `old_line` | Current line number in the old (left) file | `line` when `side` is `left` | `old_line`, only when `is_outdated` is `false` |
+| `new_line` | Current line number in the new (right) file | `line` when `side` is `right` | `new_line`, only when `is_outdated` is `false` |
+| `is_outdated` | Whether later pushes made the thread outdated | `isOutdated` | `false` when the position's `base_sha`, `start_sha`, and `head_sha` match the merge request's current `diff_refs`, `true` when they differ, `null` when either set is incomplete or cannot be fetched |
 
 To match a finding reported against the head revision, compare `path` and
 `new_line`. The table distinguishes the cases the two forges previously
@@ -305,9 +305,14 @@ conflated:
 
 - A GitHub outdated thread has `is_outdated: true`, a `null` `line`, and its
   creation position in `original_line`.
-- A GitLab removed-line discussion has `side: "left"`, `old_line` set,
-  `new_line: null`, and `is_outdated: null`. A `null` `new_line` alone never
-  means a thread is outdated.
+- A GitLab removed-line discussion on the current diff has `side: "left"`,
+  `old_line` set, `new_line: null`, and `is_outdated: false`. A `null`
+  `new_line` alone never means a thread is outdated.
+- A GitLab discussion whose position belongs to an older diff has
+  `is_outdated: true` and keeps `path` and `side`, but `line`, `start_line`,
+  `old_line`, and `new_line` are `null`. The same applies with
+  `is_outdated: null` when the diff refs are incomplete or the merge request's
+  current `diff_refs` cannot be fetched; treat such a position as untrusted.
 - A GitLab comment on an unchanged context line has both `old_line` and
   `new_line`. GitHub reports only the line on the thread's `side`, so the other
   field is `null`.

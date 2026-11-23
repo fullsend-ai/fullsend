@@ -813,8 +813,10 @@ type ReviewThread struct {
 	// thread has no diff position.
 	Side *DiffSide `json:"side"`
 	// Line is the last line of the thread's range on Side in the current
-	// diff. Nil when the thread no longer maps onto the current diff (for
-	// example an outdated GitHub thread) or has no line position.
+	// diff. Nil when the thread no longer maps onto the current diff (an
+	// outdated thread), when the forge cannot confirm the position is
+	// current (GitLab with unknown outdated state), or when the thread has
+	// no line position.
 	Line *int `json:"line"`
 	// StartSide and StartLine give the first line of a multi-line range.
 	// Both are nil for single-line threads. StartLine is nil for an outdated
@@ -831,11 +833,17 @@ type ReviewThread struct {
 	// old (left) and new (right) file. A removed line has only OldLine, an
 	// added line only NewLine, and an unchanged context line may have both
 	// when the forge reports them (GitLab). GitHub reports one side only.
+	// Both are nil whenever Line is nil because the position is outdated or
+	// not confirmed current.
 	OldLine *int `json:"old_line"`
 	NewLine *int `json:"new_line"`
-	// IsOutdated reports whether the forge marks the thread as outdated by
-	// later pushes. Nil when the forge does not expose outdated state
-	// (GitLab); a nil NewLine alone never implies an outdated thread.
+	// IsOutdated reports whether later pushes made the thread's position
+	// outdated. GitLab reports false only when the position's diff refs
+	// match the merge request's current diff_refs, and true when they
+	// differ. Nil when the forge cannot determine outdated state (on GitLab,
+	// when either set of diff refs is incomplete or unavailable); consumers
+	// must not treat a nil value as a current position. A nil NewLine alone
+	// never implies an outdated thread.
 	IsOutdated             *bool                 `json:"is_outdated"`
 	ResolvedBy             string                `json:"resolved_by"`
 	ResolvedByType         string                `json:"resolved_by_type"`
