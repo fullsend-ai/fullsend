@@ -85,6 +85,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newMintCmd())
 	cmd.AddCommand(newFetchSkillCmd())
 	cmd.AddCommand(newDispatchCmd())
+	cmd.AddCommand(newExecutionPlanCmd())
 	cmd.AddCommand(newRunCmd())
 	cmd.AddCommand(newScanCmd())
 	cmd.AddCommand(newReposCmd())
