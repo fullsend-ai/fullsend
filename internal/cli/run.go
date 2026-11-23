@@ -7248,12 +7248,14 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 	return nil
 }
 
-// alertOnOutputRemoval emits a workflow annotation when an output file was
-// replaced whole by a fail-closed marker. Everything the agent wrote into that
-// file is gone, and a lost review that only shows up as one scan line is the
-// silent failure #5705 set out to fix. Only the marker's fixed reason reaches
-// the annotation: a file path or a matched value could carry agent-chosen text
-// (ADR 0163).
+// alertOnOutputRemoval emits a ::error:: workflow command when an output file
+// was replaced whole by a fail-closed marker. Everything the agent wrote into
+// that file is gone, and a lost review that only shows up as one scan line is
+// the silent failure #5705 set out to fix. GitHub Actions renders the command as
+// an error annotation; Forgejo Actions sets GITHUB_ACTIONS too but prints the
+// line in the step log, since it has no annotation view. Only the marker's fixed
+// reason reaches the line: a file path or a matched value could carry
+// agent-chosen text (ADR 0163).
 func alertOnOutputRemoval(printer *ui.Printer, sanitized []byte) {
 	reason, removed := security.OutputRemoval(sanitized)
 	if !removed || os.Getenv("GITHUB_ACTIONS") != "true" {
@@ -7262,12 +7264,13 @@ func alertOnOutputRemoval(printer *ui.Printer, sanitized []byte) {
 	printer.Raw("::error::Output file replaced with a fail-closed marker: " + reason + "\n")
 }
 
-// alertOnRecordRemoval emits a workflow annotation for each distinct reason a
-// JSONL record was replaced with a fail-closed marker. Such a file keeps its
-// records, so it is never a whole-file marker, and the record's loss would
-// otherwise show up only as one scan line — the silent failure #5705 set out to
-// fix. Only the marker's fixed reason reaches the annotation, never a path or a
-// matched value (ADR 0163).
+// alertOnRecordRemoval emits a ::error:: workflow command for each distinct
+// reason a JSONL record was replaced with a fail-closed marker. Such a file
+// keeps its records, so it is never a whole-file marker, and the record's loss
+// would otherwise show up only as one scan line — the silent failure #5705 set
+// out to fix. GitHub Actions renders the command as an annotation; Forgejo
+// prints it in the step log. Only the marker's fixed reason reaches the line,
+// never a path or a matched value (ADR 0163).
 func alertOnRecordRemoval(printer *ui.Printer, sanitized []byte) {
 	if os.Getenv("GITHUB_ACTIONS") != "true" {
 		return

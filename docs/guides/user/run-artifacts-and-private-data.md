@@ -351,11 +351,14 @@ content cannot be written or computed is replaced by such a marker and fails
 the run. A private-key block that spans JSON members is handled in place
 instead: the keys keep their names, and each string value that carries block
 text or base64 key material becomes `[REDACTED PRIVATE KEY]`. When a
-replacement happens in a run that still exits 0, the job log carries an error
-annotation to say so. The annotation is a workflow command, so it appears
-whenever the job sets `GITHUB_ACTIONS=true`, which covers GitHub Actions and
-Forgejo Actions; on GitLab the run's log and exit status are the signal. A
-write or sanitize failure needs no annotation because the run itself fails.
+replacement happens in a run that still exits 0, the job log says so. On GitHub
+Actions this is an error annotation: fullsend writes a `::error::` workflow
+command whenever the job sets `GITHUB_ACTIONS=true`, and GitHub Actions renders
+it. Forgejo Actions also sets `GITHUB_ACTIONS=true`, so the same `::error::`
+line is written there, but Forgejo has no annotation view: its runner prints the
+line in the step log and the exit status stays 0. On GitLab the line is not
+written at all, so the run's log is the signal. A write or sanitize failure
+needs no annotation because the run itself fails.
 
 `fullsend run` leaves `output/` untouched. At the end of the job,
 `fullsend prepare-artifacts` builds a filtered copy at the level you set, and

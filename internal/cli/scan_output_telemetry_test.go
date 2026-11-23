@@ -345,12 +345,13 @@ func TestScanOutputFiles_JSONLRawMultilinePEMRemainsValid(t *testing.T) {
 }
 
 // TestScanOutputFiles_EmitsAnnotationWhenOutputIsRemoved pins that a whole-file
-// fail-closed replacement is announced as a workflow annotation. A review lost to
-// redaction must not pass silently: the run still exits 0, so the annotation is
-// the only signal an operator gets (#5705). Forgejo Actions runners set
-// GITHUB_ACTIONS=true too and understand the same workflow command, so they get
-// the annotation as well, which is why the check is the variable and not the
-// forge.
+// fail-closed replacement is announced as a workflow command. A review lost to
+// redaction must not pass silently: the run still exits 0, so the line is the
+// only signal an operator gets (#5705). Forgejo Actions runners also set
+// GITHUB_ACTIONS=true, so the same ::error:: line is written there, which is why
+// the check is the variable and not the forge. GitHub Actions renders that line
+// as an error annotation; Forgejo has no annotation view, so its runner prints
+// the line in the step log and the exit status stays 0.
 func TestScanOutputFiles_EmitsAnnotationWhenOutputIsRemoved(t *testing.T) {
 	const secret = `"v1","k2"`
 	require.True(t, security.RegisterRuntimeSecret(secret))

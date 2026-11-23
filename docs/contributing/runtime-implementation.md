@@ -684,10 +684,12 @@ match spans record boundaries. Markers look like
 `{"error":"output removed because …"}` and are logged
 as findings in `security/findings.jsonl`. Because a replaced file or record loses
 everything the agent wrote into it, and because the run still exits 0, the reason
-a marker states is also emitted as a `::error::` workflow annotation whenever the
-job sets `GITHUB_ACTIONS=true` — GitHub Actions and Forgejo Actions both do: one
-annotation for a file replaced whole, and one per distinct reason for a JSONL
-file whose records were replaced.
+a marker states is also emitted as a `::error::` workflow command whenever the
+job sets `GITHUB_ACTIONS=true`: one line for a file replaced whole, and one per
+distinct reason for a JSONL file whose records were replaced. GitHub Actions
+renders these as error annotations. Forgejo Actions also sets `GITHUB_ACTIONS=true`,
+so its runner writes the same lines, but Forgejo has no annotation view: the
+runner prints them in the step log and the exit status stays 0.
 
 A sanitized file that cannot be written, and a file that cannot be sanitized at
 all, do not stop the walk: every remaining file is still scanned and redacted,
