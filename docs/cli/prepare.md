@@ -34,8 +34,6 @@ fullsend prepare <agent-name> [flags]
 | `--event-file` | Normalized event JSON file for overlay resolution. When omitted, the dispatch payload is read, as with `fullsend run` |
 | `--json` | Print the result as JSON on stdout. Progress goes to stderr |
 | `--offline` | Reject network fetches; only use cached remote resources |
-| `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
-| `--max-resources` | Maximum total remote resources per harness |
 
 Pass the same `--fullsend-dir`, `--forge`, `--event-file`, and environment
 that the runs use. The image can depend on all of them.
@@ -47,23 +45,36 @@ that the runs use. The image can depend on all of them.
    chain, the agent's `harness:` blocks, `lock.yaml` pins, and overlays.
 2. Applies the `FULLSEND_SANDBOX_IMAGE` override, if set.
 3. Checks that the OpenShell CLI is installed and that a gateway is running.
-4. Warms the image:
-   - On a local gateway, it checks the local Podman store, which the gateway's
-     Podman driver pulls into. A cached image is not pulled again. A missing
-     image is pulled with the registry credential `fullsend run` uses (see
-     below), or anonymously when none applies.
+4. Warms the image. The gateway pulls a public image into its own store when
+   the preflight sandbox starts, so `fullsend prepare` pulls locally only when
+   a registry credential applies (see below), which the gateway cannot use:
+   - With no credential, nothing is pulled locally. The image is reported as
+     `skipped`, and the preflight sandbox makes the gateway pull it.
+   - On a local gateway with a credential, it checks the local Podman store,
+     which the gateway's Podman driver pulls into. A cached image is not pulled
+     again. A missing image is pulled with the credential. If that pull fails,
+     the preflight sandbox still pulls the image through the gateway without
+     the credential, as `fullsend run` does, so a public image keeps working.
+     A full disk is the exception: the command fails with `disk-space`.
    - When `OPENSHELL_GATEWAY_ENDPOINT` is set, the gateway may keep its images
-     on another host. `fullsend prepare` does not pull into the local store,
-     and it reports the image as `skipped`. The preflight sandbox in the next
-     step makes the gateway pull the image into its own store, anonymously.
+     on another host, and `fullsend prepare` cannot authenticate a pull there.
+     It does not pull into the local store. If a credential would have
+     applied, it warns that the credential cannot be used. The image is
+     reported as `skipped`, and the preflight sandbox pulls it anonymously. A
+     private image then fails with a hint to make it public or to pull it on
+     the gateway host first.
    - When Podman is not installed, the image is reported as `skipped` and the
-     preflight sandbox pulls it through the gateway.
-5. Creates one sandbox from the image, with no providers, no policy, and no
-   workload, and waits until it is ready. The wait uses the harness
-   `sandbox_timeout_seconds`. The gateway pulls any image of its own that it
-   needs at this point, such as its supervisor image. The command then deletes
-   the sandbox. A sandbox that fails to start is also deleted. The preflight
-   makes one attempt, so a broken environment fails fast.
+     preflight sandbox pulls it through the gateway without a credential.
+5. Creates one sandbox from the image, with no providers and no workload, under
+   a restrictive policy (the base policy generated agents use: filesystem,
+   Landlock, and process rules, and no network access). It waits until the
+   sandbox is ready. The wait uses the harness `sandbox_timeout_seconds`, and
+   interrupting the command stops it. The gateway pulls any image of its own
+   that it needs at this point, such as its supervisor image. The command then
+   deletes the sandbox. A sandbox that fails to start is also deleted. A
+   sandbox that cannot be deleted fails the command with `sandbox-cleanup`,
+   and the hint names the `openshell sandbox delete` command to run. The
+   preflight makes one attempt, so a broken environment fails fast.
 
 The preflight runs even when the image is already cached.
 
@@ -80,9 +91,12 @@ The preflight runs even when the image is already cached.
 The credential is written to an auth file in a private temporary directory
 and removed after the pull. It is redacted from every message.
 
-Unlike `fullsend run`, `fullsend prepare` leaves the runner secrets bundle
-(`FULLSEND_GITHUB_RUNNER_SECRETS`) in place, so the runs that follow can still
-read it.
+Unlike `fullsend run`, `fullsend prepare` does not consume the runner secrets
+bundle (`FULLSEND_GITHUB_RUNNER_SECRETS` and
+`FULLSEND_GITHUB_RUNNER_SECRETS_FILE`), so the runs that follow can still read
+it. It hides the bundle from every process it starts, such as Podman and
+OpenShell, while it runs, and restores it when it exits. The bundle file is
+not deleted.
 
 ## Exit status and failures
 
@@ -101,6 +115,8 @@ field of the JSON result names the cause:
 | `image-unresolvable` | The image reference could not be resolved |
 | `image-pull` | The pull failed for another reason |
 | `sandbox-preflight` | The preflight sandbox did not start for another reason |
+| `sandbox-cleanup` | The preflight sandbox started but could not be deleted |
+| `canceled` | The command was interrupted |
 
 ## JSON output
 
@@ -142,6 +158,7 @@ With `--json`, stdout holds one JSON object, also when the command fails:
 | `images[].detail` | Why the image was skipped, when it was |
 | `preflight.sandbox` | The name of the preflight sandbox |
 | `preflight.status` | `passed` or `failed` |
+| `preflight.cleanup` | `deleted` or `failed` once a sandbox was created. `failed` means the sandbox may still exist |
 | `error.kind` | The cause of a failure (see the table above) |
 | `error.message` | The error message |
 | `error.hint` | What to try next, when the cause is recognized |

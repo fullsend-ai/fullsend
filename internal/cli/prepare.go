@@ -13,10 +13,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/agentnew"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/envfile"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
-	"github.com/fullsend-ai/fullsend/internal/resolve"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -26,7 +26,7 @@ import (
 var (
 	prepareEnsureOpenshellFn = sandbox.EnsureAvailable
 	prepareCheckGatewayFn    = sandbox.CheckGateway
-	prepareCreateSandboxFn   = sandbox.CreateWithRetry
+	prepareCreateSandboxFn   = sandbox.CreateWithRetryContext
 )
 
 // Image statuses reported by fullsend prepare.
@@ -67,6 +67,14 @@ const (
 	prepareErrUnresolvable = "image-unresolvable"
 	prepareErrPull         = "image-pull"
 	prepareErrPreflight    = "sandbox-preflight"
+	prepareErrCleanup      = "sandbox-cleanup"
+	prepareErrCanceled     = "canceled"
+)
+
+// Preflight cleanup outcomes reported by fullsend prepare.
+const (
+	prepareCleanupDeleted = "deleted"
+	prepareCleanupFailed  = "failed"
 )
 
 // prepareResult is the machine-readable result of fullsend prepare
@@ -95,6 +103,9 @@ type prepareImage struct {
 type preparePreflight struct {
 	Sandbox string `json:"sandbox"`
 	Status  string `json:"status"` // "passed" or "failed"
+	// Cleanup is "deleted" or "failed" once a sandbox was created; "failed"
+	// means the sandbox may still exist and needs deleting by hand.
+	Cleanup string `json:"cleanup,omitempty"`
 }
 
 // prepareResultError is why fullsend prepare failed.
@@ -139,9 +150,11 @@ func newPrepareCmd() *cobra.Command {
 		Use:   "prepare <agent-name>",
 		Short: "Warm an agent's sandbox image and run a sandbox preflight",
 		Long: `Resolve the agent's sandbox image exactly as 'fullsend run' does (harness image:
-field, FULLSEND_SANDBOX_IMAGE override), pull it into the gateway's image store
-when it is not already there, and create and delete a minimal sandbox to check
-that the gateway can start one. It runs no pre-script, agent, or inference.
+field, FULLSEND_SANDBOX_IMAGE override), warm a private image in the local
+Podman store with the CI job's registry credential, and create and delete a
+minimal sandbox under a restrictive policy to check that the gateway can start
+one. The gateway pulls any other image when that sandbox starts. It runs no
+pre-script, agent, or inference.
 
 Run it once before starting many 'fullsend run' invocations in parallel, so a
 missing image is pulled once and a broken environment fails fast. It exits
@@ -164,8 +177,6 @@ preflight sandbox cannot be created.`,
 	cmd.Flags().StringVar(&opts.eventFile, "event-file", "", "path to a normalized event JSON file for CEL overlay resolution (ADR 0088)")
 	cmd.Flags().BoolVar(&opts.jsonOut, "json", false, "print the result as JSON on stdout (progress goes to stderr)")
 	cmd.Flags().BoolVar(&opts.rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
-	cmd.Flags().IntVar(&opts.rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
-	cmd.Flags().IntVar(&opts.rFlags.maxResources, "max-resources", resolve.DefaultMaxResources, "maximum total remote resources per harness")
 
 	return cmd
 }
@@ -203,12 +214,6 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	printer.Header("Preparing agent: " + opts.agentName)
 	printer.Blank()
 
-	if opts.rFlags.maxDepth < 0 {
-		return res, fmt.Errorf("--max-depth must be >= 0, got %d", opts.rFlags.maxDepth)
-	}
-	if opts.rFlags.maxResources < 1 {
-		return res, fmt.Errorf("--max-resources must be >= 1, got %d", opts.rFlags.maxResources)
-	}
 	for _, ef := range opts.envFiles {
 		if err := envfile.Load(ef); err != nil {
 			return res, fmt.Errorf("loading env file %s: %w", ef, err)
@@ -216,6 +221,15 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	}
 	// After the env files, which may set FULLSEND_SANDBOX_ARCH.
 	res.Arch = sandboxArch()
+
+	// Keep the runner secrets bundle out of every child process (podman,
+	// openshell, git) without consuming it: the runs that follow still need
+	// it, so it is restored on return rather than deleted.
+	restoreEnv, err := hideRunnerSecretsEnv()
+	if err != nil {
+		return res, err
+	}
+	defer restoreEnv()
 
 	image, source, harnessPath, sandboxTimeout, err := resolvePrepareImage(ctx, opts, printer)
 	res.Harness = harnessPath
@@ -254,13 +268,33 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	if err := warmPrepareImage(ctx, img, remote, printer); err != nil {
 		return res, err
 	}
+	if err := prepareCanceled(ctx); err != nil {
+		return res, err
+	}
+
+	policyPath, removePolicy, err := writePreflightPolicy()
+	if err != nil {
+		return res, &prepareError{kind: prepareErrConfig, err: err}
+	}
+	defer removePolicy()
 
 	res.Preflight = &preparePreflight{Sandbox: generateSandboxName(opts.agentName)}
-	if err := runPrepareSandboxPreflight(res.Preflight, image, sandboxTimeout, printer); err != nil {
+	if err := runPrepareSandboxPreflight(ctx, res.Preflight, image, policyPath, sandboxTimeout, printer); err != nil {
 		// The preflight is the first pull of an image the gateway had to
 		// fetch itself; a pull failure there is the image's failure.
 		if img.Status == prepareImageSkipped {
 			img.Status = prepareImageFailed
+		}
+		// fullsend cannot authenticate a pull on a remote gateway, so a
+		// private image fails there for a reason the generic hints miss.
+		var pe *prepareError
+		if _, hasCred := sandboxImageCredential(image); remote && hasCred && errors.As(err, &pe) &&
+			(pe.kind == prepareErrAuth || pe.kind == prepareErrPull || pe.kind == prepareErrPreflight) {
+			if pe.kind != prepareErrAuth && pe.hint != "" {
+				pe.hint = prepareRemoteAuthHint + "; " + pe.hint
+			} else {
+				pe.hint = prepareRemoteAuthHint
+			}
 		}
 		return res, err
 	}
@@ -367,51 +401,130 @@ func displayPrepareImage(image string) string {
 	return image
 }
 
-// warmPrepareImage puts img into the gateway's image store, recording the
-// outcome on img. It pulls only into a store it knows is the gateway's: the
-// local Podman store of a local gateway, which OpenShell's Podman driver
-// pulls into. A remote gateway's store is out of reach from this host, so
-// warming is left to the preflight sandbox, which the gateway pulls the
-// image for itself.
+// prepareRemoteAuthHint explains a private image's failure on a remote
+// gateway: fullsend authenticates pulls only into this host's Podman store.
+const prepareRemoteAuthHint = "fullsend cannot authenticate a pull on a remote gateway (OPENSHELL_GATEWAY_ENDPOINT); make the image public, or pull it on the gateway host with the registry credential first"
+
+// prepareCanceled returns a canceled failure when ctx is done.
+func prepareCanceled(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return &prepareError{kind: prepareErrCanceled, err: fmt.Errorf("preparation canceled: %w", err)}
+	}
+	return nil
+}
+
+// hideRunnerSecretsEnv removes the runner secrets bundle variables from the
+// process environment, so no child process inherits them, and returns a
+// function that puts them back. fullsend prepare must not consume the
+// bundle the way fullsend run does (the runs that follow read it), so it is
+// hidden for the command's duration and left in place afterwards.
+func hideRunnerSecretsEnv() (restore func(), err error) {
+	type saved struct{ name, value string }
+	var kept []saved
+	restore = func() {
+		for _, s := range kept {
+			_ = os.Setenv(s.name, s.value)
+		}
+	}
+	for _, name := range []string{runnerSecretsFileEnv, runnerSecretsEnv} {
+		value, ok := os.LookupEnv(name)
+		if !ok {
+			continue
+		}
+		if err := os.Unsetenv(name); err != nil {
+			restore()
+			return func() {}, fmt.Errorf("hiding %s from child processes: %w", name, err)
+		}
+		kept = append(kept, saved{name, value})
+	}
+	return restore, nil
+}
+
+// writePreflightPolicy writes the restrictive base sandbox policy — the
+// filesystem, landlock and process rules generated agents start from, with
+// no network access — to a private temporary file for the preflight sandbox,
+// and returns its path and a function that removes it. OpenShell 0.1 refuses
+// a sandbox with no policy, and the preflight runs no workload that needs
+// more than this.
+func writePreflightPolicy() (path string, remove func(), err error) {
+	dir, err := os.MkdirTemp("", "fullsend-preflight-policy-")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("creating preflight policy directory: %w", err)
+	}
+	remove = func() { _ = os.RemoveAll(dir) }
+	path = filepath.Join(dir, "base.yaml")
+	if err := os.WriteFile(path, agentnew.BasePolicy(), 0o600); err != nil {
+		remove()
+		return "", func() {}, fmt.Errorf("writing preflight policy: %w", err)
+	}
+	return path, remove, nil
+}
+
+// warmPrepareImage records on img how the image reaches the gateway's image
+// store. The gateway pulls a public image into its own store when the
+// preflight sandbox starts, so that image is left to the preflight: a local
+// pull would fill only this host's store, which is the gateway's only when
+// the gateway is local. A pull here is worth doing for one case — a private
+// image the gateway cannot authenticate for. That is the local Podman store,
+// which OpenShell's Podman driver pulls into, with the credential
+// fullsend run uses. A remote gateway's store is out of reach from this host,
+// so a private image cannot be warmed there: it is reported and left to the
+// preflight, which pulls anonymously.
+//
+// A failed credentialed pull falls back to the gateway's own pull, as
+// fullsend run does, so a public image still works; only a full disk, which
+// the gateway's pull would hit too, fails here.
 func warmPrepareImage(ctx context.Context, img *prepareImage, remote bool, printer *ui.Printer) error {
-	switch {
-	case img.Ref == "":
+	if img.Ref == "" {
 		img.Status = prepareImageSkipped
 		img.Detail = "no image configured; the gateway uses its default sandbox image"
 		return nil
+	}
+	cred, hasCred := sandboxImageCredential(img.Ref)
+	switch {
+	case !hasCred:
+		img.Status = prepareImageSkipped
+		img.Detail = "no registry credential applies, so nothing was pulled locally; the gateway pulls the image into its own image store"
+		printer.StepInfo(img.Detail)
+		return nil
 	case remote:
 		img.Status = prepareImageSkipped
-		img.Detail = "OPENSHELL_GATEWAY_ENDPOINT names a gateway whose image store is not on this host, so it was not pulled locally"
-		printer.StepWarn("Not pulling " + img.Ref + ": " + img.Detail + "; the sandbox preflight pulls it through the gateway, anonymously")
+		img.Detail = "the registry credential from " + cred.source + " cannot be used with the remote gateway named by OPENSHELL_GATEWAY_ENDPOINT, whose image store is not on this host; the gateway pulls the image anonymously, which works only for a public image"
+		printer.StepWarn(img.Detail)
 		return nil
 	}
 	if _, err := imagePullLookPathFn("podman"); err != nil {
 		img.Status = prepareImageSkipped
-		img.Detail = "podman not found, so the gateway's image store could not be checked from this host"
-		printer.StepWarn("Not pulling " + img.Ref + ": " + img.Detail + "; the sandbox preflight pulls it through the gateway")
+		img.Detail = "podman not found, so the gateway's image store could not be checked or warmed from this host; the gateway pulls the image without registry credentials"
+		printer.StepWarn(img.Detail)
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, sandboxImagePullTimeout)
+	pullCtx, cancel := context.WithTimeout(ctx, sandboxImagePullTimeout)
 	defer cancel()
 
-	if localImageExists(ctx, img.Ref) {
+	if localImageExists(pullCtx, img.Ref) {
 		img.Status = prepareImageCached
 		printer.StepDone("Image already present: " + img.Ref)
 		return nil
 	}
 
-	var cred *registryCredential
-	how := "anonymously"
-	if c, ok := sandboxImageCredential(img.Ref); ok {
-		cred, how = &c, "with "+c.source
-	}
-	printer.StepStart("Pulling sandbox image " + how + ": " + img.Ref)
-	if err := pullLocalImage(ctx, img.Ref, cred); err != nil {
-		img.Status = prepareImageFailed
-		printer.StepFail("Failed to pull " + img.Ref)
+	printer.StepStart("Pulling sandbox image with " + cred.source + ": " + img.Ref)
+	if err := pullLocalImage(pullCtx, img.Ref, &cred); err != nil {
+		if cErr := prepareCanceled(ctx); cErr != nil {
+			printer.StepFail("Pull of " + img.Ref + " canceled")
+			return cErr
+		}
 		kind, hint := classifyPrepareFailure(err.Error(), prepareErrPull)
-		return &prepareError{kind: kind, hint: hint, err: err}
+		if kind == prepareErrDiskSpace {
+			img.Status = prepareImageFailed
+			printer.StepFail("Failed to pull " + img.Ref)
+			return &prepareError{kind: kind, hint: hint, err: err}
+		}
+		img.Status = prepareImageSkipped
+		img.Detail = err.Error() + "; the gateway pulls the image without registry credentials"
+		printer.StepWarn(img.Detail)
+		return nil
 	}
 	img.Status = prepareImagePulled
 	printer.StepDone("Pulled sandbox image " + img.Ref)
@@ -419,26 +532,59 @@ func warmPrepareImage(ctx context.Context, img *prepareImage, remote bool, print
 }
 
 // runPrepareSandboxPreflight creates a minimal sandbox from image — no
-// providers, no policy, no workload — waits for it to be ready, and deletes
-// it. One attempt: a preflight exists to fail fast. A failed creation is
-// deleted by CreateWithRetry.
-func runPrepareSandboxPreflight(pf *preparePreflight, image string, readyTimeout time.Duration, printer *ui.Printer) error {
+// providers, no workload, the restrictive policy at policyPath — waits for it
+// to be ready, and deletes it. One attempt: a preflight exists to fail fast.
+// Cancelling ctx stops the wait. A failed creation is deleted by
+// CreateWithRetryContext; a sandbox that cannot be deleted, either way, fails
+// the preflight and is named so it can be removed by hand.
+func runPrepareSandboxPreflight(ctx context.Context, pf *preparePreflight, image, policyPath string, readyTimeout time.Duration, printer *ui.Printer) error {
 	printer.StepStart("Creating preflight sandbox: " + pf.Sandbox)
 	start := time.Now()
-	if err := prepareCreateSandboxFn(pf.Sandbox, nil, image, "", 1, readyTimeout, false); err != nil {
+	if err := prepareCreateSandboxFn(ctx, pf.Sandbox, nil, image, policyPath, 1, readyTimeout, false); err != nil {
 		pf.Status = preparePreflightFailed
+		if errors.Is(err, sandbox.ErrCleanupFailed) {
+			pf.Cleanup = prepareCleanupFailed
+		}
+		if cErr := prepareCanceled(ctx); cErr != nil {
+			printer.StepFail("Preflight sandbox canceled")
+			var pe *prepareError
+			if errors.As(cErr, &pe) {
+				pe.err = fmt.Errorf("%w: %w", pe.err, err)
+				pe.hint = prepareCleanupHint(pf)
+			}
+			return cErr
+		}
 		printer.StepFail("Preflight sandbox could not be created")
 		kind, hint := classifyPrepareFailure(err.Error(), prepareErrPreflight)
+		if cleanup := prepareCleanupHint(pf); cleanup != "" {
+			if hint != "" {
+				hint += "; "
+			}
+			hint += cleanup
+		}
 		return &prepareError{kind: kind, hint: hint, err: fmt.Errorf("creating preflight sandbox: %w", err)}
 	}
 	pf.Status = preparePreflightPassed
 	printer.StepDone(fmt.Sprintf("Preflight sandbox ready (%.1fs)", time.Since(start).Seconds()))
+	// Deleted even when ctx was canceled meanwhile: the sandbox exists.
 	if err := deleteSandboxFn(pf.Sandbox); err != nil {
-		printer.StepWarn("Could not delete preflight sandbox " + pf.Sandbox + ": " + err.Error())
-	} else {
-		printer.StepDone("Deleted preflight sandbox")
+		pf.Cleanup = prepareCleanupFailed
+		printer.StepFail("Could not delete preflight sandbox " + pf.Sandbox)
+		return &prepareError{kind: prepareErrCleanup, hint: prepareCleanupHint(pf),
+			err: fmt.Errorf("deleting preflight sandbox %s: %w", pf.Sandbox, err)}
 	}
+	pf.Cleanup = prepareCleanupDeleted
+	printer.StepDone("Deleted preflight sandbox")
 	return nil
+}
+
+// prepareCleanupHint says how to remove a preflight sandbox that was not
+// deleted, or returns "" when it was.
+func prepareCleanupHint(pf *preparePreflight) string {
+	if pf.Cleanup != prepareCleanupFailed {
+		return ""
+	}
+	return "the preflight sandbox may still exist; delete it with 'openshell sandbox delete " + pf.Sandbox + "'"
 }
 
 // classifyPrepareFailure maps an image pull or sandbox creation error

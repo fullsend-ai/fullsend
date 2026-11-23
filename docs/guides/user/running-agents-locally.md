@@ -502,8 +502,8 @@ Status comment behavior is configured via `status_notifications` in
 
 When you start many runs of one agent at once, for example from an evaluation
 harness, run [`fullsend prepare`](../../cli/prepare.md) first. It resolves the
-agent's sandbox image as `fullsend run` does and pulls it once. Then it starts
-and deletes a test sandbox. It runs no agent and no inference. If the
+agent's sandbox image as `fullsend run` does. Then it starts and deletes a test
+sandbox, which makes the gateway pull the image once. It runs no agent and no inference. If the
 environment cannot start a sandbox, for example because the disk is full or
 the registry refuses the pull, it fails once and names the cause:
 

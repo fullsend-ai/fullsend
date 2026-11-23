@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,7 +15,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/agentnew"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -28,12 +31,18 @@ type fakePrepareSandbox struct {
 	createErr  error
 	deleteErr  error
 
-	created  []string // sandbox names
-	images   []string // image per create
-	policies []string
-	attempts []int
-	timeouts []time.Duration
-	deleted  []string
+	// onCreate runs inside the fake create, with the create's context.
+	onCreate func(ctx context.Context)
+
+	created    []string // sandbox names
+	images     []string // image per create
+	policies   []string // policy path per create
+	policyBody []string // policy file content at create time
+	attempts   []int
+	timeouts   []time.Duration
+	deleted    []string
+	// runner secrets variables visible to the create, as "NAME=value".
+	createEnv []string
 }
 
 // stubPrepareSandbox replaces fullsend prepare's sandbox operations with a
@@ -49,12 +58,23 @@ func stubPrepareSandbox(t *testing.T) *fakePrepareSandbox {
 	origEnsure, origGateway, origCreate, origDelete := prepareEnsureOpenshellFn, prepareCheckGatewayFn, prepareCreateSandboxFn, deleteSandboxFn
 	prepareEnsureOpenshellFn = func() error { return f.ensureErr }
 	prepareCheckGatewayFn = func() error { return f.gatewayErr }
-	prepareCreateSandboxFn = func(name string, providers []string, image, policy string, maxAttempts int, ready time.Duration, keep bool) error {
+	prepareCreateSandboxFn = func(ctx context.Context, name string, providers []string, image, policy string, maxAttempts int, ready time.Duration, keep bool) error {
 		assert.Empty(t, providers, "the preflight sandbox has no providers")
 		assert.False(t, keep, "the preflight sandbox is never kept")
 		f.created = append(f.created, name)
 		f.images = append(f.images, image)
 		f.policies = append(f.policies, policy)
+		body, readErr := os.ReadFile(policy)
+		assert.NoError(t, readErr, "the preflight policy file exists while the sandbox is created")
+		f.policyBody = append(f.policyBody, string(body))
+		for _, name := range []string{runnerSecretsFileEnv, runnerSecretsEnv} {
+			if v, ok := os.LookupEnv(name); ok {
+				f.createEnv = append(f.createEnv, name+"="+v)
+			}
+		}
+		if f.onCreate != nil {
+			f.onCreate(ctx)
+		}
 		f.attempts = append(f.attempts, maxAttempts)
 		f.timeouts = append(f.timeouts, ready)
 		return f.createErr
@@ -93,7 +113,6 @@ func prepareOpts(dir string) prepareOptions {
 		agentName:   "code",
 		fullsendDir: dir,
 		jsonOut:     true,
-		rFlags:      resolveFlags{maxDepth: 10, maxResources: 50},
 	}
 }
 
@@ -111,7 +130,7 @@ func TestPrepare_CachedImageSkipsPullButRunsPreflight(t *testing.T) {
 	fake, _, _ := setupImagePull(t)
 	fake.respond("image", "", nil) // already present
 	sb := stubPrepareSandbox(t)
-	dir := writePrepareFixture(t, "image: "+prepareTestImage)
+	dir := writePrepareFixture(t, "image: "+privateImage)
 
 	res, _, err := runPrepareJSON(t, prepareOpts(dir))
 
@@ -122,32 +141,53 @@ func TestPrepare_CachedImageSkipsPullButRunsPreflight(t *testing.T) {
 	assert.Equal(t, prepareGatewayLocal, res.Gateway)
 	assert.Equal(t, filepath.Join(dir, "harness", "code.yaml"), res.Harness)
 	require.Len(t, res.Images, 1)
-	assert.Equal(t, prepareImage{Role: "sandbox", Ref: prepareTestImage, Source: prepareSourceHarness, Status: prepareImageCached}, res.Images[0])
+	assert.Equal(t, prepareImage{Role: "sandbox", Ref: privateImage, Source: prepareSourceHarness, Status: prepareImageCached}, res.Images[0])
 	assert.Equal(t, []string{"image"}, fake.subcommands(), "a cached image is not pulled")
 
 	require.Len(t, sb.created, 1, "the preflight still runs for a cached image")
-	assert.Equal(t, []string{prepareTestImage}, sb.images)
-	assert.Equal(t, []string{""}, sb.policies)
+	assert.Equal(t, []string{privateImage}, sb.images)
+	require.Len(t, sb.policies, 1)
+	assert.NotEmpty(t, sb.policies[0], "the preflight sandbox is created with a policy")
 	assert.Equal(t, []int{1}, sb.attempts)
 	assert.Equal(t, []time.Duration{42 * time.Second}, sb.timeouts, "the harness sandbox timeout applies")
 	assert.Equal(t, sb.created, sb.deleted, "the preflight sandbox is deleted")
 	require.NotNil(t, res.Preflight)
-	assert.Equal(t, preparePreflight{Sandbox: sb.created[0], Status: preparePreflightPassed}, *res.Preflight)
+	assert.Equal(t, preparePreflight{Sandbox: sb.created[0], Status: preparePreflightPassed, Cleanup: prepareCleanupDeleted}, *res.Preflight)
 	assert.Nil(t, res.Error)
 }
 
-func TestPrepare_PullsMissingImageAnonymously(t *testing.T) {
+// The preflight sandbox uses the restrictive base policy: filesystem and
+// process rules, and no network section. The file is gone afterwards.
+func TestPrepare_PreflightUsesRestrictivePolicy(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+
+	_, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
+
+	require.NoError(t, err)
+	require.Len(t, sb.policyBody, 1)
+	assert.Equal(t, string(agentnew.BasePolicy()), sb.policyBody[0])
+	assert.Contains(t, sb.policyBody[0], "filesystem_policy")
+	assert.NotContains(t, sb.policyBody[0], "network_policies")
+	_, statErr := os.Stat(sb.policies[0])
+	assert.True(t, os.IsNotExist(statErr), "the policy file is removed after the preflight")
+}
+
+// A public image is pulled by the gateway into its own store during the
+// preflight, so prepare pulls nothing locally.
+func TestPrepare_PublicImageIsLeftToGateway(t *testing.T) {
 	fake, _, _ := setupImagePull(t)
-	stubPrepareSandbox(t)
+	sb := stubPrepareSandbox(t)
 	dir := writePrepareFixture(t, "image: "+prepareTestImage)
 
 	res, progress, err := runPrepareJSON(t, prepareOpts(dir))
 
 	require.NoError(t, err)
-	assert.Equal(t, prepareImagePulled, res.Images[0].Status)
-	require.Equal(t, []string{"image", "pull"}, fake.subcommands())
-	assert.Equal(t, []string{"pull", "--quiet", prepareTestImage}, fake.calls[1])
-	assert.Contains(t, progress, "anonymously")
+	assert.Empty(t, fake.calls, "no local pull for an image the gateway can pull itself")
+	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Contains(t, res.Images[0].Detail, "no registry credential applies")
+	assert.Contains(t, progress, "gateway pulls the image into its own image store")
+	assert.Equal(t, []string{prepareTestImage}, sb.images)
 }
 
 func TestPrepare_PullsGHCRImageWithWorkflowToken(t *testing.T) {
@@ -225,16 +265,48 @@ func TestPrepare_RemoteGatewayIsNotWarmedLocally(t *testing.T) {
 	sb := stubPrepareSandbox(t)
 	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
 
-	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
 
 	require.NoError(t, err)
 	assert.Equal(t, prepareGatewayRemote, res.Gateway)
 	assert.Empty(t, fake.calls, "the local Podman store is not the remote gateway's")
 	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
-	assert.Contains(t, res.Images[0].Detail, "OPENSHELL_GATEWAY_ENDPOINT")
 	assert.Contains(t, res.Images[0].Detail, "the sandbox preflight pulled it through the gateway")
-	assert.Contains(t, progress, "Not pulling "+prepareTestImage)
-	assert.Equal(t, []string{prepareTestImage}, sb.images)
+	assert.Equal(t, []string{prepareTestImage}, sb.images, "a public image still works on a remote gateway")
+}
+
+// A credential cannot be delivered to a remote gateway: prepare says so
+// instead of pulling into the wrong store, and the public-image fallback
+// (the gateway's anonymous pull) is kept.
+func TestPrepare_RemoteGatewayCannotAuthenticatePrivateImage(t *testing.T) {
+	fake, _, _ := setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
+
+	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.NoError(t, err, "a public image under a credential-eligible name still works")
+	assert.Empty(t, fake.calls, "nothing is pulled into the local store of a remote gateway")
+	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Contains(t, res.Images[0].Detail, "cannot be used with the remote gateway")
+	assert.Contains(t, progress, "cannot be used with the remote gateway")
+	assert.NotContains(t, progress, testWorkflowToken)
+	assert.Equal(t, []string{privateImage}, sb.images)
+}
+
+func TestPrepare_RemoteGatewayPrivateImageFailureNamesUnsupportedAuth(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	sb.createErr = errors.New("sandbox create failed: unauthorized: authentication required")
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
+
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.Error(t, err)
+	require.NotNil(t, res.Error)
+	assert.Equal(t, prepareErrAuth, res.Error.Kind)
+	assert.Equal(t, prepareRemoteAuthHint, res.Error.Hint)
+	assert.Equal(t, prepareImageFailed, res.Images[0].Status)
 }
 
 func TestPrepare_RemoteGatewayPreflightPullFailure(t *testing.T) {
@@ -261,7 +333,7 @@ func TestPrepare_PodmanMissingLeavesWarmingToPreflight(t *testing.T) {
 	imagePullLookPathFn = func(string) (string, error) { return "", errors.New("not found") }
 	sb := stubPrepareSandbox(t)
 
-	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
 
 	require.NoError(t, err)
 	assert.Empty(t, fake.calls)
@@ -275,7 +347,7 @@ func TestPrepare_PullFailureDiskSpace(t *testing.T) {
 	fake.respond("pull", "Error: writing blob: storing blob to file: write /var/tmp/x: no space left on device", errors.New("exit status 125"))
 	sb := stubPrepareSandbox(t)
 
-	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no space left on device")
@@ -290,10 +362,30 @@ func TestPrepare_PullFailureDiskSpace(t *testing.T) {
 	assert.Empty(t, sb.created)
 }
 
-func TestPrepare_PullFailureRedactsCredential(t *testing.T) {
+// A failed credentialed pull falls back to the gateway's own pull, as
+// fullsend run does, so a public image keeps working. The credential is
+// redacted from every message.
+func TestPrepare_PullFailureFallsBackToGatewayPull(t *testing.T) {
 	fake, _, _ := setupImagePull(t)
 	fake.respond("pull", "Error: unauthorized "+testWorkflowToken, errors.New("exit status 125"))
-	stubPrepareSandbox(t)
+	sb := stubPrepareSandbox(t)
+
+	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.NoError(t, err)
+	assert.True(t, res.OK)
+	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Contains(t, res.Images[0].Detail, "the gateway pulls the image without registry credentials")
+	assert.NotContains(t, res.Images[0].Detail, testWorkflowToken)
+	assert.NotContains(t, progress, testWorkflowToken)
+	assert.Len(t, sb.created, 1, "the preflight still runs, pulling through the gateway")
+}
+
+func TestPrepare_PullFailureThenPreflightFailureRedactsCredential(t *testing.T) {
+	fake, _, _ := setupImagePull(t)
+	fake.respond("pull", "Error: unauthorized "+testWorkflowToken, errors.New("exit status 125"))
+	sb := stubPrepareSandbox(t)
+	sb.createErr = errors.New("unauthorized: authentication required")
 
 	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
 
@@ -302,7 +394,61 @@ func TestPrepare_PullFailureRedactsCredential(t *testing.T) {
 	assert.NotContains(t, progress, testWorkflowToken)
 	require.NotNil(t, res.Error)
 	assert.Equal(t, prepareErrAuth, res.Error.Kind)
-	assert.NotContains(t, res.Error.Message, testWorkflowToken)
+	assert.Equal(t, prepareImageFailed, res.Images[0].Status)
+	assert.NotContains(t, res.Images[0].Detail, testWorkflowToken)
+}
+
+// prepare must not consume the runner secrets bundle, but no child process
+// may see it: not podman, not the sandbox tooling.
+func TestPrepare_RunnerSecretsBundleHiddenFromChildrenAndRestored(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	bundleFile := filepath.Join(t.TempDir(), "bundle.json")
+	require.NoError(t, os.WriteFile(bundleFile, []byte(`{"TOKEN_A":"secret-value-aaaaaaaa"}`), 0o600))
+	t.Setenv(runnerSecretsFileEnv, bundleFile)
+	t.Setenv(runnerSecretsEnv, `{"TOKEN_B":"secret-value-bbbbbbbb"}`)
+
+	var podmanEnv []string
+	podmanCalls := 0
+	podmanRun := runPodmanFn
+	runPodmanFn = func(ctx context.Context, args ...string) ([]byte, error) {
+		podmanCalls++
+		for _, name := range []string{runnerSecretsFileEnv, runnerSecretsEnv} {
+			if _, ok := os.LookupEnv(name); ok {
+				podmanEnv = append(podmanEnv, name)
+			}
+		}
+		return podmanRun(ctx, args...)
+	}
+
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.NoError(t, err)
+	assert.True(t, res.OK)
+	assert.Equal(t, 2, podmanCalls, "podman ran to look up and pull the image")
+	assert.Empty(t, podmanEnv, "podman must not inherit the runner secrets bundle")
+	assert.Empty(t, sb.createEnv, "the sandbox tooling must not inherit the runner secrets bundle")
+	assert.Equal(t, bundleFile, os.Getenv(runnerSecretsFileEnv), "the bundle file variable is restored")
+	assert.Equal(t, `{"TOKEN_B":"secret-value-bbbbbbbb"}`, os.Getenv(runnerSecretsEnv), "the inline bundle is restored")
+	_, statErr := os.Stat(bundleFile)
+	assert.NoError(t, statErr, "the bundle file is not deleted")
+}
+
+func TestHideRunnerSecretsEnv_NothingSetRestoresNothing(t *testing.T) {
+	_, hadFile := os.LookupEnv(runnerSecretsFileEnv)
+	_, hadInline := os.LookupEnv(runnerSecretsEnv)
+	if hadFile || hadInline {
+		t.Skip("runner secrets variables set in the test environment")
+	}
+
+	restore, err := hideRunnerSecretsEnv()
+	require.NoError(t, err)
+	restore()
+
+	_, ok := os.LookupEnv(runnerSecretsFileEnv)
+	assert.False(t, ok)
+	_, ok = os.LookupEnv(runnerSecretsEnv)
+	assert.False(t, ok)
 }
 
 func TestPrepare_PreflightFailureUnclassified(t *testing.T) {
@@ -311,7 +457,7 @@ func TestPrepare_PreflightFailureUnclassified(t *testing.T) {
 	sb := stubPrepareSandbox(t)
 	sb.createErr = errors.New("sandbox \"x\" not ready after 42s")
 
-	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating preflight sandbox")
@@ -321,7 +467,9 @@ func TestPrepare_PreflightFailureUnclassified(t *testing.T) {
 	assert.Equal(t, prepareImageCached, res.Images[0].Status, "a cached image is not blamed for the preflight")
 }
 
-func TestPrepare_PreflightDeleteFailureWarns(t *testing.T) {
+// A preflight sandbox that cannot be deleted is reported, not ignored: a
+// leaked sandbox holds the disk the preflight exists to protect.
+func TestPrepare_PreflightDeleteFailureFails(t *testing.T) {
 	fake, _, _ := setupImagePull(t)
 	fake.respond("image", "", nil)
 	sb := stubPrepareSandbox(t)
@@ -329,9 +477,87 @@ func TestPrepare_PreflightDeleteFailureWarns(t *testing.T) {
 
 	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
 
-	require.NoError(t, err)
-	assert.True(t, res.OK)
+	require.Error(t, err)
+	assert.False(t, res.OK)
+	require.NotNil(t, res.Error)
+	assert.Equal(t, prepareErrCleanup, res.Error.Kind)
+	assert.Contains(t, res.Error.Hint, "openshell sandbox delete "+sb.created[0])
+	require.NotNil(t, res.Preflight)
+	assert.Equal(t, preparePreflightPassed, res.Preflight.Status, "the sandbox itself started")
+	assert.Equal(t, prepareCleanupFailed, res.Preflight.Cleanup)
 	assert.Contains(t, progress, "Could not delete preflight sandbox")
+}
+
+// A failed creation whose cleanup also failed names the sandbox to delete.
+func TestPrepare_PreflightCreateCleanupFailureIsReported(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	sb.createErr = fmt.Errorf("sandbox not ready (%w for sandbox x: delete refused)", sandbox.ErrCleanupFailed)
+
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
+
+	require.Error(t, err)
+	require.NotNil(t, res.Error)
+	assert.Equal(t, prepareErrPreflight, res.Error.Kind)
+	assert.Contains(t, res.Error.Hint, "openshell sandbox delete "+sb.created[0])
+	assert.Equal(t, prepareCleanupFailed, res.Preflight.Cleanup)
+}
+
+func TestPrepare_CanceledBeforePreflightCreatesNothing(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var progress, out bytes.Buffer
+
+	err := runPrepare(ctx, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)), ui.New(&progress), &out)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	var res prepareResult
+	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+	require.NotNil(t, res.Error)
+	assert.Equal(t, prepareErrCanceled, res.Error.Kind)
+	assert.Empty(t, sb.created, "no sandbox is created after cancellation")
+}
+
+func TestPrepare_CanceledDuringPreflightReportsCancellation(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	sb.onCreate = func(context.Context) { cancel() }
+	sb.createErr = fmt.Errorf("sandbox creation canceled: %w", context.Canceled)
+	var progress, out bytes.Buffer
+
+	err := runPrepare(ctx, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)), ui.New(&progress), &out)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	var res prepareResult
+	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+	require.NotNil(t, res.Error)
+	assert.Equal(t, prepareErrCanceled, res.Error.Kind)
+	assert.Equal(t, preparePreflightFailed, res.Preflight.Status)
+}
+
+func TestPrepare_CanceledDuringPullIsNotAFallback(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	runPodmanFn = func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "pull" {
+			cancel()
+			return nil, context.Canceled
+		}
+		return nil, errors.New("exit status 1") // not cached
+	}
+	var progress, out bytes.Buffer
+
+	err := runPrepare(ctx, prepareOpts(writePrepareFixture(t, "image: "+privateImage)), ui.New(&progress), &out)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, sb.created, "a canceled pull does not fall back to a gateway pull")
 }
 
 func TestPrepare_GatewayAndOpenshellFailures(t *testing.T) {
@@ -408,18 +634,6 @@ func TestPrepare_HarnessFailures(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "loading env file")
 	})
-	t.Run("bad resolve flags", func(t *testing.T) {
-		setupImagePull(t)
-		stubPrepareSandbox(t)
-		opts := prepareOpts(writePrepareFixture(t, ""))
-		opts.rFlags.maxDepth = -1
-		_, _, err := runPrepareJSON(t, opts)
-		require.ErrorContains(t, err, "--max-depth")
-		opts.rFlags.maxDepth = 10
-		opts.rFlags.maxResources = 0
-		_, _, err = runPrepareJSON(t, opts)
-		require.ErrorContains(t, err, "--max-resources")
-	})
 }
 
 // prepare composes through composeRunHarness, the function runAgent uses,
@@ -484,8 +698,13 @@ func TestPrepareCmd_Registered(t *testing.T) {
 	cmd, _, err := newRootCmd().Find([]string{"prepare"})
 	require.NoError(t, err)
 	assert.Equal(t, "prepare", cmd.Name())
-	for _, flag := range []string{"fullsend-dir", "env-file", "forge", "event-file", "json", "offline", "max-depth", "max-resources"} {
+	for _, flag := range []string{"fullsend-dir", "env-file", "forge", "event-file", "json", "offline"} {
 		assert.NotNil(t, cmd.Flags().Lookup(flag), flag)
+	}
+	// Composing a harness never reads these resolve limits, so prepare must
+	// not offer flags that change nothing.
+	for _, flag := range []string{"max-depth", "max-resources"} {
+		assert.Nil(t, cmd.Flags().Lookup(flag), flag)
 	}
 }
 
