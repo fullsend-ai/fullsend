@@ -1,0 +1,84 @@
+# Environment configuration via safe-settings full-sync, scoped to this
+# repository only (config under .github/safe-settings/). Everything else --
+# rulesets, repository settings -- stays managed by the org repo's
+# safe-settings run. PRs run dry; merges to main and the daily schedule apply.
+name: safe-settings
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/safe-settings/**']
+  pull_request:
+    paths: ['.github/safe-settings/**']
+  schedule:
+    - cron: '0 8 * * *' # daily reconcile against drift; offset from the org run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SAFE_SETTINGS_VERSION: '3.0.0'
+  SAFE_SETTINGS_CODE_DIR: ${{ github.workspace }}/.safe-settings-code
+  # Points safe-settings at our deployment config so the sync is restricted
+  # to this repository (restrictedRepos.include).
+  DEPLOYMENT_CONFIG_FILE: ${{ github.workspace }}/.github/safe-settings/deployment-settings.yml
+
+jobs:
+  # Skipped on fork PRs: they cannot mint the App token.
+  safe-settings-dry-run:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: github-community-projects/safe-settings
+          ref: ${{ env.SAFE_SETTINGS_VERSION }}
+          path: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ${{ env.SAFE_SETTINGS_CODE_DIR }}/.nvmrc
+      - run: npm install
+        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+      - run: npm run full-sync
+        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+        env:
+          GH_ORG: fullsend-ai
+          APP_ID: ${{ vars.GOVERNANCE_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.GOVERNANCE_PRIVATE_KEY }}
+          ADMIN_REPO: fullsend
+          CONFIG_PATH: .github/safe-settings
+          FULL_SYNC_NOP: 'true'
+
+  apply:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: github-community-projects/safe-settings
+          ref: ${{ env.SAFE_SETTINGS_VERSION }}
+          path: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ${{ env.SAFE_SETTINGS_CODE_DIR }}/.nvmrc
+      - run: npm install
+        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+      - run: npm run full-sync
+        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+        env:
+          GH_ORG: fullsend-ai
+          APP_ID: ${{ vars.GOVERNANCE_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.GOVERNANCE_PRIVATE_KEY }}
+          ADMIN_REPO: fullsend
+          CONFIG_PATH: .github/safe-settings
