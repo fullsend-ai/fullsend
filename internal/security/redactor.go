@@ -270,7 +270,12 @@ func Mask(value string) string {
 		return "***"
 	}
 	prefix := value[:4]
-	if strings.Contains(prefix, "\\") {
+	// A prefix that carries an escape or a quote delimiter cannot be written
+	// back: in a JSON or YAML string it would escape or close the surrounding
+	// quoting and break the document (#5705). The quote case covers a YAML
+	// single-quoted value whose doubled quote ('') falls inside the prefix:
+	// keeping half of the pair leaves a lone quote that ends the string early.
+	if strings.ContainsAny(prefix, "\\'\"") {
 		return "***"
 	}
 	return prefix + "..."

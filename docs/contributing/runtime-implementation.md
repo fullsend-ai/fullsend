@@ -656,8 +656,16 @@ written back as structure. A value that neither carries a marker nor holds a run
 of that shape keeps its content: nothing distinguishes a quoted marker pair from
 a split block, so the choice is between masking free text and enum values, which
 loses the review, and keeping a fragment too short to be recognized as key
-material. A hex-only run is kept for the same reason the enum values are: a PEM
-body is base64, while a hex run is more likely a commit SHA or a finding id.
+material. Because one member holds only one line of a body, the values between
+the boundary members are also decided on their joined text: consecutive
+base64-only values are concatenated, and if the result looks like a body line —
+upper case, lower case and a base64-only character — every value in that run is
+masked. That catches a body split into short or digit-free chunks, while an
+object key, a value with punctuation or whitespace, a hex-only run or a lowercase
+word breaks the run. A hex-only run is kept for the same reason the enum values
+are: a PEM body is base64, while a hex run is more likely a commit SHA or a
+finding id. A single isolated fragment below the floor, with no neighbour to join
+it to, is still kept.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
 rewriting that framing, so only the records it covers are replaced. A
@@ -694,9 +702,11 @@ runner prints them in the step log and the exit status stays 0.
 A sanitized file that cannot be written, and a file that cannot be sanitized at
 all, do not stop the walk: every remaining file is still scanned and redacted,
 and the run fails closed afterwards with all failures joined. The file itself is
-replaced with a fail-closed marker so the unredacted bytes never reach the
-uploaded artifact. In `quiet` mode the affected paths are counted, not named
-(ADR 0163).
+replaced with a fail-closed marker so the unredacted bytes do not reach the
+uploaded artifact when the filesystem allows it; if the marker write and the
+fallback removal both fail, that failure is added to the joined error rather
+than left unreported, so the run says the unredacted file is still on disk. In
+`quiet` mode the affected paths are counted, not named (ADR 0163).
 
 ## Agent rule layering
 

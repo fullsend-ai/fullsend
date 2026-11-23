@@ -522,6 +522,18 @@ func TestSecretRedactor(t *testing.T) {
 		assert.NotContains(t, result.Sanitized, "remaining_secret")
 	})
 
+	t.Run("json_field keeps YAML single-quoted value valid when doubled quote falls in the mask prefix", func(t *testing.T) {
+		// The mask prefix would end on half of the doubled '' pair, leaving a
+		// lone quote that closes the YAML string early. The value must fall back
+		// to the fixed placeholder instead (#5705).
+		result := r.Scan("'api_token': 'abc''defghijk'")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "defghijk")
+		assert.Equal(t, "'api_token': '***'", result.Sanitized,
+			"a prefix carrying a quote must not be written back")
+	})
+
 	t.Run("json_field handles backslash followed by physical newline", func(t *testing.T) {
 		result := r.Scan("'password': 'abcdefgh\\\nijklmnop'")
 		assert.False(t, result.Safe)

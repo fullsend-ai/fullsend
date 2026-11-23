@@ -207,11 +207,17 @@ var privateKeyMarkerRe = regexp.MustCompile(`-----BEGIN|-----END|PRIVATE KEY----
 // word ("misconfiguration") and a file path ("internal/security/jsonsanitize")
 // both reach 16 characters using only base64 characters, and a path adds a slash
 // that reads as base64 padding or division. pemBodyRun therefore also requires
-// the case and digit mix a base64 body carries and a word or a path does not. A
-// fragment shorter than the floor cannot be recognized as key material, which is
-// the same limit that makes a quoted marker pair indistinguishable from a split
-// block.
+// the case and digit mix a base64 body carries and a word or a path does not.
+// A single member can hold only one line of the body, so a body split into short
+// or digit-free chunks is decided by the joined text of consecutive members
+// instead (maskSpanBody).
 var privateKeyMaterialRe = regexp.MustCompile(`[A-Za-z0-9+/]{16,}=*`)
+
+// pemChunkCandidateRe matches a string value that could be one segment of a PEM
+// body: every byte is in the base64 alphabet. A value with whitespace, a hyphen,
+// a period or any other punctuation is free text or a structural token, so it
+// breaks a run of segments rather than joining one.
+var pemChunkCandidateRe = regexp.MustCompile(`^[A-Za-z0-9+/]+=*$`)
 
 // jsonProvenance accumulates an order-preserving view of the decoded strings
 // in a document so a private-key block that spans members can be detected after
@@ -269,14 +275,15 @@ type privateKeySpans struct {
 // another matches too — so only the members the match carries block content into
 // are touched. The strings the match starts and ends in carry marker text and are
 // masked unconditionally; a string value in between is masked when it holds a
-// block marker or base64 body material (valueCarriesKeyMaterial). Those are the
-// two shapes key material takes in a member, while the free text and enum values
-// between a quoted marker pair stay readable, so a review result keeps its shape
-// instead of failing schema validation and being dropped (#5705). An object key
-// keeps its name unless the match starts or ends in it, or the name itself carries
-// a block marker: key names are the document's structure, and masking them would
-// drop a required field such as a finding's severity, category or file and make
-// the document fail schema validation.
+// block marker or base64 body material (valueCarriesKeyMaterial) or when the
+// joined text of its neighbours looks like a PEM body line (maskSpanBody). Those
+// are the two shapes key material takes in a member, while the free text and enum
+// values between a quoted marker pair stay readable, so a review result keeps its
+// shape instead of failing schema validation and being dropped (#5705). An object
+// key keeps its name unless the match starts or ends in it, or the name itself
+// carries a block marker: key names are the document's structure, and masking them
+// would drop a required field such as a finding's severity, category or file and
+// make the document fail schema validation.
 func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 	spans := privateKeySpans{covered: map[int]bool{}, maskedKeys: map[int]bool{}}
 	for _, match := range privateKeyRe.FindAllIndex(v.decoded.Bytes(), -1) {
@@ -295,6 +302,10 @@ func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 			continue
 		}
 		spans.localized++
+		// The middle members are decided together: a body split into chunks
+		// that are each shorter than the material floor is only recognizable
+		// once they are joined.
+		v.maskSpanBody(hit, &spans)
 		for pos, i := range hit {
 			// The match begins with a BEGIN marker and ends with an END marker, so
 			// the leaves it starts and ends in always carry marker text. They are
@@ -313,6 +324,46 @@ func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 		}
 	}
 	return spans
+}
+
+// maskSpanBody covers the string values between a framing-spanning block's
+// boundary members when their joined text looks like PEM body material. A member
+// holds one line of the body, and an agent can split the body so that every line
+// is short or digit-free; a per-member test then accepts none of them and writes
+// the body back after the markers are masked, where the written-bytes rescan can
+// no longer see the block (#5705). Consecutive candidate segments are therefore
+// decided together. An object key between two values breaks the run, because a
+// key is structure rather than body, and a value with punctuation or whitespace
+// breaks it too: those are structural tokens and free text, not body lines.
+func (v *jsonProvenance) maskSpanBody(hit []int, spans *privateKeySpans) {
+	var group []int
+	flush := func() {
+		if len(group) == 0 {
+			return
+		}
+		joined := make([]byte, 0, len(group)*16)
+		for _, i := range group {
+			joined = append(joined, v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end]...)
+		}
+		if pemBodyJoined(joined) {
+			for _, i := range group {
+				spans.covered[i] = true
+			}
+		}
+		group = group[:0]
+	}
+	for pos, i := range hit {
+		if pos == 0 || pos == len(hit)-1 || v.keys[i] {
+			flush()
+			continue
+		}
+		if !pemChunkCandidateRe.Match(v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end]) {
+			flush()
+			continue
+		}
+		group = append(group, i)
+	}
+	flush()
 }
 
 // valueCarriesKeyMaterial reports whether the string value at index i has to be
@@ -363,6 +414,34 @@ func pemBodyRun(run []byte) bool {
 		}
 	}
 	return upper && lower && digit && base64Only
+}
+
+// pemBodyJoined reports whether the concatenated text of consecutive member
+// segments looks like PEM body material. It is the check maskSpanBody applies to
+// a body split across members: a chunk on its own may be shorter than the
+// material floor or carry no digit, but the joined body reconstructs both. It
+// does not require a digit, because a single chunk can legitimately be digit-free
+// and a body split so that every digit lands in another chunk would otherwise be
+// written back. It still requires upper case, lower case and a base64-only
+// character, which a hex SHA, a lowercase word, a path and free text do not have.
+func pemBodyJoined(joined []byte) bool {
+	if len(joined) < 16 {
+		return false
+	}
+	var upper, lower, base64Only bool
+	for _, b := range joined {
+		switch {
+		case b >= 'a' && b <= 'z':
+			lower = true
+			base64Only = base64Only || b > 'f'
+		case b >= 'A' && b <= 'Z':
+			upper = true
+			base64Only = base64Only || b > 'F'
+		case b == '+' || b == '/' || b == '=':
+			base64Only = true
+		}
+	}
+	return upper && lower && base64Only
 }
 
 // leafContaining returns the index of the leaf that fully contains [start, end),

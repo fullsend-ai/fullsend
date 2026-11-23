@@ -7146,8 +7146,12 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 			}
 			// A record that was replaced with a marker is not a whole-file
 			// marker, so this is the only place its loss reaches an operator.
-			alertOnRecordRemoval(printer, out)
+			// The alert is gated on findings so a clean file that already
+			// contains a marker-equal line (a re-scanned artifact, a fixture,
+			// or a line the agent wrote on purpose) does not raise a false
+			// error when this pass removed nothing.
 			if len(jsonLineFindings) > 0 {
+				alertOnRecordRemoval(printer, out)
 				findingCount += len(jsonLineFindings)
 				for _, f := range jsonLineFindings {
 					if !quiet {
@@ -7285,32 +7289,41 @@ func alertOnRecordRemoval(printer *ui.Printer, sanitized []byte) {
 // (ADR 0163); non-quiet callers name it.
 func writeFailure(quiet bool, path, relPath string, writeErr error, unwritable *int) error {
 	*unwritable++
-	quarantineOutput(path)
+	quarantineErr := quarantineOutput(path)
 	if quiet {
-		return fmt.Errorf("could not write sanitized output file")
+		return errors.Join(errors.New("could not write sanitized output file"), quarantineErr)
 	}
-	return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
+	return errors.Join(fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr), quarantineErr)
 }
 
 // sanitizeFailure records a sanitization error and contains the file it could
 // not sanitize, so the walk continues to the remaining files instead of leaving
-// them unredacted. The unredacted bytes must never reach the uploaded artifact,
-// so the file is replaced with the marker as on a write failure (#5705).
+// them unredacted. The unredacted bytes are replaced with the marker when the
+// filesystem allows it, as on a write failure (#5705).
 func sanitizeFailure(quiet bool, path, relPath string, scanErr error, unsanitizable *int) error {
 	*unsanitizable++
-	quarantineOutput(path)
+	quarantineErr := quarantineOutput(path)
 	if quiet {
-		return fmt.Errorf("could not sanitize output file")
+		return errors.Join(errors.New("could not sanitize output file"), quarantineErr)
 	}
-	return fmt.Errorf("could not sanitize %s: %w", relPath, scanErr)
+	return errors.Join(fmt.Errorf("could not sanitize %s: %w", relPath, scanErr), quarantineErr)
 }
 
 // quarantineOutput replaces path with the fail-closed marker, removing it if even
-// that write fails, so unredacted bytes never reach the uploaded artifact.
-func quarantineOutput(path string) {
-	if err := os.WriteFile(path, []byte(unwritableOutputMarker), 0o644); err != nil {
-		_ = os.Remove(path)
+// that write fails, so unredacted bytes do not reach the uploaded artifact. When
+// neither works — a read-only directory is the common case — the original file is
+// still on disk, and the returned error says so instead of leaving the failed
+// quarantine unreported while the run's failure looks like a plain write error.
+func quarantineOutput(path string) error {
+	if err := os.WriteFile(path, []byte(unwritableOutputMarker), 0o644); err == nil {
+		return nil
 	}
+	if err := os.Remove(path); err != nil {
+		// No path reaches the message: the file name can be agent-chosen
+		// (ADR 0163), and the caller already names it when it is safe to.
+		return errors.New("unredacted output file could not be replaced or removed")
+	}
+	return nil
 }
 
 // unwritableOutputMarker replaces a file whose sanitized content could not be

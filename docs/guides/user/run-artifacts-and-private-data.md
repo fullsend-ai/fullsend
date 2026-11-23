@@ -348,7 +348,9 @@ literals; it does not remove personal data, customer names or other private
 business text. A secret that cannot be localized replaces the whole JSON
 document or JSONL record with a JSON error marker, and a file whose redacted
 content cannot be written or computed is replaced by such a marker and fails
-the run. A private-key block that spans JSON members is handled in place
+the run. If the marker cannot be written and the file cannot be removed either,
+the run's error says the unredacted file is still on disk. A private-key block
+that spans JSON members is handled in place
 instead: the keys keep their names, and each string value that carries block
 text or base64 key material becomes `[REDACTED PRIVATE KEY]`. When a
 replacement happens in a run that still exits 0, the job log says so. On GitHub

@@ -261,6 +261,43 @@ func TestSanitizeJSONDocument_MarkerSplitAcrossMembersMasked(t *testing.T) {
 	assert.NotContains(t, string(out), "PRIVATE KEY-----")
 }
 
+// TestSanitizeJSONDocument_ChunkedBodyBetweenMarkersMasked pins the regression a
+// reviewer found: a body split across members into chunks that are each short,
+// digit-free, or hex-looking was written back after the boundary markers were
+// masked, where the written-bytes rescan can no longer see the block. The joined
+// text of consecutive values reconstructs the body, so every chunk is masked
+// (#5705).
+func TestSanitizeJSONDocument_ChunkedBodyBetweenMarkersMasked(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	cases := map[string][]string{
+		"short chunks":         {"MIIEowIB", "AAKCAQEA", "x9Kq2Lm"},
+		"digit-free chunk":     {"MIIEowIBAAKCAQEA"},
+		"hex chunk in the run": {"MIIEowIBAAKCAQEA", "abcdef0123456789", "short+chunk"},
+	}
+	for name, chunks := range cases {
+		t.Run(name, func(t *testing.T) {
+			quoted := make([]string, 0, len(chunks)+2)
+			quoted = append(quoted, `"`+begin+`"`)
+			for _, chunk := range chunks {
+				quoted = append(quoted, `"`+chunk+`"`)
+			}
+			quoted = append(quoted, `"`+end+`"`)
+			doc := []byte(`{"lines":[` + strings.Join(quoted, ",") + `]}`)
+
+			out, findings, err := SanitizeJSONDocument(doc, p)
+			require.NoError(t, err)
+			require.NotEmpty(t, findings)
+			assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+			assert.NotContains(t, string(out), "PRIVATE KEY-----")
+			for _, chunk := range chunks {
+				assert.NotContains(t, string(out), chunk, "a body chunk must not survive")
+			}
+		})
+	}
+}
+
 // TestSanitizeJSONDocument_HexValuesInSpanKeepTheirContent pins that a hex run
 // inside a quoted marker span is not treated as key material. A commit SHA or a
 // finding id is schema-constrained (head_sha, id), and a PEM body is base64, so a

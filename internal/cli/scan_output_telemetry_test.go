@@ -421,6 +421,29 @@ func TestScanOutputFiles_ReturnsErrorWhenSanitizedWriteFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "could not write sanitized secret.txt")
 }
 
+// TestScanOutputFiles_ReportsFailedQuarantine pins that a quarantine that cannot
+// replace or remove the file is reported: the unredacted bytes are still on disk
+// and the run's failure must say so, instead of looking like a plain write error
+// (#5705).
+func TestScanOutputFiles_ReportsFailedQuarantine(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission checks do not apply to root")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	require.NoError(t, os.WriteFile(path, []byte("Token: ghp_FAKEtesttoken000000000000000000000000"), 0o444))
+	require.NoError(t, os.Chmod(dir, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	err := scanOutputFilesWithWriter(dir, "trace-id", "", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
+		return os.ErrPermission
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not write sanitized secret.txt")
+	assert.Contains(t, err.Error(), "unredacted output file could not be replaced or removed",
+		"a failed quarantine must reach the joined error")
+}
+
 // TestScanOutputFiles_SanitizerErrorContainsFileAndContinues pins that a
 // sanitizer error is contained the way a write failure is: the file it could not
 // sanitize is replaced with the marker, the walk continues to the remaining
@@ -502,6 +525,28 @@ func TestScanOutputFiles_EmitsAnnotationForJSONLRecordRemoval(t *testing.T) {
 			assert.Contains(t, output.String(), tc.want)
 		})
 	}
+}
+
+// TestScanOutputFiles_NoAnnotationForPreexistingMarkerLine pins that a clean
+// JSONL file that already holds a marker-equal line raises no error annotation:
+// this pass removed nothing, so an operator should not be told a record was lost.
+// Such a line is a re-scanned artifact, a fixture, or a line the agent wrote on
+// purpose (#5705).
+func TestScanOutputFiles_NoAnnotationForPreexistingMarkerLine(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	content := `{"error":"output removed because output contained a cross-record secret"}` + "\n" +
+		`{"event":"done"}` + "\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	var output bytes.Buffer
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&output)))
+
+	assert.NotContains(t, output.String(), "::error::", "a clean stream must not raise an annotation")
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(got), "a clean stream must be written back unchanged")
 }
 
 func TestScanOutputFiles_QuietJSONWriteFailureIsFatal(t *testing.T) {
