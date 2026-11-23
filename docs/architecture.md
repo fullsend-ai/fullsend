@@ -716,6 +716,16 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
 
+- Decided, not yet implemented: a saga journal stores versioned JSON in the
+  control repository, initially on GitLab, independently of the source forge
+  and tracker. Workflow-supplied trusted host adapters claim work and reconcile
+  it on subsequent invocations. They retain separate dispatch, execution and
+  publication receipts for each target.
+  Conditional updates and ownership generations support cross-host recovery;
+  CI finalization provides only a best-effort checkpoint. Domain adapters
+  retain operation, completion and compensation semantics
+  ([ADR 0165](ADRs/0165-recover-work-through-repository-owned-operation-journals.md)).
+
 **Open questions:**
 
 - What provider query plans can support entity-first evaluation over the
@@ -730,12 +740,18 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
-  lock refresh; ADR 0098 does not resolve this question.)
+  lock refresh; ADR 0165 chooses an operation journal for recoverable effects,
+  while adapter implementation and external-system guarantees remain open.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - How should explicit cancellation, retry, and reassignment interact with the
   automatic event-coalescing policy in
   [ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)?
-- Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
+- Does the coordinator need state (a queue, a lock, a claim system), or can it
+  be stateless and event-driven? (ADR 0165 requires durable claims for workflows
+  that opt in. Adapter implementation and packaging remain open in
+  [#9253](https://github.com/fullsend-ai/fullsend/issues/9253) and the
+  tracker-first integration in
+  [#9260](https://github.com/fullsend-ai/fullsend/issues/9260).)
 - When should a conversation or thread be linked to a work item (e.g. Discussion
   → issue) so a conversation-native agent can hand off to `/fs-code` without
   violating entity-context separation ([ADR 0076](ADRs/0076-slash-command-entity-context-separation.md),
