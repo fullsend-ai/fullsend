@@ -36,6 +36,10 @@ var runPodmanFn = func(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "podman", args...).CombinedOutput()
 }
 
+// gatewayIsRemoteFn reports whether the gateway openshell uses is on another
+// host, whose image store is not this host's. Override in tests.
+var gatewayIsRemoteFn = sandbox.GatewayIsRemote
+
 // imageRegistryHost returns the part of image before the first slash, which
 // is the registry host (with any port) for a fully qualified reference, or
 // "" when image has no slash.
@@ -68,13 +72,49 @@ type registryCredential struct {
 // fullsend run and fullsend prepare both use it, so an image prepare
 // warms is pulled with the credential a run would use.
 func sandboxImageCredential(image string) (registryCredential, bool) {
+	return sandboxImageCredentialWithToken(image, os.Getenv(workflowTokenEnv))
+}
+
+// preparedWorkflowToken returns the GitHub Actions workflow token for
+// fullsend prepare, which does not mint an agent token and so never has
+// GH_WORKFLOW_TOKEN preserved for it the way fullsend run does
+// (mintAgentTokenAtLevel). It resolves the same value without minting and
+// without touching the environment: an existing GH_WORKFLOW_TOKEN, else the
+// caller's GH_TOKEN, else its GITHUB_TOKEN, which must look like a token.
+// Outside GitHub Actions there is no workflow token and it returns "". A
+// non-empty problem explains why a token that was present is not used.
+func preparedWorkflowToken() (token, problem string) {
+	if os.Getenv("GITHUB_ACTIONS") != "true" {
+		return "", ""
+	}
+	if existing := os.Getenv(workflowTokenEnv); existing != "" {
+		return existing, ""
+	}
+	name := "GH_TOKEN"
+	token = os.Getenv(name)
+	if token == "" {
+		name = "GITHUB_TOKEN"
+		token = os.Getenv(name)
+	}
+	if token == "" {
+		return "", ""
+	}
+	if !mintTokenPattern.MatchString(token) {
+		return "", name + " has an unexpected format, so it is not used as the workflow token"
+	}
+	return token, ""
+}
+
+// sandboxImageCredentialWithToken is sandboxImageCredential with the GitHub
+// workflow token supplied by the caller.
+func sandboxImageCredentialWithToken(image, workflowToken string) (registryCredential, bool) {
 	host := imageRegistryHost(image)
 	if host == "" {
 		return registryCredential{}, false
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" && strings.EqualFold(host, ghcrRegistry) {
-		if token := os.Getenv(workflowTokenEnv); token != "" {
-			return registryCredential{registry: ghcrRegistry, username: ghcrAuthUsername, secret: token, source: "the workflow token"}, true
+		if workflowToken != "" {
+			return registryCredential{registry: ghcrRegistry, username: ghcrAuthUsername, secret: workflowToken, source: "the workflow token"}, true
 		}
 	}
 	if os.Getenv("GITLAB_CI") == "true" {
@@ -170,7 +210,7 @@ func prePullSandboxImage(ctx context.Context, image string, printer *ui.Printer)
 	if !ok {
 		return
 	}
-	if sandbox.GatewayEndpointIsRemote() {
+	if gatewayIsRemoteFn(ctx) {
 		// This host's Podman store is not the remote gateway's image store,
 		// so a local pull would not help the gateway.
 		printer.StepWarn("the sandbox gateway is remote, so the registry credential cannot be used; it will pull " + image + " without registry credentials")

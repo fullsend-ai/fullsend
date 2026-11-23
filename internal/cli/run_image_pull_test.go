@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -78,16 +80,24 @@ func setupImagePull(t *testing.T) (*fakePodman, *bytes.Buffer, *ui.Printer) {
 	// Image not present locally unless a test says otherwise.
 	fake.respond("image", "", errors.New("exit status 1"))
 
-	origRun, origLook := runPodmanFn, imagePullLookPathFn
+	origRun, origLook, origRemote := runPodmanFn, imagePullLookPathFn, gatewayIsRemoteFn
 	runPodmanFn = fake.run
 	imagePullLookPathFn = func(string) (string, error) { return "/usr/bin/podman", nil }
+	// Hermetic: only OPENSHELL_GATEWAY_ENDPOINT names the gateway, never a
+	// real `openshell gateway info`.
+	gatewayIsRemoteFn = func(ctx context.Context) bool {
+		return sandbox.GatewayEndpointIsRemote(ctx, os.Getenv("OPENSHELL_GATEWAY_ENDPOINT"))
+	}
 	t.Cleanup(func() {
 		runPodmanFn = origRun
 		imagePullLookPathFn = origLook
+		gatewayIsRemoteFn = origRemote
 	})
 
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv(workflowTokenEnv, testWorkflowToken)
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GITLAB_CI", "")
 	t.Setenv("CI_REGISTRY", "")
 	t.Setenv("CI_REGISTRY_USER", "")
@@ -203,6 +213,84 @@ func TestPrePullSandboxImage_LocalEndpointStillPulls(t *testing.T) {
 	prePullSandboxImage(context.Background(), privateImage, printer)
 
 	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
+}
+
+// A registered remote gateway, with no endpoint exported, also has its own
+// image store.
+func TestPrePullSandboxImage_RegisteredRemoteGatewaySkipsLocalPull(t *testing.T) {
+	fake, buf, printer := setupImagePull(t)
+	gatewayIsRemoteFn = func(context.Context) bool { return true }
+
+	prePullSandboxImage(context.Background(), privateImage, printer)
+
+	assert.Empty(t, fake.calls)
+	assert.Contains(t, buf.String(), "gateway is remote")
+}
+
+// A non-loopback endpoint that is this host's own address is a local
+// gateway: run still pulls into the local store.
+func TestPrePullSandboxImage_OwnAddressEndpointStillPulls(t *testing.T) {
+	ip := localNonLoopbackIP(t)
+	fake, _, printer := setupImagePull(t)
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://"+net.JoinHostPort(ip, "17670"))
+
+	prePullSandboxImage(context.Background(), privateImage, printer)
+
+	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
+}
+
+// localNonLoopbackIP returns an address assigned to one of this host's
+// interfaces that is not loopback, or skips the test when there is none.
+func localNonLoopbackIP(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err == nil {
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() && n.IP.To4() != nil {
+				return n.IP.String()
+			}
+		}
+	}
+	t.Skip("no non-loopback IPv4 interface address on this host")
+	return ""
+}
+
+func TestPreparedWorkflowToken(t *testing.T) {
+	const ghToken = "ghs_exampleTokenValue123"
+	const githubToken = "ghs_otherTokenValue456"
+	tests := []struct {
+		name        string
+		actions     string
+		workflow    string
+		ghToken     string
+		githubToken string
+		wantToken   string
+		wantProblem bool
+	}{
+		{"explicit workflow token wins", "true", "explicit-token", ghToken, githubToken, "explicit-token", false},
+		{"GH_TOKEN only", "true", "", ghToken, "", ghToken, false},
+		{"GITHUB_TOKEN only", "true", "", "", githubToken, githubToken, false},
+		{"GH_TOKEN preferred over GITHUB_TOKEN", "true", "", ghToken, githubToken, ghToken, false},
+		{"neither set", "true", "", "", "", "", false},
+		{"malformed GH_TOKEN is refused", "true", "", "bad token;rm", githubToken, "", true},
+		{"outside GitHub Actions", "", "", ghToken, githubToken, "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GITHUB_ACTIONS", tc.actions)
+			t.Setenv(workflowTokenEnv, tc.workflow)
+			t.Setenv("GH_TOKEN", tc.ghToken)
+			t.Setenv("GITHUB_TOKEN", tc.githubToken)
+
+			token, problem := preparedWorkflowToken()
+
+			assert.Equal(t, tc.wantToken, token)
+			assert.Equal(t, tc.wantProblem, problem != "")
+			if tc.wantProblem {
+				assert.NotContains(t, problem, tc.ghToken, "the problem never carries the token")
+			}
+		})
+	}
 }
 
 func TestPrePullSandboxImage_PodmanMissing(t *testing.T) {

@@ -3,10 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,8 +85,13 @@ func stubPrepareSandbox(t *testing.T) *fakePrepareSandbox {
 		f.deleted = append(f.deleted, name)
 		return f.deleteErr
 	}
+	origRemote := gatewayIsRemoteFn
+	gatewayIsRemoteFn = func(ctx context.Context) bool {
+		return sandbox.GatewayEndpointIsRemote(ctx, os.Getenv("OPENSHELL_GATEWAY_ENDPOINT"))
+	}
 	t.Cleanup(func() {
 		prepareEnsureOpenshellFn, prepareCheckGatewayFn, prepareCreateSandboxFn, deleteSandboxFn = origEnsure, origGateway, origCreate, origDelete
+		gatewayIsRemoteFn = origRemote
 	})
 	return f
 }
@@ -258,6 +265,163 @@ func TestPrepare_NoImageUsesGatewayDefault(t *testing.T) {
 	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
 	assert.Empty(t, fake.calls)
 	assert.Equal(t, []string{""}, sb.images)
+}
+
+// prepare mints nothing, so it uses the caller's GH_TOKEN or GITHUB_TOKEN as
+// the workflow token when GH_WORKFLOW_TOKEN is not exported, as run would
+// after preserving it.
+func TestPrepare_PullsGHCRImageWithoutWorkflowTokenVariable(t *testing.T) {
+	const actionsToken = "ghs_exampleActionsToken123"
+	tests := []struct {
+		name        string
+		ghToken     string
+		githubToken string
+	}{
+		{"GH_TOKEN", actionsToken, ""},
+		{"GITHUB_TOKEN", "", actionsToken},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, _, _ := setupImagePull(t)
+			stubPrepareSandbox(t)
+			t.Setenv(workflowTokenEnv, "")
+			t.Setenv("GH_TOKEN", tc.ghToken)
+			t.Setenv("GITHUB_TOKEN", tc.githubToken)
+
+			res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+			require.NoError(t, err)
+			assert.Equal(t, prepareImagePulled, res.Images[0].Status)
+			require.Len(t, fake.authFiles, 1, "the actions token authenticates the pull")
+			var authFile struct {
+				Auths map[string]struct{ Auth string } `json:"auths"`
+			}
+			require.NoError(t, json.Unmarshal(fake.authJSON, &authFile))
+			wantAuth := base64.StdEncoding.EncodeToString([]byte(ghcrAuthUsername + ":" + actionsToken))
+			assert.Equal(t, wantAuth, authFile.Auths[ghcrRegistry].Auth)
+			assert.NotContains(t, progress, actionsToken)
+			assert.Empty(t, os.Getenv(workflowTokenEnv), "prepare does not export a workflow token")
+		})
+	}
+}
+
+// Without any workflow credential the private image is left to the gateway.
+func TestPrepare_NoWorkflowCredentialLeavesPrivateImageToGateway(t *testing.T) {
+	fake, _, _ := setupImagePull(t)
+	stubPrepareSandbox(t)
+	t.Setenv(workflowTokenEnv, "")
+
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.NoError(t, err)
+	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Empty(t, fake.calls)
+}
+
+func TestPrepare_MalformedActionsTokenIsWarnedAndNotUsed(t *testing.T) {
+	fake, _, _ := setupImagePull(t)
+	stubPrepareSandbox(t)
+	t.Setenv(workflowTokenEnv, "")
+	t.Setenv("GH_TOKEN", "not a token;")
+
+	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.NoError(t, err)
+	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Empty(t, fake.calls)
+	assert.Contains(t, progress, "GH_TOKEN has an unexpected format")
+	assert.NotContains(t, progress, "not a token;")
+}
+
+// A gateway registered with openshell, with no endpoint exported, is
+// classified from its own endpoint.
+func TestPrepare_RegisteredRemoteGatewayIsNotWarmedLocally(t *testing.T) {
+	fake, _, _ := setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	gatewayIsRemoteFn = func(context.Context) bool { return true }
+
+	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.NoError(t, err)
+	assert.Equal(t, prepareGatewayRemote, res.Gateway)
+	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Empty(t, fake.calls, "the local Podman store is not the remote gateway's")
+	assert.Contains(t, progress, "cannot be used with the remote gateway")
+	assert.Len(t, sb.created, 1)
+}
+
+// The gateway is classified after the gateway check, which can set the
+// endpoint for a containerized CLI.
+func TestPrepare_GatewayClassifiedAfterGatewayCheck(t *testing.T) {
+	setupImagePull(t)
+	stubPrepareSandbox(t)
+	checked := false
+	prepareCheckGatewayFn = func() error { checked = true; return nil }
+	gatewayIsRemoteFn = func(context.Context) bool {
+		assert.True(t, checked, "classified before the gateway was checked")
+		return false
+	}
+
+	_, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
+
+	require.NoError(t, err)
+}
+
+// A non-loopback endpoint that is one of this host's own addresses names a
+// local gateway: the credentialed pull still runs.
+func TestPrepare_OwnAddressEndpointIsWarmedLocally(t *testing.T) {
+	ip := localNonLoopbackIP(t)
+	fake, _, _ := setupImagePull(t)
+	stubPrepareSandbox(t)
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://"+net.JoinHostPort(ip, "17670"))
+
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.NoError(t, err)
+	assert.Equal(t, prepareGatewayLocal, res.Gateway)
+	assert.Equal(t, prepareImagePulled, res.Images[0].Status)
+	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
+}
+
+// Cancellation that arrives while the preflight sandbox becomes ready is
+// reported after the sandbox is deleted, not as success.
+func TestPrepare_CanceledAfterPreflightReadyIsReportedAfterCleanup(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	sb.onCreate = func(context.Context) { cancel() } // create itself succeeds
+	var progress, out bytes.Buffer
+
+	err := runPrepare(ctx, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)), ui.New(&progress), &out)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	var res prepareResult
+	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+	assert.False(t, res.OK)
+	require.NotNil(t, res.Error)
+	assert.Equal(t, prepareErrCanceled, res.Error.Kind)
+	assert.Equal(t, []string{sb.created[0]}, sb.deleted, "the sandbox that was created is deleted")
+	assert.Equal(t, prepareCleanupDeleted, res.Preflight.Cleanup)
+}
+
+// A canceled run whose sandbox cannot be deleted still names it for removal.
+func TestPrepare_CanceledAfterPreflightReadyWithDeleteFailureNamesSandbox(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	sb.onCreate = func(context.Context) { cancel() }
+	sb.deleteErr = errors.New("delete refused")
+	var progress, out bytes.Buffer
+
+	err := runPrepare(ctx, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)), ui.New(&progress), &out)
+
+	require.Error(t, err)
+	var res prepareResult
+	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+	require.NotNil(t, res.Error)
+	assert.Equal(t, prepareErrCleanup, res.Error.Kind)
+	assert.Contains(t, res.Error.Hint, "openshell sandbox delete "+sb.created[0])
 }
 
 func TestPrepare_RemoteGatewayIsNotWarmedLocally(t *testing.T) {

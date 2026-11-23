@@ -250,15 +250,6 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	printer.KeyValue("Image", displayPrepareImage(image))
 	printer.KeyValue("Arch", res.Arch)
 
-	// A gateway on another host has an image store that is not this host's.
-	// Loopback and host-gateway endpoints, which CheckGateway may set for a
-	// containerized CLI, name a gateway on this host.
-	remote := sandbox.GatewayEndpointIsRemote()
-	res.Gateway = prepareGatewayLocal
-	if remote {
-		res.Gateway = prepareGatewayRemote
-	}
-
 	if err := prepareCanceled(ctx); err != nil {
 		return res, err
 	}
@@ -279,10 +270,30 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	}
 	printer.StepDone("Gateway available")
 
+	// A gateway on another host has an image store that is not this host's.
+	// The gateway is the one named by OPENSHELL_GATEWAY_ENDPOINT or, without
+	// it, the registered one. Decided after the gateway check, which may set
+	// the endpoint for a containerized CLI. Loopback, host-gateway and this
+	// host's own addresses name a gateway on this host.
+	remote := gatewayIsRemoteFn(ctx)
+	res.Gateway = prepareGatewayLocal
+	if remote {
+		res.Gateway = prepareGatewayRemote
+	}
+
+	// fullsend run gets GH_WORKFLOW_TOKEN from minting its agent token;
+	// prepare mints nothing, so it resolves the same token from the
+	// environment (preparedWorkflowToken) for the image pull.
+	workflowToken, tokenProblem := preparedWorkflowToken()
+	if tokenProblem != "" {
+		printer.StepWarn(tokenProblem)
+	}
+	cred, hasCred := sandboxImageCredentialWithToken(image, workflowToken)
+
 	if err := prepareCanceled(ctx); err != nil {
 		return res, err
 	}
-	if err := warmPrepareImage(ctx, img, remote, printer); err != nil {
+	if err := warmPrepareImage(ctx, img, remote, cred, hasCred, printer); err != nil {
 		return res, err
 	}
 	if err := prepareCanceled(ctx); err != nil {
@@ -308,7 +319,7 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 		// private image fails there for a reason the generic hints miss.
 		// The sandbox cleanup hint stays: the sandbox may still exist.
 		var pe *prepareError
-		if _, hasCred := sandboxImageCredential(image); remote && hasCred && errors.As(err, &pe) &&
+		if remote && hasCred && errors.As(err, &pe) &&
 			(pe.kind == prepareErrAuth || pe.kind == prepareErrPull || pe.kind == prepareErrPreflight) {
 			rest := pe.hint
 			if pe.kind == prepareErrAuth {
@@ -500,13 +511,12 @@ func writePreflightPolicy() (path string, remove func(), err error) {
 // A failed credentialed pull falls back to the gateway's own pull, as
 // fullsend run does, so a public image still works; only a full disk, which
 // the gateway's pull would hit too, fails here.
-func warmPrepareImage(ctx context.Context, img *prepareImage, remote bool, printer *ui.Printer) error {
+func warmPrepareImage(ctx context.Context, img *prepareImage, remote bool, cred registryCredential, hasCred bool, printer *ui.Printer) error {
 	if img.Ref == "" {
 		img.Status = prepareImageSkipped
 		img.Detail = "no image configured; the gateway uses its default sandbox image"
 		return nil
 	}
-	cred, hasCred := sandboxImageCredential(img.Ref)
 	switch {
 	case !hasCred:
 		img.Status = prepareImageSkipped
@@ -601,6 +611,12 @@ func runPrepareSandboxPreflight(ctx context.Context, pf *preparePreflight, image
 	}
 	pf.Cleanup = prepareCleanupDeleted
 	printer.StepDone("Deleted preflight sandbox")
+	// A cancellation that arrived while the sandbox was becoming ready or
+	// being deleted is reported after the cleanup, not swallowed.
+	if cErr := prepareCanceled(ctx); cErr != nil {
+		printer.StepFail("Preparation canceled")
+		return cErr
+	}
 	return nil
 }
 
@@ -630,7 +646,7 @@ func classifyPrepareFailure(msg, fallback string) (kind, hint string) {
 	case containsAny("no space left on device", "disk quota exceeded"):
 		return prepareErrDiskSpace, "the host running the gateway's image store is out of disk space; free space (for example with 'podman system prune') or use a runner with a larger disk"
 	case containsAny("unauthorized", "authentication required", "access to the resource is denied", "403 forbidden"):
-		return prepareErrAuth, "the registry refused the pull; make the image public or provide the CI job's registry credential (GH_WORKFLOW_TOKEN with packages: read for ghcr.io on GitHub Actions, CI_REGISTRY_USER and CI_REGISTRY_PASSWORD for CI_REGISTRY on GitLab CI)"
+		return prepareErrAuth, "the registry refused the pull; make the image public or provide the CI job's registry credential (the workflow token, GH_WORKFLOW_TOKEN or the job's GH_TOKEN/GITHUB_TOKEN, with packages: read for ghcr.io on GitHub Actions, CI_REGISTRY_USER and CI_REGISTRY_PASSWORD for CI_REGISTRY on GitLab CI)"
 	case containsAny("manifest unknown", "name unknown", "invalid reference format", "no such host", "not found: manifest", "repository does not exist"):
 		return prepareErrUnresolvable, "the image reference could not be resolved; check the harness image: field and FULLSEND_SANDBOX_IMAGE"
 	}

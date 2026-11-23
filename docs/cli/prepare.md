@@ -56,10 +56,13 @@ that the runs use. The image can depend on all of them.
      the preflight sandbox still pulls the image through the gateway without
      the credential, as `fullsend run` does, so a public image keeps working.
      A full disk is the exception: the command fails with `disk-space`.
-   - When `OPENSHELL_GATEWAY_ENDPOINT` names a gateway on another host (not a
-     loopback, `localhost`, host-gateway or unix-socket endpoint), the gateway
-     keeps its images on that host, and `fullsend prepare` cannot authenticate a
-     pull there.
+   - When the gateway runs on another host, the gateway keeps its images on
+     that host, and `fullsend prepare` cannot authenticate a pull there. The
+     gateway is the one `OPENSHELL_GATEWAY_ENDPOINT` names or, without it, the
+     gateway registered with OpenShell (`openshell gateway info`). A loopback,
+     `localhost`, host-gateway or unix-socket endpoint, one of this host's own
+     addresses or its own name, or a gateway whose location cannot be read,
+     counts as local.
      It does not pull into the local store. If a credential would have
      applied, it warns that the credential cannot be used. The image is
      reported as `skipped`, and the preflight sandbox pulls it anonymously. A
@@ -85,7 +88,11 @@ The preflight runs even when the image is already cached.
 `fullsend prepare` pulls with the same job-scoped credential that
 `fullsend run` uses before it creates a sandbox:
 
-- On GitHub Actions, `GH_WORKFLOW_TOKEN` for an image on `ghcr.io`. See
+- On GitHub Actions, the workflow token for an image on `ghcr.io`. `fullsend run`
+  gets it as `GH_WORKFLOW_TOKEN` when it mints its agent token. `fullsend prepare`
+  mints nothing, so it uses an exported `GH_WORKFLOW_TOKEN` or, when that is not
+  set, the job's `GH_TOKEN` (or, when that is empty, `GITHUB_TOKEN`), which must
+  look like a token. It does not export the token. See
   [GitHub Packages credentials](run.md#github-packages-credentials).
 - On GitLab CI, `CI_REGISTRY_USER` and `CI_REGISTRY_PASSWORD` for an image on
   the instance's container registry (`CI_REGISTRY`).
@@ -152,7 +159,7 @@ With `--json`, stdout holds one JSON object, also when the command fails:
 | `agent` | The agent name |
 | `harness` | The harness file the agent resolved to |
 | `arch` | The sandbox architecture: the host's, or `FULLSEND_SANDBOX_ARCH` when set to a supported value |
-| `gateway` | `local`, or `remote` when `OPENSHELL_GATEWAY_ENDPOINT` names a gateway on another host |
+| `gateway` | `local`, or `remote` when the gateway (from `OPENSHELL_GATEWAY_ENDPOINT` or the registered gateway) runs on another host |
 | `images[].role` | `sandbox` |
 | `images[].ref` | The resolved image reference. Empty when the harness sets no image and the gateway uses its default sandbox image |
 | `images[].source` | `harness`, `FULLSEND_SANDBOX_IMAGE`, or `gateway-default` |
