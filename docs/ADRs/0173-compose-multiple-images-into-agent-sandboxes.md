@@ -15,7 +15,7 @@ Date: 2026-11-12
 
 ## Status
 
-Accepted (amends [ADR 0032](0032-safe-push-wrapper-for-sandboxed-agents.md) and [ADR 0030](0030-openshell-sandbox-interaction-model.md))
+Accepted (amends [ADR 0032](0032-safe-push-wrapper-for-sandboxed-agents.md) and supersedes the sandbox-image requirements in [ADR 0030](0030-openshell-sandbox-interaction-model.md))
 
 ## Context
 
@@ -58,6 +58,15 @@ When an end user overrides the sandbox image, they must take care to include
 any tools that the upstream agent requires - or modify the agent further to no
 longer require those tools.
 
+### Sandbox Image Contract Changes
+
+This ADR supersedes the sandbox-image requirements in [ADR 0030](0030-openshell-sandbox-interaction-model.md). A sandbox image no longer needs:
+
+- A `sandbox` account or fixed UID/GID `1000660000`; Fullsend supplies a
+  non-root identity at runtime.
+- A writable image-defined workdir; Fullsend provides a writable workspace.
+- `iproute2`; OpenShell handles network isolation outside the workload image.
+
 ### Limitations
 
 The user cannot provide just _any_ container image.
@@ -65,10 +74,7 @@ The user cannot provide just _any_ container image.
 - Both images must target Linux, and the system image must support the
   sandbox's architecture, such as `linux/amd64` or `linux/arm64`. Binaries
   built for CPU features above the architecture baseline also require hosts
-  with those features. The sandbox image must meet the guest requirements in
-  [ADR 0030](0030-openshell-sandbox-interaction-model.md): a `sandbox` user
-  with UID/GID `1000660000`, a writable workdir, and `iproute2` for network
-  namespace setup.
+  with those features.
 - The system image is mounted at `/opt/fullsend`; it does not become the
   sandbox's root filesystem or select the sandbox's dynamic linker. Its
   executables run against the sandbox's Linux kernel. A dynamically linked
@@ -80,10 +86,6 @@ The user cannot provide just _any_ container image.
   statically, or launched through a compatible loader and library set carried
   in the system image. See [`ld.so(8)`](https://man7.org/linux/man-pages/man8/ld.so.8.html)
   for ELF interpreter and library lookup behavior.
-- The sandbox policy must keep `/opt/fullsend` read-only so that tools and
-  security controls supplied by the system image cannot be modified by the
-  agent. The OpenShell backend must also support the read-only image mount and
-  its resource-admission policy must allow it.
 
 ### Sandbox image for fullsend-ai/agents
 
@@ -133,8 +135,9 @@ Support depends on the sandbox backend, not the forge.
   only the necessary one for the chosen runtime. This could reduce pull times
   with a smaller image. This idea - to decompose our monolithic system image -
   is out of scope for this ADR and deferred at the time of this writing.
-- **[ADR 0030](0030-openshell-sandbox-interaction-model.md)** is extended by this ADR from one image to a
-  sandbox image plus a system image. The sandbox image keeps the ADR 0030 guest requirements.
+- **[ADR 0030](0030-openshell-sandbox-interaction-model.md)** remains the record
+  of the broader OpenShell interaction model; this ADR supersedes its
+  sandbox-image requirements.
 - **[ADR 0032](0032-safe-push-wrapper-for-sandboxed-agents.md)** is extended by
   this ADR. `safe-push`, its policy file, and the real `git` executable move
   to the **system image** at `/opt/fullsend/usr/local/bin/safe-push`,
