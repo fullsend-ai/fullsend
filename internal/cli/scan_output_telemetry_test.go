@@ -674,6 +674,95 @@ func TestScanOutputFiles_WriteFailureRemovesUnredactedBytes(t *testing.T) {
 	assert.JSONEq(t, `{"error":"output removed because it could not be redacted"}`, string(got))
 }
 
+// TestScanOutputFiles_UnreadableFileFailsClosed pins that a file the scan cannot
+// read does not reach the artifact unredacted. Its bytes were never scanned, so
+// the file is contained with the fail-closed marker, the rest of the walk still
+// runs, and the run fails closed (#5705). Before this, the file was only named in
+// a warning and shipped.
+func TestScanOutputFiles_UnreadableFileFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission checks do not apply to root")
+	}
+	dir := t.TempDir()
+	unreadable := filepath.Join(dir, "a-unreadable.txt")
+	const secret = "ghp_FAKEtesttoken000000000000000000000000"
+	require.NoError(t, os.WriteFile(unreadable, []byte("Token: "+secret), 0o644))
+	require.NoError(t, os.Chmod(unreadable, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o644) })
+	if file, err := os.Open(unreadable); err == nil {
+		_ = file.Close()
+		t.Skip("filesystem does not enforce unreadable file permissions")
+	}
+	later := filepath.Join(dir, "b-notes.txt")
+	require.NoError(t, os.WriteFile(later, []byte("Token: "+secret), 0o644))
+
+	err := scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not read a-unreadable.txt")
+
+	// The walk continued to the file after the unreadable one.
+	got, readErr := os.ReadFile(later)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(got), secret, "a later file must still be redacted")
+
+	// The unreadable file is contained: its unredacted bytes are gone, either
+	// replaced by the marker or removed when it cannot be written.
+	contained, readErr := os.ReadFile(unreadable)
+	if readErr == nil {
+		assert.NotContains(t, string(contained), secret, "the unredacted bytes must not survive")
+		assert.JSONEq(t, `{"error":"output removed because it could not be redacted"}`, string(contained))
+	} else {
+		assert.True(t, os.IsNotExist(readErr), "an unreadable file that cannot be replaced must be removed: %v", readErr)
+	}
+}
+
+// TestScanOutputFiles_UnreadableDirectoryFailsClosed pins that a directory the
+// walk cannot open fails the run: nothing under it was scanned, so its bytes
+// would otherwise reach the artifact unredacted (#5705).
+func TestScanOutputFiles_UnreadableDirectoryFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission checks do not apply to root")
+	}
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "agent-dir")
+	require.NoError(t, os.MkdirAll(blocked, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(blocked, "notes.txt"), []byte("Token: ghp_FAKEtesttoken000000000000000000000000"), 0o644))
+	require.NoError(t, os.Chmod(blocked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+	if entries, err := os.ReadDir(blocked); err == nil {
+		_ = entries
+		t.Skip("filesystem does not enforce unreadable directory permissions")
+	}
+
+	err := scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not read agent-dir")
+}
+
+// TestScanOutputFiles_QuietReadFailureKeepsPathOutOfMessage pins the quiet
+// contract for a read failure: the run fails closed, and the file name — which
+// can be agent-chosen — stays out of the message (ADR 0163).
+func TestScanOutputFiles_QuietReadFailureKeepsPathOutOfMessage(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission checks do not apply to root")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-chosen-secret-name.txt")
+	require.NoError(t, os.WriteFile(path, []byte("Token: ghp_FAKEtesttoken000000000000000000000000"), 0o644))
+	require.NoError(t, os.Chmod(path, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	if file, err := os.Open(path); err == nil {
+		_ = file.Close()
+		t.Skip("filesystem does not enforce unreadable file permissions")
+	}
+
+	var output bytes.Buffer
+	err := scanOutputFiles(dir, "trace-id", "quiet", ui.New(&output))
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "agent-chosen-secret-name.txt")
+	assert.NotContains(t, output.String(), "agent-chosen-secret-name.txt")
+}
+
 // TestScanOutputFiles_SanitizesBOMPrefixedJSONStructurally pins that a JSON
 // document that starts with a UTF-8 BOM still takes the structural path. The BOM
 // is not JSON whitespace, so before this it fell through to the plain-text scan,

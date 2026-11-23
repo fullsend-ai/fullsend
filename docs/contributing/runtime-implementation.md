@@ -678,11 +678,18 @@ finding id. A single isolated fragment below the floor, with no neighbour to joi
 it to, is still kept.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
-rewriting that framing, so only the records it covers are replaced. A
-private-key block spanning records is detected in a decoded view of the stream,
-before per-record masking can remove its BEGIN marker, so a marker written with
-\u escapes is still recognized. After the per-record pass the rebuilt stream is
-rescanned, but only for whole-value secrets — registered runtime values and
+rewriting that framing, so only the records that carry it are replaced, and a
+record that merely sits between a quoted header and a quoted footer keeps its
+content. A BOM-prefixed record is treated as JSON like any other, so a marker
+written with \u escapes in it is still decoded. A private-key block spanning
+records is detected in a decoded view of the stream, before per-record masking
+can remove its BEGIN marker. The boundary records
+always carry marker text, so they are always replaced; a record between them is
+replaced only when its leaves hold a block marker or PEM body material, decided
+the same way as in a single document — including the joined run of consecutive
+base64-only values, which catches a body split into short or digit-free chunks.
+After the per-record pass the rebuilt stream is rescanned, but only for
+whole-value secrets — registered runtime values and
 private-key blocks, the same set the single-document path scans in its written
 form. Running the value patterns again would re-match a redaction placeholder
 followed by JSON escape bytes: in encoded JSON a `\n` escape is two non-space
@@ -709,14 +716,18 @@ renders these as error annotations. Forgejo Actions also sets `GITHUB_ACTIONS=tr
 so its runner writes the same lines, but Forgejo has no annotation view: the
 runner prints them in the step log and the exit status stays 0.
 
-A sanitized file that cannot be written, and a file that cannot be sanitized at
-all, do not stop the walk: every remaining file is still scanned and redacted,
-and the run fails closed afterwards with all failures joined. The file itself is
-replaced with a fail-closed marker so the unredacted bytes do not reach the
-uploaded artifact when the filesystem allows it; if the marker write and the
-fallback removal both fail, that failure is added to the joined error rather
-than left unreported, so the run says the unredacted file is still on disk. In
-`quiet` mode the affected paths are counted, not named (ADR 0163).
+A sanitized file that cannot be written, a file that cannot be read, and a file
+that cannot be sanitized at all, do not stop the walk: every remaining file is
+still scanned and redacted, and the run fails closed afterwards with all failures
+joined. A file that cannot be read is contained exactly like one that cannot be
+written, because its bytes were never scanned; an entry the walk cannot open fails
+the run without being quarantined, since it may be a directory whose files were
+never reached. The unredacted file is replaced with the fail-closed marker so its
+bytes do not reach the uploaded artifact when the filesystem allows it; if the
+marker write and the fallback removal both fail, that failure is added to the
+joined error rather than left unreported, so the run says the unredacted file is
+still on disk. In `quiet` mode the affected paths are counted, not named
+(ADR 0163).
 
 ## Agent rule layering
 

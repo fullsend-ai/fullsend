@@ -7099,7 +7099,11 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 
 	err := filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable entries
+			// An entry the walk cannot open is output that cannot be scanned:
+			// everything under it would reach the artifact unredacted. The walk
+			// continues and the run fails closed once it finishes (#5705).
+			writeErrs = append(writeErrs, walkFailure(quiet, outputDir, path, err, &unreadable))
+			return nil
 		}
 		if d.IsDir() {
 			// Skip the security findings directory itself.
@@ -7127,11 +7131,10 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 		content, readErr := os.ReadFile(path)
 		relPath, _ := filepath.Rel(outputDir, path)
 		if readErr != nil {
-			if quiet {
-				unreadable++
-				return nil
-			}
-			printer.StepWarn(fmt.Sprintf("Could not read %s: %v", relPath, readErr))
+			// A file that cannot be read cannot be scanned, so its bytes would
+			// reach the artifact unredacted. It is contained like a write
+			// failure and the run fails closed (#5705).
+			writeErrs = append(writeErrs, readFailure(quiet, path, relPath, readErr, &unreadable))
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))
@@ -7294,6 +7297,36 @@ func writeFailure(quiet bool, path, relPath string, writeErr error, unwritable *
 		return errors.Join(errors.New("could not write sanitized output file"), quarantineErr)
 	}
 	return errors.Join(fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr), quarantineErr)
+}
+
+// readFailure records an output file that could not be read. Its bytes cannot be
+// scanned, so it is contained like a write failure: the file is replaced with a
+// marker, or removed, when the filesystem allows it, and the run fails closed
+// afterwards (#5705).
+func readFailure(quiet bool, path, relPath string, readErr error, unreadable *int) error {
+	*unreadable++
+	quarantineErr := quarantineOutput(path)
+	if quiet {
+		return errors.Join(errors.New("could not read output file"), quarantineErr)
+	}
+	return errors.Join(fmt.Errorf("could not read %s: %w", relPath, readErr), quarantineErr)
+}
+
+// walkFailure records an entry the walk could not open. Nothing under it was
+// scanned, so the run fails closed instead of shipping those bytes as an
+// artifact (#5705). The entry is not quarantined: it may be a directory, and the
+// files it holds were never opened.
+func walkFailure(quiet bool, outputDir, path string, walkErr error, unreadable *int) error {
+	*unreadable++
+	if quiet {
+		// The path can carry an agent-chosen name (ADR 0163).
+		return errors.New("could not read an output entry")
+	}
+	relPath, err := filepath.Rel(outputDir, path)
+	if err != nil {
+		relPath = path
+	}
+	return fmt.Errorf("could not read %s: %w", relPath, walkErr)
 }
 
 // sanitizeFailure records a sanitization error and contains the file it could
