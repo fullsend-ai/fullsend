@@ -429,7 +429,7 @@ func codexTotalsOf(m *RunMetrics) codexTokenTotals {
 }
 
 // assertCodexUsageSumsToTotals checks that per_model_usage sums to the run
-// totals (docs/cli/run.md); reasoning is run-level only.
+// totals (docs/cli/run.md), reasoning included.
 func assertCodexUsageSumsToTotals(t *testing.T, m *RunMetrics) {
 	t.Helper()
 	var sum ModelUsage
@@ -438,6 +438,7 @@ func assertCodexUsageSumsToTotals(t *testing.T, m *RunMetrics) {
 	}
 	assert.Equal(t, m.InputTokens, sum.InputTokens, "input")
 	assert.Equal(t, m.OutputTokens, sum.OutputTokens, "output")
+	assert.Equal(t, m.ReasoningTokens, sum.ReasoningTokens, "reasoning")
 	assert.Equal(t, m.CacheCreationInputTokens, sum.CacheCreationInputTokens, "cache_creation")
 	assert.Equal(t, m.CacheReadInputTokens, sum.CacheReadInputTokens, "cache_read")
 	assert.Equal(t, m.TotalCostUSD, sum.CostUSD, "cost (0 on codex)")
@@ -448,9 +449,9 @@ func assertCodexUsageSumsToTotals(t *testing.T, m *RunMetrics) {
 // unknown, failed child nothing.
 func TestFoldCodexChildUsage(t *testing.T) {
 	r := CodexRuntime{}
-	parentOnly := ModelUsage{Requests: 1, InputTokens: 15, OutputTokens: 1140, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590}
-	lunaBoth := ModelUsage{Requests: 2, InputTokens: 18, OutputTokens: 1148, CacheCreationInputTokens: 20996, CacheReadInputTokens: 40590}
-	terra := ModelUsage{Requests: 1, InputTokens: 1000, OutputTokens: 200, CacheCreationInputTokens: 2000, CacheReadInputTokens: 1000}
+	parentOnly := ModelUsage{Requests: 1, InputTokens: 15, OutputTokens: 1140, ReasoningTokens: 291, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590}
+	lunaBoth := ModelUsage{Requests: 2, InputTokens: 18, OutputTokens: 1148, ReasoningTokens: 291, CacheCreationInputTokens: 20996, CacheReadInputTokens: 40590}
+	terra := ModelUsage{Requests: 1, InputTokens: 1000, OutputTokens: 200, ReasoningTokens: 100, CacheCreationInputTokens: 2000, CacheReadInputTokens: 1000}
 
 	for name, tc := range map[string]struct {
 		ids    []string
@@ -514,7 +515,7 @@ func TestFoldCodexChildUsage_ClampsNegativeCounters(t *testing.T) {
 	assert.Equal(t, 1, n)
 	// Input 10+5000+7000 and output 20+900: inflation is accepted, as on pi.
 	assert.Equal(t, codexTokenTotals{15 + 12010, 1140 + 920, 291, 13618, 40590}, codexTotalsOf(m))
-	assert.Equal(t, ModelUsage{Requests: 2, InputTokens: 15 + 12010, OutputTokens: 1140 + 920, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590},
+	assert.Equal(t, ModelUsage{Requests: 2, InputTokens: 15 + 12010, OutputTokens: 1140 + 920, ReasoningTokens: 291, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590},
 		m.PerModelUsage["gpt-5.6-luna"])
 	assertCodexUsageSumsToTotals(t, m)
 }
@@ -657,7 +658,7 @@ func TestFoldCodexChildUsage_NoChildrenNoSandbox(t *testing.T) {
 		if key == "" {
 			key = piSubagentUnknownModel
 		}
-		assert.Equal(t, map[string]ModelUsage{key: {Requests: 1, InputTokens: 15, OutputTokens: 1140, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590}}, m.PerModelUsage)
+		assert.Equal(t, map[string]ModelUsage{key: {Requests: 1, InputTokens: 15, OutputTokens: 1140, ReasoningTokens: 291, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590}}, m.PerModelUsage)
 		assert.Equal(t, codexTokenTotals{15, 1140, 291, 13618, 40590}, codexTotalsOf(m), "the parent's numbers are not double-counted into the totals")
 		assertCodexUsageSumsToTotals(t, m)
 	}
@@ -665,7 +666,7 @@ func TestFoldCodexChildUsage_NoChildrenNoSandbox(t *testing.T) {
 
 func TestFoldCodexChildUsage_ReadFailuresKeepTheParentEntry(t *testing.T) {
 	r := CodexRuntime{}
-	parentOnly := map[string]ModelUsage{"gpt-5.6-luna": {Requests: 1, InputTokens: 15, OutputTokens: 1140, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590}}
+	parentOnly := map[string]ModelUsage{"gpt-5.6-luna": {Requests: 1, InputTokens: 15, OutputTokens: 1140, ReasoningTokens: 291, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590}}
 
 	t.Run("a bad id never reaches the shell", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
@@ -750,8 +751,8 @@ func TestFoldCodexChildUsage_TwoIterationsSumToTotals(t *testing.T) {
 
 	sum := sumCodexIterations(first, second)
 	assert.Equal(t, map[string]ModelUsage{
-		"gpt-5.6-luna":  {Requests: 3, InputTokens: 118, OutputTokens: 1198, CacheCreationInputTokens: 21016, CacheReadInputTokens: 40620},
-		"gpt-5.6-terra": {Requests: 1, InputTokens: 1000, OutputTokens: 200, CacheCreationInputTokens: 2000, CacheReadInputTokens: 1000},
+		"gpt-5.6-luna":  {Requests: 3, InputTokens: 118, OutputTokens: 1198, ReasoningTokens: 298, CacheCreationInputTokens: 21016, CacheReadInputTokens: 40620},
+		"gpt-5.6-terra": {Requests: 1, InputTokens: 1000, OutputTokens: 200, ReasoningTokens: 100, CacheCreationInputTokens: 2000, CacheReadInputTokens: 1000},
 	}, sum.PerModelUsage, "two parent iterations and one luna child under luna; the terra child alone under terra")
 	assert.Equal(t, codexTokenTotals{1118, 1398, 398, 23016, 41620}, codexTotalsOf(sum))
 	assertCodexUsageSumsToTotals(t, sum)
@@ -813,8 +814,8 @@ func TestCodexRun_FoldsChildUsage(t *testing.T) {
 	assert.Equal(t, codexTokenTotals{1018, 1348, 391, 22996, 41590}, codexTotalsOf(metrics),
 		"parent (15/1140/291/13618/40590) plus the luna child (3/8/0/7378/0) plus the terra child (1000/200/100/2000/1000); the failed child nothing")
 	assert.Equal(t, map[string]ModelUsage{
-		"gpt-5.6-luna":  {Requests: 2, InputTokens: 18, OutputTokens: 1148, CacheCreationInputTokens: 20996, CacheReadInputTokens: 40590},
-		"gpt-5.6-terra": {Requests: 1, InputTokens: 1000, OutputTokens: 200, CacheCreationInputTokens: 2000, CacheReadInputTokens: 1000},
+		"gpt-5.6-luna":  {Requests: 2, InputTokens: 18, OutputTokens: 1148, ReasoningTokens: 291, CacheCreationInputTokens: 20996, CacheReadInputTokens: 40590},
+		"gpt-5.6-terra": {Requests: 1, InputTokens: 1000, OutputTokens: 200, ReasoningTokens: 100, CacheCreationInputTokens: 2000, CacheReadInputTokens: 1000},
 	}, metrics.PerModelUsage)
 	assertCodexUsageSumsToTotals(t, metrics)
 	assert.Zero(t, metrics.TotalCostUSD)
@@ -837,7 +838,7 @@ func TestCodexRun_DelegatingWithoutSpawnHasParentEntry(t *testing.T) {
 
 	assert.Equal(t, 0, exit)
 	assert.Equal(t, map[string]ModelUsage{
-		"gpt-5.6-luna": {Requests: 1, InputTokens: 8298, OutputTokens: 274, CacheCreationInputTokens: 0, CacheReadInputTokens: 49024},
+		"gpt-5.6-luna": {Requests: 1, InputTokens: 8298, OutputTokens: 274, ReasoningTokens: 21, CacheCreationInputTokens: 0, CacheReadInputTokens: 49024},
 	}, metrics.PerModelUsage, "the numbers TestApplyCodexMetrics pins for basic_run.ndjson")
 	assertCodexUsageSumsToTotals(t, metrics)
 	assert.NotContains(t, log, codexChildUsageMarker, "no id, no sandbox command")
@@ -871,7 +872,7 @@ func TestCodexRun_ChildReadFailureIsAWarning(t *testing.T) {
 	assert.NotContains(t, out, "folded into the run metrics")
 	assert.Equal(t, codexTokenTotals{15, 1140, 291, 13618, 40590}, codexTotalsOf(metrics), "the parent's tokens only")
 	assert.Equal(t, map[string]ModelUsage{
-		"gpt-5.6-luna": {Requests: 1, InputTokens: 15, OutputTokens: 1140, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590},
+		"gpt-5.6-luna": {Requests: 1, InputTokens: 15, OutputTokens: 1140, ReasoningTokens: 291, CacheCreationInputTokens: 13618, CacheReadInputTokens: 40590},
 	}, metrics.PerModelUsage)
 	assertCodexUsageSumsToTotals(t, metrics)
 }
@@ -884,8 +885,8 @@ func TestCodexRun_NonZeroExitStillReadsTheChildren(t *testing.T) {
 
 	assert.Equal(t, 137, exit)
 	assert.Equal(t, map[string]ModelUsage{
-		"gpt-5.6-luna":  {Requests: 2, InputTokens: 18, OutputTokens: 1148, CacheCreationInputTokens: 20996, CacheReadInputTokens: 40590},
-		"gpt-5.6-terra": {Requests: 1, InputTokens: 1000, OutputTokens: 200, CacheCreationInputTokens: 2000, CacheReadInputTokens: 1000},
+		"gpt-5.6-luna":  {Requests: 2, InputTokens: 18, OutputTokens: 1148, ReasoningTokens: 291, CacheCreationInputTokens: 20996, CacheReadInputTokens: 40590},
+		"gpt-5.6-terra": {Requests: 1, InputTokens: 1000, OutputTokens: 200, ReasoningTokens: 100, CacheCreationInputTokens: 2000, CacheReadInputTokens: 1000},
 	}, failed.PerModelUsage, "the parent's entry and the children it spawned")
 	assert.Equal(t, codexTokenTotals{1018, 1348, 391, 22996, 41590}, codexTotalsOf(failed))
 	assert.Equal(t, 1, strings.Count(log, codexChildUsageMarker), "one read command, after the run")

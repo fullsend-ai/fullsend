@@ -221,7 +221,9 @@ depend on the process cwd.
 #### Per-model usage
 
 A map from model spec to
-`{requests, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd}`.
+`{requests, input_tokens, output_tokens, reasoning_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd}`.
+`reasoning_tokens` is that model's reasoning share, kept out of `output_tokens` as in `token_usage`;
+only `codex` fills it, and it is omitted when zero.
 On `pi` the key is the pi model spec (`anthropic-vertex/claude-opus-4-6`); on `codex` it is the
 model id codex ran (`gpt-5.6-luna`, or the id after `gateway/`). It exists because a sub-agent's tokens never appear in the parent's
 stream: a pi sub-agent is a separate `pi` process, and a codex sub-agent is a separate thread whose
@@ -264,6 +266,13 @@ differences in the last bullet.
   failed or interrupted turn, a cancel or a timeout, still counts what its children had recorded
   when the runner read them: codex writes a child's usage as each response completes. After a
   cancel or a timeout the run warns that usage recorded after the read is not counted.
+- **Traces.** When an iteration has more than one spec, the same breakdown is exported as
+  `usage <model>` children of that iteration's `agent` span, one per entry, so mixed-vendor
+  spend is not attributed to the parent in OTLP backends. Filter `fullsend.usage.component`
+  to sum billable tokens and cost; the parent `agent` span is the rollup
+  (`fullsend.usage.rollup`) and must not be added to the children. Single-model iterations and
+  runtimes without `per_model_usage` keep the previous `agent` span. See
+  [Per-model usage components](../guides/infrastructure/distributed-tracing.md#per-model-usage-components).
 
 ## Budget and deadline
 

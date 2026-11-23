@@ -17,7 +17,8 @@ For implementation details, see the
 All levels produce metadata (timing, token counts, tool names, errors),
 including up to one `execute_tool` span per id-bearing tool call under each
 `agent` span (Claude Code and pi; codex emits no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
-capped at 1,024 per iteration.
+capped at 1,024 per iteration, and — on mixed-model iterations — one
+`usage <model>` child per `per_model_usage` entry.
 Level 3 adds the agent's conversation content to spans — enabled by one
 environment variable, exactly like Level 2's endpoint.
 
@@ -287,7 +288,8 @@ of the same trace with identical span IDs.
 run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 ├── sandbox_create (gen_ai.operation.name=create_agent)
 └── agent           (one per iteration; gen_ai.operation.name=invoke_agent)
-    └── execute_tool (one per id-bearing tool call; gen_ai.operation.name=execute_tool)
+    ├── execute_tool (one per id-bearing tool call; gen_ai.operation.name=execute_tool)
+    └── usage <model> (mixed-model iterations only; one per PerModelUsage entry)
 ```
 
 `execute_tool` spans are named `execute_tool <tool name>`. One starts when
@@ -329,6 +331,7 @@ these spans — see Content capture.
 | `sandbox_create` | Internal | Always |
 | `agent` | Internal | Always |
 | `execute_tool` | Internal | Always |
+| `usage <model>` | Internal | Mixed-model iterations only |
 
 ## Span attributes
 
@@ -339,18 +342,18 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 
 | Attribute | Example | Present on |
 |-----------|---------|------------|
-| `gen_ai.operation.name` | `invoke_agent` | `run`, `agent` (`create_agent` on `sandbox_create`; `execute_tool` on `execute_tool`) |
+| `gen_ai.operation.name` | `invoke_agent` | `run`, `agent`, mixed-model `usage <model>` (`create_agent` on `sandbox_create`; `execute_tool` on `execute_tool`) |
 | `gen_ai.agent.name` | `triage` | `run`, `agent` |
 | `gen_ai.tool.name` | `Bash` | `execute_tool` (the runtime's tool name; absent when the call was never reported) |
 | `gen_ai.tool.call.id` | `toolu_01…` | `execute_tool` (absent when the id carried a security finding — a tainted id is dropped, never substituted, so it cannot collide with another call's) |
-| `gen_ai.system` / `gen_ai.provider.name` | `anthropic` / `anthropic-vertex` | `agent` (serving endpoint of the model used on this span — varies by runtime; `system` is the pre-v1.37 name — both keys are emitted with the same value so EM-001 and modern backends agree. Not the runtime name: `fullsend.runtime` is the harness.) |
-| `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
-| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` (`input_tokens` includes the two cache counters, per the GenAI convention — see [Persisted token fields](#persisted-token-fields)) |
+| `gen_ai.system` / `gen_ai.provider.name` | `anthropic` / `anthropic-vertex` | `agent`, and each mixed-model `usage <model>` child (serving endpoint of the model used on this span — varies by runtime; `system` is the pre-v1.37 name — both keys are emitted with the same value so EM-001 and modern backends agree. Not the runtime name: `fullsend.runtime` is the harness.) |
+| `gen_ai.request.model` | `claude-opus-4-6` | `agent` (parent resolved model); each mixed-model `usage <model>` child (that component's model id) |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` on single-model runs (`input_tokens` includes the two cache counters, per the GenAI convention — see [Persisted token fields](#persisted-token-fields)); mixed-model iterations emit these on `usage <model>` children instead of the `agent` span (see [Per-model usage components](#per-model-usage-components)) |
 | `gen_ai.usage.reasoning.output_tokens` | `4096` | `agent` (only when non-zero; a breakdown of `output_tokens` — see [Persisted token fields](#persisted-token-fields)) |
 
 Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
 
-The `agent` span's provider identity reflects only the parent run's serving endpoint. When a Pi run dispatches subagents on different vendors, their usage is folded into the same span's token/cost totals without its own provider attribution — a mixed-vendor Pi run can attach multi-provider usage to a span identified by a single provider.
+When an iteration reports usage for more than one model, the parent `agent` span keeps the parent serving-endpoint identity and the iteration's `fullsend.cost_usd` rollup, and one `usage <model>` child is emitted per `per_model_usage` entry. Each child carries that component's provider, model, tokens, request count, and cost. See [Per-model usage components](#per-model-usage-components).
 
 > **Breaking change — Pi runtime:** `agent` spans from the Pi runtime used to
 > report the literal string `pi` under `gen_ai.system`. They now report the
@@ -378,15 +381,31 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 > already counted reasoning inside output and do not change. See
 > [Persisted token fields](#persisted-token-fields).
 
+> **Breaking change — mixed-model iterations:** `agent` spans for
+> mixed-model iterations (more than one `per_model_usage` entry) no
+> longer carry `gen_ai.usage.input_tokens` / `output_tokens` /
+> `cache_creation.input_tokens` / `cache_read.input_tokens`. Those values
+> move to the new `usage <model>` children, one per `per_model_usage` entry.
+> Downstream consumers that summed `gen_ai.usage.*` directly off the `agent`
+> span will silently see missing or zero token counts for mixed-model
+> iterations going forward and must filter on `fullsend.usage.component`
+> children instead. Single-model iterations are unaffected. See
+> [Per-model usage components](#per-model-usage-components).
+
 ### Fullsend-specific attributes
 
 | Attribute | Present on | Description |
 |-----------|------------|-------------|
-| `fullsend.runtime` | `agent` | Harness identity (`claude`, `pi`, …), distinct from `gen_ai.system` (the serving endpoint) |
+| `fullsend.runtime` | `agent`, mixed-model `usage <model>` | Harness identity (`claude`, `pi`, …), distinct from `gen_ai.system` (the serving endpoint) |
 | `fullsend.usage.input_includes_cache` | `agent` | Emitted with `gen_ai.usage.input_tokens`, always `true`. Marks that count as including the two cache counters. Spans written before that change carry the count without it (see [Persisted token fields](#persisted-token-fields)) |
 | `fullsend.work_item_id` | `run` | Work item identity (e.g. `owner/repo#123`); primary cross-run correlation key |
 | `fullsend.agent` | `run` | Agent name |
-| `fullsend.cost_usd` | `run` (aggregated), `agent` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)) |
+| `fullsend.cost_usd` | `run` (aggregated), `agent`, mixed-model `usage <model>` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)). On mixed-model iterations the `agent` value is the iteration rollup and each `usage <model>` value is that component's share; do not sum both. |
+| `fullsend.usage.rollup` | `agent` | Present (`true`) on mixed-model iterations: this span is the parent/root rollup, not a billable component. Absent on single-model runs. |
+| `fullsend.usage.component` | `usage <model>` | Present (`true`) on each per-model usage child. Query this flag (not span name) to sum billable tokens/cost without the parent rollup. |
+| `fullsend.usage.model_spec` | `usage <model>` | The `per_model_usage` key that produced this child (`anthropic-vertex/claude-sonnet-5`, `xai-vertex/xai/grok-4.6`, `unknown`). |
+| `fullsend.usage.requests` | `usage <model>` | Inference episodes attributed to this model spec (one for the parent iteration, one per sub-agent call). |
+| `fullsend.usage.dropped` | `agent` | Present when the iteration's `per_model_usage` breakdown had more distinct specs than the 1,024-spec usage-span cap allows: the number of specs refused a `usage <model>` component. Mirrors `fullsend.tool_spans.dropped` for the usage-component stream. |
 | `fullsend.tool_calls` | `run` (aggregated), `agent` | Number of tool invocations |
 | `fullsend.num_turns` | `run` | Total conversation turns across all iterations |
 | `fullsend.iterations` | `run` | Number of agent iterations (validation loop included) |
@@ -479,6 +498,77 @@ Set on every span via the OTel resource:
 
 Additional resource attributes from `OTEL_RESOURCE_ATTRIBUTES` are merged in.
 
+## Per-model usage components
+
+An iteration with more than one model in its per-model usage already records
+the breakdown in `metrics.json` (`per_model_usage`). The trace now exports the
+same components so model/provider dashboards do not attribute every child to
+the parent.
+
+**When they appear.** One Internal child of that iteration's `agent` span per
+`per_model_usage` entry, named `usage <model>`, only when the iteration has
+**more than one** spec. A single-model run (including an Agent-enabled
+iteration that dispatched nothing) and any runtime that leaves
+`per_model_usage` unset keep today's `agent` span and emit no children.
+Historical traces are not rewritten; `metrics.json` is unchanged. At most 1,024
+children are emitted per iteration; a breakdown with more distinct specs than
+that reports the overflow as `fullsend.usage.dropped` on the `agent` span
+instead of emitting further children.
+
+**What each child carries.** The serving-endpoint provider (`gen_ai.system` /
+`gen_ai.provider.name`), the effective model id (`gen_ai.request.model`),
+input/output/cache-creation/cache-read tokens (`gen_ai.usage.*`),
+`fullsend.usage.requests`, `fullsend.usage.model_spec`, `fullsend.cost_usd`
+(that component, rounded to cents), and `fullsend.runtime`. Token counts follow
+the same rules as a single-model `agent` span: `gen_ai.usage.input_tokens`
+includes the two cache counters and the child carries
+`fullsend.usage.input_includes_cache=true`, and `gen_ai.usage.output_tokens`
+includes that model's reasoning tokens on every runtime (Codex reports them
+separately, so the child adds them back). Status is Ok: the
+span reports consumed usage, not the agent's outcome. There is no prompt/output
+content, no credentials, and no `mlflow.*` attributes. A record with no model
+spec is keyed `unknown` (provider and model `unknown`) rather than dropped. Pi
+keys carry their serving endpoint as a `provider/id` prefix. Claude and Codex
+keys are model ids and inherit the iteration's serving endpoint, including
+`gateway` when that route is selected. Claude reports no per-model request
+count (`fullsend.usage.requests` is `0`); Codex reports no dollar cost
+(`fullsend.cost_usd` is `0`).
+
+**How to query without double-counting.** The parent `agent` span is a rollup:
+it keeps the parent identity and the iteration's `fullsend.cost_usd`, and is
+marked `fullsend.usage.rollup=true`. It does **not** carry
+`gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` on
+mixed-model iterations, because backends that auto-sum those keys (MLflow; ADR
+0050, 2026-08-18) would otherwise add the rollup to the components.
+The `gen_ai.usage.reasoning.output_tokens` breakdown has no per-model
+counterpart and stays on the `agent` span.
+
+Billable tokens and cost live on the children
+(`fullsend.usage.component=true`). Filter on that flag — not on span name —
+when summing. Do not add the `agent` span's `fullsend.cost_usd` to the
+children's — sum the children directly instead of using the `agent` span's
+rollup as a stand-in for that sum (see the rounding caveat below). The root
+`run` span's `fullsend.cost_usd` is the run total and is custom-namespaced, so
+it is not auto-summed with GenAI usage. Across retry iterations, each `agent`
+span (and its children, if mixed) covers that iteration only; the root remains
+the run rollup. The [worked example](#worked-example) shows a null-safe filter
+that reads single-model `agent` spans and mixed-model components together.
+
+When no components were dropped by the 1,024-span cap, the sum of component
+uncached input (`input_tokens` minus the two cache attributes), cache-creation,
+and cache-read tokens equals that iteration's run totals — those are exact
+integers, never rounded. Component `fullsend.cost_usd` values are each rounded
+to cents independently, the same rounding the `agent` and root spans apply (see
+[Rounding and precision by surface](#rounding-and-precision-by-surface)) — not
+by rounding once after summing. Because of that, the sum of the children's
+rounded costs can differ from the `agent` span's rounded rollup by up to a cent
+per component: three components each costing $0.006 round individually to $0.01
+(summing to $0.03), while the raw iteration total of $0.018 rounds to $0.02.
+This is the same class of discrepancy as the agent-vs-root rounding caveat
+below, one level down.
+
+This is usage attribution, not the recursive sub-agent span expansion [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md) deferred: the children are near-zero-duration, carry no turns or content, and are keyed by model spec rather than by `Agent`-tool call.
+
 ## Cost data contract
 
 Fullsend does not calculate inference cost from token counts or maintain a
@@ -528,6 +618,7 @@ apply different precision:
 |---------|-------|-----------|---------|
 | `metrics.json` `total_cost_usd` | Raw aggregate | Full float64 | `0.8234567` |
 | `fullsend.cost_usd` on `agent` spans | Per-iteration | Rounded to cents: `round(value × 100) / 100` | `0.41` |
+| `fullsend.cost_usd` on mixed-model `usage <model>` spans | That model spec's share of the iteration | Rounded to cents: `round(value × 100) / 100` | `0.20` |
 | `fullsend.cost_usd` on the root `run` span | Aggregate | Rounded to cents: `round(value × 100) / 100` | `0.82` |
 | Console (per-iteration) | Per-iteration | Four decimal places (`$%.4f`) | `$0.4117` |
 | Status comment footer | Aggregate | Two decimal places (`$%.2f`) | `$0.82` |
@@ -684,9 +775,14 @@ reasoning; completion alone does not imply non-zero reasoning.
 
 ### Worked example
 
-Extract the relevant attributes from each `agent` span in the local OTLP
-JSONL file (see [Output file format](#output-file-format)). The filter
-normalizes two fields, so old and new files read the same way. `input` is
+Extract the relevant attributes from each billable span in the local OTLP
+JSONL file (see [Output file format](#output-file-format)): an `agent` span
+on a single-model iteration, or each `usage <model>` component
+(`fullsend.usage.component=true`) on a mixed-model one. The mixed-model
+`agent` span is a rollup (`fullsend.usage.rollup=true`) with no
+`gen_ai.usage.input_tokens` or cache attributes, so the filter skips it and
+defaults any missing counter to zero rather than failing on `null`. The
+filter normalizes two fields, so old and new files read the same way. `input` is
 uncached input: on a span that carries
 `fullsend.usage.input_includes_cache` it is `gen_ai.usage.input_tokens`
 minus the two cache attributes, and on an older span, which has no such
@@ -698,12 +794,15 @@ back:
 ```bash
 jq -c '
   .resourceSpans[]?.scopeSpans[]?.spans[]?
-  | select(.name == "agent")
-  | .attributes
-  | map({key: .key, value: (.value.intValue // .value.doubleValue // .value.stringValue // .value.boolValue)})
-  | from_entries
-  | (.["gen_ai.usage.cache_creation.input_tokens"] | tonumber) as $cache_creation
-  | (.["gen_ai.usage.cache_read.input_tokens"] | tonumber) as $cache_read
+  | . as $span
+  | (.attributes
+     | map({key: .key, value: (.value.intValue // .value.doubleValue // .value.stringValue // .value.boolValue)})
+     | from_entries) as $attrs
+  | select($attrs["fullsend.usage.rollup"] != true
+           and ($span.name == "agent" or $attrs["fullsend.usage.component"] == true))
+  | $attrs
+  | ((.["gen_ai.usage.cache_creation.input_tokens"] // 0) | tonumber) as $cache_creation
+  | ((.["gen_ai.usage.cache_read.input_tokens"] // 0) | tonumber) as $cache_read
   | (.["fullsend.usage.input_includes_cache"] == true) as $input_includes_cache
   | ((.["gen_ai.usage.reasoning.output_tokens"] // .["gen_ai.usage.reasoning_tokens"] // 0) | tonumber) as $reasoning
   | (has("gen_ai.usage.reasoning.output_tokens") | not) as $before_new_key
@@ -711,9 +810,9 @@ jq -c '
   | {
       runtime: .["fullsend.runtime"],
       model: .["gen_ai.request.model"],
-      input: ((.["gen_ai.usage.input_tokens"] | tonumber)
+      input: (((.["gen_ai.usage.input_tokens"] // 0) | tonumber)
               - (if $input_includes_cache then $cache_creation + $cache_read else 0 end)),
-      output: ((.["gen_ai.usage.output_tokens"] | tonumber)
+      output: (((.["gen_ai.usage.output_tokens"] // 0) | tonumber)
                + (if $before_new_key and $kept_reasoning_out then $reasoning else 0 end)),
       cache_creation: $cache_creation,
       cache_read: $cache_read,
@@ -768,11 +867,11 @@ the same usage twice. An iteration can include multiple models or providers
 through fallback and sub-agents, so a single span's model label may not be
 enough. Use the [per-model usage breakdown](../../cli/run.md#per-model-usage)
 where available. Its `output_tokens` come from `metrics.json`, not from the
-span: on Codex they exclude reasoning, so add the run-level `reasoning`
-count. It has no per-model reasoning counter, so mixed-model
-Codex reasoning cannot be priced exactly at different model rates from
-that breakdown alone. Missing attribution or usage makes the result an
-estimate, not a complete billing record.
+span: on Codex they exclude reasoning, so add that entry's
+`reasoning_tokens` (omitted when zero; only Codex fills it). The matching
+`usage <model>` span already includes that reasoning in its
+`gen_ai.usage.output_tokens`. Missing attribution or usage makes the result
+an estimate, not a complete billing record.
 
 ## Output file format
 
