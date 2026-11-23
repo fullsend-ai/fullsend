@@ -111,4 +111,7 @@ Then add the org to `orgPool` in `internal/e2etest/testutil.go`
 to `POOL_ORG_IDS` so the e2e inference gateway admits the org's
 repositories (a frozen change — see
 [Inference gateway test gateway](../../docs/guides/dev/e2e-testing.md#inference-gateway-test-gateway)),
-and run `make behaviour-test`.
+update the org range in the *E2E Org Pool* workflow
+(`.github/workflows/e2e-org-pool.yml`, the `seq -f 'halfsend-%02g' 1 NN`
+line — `setup-org_test.sh` checks it against `DevPoolOrgCount`), and run
+`make behaviour-test`.

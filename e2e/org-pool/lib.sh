@@ -150,11 +150,11 @@ assign_all_repo_role() {
     return 0
   fi
 
-  echo "    Assigning all-repository ${perm} (role ${role_id}) to ${username}..."
   if [[ "${DRY_RUN}" == "1" ]]; then
     echo "    DRY-RUN: would assign all-repository ${perm} to ${username}"
     return 0
   fi
+  echo "    Assigning all-repository ${perm} (role ${role_id}) to ${username}..."
   if ! gh api -X PUT "/orgs/${org}/organization-roles/users/${username}/${role_id}" --silent; then
     echo "    ERROR: failed to assign all-repository ${perm} to ${username}." >&2
     return 1
@@ -223,6 +223,11 @@ ensure_status_team() {
   elif echo "${body}" | grep -q "HTTP 404"; then
     if [[ "${DRY_RUN}" == "1" ]]; then
       echo "    DRY-RUN: would create team ${org}/${slug}"
+      # A real run would also remove the team creator (GitHub adds the
+      # creating user as a maintainer) and add ${member} as its only
+      # member. The team does not exist yet, so there is nothing to
+      # verify; report the full plan and stop.
+      echo "    DRY-RUN: would remove the team creator and add ${member} as member"
       return 0
     else
       echo "    Creating team ${org}/${slug}..."
@@ -281,6 +286,7 @@ ensure_status_team() {
   if [[ "${state}" != "active member" ]]; then
     if [[ "${DRY_RUN}" == "1" ]]; then
       echo "    DRY-RUN: would set ${member} on ${org}/${slug} as member (current: ${state})"
+      # The membership is only planned, so do not claim it is active.
     else
       echo "    Setting ${member} on ${org}/${slug} as member (current: ${state})..."
       if ! body=$(gh api -X PUT "/orgs/${org}/teams/${slug}/memberships/${member}" \
@@ -294,9 +300,11 @@ ensure_status_team() {
         echo "    ${member} must be an active member of ${org} first." >&2
         return 1
       fi
+      echo "    OK: ${member} is an active member of ${org}/${slug}"
     fi
+  else
+    echo "    OK: ${member} is an active member of ${org}/${slug}"
   fi
-  echo "    OK: ${member} is an active member of ${org}/${slug}"
 
   # The team must hold only the write actor. List every member, including
   # maintainers, and every pending invitation; fail on anyone else.

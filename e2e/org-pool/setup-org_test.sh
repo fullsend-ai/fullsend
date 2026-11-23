@@ -26,6 +26,10 @@
 # no changes; a read error or a non-"all" visibility fails closed; and an
 # unlisted caller is appended without dropping existing entries.
 #
+# Also covers --dry-run end to end: a pending actor invitation is planned,
+# not accepted, and the workflow's hardcoded pool org range is checked
+# against DevPoolOrgCount.
+#
 # Run from the repo root:
 #   bash e2e/org-pool/setup-org_test.sh
 set -euo pipefail
@@ -123,13 +127,19 @@ case "${method} ${path}" in
     out "{}" ;;
   "GET /orgs/${STUB_ORG}/memberships/"*)
     # Org membership: botsend is an active owner, the actors are active
-    # members, everyone else (the outsider) is a 404.
+    # members, everyone else (the outsider) is a 404. A file under
+    # org_membership/<login> overrides the default for that login.
     login="${path##*/}"
-    case "${login}" in
-      botsend) out '{"state":"active","role":"admin"}' ;;
-      fstest-write|fstest-triage) out '{"state":"active","role":"member"}' ;;
-      *) notfound ;;
-    esac ;;
+    if [[ -f "${S}/org_membership/${login}" ]]; then
+      read -r st ro < "${S}/org_membership/${login}"
+      out "{\"state\":\"${st}\",\"role\":\"${ro}\"}"
+    else
+      case "${login}" in
+        botsend) out '{"state":"active","role":"admin"}' ;;
+        fstest-write|fstest-triage) out '{"state":"active","role":"member"}' ;;
+        *) notfound ;;
+      esac
+    fi ;;
   "GET /repos/${STUB_ORG}/test-repo")
     [[ -f "${S}/test-repo" ]] || notfound
     out '{"name":"test-repo"}' ;;
@@ -699,6 +709,41 @@ if [[ "${RC}" -eq 1 ]] && grep -q "Usage" <<< "${OUT}" ; then
   pass "setup dry-run: usage error without an org"
 else
   fail "setup dry-run usage: rc=${RC}: ${OUT}"
+fi
+
+# 17d. --dry-run with a pending actor invitation: the acceptance is
+# planned, not performed, and no PATCH is sent.
+provisioned_state
+mkdir -p "${STATE}/org_membership"
+echo "pending member" > "${STATE}/org_membership/${WRITE}"
+run_setup --dry-run "${ORG}"
+if [[ "${RC}" -eq 0 && -z "$(mutations)" ]] \
+    && grep -q "DRY-RUN: would accept ${WRITE}'s invitation using TEST_ACTOR_WRITE_PAT" <<< "${OUT}" \
+    && ! grep -q -- "-X PATCH /user/memberships/orgs/${ORG}" "${STATE}/gh.log" ; then
+  pass "setup dry-run pending invitation: planned, not accepted"
+else
+  fail "setup dry-run pending invitation: rc=${RC}, changes: $(mutations): ${OUT}"
+fi
+
+# --- 18. workflow org list stays in sync with DevPoolOrgCount ------------
+# The e2e-org-pool.yml workflow hardcodes the pool org range
+# (halfsend plus halfsend-01..halfsend-NN). A new pool org that is added
+# to orgPool but not to the workflow would never be configured. Keep the
+# workflow's range in sync with DevPoolOrgCount, the single source of
+# truth for the pool size.
+WORKFLOW="${SCRIPT_DIR}/../../.github/workflows/e2e-org-pool.yml"
+SLOTPOOL="${SCRIPT_DIR}/../../pkg/behaviourtest/drivers/install/slotpool.go"
+if [[ -f "${WORKFLOW}" && -f "${SLOTPOOL}" ]]; then
+  workflow_count=$(sed -n "s/.*seq -f 'halfsend-%02g' 1 \([0-9][0-9]*\).*/\1/p" "${WORKFLOW}" | head -1)
+  dev_count=$(sed -n 's/.*DevPoolOrgCount = \([0-9][0-9]*\).*/\1/p' "${SLOTPOOL}" | head -1)
+  if [[ -n "${workflow_count}" && -n "${dev_count}" \
+      && "${workflow_count}" == "${dev_count}" ]]; then
+    pass "workflow org list: matches DevPoolOrgCount (${dev_count})"
+  else
+    fail "workflow org list: workflow count '${workflow_count:-missing}' != DevPoolOrgCount '${dev_count:-missing}'"
+  fi
+else
+  fail "workflow org list: ${WORKFLOW} or ${SLOTPOOL} not found"
 fi
 
 if [[ "${FAILURES}" -gt 0 ]]; then

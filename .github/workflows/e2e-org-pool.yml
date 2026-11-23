@@ -19,6 +19,7 @@ on:
     paths:
       - 'e2e/org-pool/**'
       - '.github/workflows/e2e-org-pool.yml'
+  merge_group:
   workflow_dispatch:
     inputs:
       dry_run:
@@ -30,36 +31,81 @@ on:
     # e2e/org-pool. Runs on the default branch (main).
     - cron: '0 4 * * 1'
 
-# One shared group: configuring the pool orgs mutates shared state, so
-# runs must not overlap, and a queued run must not cancel a mutating run
-# mid-loop.
-concurrency:
-  group: ${{ github.workflow }}
-  cancel-in-progress: false
+# Concurrency is set per job: the mutating configure job gets the plain
+# workflow group (runs must not overlap, and a queued run must not cancel
+# a mutating run mid-loop), while the read-only PR test job gets its own
+# group so PR validation never queues behind — or displaces — a mutating
+# run.
 
 jobs:
   test:
     # PR validation: stubbed gh, no secrets, PR-head code.
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'merge_group'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    concurrency:
+      group: ${{ github.workflow }}-test
+      cancel-in-progress: true
     steps:
+      - name: Check for relevant changes
+        id: changes
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        # SYNC-WITH: push.paths / pull_request.paths filters above
+        run: |
+          FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" \
+            --jq '.files[].filename') || {
+            echo "::warning::Failed to fetch merge group files — running as a precaution"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          FILE_COUNT=$(echo "$FILES" | wc -l)
+          if [ "$FILE_COUNT" -ge 300 ]; then
+            echo "::warning::Compare API returned $FILE_COUNT files (possible truncation) — running as a precaution"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if echo "$FILES" | grep -qE '^e2e/org-pool/|^\.github/workflows/e2e-org-pool\.yml$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No relevant files changed — skipping"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.changes.outputs.relevant != 'false'
         with:
-          sparse-checkout: e2e/org-pool
+          # The workflow file and slotpool.go are read by setup-org_test.sh
+          # to keep the workflow's org list in sync with DevPoolOrgCount.
+          sparse-checkout: |
+            e2e/org-pool
+            .github/workflows/e2e-org-pool.yml
+            pkg/behaviourtest/drivers/install/slotpool.go
           persist-credentials: false
 
       - name: Run org pool setup tests
+        if: steps.changes.outputs.relevant != 'false'
         run: bash e2e/org-pool/setup-org_test.sh
 
   configure:
     # Drift correction. The PAT secrets live in the 'e2e-org-pool'
     # environment, which must be restricted to the main branch, so
     # pull_request runs can never reach the org-admin token.
-    if: github.event_name != 'pull_request'
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.event_name != 'merge_group'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: e2e-org-pool
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: false
     steps:
       # Main-branch scripts only: the org-admin token below must never
       # run PR-head code.
@@ -76,10 +122,11 @@ jobs:
           TEST_BOTSEND_PAT: ${{ secrets.TEST_BOTSEND_PAT }}
           TEST_ACTOR_WRITE_PAT: ${{ secrets.TEST_ACTOR_WRITE_PAT }}
           TEST_ACTOR_TRIAGE_PAT: ${{ secrets.TEST_ACTOR_TRIAGE_PAT }}
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
         run: |
           : "${TEST_BOTSEND_PAT:?TEST_BOTSEND_PAT secret is not set}"
           export GH_TOKEN="${TEST_BOTSEND_PAT}"
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+          if [[ "${DRY_RUN_INPUT}" == "true" ]]; then
             dry_run="--dry-run"
           else
             dry_run=""

@@ -95,7 +95,7 @@ echo
 # the actor's own PAT, so CI can do it. PATs come from the repository
 # secrets TEST_ACTOR_WRITE_PAT and TEST_ACTOR_TRIAGE_PAT; the
 # e2e-org-pool.yml workflow runs this script with them on main (PR runs
-# are dry-run and leave invitations pending).
+# never execute this script; they run the stub-based tests instead).
 echo "==> Checking test actor org membership..."
 
 for actor_info in "${TEST_WRITE_USER}:TEST_ACTOR_WRITE_PAT" "${TEST_TRIAGE_USER}:TEST_ACTOR_TRIAGE_PAT"; do
