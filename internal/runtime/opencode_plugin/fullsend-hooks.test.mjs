@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const plugin = (await import(pathToFileURL(process.env.FULLSEND_TEST_ADAPTER))).default;
 const bashPolicy = JSON.parse(process.env.FULLSEND_TEST_BASH_POLICY);
+const bash = process.env.FULLSEND_TEST_BASH;
 
 async function setup(t, extra = {}, scripts = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "fullsend-opencode-"));
@@ -83,7 +84,7 @@ test("restricted Bash permits only vetted builtins from the shared inventory", a
 test("completion callbacks cannot execute through restricted Bash", async (t) => {
   const command = "compgen -C 'printf COMPGEN_RAN >&2' x";
   const registration = "complete -C 'printf COMPLETE_CALLBACK >&2' probe";
-  const shell = (text, cwd) => spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", text], {
+  const shell = (text, cwd) => spawnSync(bash, ["--noprofile", "--norc", "-c", text], {
     cwd, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8",
   });
   for (const policy of [
@@ -160,7 +161,7 @@ test("printf cannot obtain its assignment option through an unknown expansion", 
 test("restricted printf formats cannot write shell variables", async (t) => {
   const shellPath = "/usr/bin:/bin";
   const shell = (command) => {
-    const result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c",
+    const result = spawnSync(bash, ["--noprofile", "--norc", "-c",
       `${command}; builtin printf '%s' "$PATH"`], {
       cwd: process.cwd(), env: { PATH: shellPath }, encoding: "utf8",
     });
@@ -199,23 +200,31 @@ test("restricted printf formats cannot write shell variables", async (t) => {
 
 test("restricted test cannot execute an indexed-array subscript", async (t) => {
   const command = "test -v 'BASH_VERSINFO[$(printf 0 >builtin-evaluated)]'";
+  const probe = spawnSync(bash, ["--noprofile", "--norc", "-c", "test -v 'BASH_VERSINFO[0]'"], {
+    env: { PATH: "/usr/bin:/bin" }, encoding: "utf8",
+  });
+  assert.ifError(probe.error);
   for (const policy of [
     { bashAllowlist: ["test"] },
     { permission: { bash: { "*": "deny", "test *": "allow" } } },
   ]) {
     const h = await setup(t, policy);
     const marker = path.join(h.workspace, "builtin-evaluated");
-    const result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", command], {
-      cwd: h.workspace, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8",
-    });
-    assert.ifError(result.error);
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(readFileSync(marker, "utf8"), "0", "Bash evaluates the quoted subscript");
-    rmSync(marker);
     for (const candidate of [command, "test ! -v 'BASH_VERSINFO[$(printf 0 >builtin-evaluated)]'"]) {
       await assert.rejects(h.before("bash", { command: candidate }), /environment assignments and shell wrappers/, candidate);
       assert.equal(existsSync(marker), false, "the denied call never executes Bash");
     }
+    await t.test("Bash evaluates the quoted subscript", {
+      skip: probe.status === 0 ? false : "PATH Bash does not support indexed-array test -v",
+    }, () => {
+      const result = spawnSync(bash, ["--noprofile", "--norc", "-c", command], {
+        cwd: h.workspace, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8",
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(marker, "utf8"), "0", "Bash evaluates the quoted subscript");
+      rmSync(marker);
+    });
   }
 });
 

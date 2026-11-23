@@ -25,13 +25,17 @@ func TestOpenCodeHookAdapter(t *testing.T) {
 	if err != nil {
 		t.Skip("python3 unavailable")
 	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
 	adapter := filepath.Join(t.TempDir(), "adapter.mjs")
 	require.NoError(t, os.WriteFile(adapter, openCodeHookAdapter, 0o600))
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, "--test", "opencode_plugin/fullsend-hooks.test.mjs")
 	policy := openCodeHookPolicy("", "", &piAgentDef{}, nil)
-	cmd.Env = append(os.Environ(), "FULLSEND_TEST_ADAPTER="+adapter, "FULLSEND_TEST_PYTHON="+python, "FULLSEND_TEST_BASH_POLICY="+openCodeHookConfigJSON(policy))
+	cmd.Env = append(os.Environ(), "FULLSEND_TEST_ADAPTER="+adapter, "FULLSEND_TEST_PYTHON="+python, "FULLSEND_TEST_BASH="+bash, "FULLSEND_TEST_BASH_POLICY="+openCodeHookConfigJSON(policy))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", out)
 }
