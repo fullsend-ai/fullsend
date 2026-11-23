@@ -86,6 +86,8 @@ Credential delivery tier 2 is a scoped relaxation of the constraint established 
 
 `safe-push` is a Go binary baked into the sandbox container image at `/usr/local/bin/safe-push`, protected by Landlock as read-only and executable.
 
+> **Note (2026-11):** the binary was moved to `/opt/fullsend/usr/local/bin/safe-push` as part of the sandbox image / system image separation in [ADR 0173](0173-compose-multiple-images-into-agent-sandboxes.md).
+
 The agent invokes `safe-push` with the same arguments it would pass to `git push`:
 
 ```
@@ -99,6 +101,14 @@ safe-push --force origin feature/my-branch   # denied by default policy
 2. **Evaluate** against the policy file at `/etc/fullsend/safe-push-policy.yaml` (read-only, Landlock-protected).
 3. **Allow:** Spawn a child process via `os/exec` that runs `/usr/bin/git push` with the original arguments, wait for it to exit, and propagate the exit code. Spawning a child rather than replacing the process image preserves the `safe-push` parent in the process tree, which is required for L7 process-tree tracking — OpenShell walks `/proc/pid/` ancestry to verify that the `git` process making the network call is descended from `safe-push`.
    **Deny:** Print a clear error to stderr describing what was blocked and why (e.g., `safe-push: denied: force-push is not allowed by policy`), write a structured JSON audit entry to `/tmp/workspace/.safe-push-audit.jsonl`, and exit non-zero.
+
+> **Note (2026-11):** the `/etc/fullsend` directory described above now lives
+> at `/opt/fullsend/etc/fullsend/` in the system image described by
+> [ADR 0173](0173-compose-multiple-images-into-agent-sandboxes.md).
+
+> **Note (2026-11):** the real `git` executable described above now lives at
+> `/opt/fullsend/usr/bin/git` in the system image described by
+> [ADR 0173](0173-compose-multiple-images-into-agent-sandboxes.md).
 
 ### L7 enforcement
 

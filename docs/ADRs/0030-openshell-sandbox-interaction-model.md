@@ -142,7 +142,12 @@ directly (credential delivery tier 4).
 **Files and binaries: SCP + images (Options A + B).** Agent definitions, skills,
 host files, and security hooks are SCP'd during bootstrap. Tool binaries and
 runtimes are baked into the container image. OpenShell's `--upload` (Option C)
-is not used — fullsend needs per-file destination control and content expansion.
+is not used — fullsend needs per-file destination control and content
+expansion.
+
+> **Note (2026-11):** this part of the decision was revised in [ADR
+> 0173](0173-compose-multiple-images-into-agent-sandboxes.md) which now
+> distinguishes between a **sandbox image** and a **system image**.
 
 **Commands: SSH (Option A).** `SSHStreamReader` enables real-time parsing of the
 agent's `stream-json` output. All SSH traffic tunnels through the gateway's
