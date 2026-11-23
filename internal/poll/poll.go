@@ -366,12 +366,16 @@ func (p *Poller) Run(ctx context.Context) error {
 			where := fmt.Sprintf("%s event on IID %d", event.Type, event.IID)
 			normalizedEvent.State.Labels = dispatch.LogBoundTransportLabels(where, normalizedEvent.State.Labels)
 			logBoundTransportEventStrings(where, &normalizedEvent)
-			stages, err = p.router.Route(&normalizedEvent)
+			var reason string
+			stages, reason, err = routeWithReason(p.router, &normalizedEvent)
 			if err != nil {
 				log.Printf("dispatch core error for %s: %v", eventKey, err)
 				recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
 					fmt.Errorf("dispatch core error for %s: %w", eventKey, err))
 				continue
+			}
+			if len(stages) == 0 {
+				log.Printf("  no stages routed for %s: %s", eventKey, reason)
 			}
 		}
 
@@ -748,6 +752,17 @@ func (p *Poller) Run(ctx context.Context) error {
 		return fmt.Errorf("poll cycle: %w", err)
 	}
 	return nil
+}
+
+// routeWithReason routes event through router and, when router implements
+// dispatch.ReasonRouter, also returns why no stage was selected so the poll
+// log names a reason instead of only counting the event as undispatched.
+func routeWithReason(router dispatch.EventRouter, event *dispatch.NormalizedEvent) ([]string, string, error) {
+	if rr, ok := router.(dispatch.ReasonRouter); ok {
+		return rr.RouteWithReason(event)
+	}
+	stages, err := router.Route(event)
+	return stages, "router selected no stages", err
 }
 
 // pendingLabelIsCurrent reports whether a successfully retried pending label
