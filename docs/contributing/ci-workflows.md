@@ -34,6 +34,43 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
 
 **Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
 
+### Runs of discarded merge groups
+
+When the merge queue rebuilds (an entry fails or is removed), GitHub deletes
+the old `gh-readonly-queue/main/pr-<n>-<sha>` branches and creates new groups.
+It does not cancel the runs started for the old groups, and concurrency groups
+cannot either: a `merge_group` run's `github.ref` contains the group's head
+SHA, so every group gets its own concurrency group, and workflow expressions
+have no function to cut the pull request number out of the ref. Left alone,
+these runs keep going; the E2E ones use up the test organizations' API quota
+([#9353](https://github.com/fullsend-ai/fullsend/issues/9353)).
+
+`merge-queue-cancel-superseded.yml` does the cleanup. On each new merge group
+it runs `scripts/cancel-superseded-merge-group-runs.sh`, which cancels
+unfinished `merge_group` runs whose branch no longer exists:
+
+- **Listing gate.** If the `gh-readonly-queue/` branch listing fails, is
+  empty, or does not contain the run's own branch, it cancels nothing.
+- **Confirm step.** A branch missing from the listing is only a candidate,
+  because GitHub does not promise the listing is complete or up to date.
+  Before each cancel, the script asks for that one branch
+  (`GET repos/{repo}/git/ref/heads/<branch>`) and cancels only on a definite
+  HTTP 404. Any other answer (200, 5xx, rate limit, network error) keeps the
+  run.
+- **Age threshold.** Runs younger than 120 seconds are kept ("too new").
+- It never cancels a run whose event is not `merge_group`, or its own run.
+
+The job is not a required check, and it exits 0 on API errors, so it never
+fails a merge group.
+
+**Merged groups are cleaned up too.** When a group merges, GitHub deletes its
+branch as well, so the next cleanup also cancels that group's leftover runs.
+The required checks (`behaviour`, `playback`) have finished by then, but the
+non-required `CI` workflow can still be running. Cancelling it loses that
+run's coverage upload and Semgrep scan artifact, and the run shows as
+cancelled on a commit in `main`. The same workflow runs again on the push to
+`main`, so the coverage and scan still happen.
+
 ## Context-variable scoping
 
 GitHub Actions contexts describe different parts of an invocation. Do not treat similarly named properties as interchangeable when moving logic between inline workflow steps, reusable workflows, and composite actions. See the [GitHub contexts reference](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts) for the complete availability matrix.

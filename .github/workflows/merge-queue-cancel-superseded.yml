@@ -1,0 +1,60 @@
+name: Merge Queue Cancel Superseded
+
+# Cancels workflow runs left behind by discarded merge-queue groups (#9353).
+# When the queue rebuilds, GitHub deletes the old gh-readonly-queue/ branches
+# but does not cancel their runs, and concurrency groups cannot do it (see
+# docs/contributing/ci-workflows.md). Each new group's run cancels unfinished
+# merge_group runs whose branch no longer exists. If the branch
+# listing fails, is empty, or lacks this run's own branch, it cancels nothing.
+# Before each cancel it confirms that one branch is gone (GET git/ref, cancel
+# only on HTTP 404), and it keeps runs younger than 120 seconds.
+#
+# Merged groups: a merged group's branch is deleted too, so its leftover runs
+# are cancelled as well. The required checks (behaviour, playback) have
+# finished by then, but the non-required CI workflow can still be running;
+# that run loses its coverage upload and scan artifact and shows as cancelled
+# on a commit in main. CI runs again on the push to main.
+#
+# Timing: GitHub's docs do not say whether the old branches are deleted before
+# the new groups' runs start. The script does not depend on it. It is
+# idempotent and runs once per new group: a rebuild creates one group per
+# queued pull request, and if every one of their runs starts before the old
+# branches are gone, the next group created (the next queue entry or rebuild)
+# cancels the leftovers. No sleep is needed.
+#
+# Not a required check. The script exits 0 on every handled error, so this
+# workflow never fails a merge group.
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+# Every merge group has its own ref (it contains the group's head SHA), so a
+# group's cleanup run never shares a concurrency group with another group's.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cancel-superseded:
+    runs-on: ubuntu-24.04
+    # Three or four API calls plus two per stale run (confirm GET, cancel).
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      # GITHUB_REPOSITORY and GITHUB_RUN_ID come from the runner's default
+      # environment.
+      - name: Cancel runs of discarded merge groups
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWN_REF: ${{ github.ref }}
+        run: bash scripts/cancel-superseded-merge-group-runs.sh
