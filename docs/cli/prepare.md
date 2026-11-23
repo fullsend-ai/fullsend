@@ -56,8 +56,10 @@ that the runs use. The image can depend on all of them.
      the preflight sandbox still pulls the image through the gateway without
      the credential, as `fullsend run` does, so a public image keeps working.
      A full disk is the exception: the command fails with `disk-space`.
-   - When `OPENSHELL_GATEWAY_ENDPOINT` is set, the gateway may keep its images
-     on another host, and `fullsend prepare` cannot authenticate a pull there.
+   - When `OPENSHELL_GATEWAY_ENDPOINT` names a gateway on another host (not a
+     loopback, `localhost`, host-gateway or unix-socket endpoint), the gateway
+     keeps its images on that host, and `fullsend prepare` cannot authenticate a
+     pull there.
      It does not pull into the local store. If a credential would have
      applied, it warns that the credential cannot be used. The image is
      reported as `skipped`, and the preflight sandbox pulls it anonymously. A
@@ -150,7 +152,7 @@ With `--json`, stdout holds one JSON object, also when the command fails:
 | `agent` | The agent name |
 | `harness` | The harness file the agent resolved to |
 | `arch` | The sandbox architecture: the host's, or `FULLSEND_SANDBOX_ARCH` when set to a supported value |
-| `gateway` | `local`, or `remote` when `OPENSHELL_GATEWAY_ENDPOINT` is set |
+| `gateway` | `local`, or `remote` when `OPENSHELL_GATEWAY_ENDPOINT` names a gateway on another host |
 | `images[].role` | `sandbox` |
 | `images[].ref` | The resolved image reference. Empty when the harness sets no image and the gateway uses its default sandbox image |
 | `images[].source` | `harness`, `FULLSEND_SANDBOX_IMAGE`, or `gateway-default` |

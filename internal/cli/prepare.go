@@ -231,9 +231,18 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	}
 	defer restoreEnv()
 
+	if err := prepareCanceled(ctx); err != nil {
+		return res, err
+	}
 	image, source, harnessPath, sandboxTimeout, err := resolvePrepareImage(ctx, opts, printer)
 	res.Harness = harnessPath
 	if err != nil {
+		if cErr := prepareCanceled(ctx); cErr != nil {
+			return res, cErr
+		}
+		return res, err
+	}
+	if err := prepareCanceled(ctx); err != nil {
 		return res, err
 	}
 	res.Images = append(res.Images, prepareImage{Role: "sandbox", Ref: image, Source: source})
@@ -241,21 +250,26 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	printer.KeyValue("Image", displayPrepareImage(image))
 	printer.KeyValue("Arch", res.Arch)
 
-	// Read before CheckGateway: it may set OPENSHELL_GATEWAY_ENDPOINT itself
-	// for a containerized CLI that reaches the local gateway through a
-	// host-gateway name. Only an endpoint the caller set names a gateway
-	// whose image store may not be this host's.
-	remote := os.Getenv("OPENSHELL_GATEWAY_ENDPOINT") != ""
+	// A gateway on another host has an image store that is not this host's.
+	// Loopback and host-gateway endpoints, which CheckGateway may set for a
+	// containerized CLI, name a gateway on this host.
+	remote := sandbox.GatewayEndpointIsRemote()
 	res.Gateway = prepareGatewayLocal
 	if remote {
 		res.Gateway = prepareGatewayRemote
 	}
 
+	if err := prepareCanceled(ctx); err != nil {
+		return res, err
+	}
 	printer.StepStart("Checking openshell availability")
 	if err := prepareEnsureOpenshellFn(); err != nil {
 		printer.StepFail("openshell not available")
 		return res, &prepareError{kind: prepareErrOpenshell, err: fmt.Errorf("openshell is required: %w", err),
 			hint: "install the OpenShell CLI (see the running agents locally guide)"}
+	}
+	if err := prepareCanceled(ctx); err != nil {
+		return res, err
 	}
 	printer.StepStart("Checking gateway")
 	if err := prepareCheckGatewayFn(); err != nil {
@@ -265,6 +279,9 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	}
 	printer.StepDone("Gateway available")
 
+	if err := prepareCanceled(ctx); err != nil {
+		return res, err
+	}
 	if err := warmPrepareImage(ctx, img, remote, printer); err != nil {
 		return res, err
 	}
@@ -282,18 +299,27 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	if err := runPrepareSandboxPreflight(ctx, res.Preflight, image, policyPath, sandboxTimeout, printer); err != nil {
 		// The preflight is the first pull of an image the gateway had to
 		// fetch itself; a pull failure there is the image's failure.
-		if img.Status == prepareImageSkipped {
+		// A failure after the sandbox reached Ready is a teardown failure,
+		// not the image's.
+		if img.Status == prepareImageSkipped && res.Preflight.Status == preparePreflightFailed {
 			img.Status = prepareImageFailed
 		}
 		// fullsend cannot authenticate a pull on a remote gateway, so a
 		// private image fails there for a reason the generic hints miss.
+		// The sandbox cleanup hint stays: the sandbox may still exist.
 		var pe *prepareError
 		if _, hasCred := sandboxImageCredential(image); remote && hasCred && errors.As(err, &pe) &&
 			(pe.kind == prepareErrAuth || pe.kind == prepareErrPull || pe.kind == prepareErrPreflight) {
-			if pe.kind != prepareErrAuth && pe.hint != "" {
-				pe.hint = prepareRemoteAuthHint + "; " + pe.hint
-			} else {
-				pe.hint = prepareRemoteAuthHint
+			rest := pe.hint
+			if pe.kind == prepareErrAuth {
+				// The generic registry hint tells the user to supply a
+				// credential, which a remote gateway cannot use; keep only
+				// the cleanup hint.
+				rest = prepareCleanupHint(res.Preflight)
+			}
+			pe.hint = prepareRemoteAuthHint
+			if rest != "" {
+				pe.hint += "; " + rest
 			}
 		}
 		return res, err

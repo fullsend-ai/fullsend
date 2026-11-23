@@ -25,6 +25,44 @@ const (
 // neither — resolves in a given container runtime.
 var containerGatewayHosts = []string{"host.containers.internal", "host.docker.internal"}
 
+// GatewayEndpointIsRemote reports whether OPENSHELL_GATEWAY_ENDPOINT names a
+// gateway on another host, whose image store is not this host's. An unset
+// endpoint, a loopback address or "localhost", a host-gateway name such as
+// host.containers.internal (how a containerized CLI reaches the gateway on
+// its own host), and a unix socket all name a gateway on this host.
+func GatewayEndpointIsRemote() bool {
+	endpoint := strings.TrimSpace(os.Getenv("OPENSHELL_GATEWAY_ENDPOINT"))
+	if endpoint == "" {
+		return false
+	}
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "//" + endpoint
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return true
+	}
+	if u.Scheme == "unix" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return true
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return false
+	}
+	for _, h := range containerGatewayHosts {
+		if host == h {
+			return false
+		}
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback()
+	}
+	return true
+}
+
 var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 var gatewayOverrideOnce = &sync.Once{}

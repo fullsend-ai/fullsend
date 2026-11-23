@@ -485,6 +485,7 @@ func TestPrepare_PreflightDeleteFailureFails(t *testing.T) {
 	require.NotNil(t, res.Preflight)
 	assert.Equal(t, preparePreflightPassed, res.Preflight.Status, "the sandbox itself started")
 	assert.Equal(t, prepareCleanupFailed, res.Preflight.Cleanup)
+	assert.Equal(t, prepareImageSkipped, res.Images[0].Status, "a teardown failure is not the image's failure")
 	assert.Contains(t, progress, "Could not delete preflight sandbox")
 }
 
@@ -558,6 +559,89 @@ func TestPrepare_CanceledDuringPullIsNotAFallback(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Empty(t, sb.created, "a canceled pull does not fall back to a gateway pull")
+}
+
+// A loopback or host-gateway endpoint names a gateway on this host, whose
+// image store is the local Podman store: the credentialed pull still runs.
+func TestPrepare_LocalEndpointIsWarmedLocally(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://127.0.0.1:17670",
+		"https://localhost:17670",
+		"http://[::1]:17670",
+		"http://host.containers.internal:17670",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			fake, _, _ := setupImagePull(t)
+			stubPrepareSandbox(t)
+			t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", endpoint)
+
+			res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+			require.NoError(t, err)
+			assert.Equal(t, prepareGatewayLocal, res.Gateway)
+			assert.Equal(t, prepareImagePulled, res.Images[0].Status)
+			assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
+		})
+	}
+}
+
+// The remote-gateway hint replaces the generic registry hint for an
+// authentication failure, but a sandbox that may still exist stays named.
+func TestPrepare_RemoteGatewayAuthFailureKeepsCleanupHint(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	sb.createErr = fmt.Errorf("unauthorized: authentication required (%w for sandbox x: delete refused)", sandbox.ErrCleanupFailed)
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
+
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.Error(t, err)
+	require.NotNil(t, res.Error)
+	assert.Equal(t, prepareErrAuth, res.Error.Kind)
+	assert.Contains(t, res.Error.Hint, prepareRemoteAuthHint)
+	assert.NotContains(t, res.Error.Hint, "CI_REGISTRY_PASSWORD")
+	assert.Contains(t, res.Error.Hint, "openshell sandbox delete "+sb.created[0])
+}
+
+// Cancellation stops preparation between steps, before the next one starts.
+func TestPrepare_CanceledBetweenStepsStopsEarly(t *testing.T) {
+	for _, afterGateway := range []bool{false, true} {
+		name := "after the openshell check"
+		if afterGateway {
+			name = "after the gateway check"
+		}
+		t.Run(name, func(t *testing.T) {
+			fake, _, _ := setupImagePull(t)
+			sb := stubPrepareSandbox(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			gatewayChecked := false
+			prepareEnsureOpenshellFn = func() error {
+				if !afterGateway {
+					cancel()
+				}
+				return nil
+			}
+			prepareCheckGatewayFn = func() error {
+				gatewayChecked = true
+				cancel()
+				return nil
+			}
+			var progress, out bytes.Buffer
+
+			err := runPrepare(ctx, prepareOpts(writePrepareFixture(t, "image: "+privateImage)), ui.New(&progress), &out)
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, context.Canceled)
+			var res prepareResult
+			require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+			require.NotNil(t, res.Error)
+			assert.Equal(t, prepareErrCanceled, res.Error.Kind)
+			assert.Equal(t, afterGateway, gatewayChecked)
+			assert.Empty(t, fake.calls, "nothing is pulled after cancellation")
+			assert.Empty(t, sb.created)
+		})
+	}
 }
 
 func TestPrepare_GatewayAndOpenshellFailures(t *testing.T) {

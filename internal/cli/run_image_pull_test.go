@@ -184,6 +184,27 @@ func TestPrePullSandboxImage_NoAttempt(t *testing.T) {
 	}
 }
 
+// A remote gateway has its own image store: a local pull would not help it.
+func TestPrePullSandboxImage_RemoteGatewaySkipsLocalPull(t *testing.T) {
+	fake, buf, printer := setupImagePull(t)
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
+
+	prePullSandboxImage(context.Background(), privateImage, printer)
+
+	assert.Empty(t, fake.calls)
+	assert.Contains(t, buf.String(), "gateway is remote")
+}
+
+// A local endpoint is not remote: the pull still runs.
+func TestPrePullSandboxImage_LocalEndpointStillPulls(t *testing.T) {
+	fake, _, printer := setupImagePull(t)
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "http://127.0.0.1:17670")
+
+	prePullSandboxImage(context.Background(), privateImage, printer)
+
+	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
+}
+
 func TestPrePullSandboxImage_PodmanMissing(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
 	imagePullLookPathFn = func(string) (string, error) { return "", errors.New("not found") }

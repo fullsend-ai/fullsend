@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -167,6 +168,12 @@ func pullLocalImage(ctx context.Context, image string, cred *registryCredential)
 func prePullSandboxImage(ctx context.Context, image string, printer *ui.Printer) {
 	cred, ok := sandboxImageCredential(image)
 	if !ok {
+		return
+	}
+	if sandbox.GatewayEndpointIsRemote() {
+		// This host's Podman store is not the remote gateway's image store,
+		// so a local pull would not help the gateway.
+		printer.StepWarn("the sandbox gateway is remote, so the registry credential cannot be used; it will pull " + image + " without registry credentials")
 		return
 	}
 	if _, err := imagePullLookPathFn("podman"); err != nil {
