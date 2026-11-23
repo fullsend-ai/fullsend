@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:
-      group: ${{ github.workflow }}-test
+      group: ${{ github.workflow }}-test-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
     steps:
       - name: Check for relevant changes
