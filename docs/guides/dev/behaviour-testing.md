@@ -814,6 +814,8 @@ everything else stays `scenario` — never retried, never masked.
 | GCP WIF quota or rate limit during inference provisioning (provision and status wait) | `behaviourfail.Mark` on matched CLI stderr signatures |
 | `fullsend github setup` fails during repo setup because the forge client gave up on a GitHub 500–504, or GitHub reset the HTTP/2 stream (`stream error: stream ID N; CANCEL; received from peer`). Setup runs as a subprocess, so `gh.IsServerError` cannot see a typed error. Any other setup failure, a 4xx or validation error for example, stays `scenario`. A GraphQL server error during setup also stays `scenario`, because none has been observed there (#9497). | `behaviourfail.Mark` on the CLI's final `Error:` line (`markGitHubSetupTransient` in `drivers/install/common/setup.go`) |
 | e2e auth-token mint or download failure at bootstrap: a transport error, or a 429 or 5xx response | `behaviourfail.Mark` at the e2etest token source |
+| A guarded step-time write that times out ambiguously and is not resent, because the request may already have been applied (`forge.WithoutAmbiguousRetry`); the suite retries the scenario, it does not resend the request — the timeout counterpart of the server-error row above | the forge client's `NotRetriedError` (`internal/forge/github`), matched by `failclass` |
+| A step-time mutation blocked by the lease guard because the scenario's leased slot was taken over mid-run; the guard fails closed before any write, and the retried scenario allocates a fresh slot. Provisioning-time lease races (see below) stay `scenario` | `behaviourfail.Mark` on the steps' `errLeaseLost` (`verifyLease` in `pkg/behaviourtest/steps/lease_guard.go`) |
 
 The bootstrap token mint is first-party, so a mint regression that answers
 5xx is also classified `infrastructure`. That trade-off is deliberate: the
@@ -831,8 +833,10 @@ Everything else classifies as `scenario`: assertion failures (expected
 state not observed), unrecognized API errors (a 4xx other than a rate
 limit, a typed GraphQL error such as `FORBIDDEN`, or an untyped GraphQL
 error whose message does not start with GitHub's "Something went wrong
-while executing your query" server-error prefix), lease races
-(`errLeaseLost`, `errForkReplaced`), unexplained failures of the test
+while executing your query" server-error prefix), provisioning-time
+lease races (the install path's `errLeaseLost`, `errForkReplaced`; a
+lease lost while a scenario holds it is in the table above), unexplained
+failures of the test
 repo's workflow runs, and errors whose message merely mentions a rate
 limit without a structural match. Unexplained workflow-run failures stay
 scenario deliberately: a dispatch workflow failing without its artifact
