@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,11 +30,16 @@ type forgejoServer struct {
 	writes int
 	auth   map[string]bool
 	srv    *httptest.Server
+	// commits holds the files at each recorded commit; tags maps
+	// owner/repo@tag to a commit.
+	commits map[string]map[string]string
+	tags    map[string]string
 }
 
 func newForgejoServer(t *testing.T, prefix string) *forgejoServer {
 	t.Helper()
-	f := &forgejoServer{prefix: prefix, files: map[string]string{}, auth: map[string]bool{}}
+	f := &forgejoServer{prefix: prefix, files: map[string]string{}, auth: map[string]bool{},
+		commits: map[string]map[string]string{}, tags: map[string]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -49,8 +56,19 @@ func (f *forgejoServer) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if repo, ok := strings.CutSuffix(key, "/contents"); ok && r.Method == http.MethodPost {
+		f.changeFiles(w, r, repo)
+		return
+	}
+	if repo, tag, ok := strings.Cut(key, "/tags"); ok {
+		f.serveTags(w, r, repo, strings.TrimPrefix(tag, "/"))
+		return
+	}
 	key = strings.Replace(key, "/contents/", "/", 1)
 	content, exists := f.files[key]
+	if ref := r.URL.Query().Get("ref"); ref != "" {
+		content, exists = f.commits[ref][key]
+	}
 	switch r.Method {
 	case http.MethodGet:
 		if !exists {
@@ -74,8 +92,66 @@ func (f *forgejoServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// snapshot records the current files as a commit and returns its SHA.
+func (f *forgejoServer) snapshot() string {
+	sha := fmt.Sprintf("%040x", len(f.commits)+1)
+	snap := make(map[string]string, len(f.files))
+	maps.Copy(snap, f.files)
+	f.commits[sha] = snap
+	return sha
+}
+
+// changeFiles serves POST /repos/{owner}/{repo}/contents.
+func (f *forgejoServer) changeFiles(w http.ResponseWriter, r *http.Request, repo string) {
+	var body struct {
+		Files []struct {
+			Operation, Path, Content string
+		} `json:"files"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	for _, op := range body.Files {
+		key := repo + "/" + op.Path
+		if op.Operation == "delete" {
+			delete(f.files, key)
+			continue
+		}
+		data, _ := base64.StdEncoding.DecodeString(op.Content)
+		f.files[key] = string(data)
+	}
+	f.writes++
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": f.snapshot()}})
+}
+
+// serveTags serves GET /repos/{owner}/{repo}/tags/{tag} and POST .../tags.
+func (f *forgejoServer) serveTags(w http.ResponseWriter, r *http.Request, repo, tag string) {
+	if r.Method == http.MethodPost {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		target := body["target"]
+		if target == "" {
+			target = f.snapshot()
+		}
+		f.tags[repo+"@"+body["tag_name"]] = target
+		f.writes++
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": target}})
+		return
+	}
+	sha, ok := f.tags[repo+"@"+tag]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": sha}})
+}
+
+// forgejoCLIManifest vendors the workflow bundle into every repository, so
+// it needs no workflow host.
 func forgejoCLIManifest(home, other *forgejoServer) string {
 	return `version: 1
+defaults:
+  vendor: true
 forgejo:
   instances:
     - alias: home
@@ -134,10 +210,11 @@ func TestReposForgejo_InstallStatusUninstallLifecycle(t *testing.T) {
 		return runErr
 	}
 	require.NoError(t, install("forgejo:home/org/app", "org/lib"))
-	assert.Equal(t, 2, home.writes)
+	assert.Equal(t, 4, home.writes, "a config write and a workflow commit per repository")
 	assert.Contains(t, home.files["org/app/.fullsend/config.yaml"], "managed by 'fullsend repos'")
+	assert.Contains(t, home.files["org/app/.forgejo/workflows/fullsend.yml"], "uses: ./.forgejo/workflows/fullsend-dispatch.yml")
 	require.NoError(t, install("forgejo:home/org/*"))
-	assert.Equal(t, 2, home.writes, "reinstall converges without changes")
+	assert.Equal(t, 4, home.writes, "reinstall converges without changes")
 	assert.Equal(t, map[string]bool{"token home-tok": true}, home.auth)
 	assert.Empty(t, other.auth, "the unselected instance is never contacted")
 
@@ -247,6 +324,22 @@ func (failingForgejo) DeleteFile(context.Context, string, string, string, string
 	return os.ErrPermission
 }
 
+func (failingForgejo) GetFileAt(context.Context, string, string, string, string) (*repos.ForgejoFile, error) {
+	return nil, os.ErrPermission
+}
+
+func (failingForgejo) ChangeFiles(context.Context, string, string, string, []repos.ForgejoFileChange) (string, error) {
+	return "", os.ErrPermission
+}
+
+func (failingForgejo) GetTag(context.Context, string, string, string) (string, error) {
+	return "", os.ErrPermission
+}
+
+func (failingForgejo) CreateTag(context.Context, string, string, string, string, string) (string, error) {
+	return "", os.ErrPermission
+}
+
 func TestReposForgejo_InstallFailureAndSelectorErrors(t *testing.T) {
 	home := newForgejoServer(t, "")
 	other := newForgejoServer(t, "")
@@ -300,12 +393,14 @@ forgejo:
         client_id: home-client
       repos:
         - name: org/app
+          vendor: true
     - alias: other
       url: ` + other.url() + `
       oauth:
         client_id: other-client
       repos:
         - name: org/app
+          vendor: true
 `
 	manifestPath := writeTestManifest(t, manifest)
 	oauth := &cliForgejoOAuth{}
@@ -478,4 +573,103 @@ func TestNewForgejoLifecycle_DefaultClient(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, c)
 	assert.True(t, lc.DryRun)
+}
+
+// A workflow host publishes the bundle and a consumer pins it on the same
+// instance; the host cannot be uninstalled while the consumer is declared.
+func TestReposForgejo_WorkflowHostPublishPinAndProtect(t *testing.T) {
+	home := newForgejoServer(t, "/forgejo")
+	p := writeTestManifest(t, `version: 1
+forgejo:
+  instances:
+    - alias: home
+      url: `+home.url()+`
+      repos:
+        - name: fullsend/workflows
+          workflow_host: true
+        - name: org/app
+`)
+	hooks := forgejoEnv(map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"})
+	var runErr error
+	captureStdout(t, func() {
+		runErr = runReposInstall(context.Background(), &reposInstallConfig{manifest: p, concurrency: 4, testForgejo: hooks})
+	})
+	require.NoError(t, runErr)
+	require.Len(t, home.tags, 1)
+	var pin string
+	for _, sha := range home.tags {
+		pin = sha
+	}
+	assert.Contains(t, home.files, "fullsend/workflows/.forgejo/workflows/fullsend-dispatch.yml")
+	assert.Contains(t, home.files["org/app/.forgejo/workflows/fullsend.yml"],
+		"uses: "+home.url()+"/fullsend/workflows/.forgejo/workflows/fullsend-dispatch.yml@"+pin)
+
+	out, err := runForgejoStatus(t, p, nil, hooks, false)
+	require.NoError(t, err)
+	assert.Contains(t, out, "bundle fullsend-bundle-")
+	assert.Contains(t, out, "at "+pin)
+
+	captureStdout(t, func() {
+		runErr = runReposUninstall(context.Background(), &reposUninstallConfig{manifest: p, concurrency: 4, yes: true, testForgejo: hooks},
+			[]string{"forgejo:home/fullsend/workflows"})
+	})
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "still serves 1 consumer(s) declared in repos.yaml: forgejo:home/org/app")
+	m, err := repos.LoadManifest(context.Background(), p)
+	require.NoError(t, err)
+	assert.Len(t, m.Forgejo.Instances[0].Repos, 2, "the refused host stays declared")
+	assert.Contains(t, home.files, "fullsend/workflows/.forgejo/workflows/fullsend-dispatch.yml")
+
+	captureStdout(t, func() {
+		runErr = runReposUninstall(context.Background(), &reposUninstallConfig{manifest: p, concurrency: 4, yes: true, testForgejo: hooks}, nil)
+	})
+	require.NoError(t, runErr)
+	assert.Empty(t, home.files)
+	m, err = repos.LoadManifest(context.Background(), p)
+	require.NoError(t, err)
+	assert.Empty(t, m.Forgejo.Instances[0].Repos)
+}
+
+// A consumer whose workflow index lost its ownership marker keeps its shim,
+// so it stays declared and a later host-only uninstall is still refused.
+func TestReposForgejo_UnownedConsumerStaysDeclaredAndProtectsHost(t *testing.T) {
+	home := newForgejoServer(t, "/forgejo")
+	p := writeTestManifest(t, `version: 1
+forgejo:
+  instances:
+    - alias: home
+      url: `+home.url()+`
+      repos:
+        - name: fullsend/workflows
+          workflow_host: true
+        - name: org/app
+`)
+	hooks := forgejoEnv(map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"})
+	var runErr error
+	captureStdout(t, func() {
+		runErr = runReposInstall(context.Background(), &reposInstallConfig{manifest: p, concurrency: 4, testForgejo: hooks})
+	})
+	require.NoError(t, runErr)
+
+	idx := "org/app/.fullsend/forgejo-workflows.yaml"
+	require.Contains(t, home.files, idx)
+	home.files[idx] = strings.TrimPrefix(home.files[idx], "# fullsend-managed: forgejo-workflows\n")
+
+	captureStdout(t, func() {
+		runErr = runReposUninstall(context.Background(), &reposUninstallConfig{manifest: p, concurrency: 4, yes: true, testForgejo: hooks},
+			[]string{"forgejo:home/org/app"})
+	})
+	require.NoError(t, runErr)
+	assert.Contains(t, home.files, "org/app/.forgejo/workflows/fullsend.yml", "the unowned shim is left in place")
+	m, err := repos.LoadManifest(context.Background(), p)
+	require.NoError(t, err)
+	assert.Len(t, m.Forgejo.Instances[0].Repos, 2, "the consumer stays declared")
+
+	captureStdout(t, func() {
+		runErr = runReposUninstall(context.Background(), &reposUninstallConfig{manifest: p, concurrency: 4, yes: true, testForgejo: hooks},
+			[]string{"forgejo:home/fullsend/workflows"})
+	})
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "still serves 1 consumer(s) declared in repos.yaml: forgejo:home/org/app")
+	assert.Contains(t, home.files, "fullsend/workflows/.forgejo/workflows/fullsend-dispatch.yml")
 }

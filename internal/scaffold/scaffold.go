@@ -15,6 +15,9 @@ var content embed.FS
 //go:embed all:fullsend-repo-gitlab
 var gitlabContent embed.FS
 
+//go:embed all:fullsend-repo-forgejo
+var forgejoContent embed.FS
+
 // FullsendRepoFile returns the content of a file from the fullsend-repo scaffold.
 // The path is relative to the fullsend-repo root (e.g., ".github/workflows/prioritize.yml").
 func FullsendRepoFile(path string) ([]byte, error) {
@@ -241,4 +244,18 @@ func GitLabPerRepoFile(path string) ([]byte, error) {
 // resolution at runtime is handled by fullsend run's config-driven lookup.
 func WalkGitLabPerRepo(fn func(path string, content []byte) error) error {
 	return walkEmbedFS(gitlabContent, "fullsend-repo-gitlab", fn, nil)
+}
+
+// WalkForgejoBundle calls fn for each file of the Forgejo workflow bundle,
+// with paths relative to the repository root the bundle is published to
+// (e.g., ".forgejo/workflows/fullsend-dispatch.yml"). repos install
+// publishes these files to a Forgejo instance's workflow-host repository,
+// or copies them into a vendored repository.
+func WalkForgejoBundle(fn func(path string, content []byte) error) error {
+	return walkEmbedFS(forgejoContent, "fullsend-repo-forgejo/bundle", fn, nil)
+}
+
+// ForgejoShimTemplate returns the Forgejo consumer shim workflow template.
+func ForgejoShimTemplate() ([]byte, error) {
+	return forgejoContent.ReadFile("fullsend-repo-forgejo/templates/shim.yaml")
 }
