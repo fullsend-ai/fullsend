@@ -85,6 +85,15 @@ Runs in two phases:
 1. **Select** — the repositories to converge are chosen from the entries declared in the manifest (see [Selecting repositories](#selecting-repositories)). Positional arguments only filter declared entries; they never create, copy, or carve out entries. Every selected repository must resolve an [inference authentication selection](#inference-authentication-selection), and its [effective infrastructure values](#effective-infrastructure-values) must be consistent, or that repository fails before any write.
 2. **Converge** — all selected repos are converged through a unified probe → diff → apply pipeline. Repos whose shim workflow is not yet on the default branch are freshly installed (scaffold files, variables, secrets, a declared configuration preset as `.fullsend/config.base.yaml`, and a canonical managed `.fullsend/config.yaml`) onto the initialization branch (`fullsend/scaffold-install`). That includes a re-run while the initialization PR/MR is still open: variables and secrets may already exist from the first run, but the installer still updates the same initialization PR rather than opening a competing upgrade PR. Repos whose workflow is already on the default branch are checked for drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — repaired automatically, except a disabled GitLab schedule, which is reported as drift and reactivated only with `--reactivate-schedules`; typed GitLab dispatch's required pipeline-variable restriction; legacy variable-based wrappers are refused, and a leftover pipeline variable on a managed schedule is not repaired and must be removed manually), scaffold content drift (repaired automatically, including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref), declared configuration-preset drift against `.fullsend/config.base.yaml` (replaced wholesale; `.fullsend/config.yaml` is preserved), managed `.fullsend/config.yaml` drift (replaced wholesale; an existing file without the ownership marker stops that repository before any writes until it is adopted, while the other selected repositories still converge), and scaffold ref drift (upgraded automatically). When no configuration preset resolves for a repo, the desired state is no `.fullsend/config.base.yaml`. An existing base file then stops that repo's fresh or repeat install, including `--dry-run`, before any writes, with an error telling you to declare a `config_base` source or remove the file. A declared preset that cannot be loaded (fetch failure, `sha256` mismatch, invalid content) fails only that repository: install reports the error in that repository's result, converges the other selected repositories, and exits non-zero. An HTTPS preset fetch that fails at the transport level (for example, a dropped connection reported as `EOF`) is retried once, and the error names the phase that failed (DNS, connect, TLS handshake, awaiting the response), the remote address, and the elapsed time.
 
+```bash
+fullsend repos install -f repos.yaml
+fullsend repos install --dry-run
+fullsend repos install acme/api acme/web
+fullsend repos install "acme/*" --direct --concurrency 8
+```
+
+### Managed configuration
+
 `defaults.config`, `github.config`, `gitlab.config`, and per-repository `config`
 declare a sparse typed managed configuration for `.fullsend/config.yaml` ([ADR
 0122](../ADRs/0122-declarative-repo-configuration.md)). Each accepts every
@@ -198,12 +207,36 @@ github:
     - name: acme/plain          # no config key: still managed (sparse, marker only)
 ```
 
-```bash
-fullsend repos install -f repos.yaml
-fullsend repos install --dry-run
-fullsend repos install acme/api acme/web
-fullsend repos install "acme/*" --direct --concurrency 8
-```
+The `# Source manifest:` line becomes part of the target repository's Git
+history, which may be public. A file without this line still carries the
+ownership marker, so it never requires adoption.
+
+An existing zero-byte `.fullsend/config.yaml` counts as an existing file
+without the marker, so it also requires adoption. When install skips a
+repository for adoption, it prints the same guidance as `repos status`: the
+proposed `repos.yaml` entry, the difference between the existing file and the
+managed file adoption would produce, and the effective layered-configuration
+change (see [`repos status` output](#output)).
+
+The pre-write safety gate reads each compared key through the full overlay →
+base → code-defaults chain. Omitted keys fall through rather than being treated
+as unset, and an explicit empty `allowed_remote_resources: []` remains
+deny-all. A blanket adoption acknowledgement does not satisfy the gate: each
+relaxation must be declared in the manifest. Install checks
+`.fullsend/config.yaml` and `.fullsend/config.base.yaml` together, before any
+manifest or forge write. When the overlay needs adoption and the base needs
+action, install reports both problems. The same checks run again inside
+convergence. They apply to repositories with an explicit entry and to
+glob-covered repositories. A malformed or non-per-repo file, or a read error,
+fails with a clear error and is never replaced.
+
+A manifest is read-only when it is an HTTPS URL, a pipe or FIFO such as
+`<(cmd)`, or a local file without write permission or on a read-only file
+system. From a read-only manifest, install fails before any manifest write and
+prints the exact entry to add to its source. That includes a glob-covered
+repository whose first-install `tracker` default needs its own entry.
+`--dry-run`, a live install and `repos status` agree. Trace signing keys follow
+their own rule; see [Trace signing keys](#trace-signing-keys).
 
 ### Configuration schema of a pinned ref
 
