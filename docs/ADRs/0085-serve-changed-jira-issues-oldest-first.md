@@ -114,13 +114,17 @@ limit, the random pick, and the lock.
    have passed since the cycle started. The five minutes include the search
    and the per-issue reads: the driver checks the clock between Jira calls,
    and the rest of the job's time is left for committing checkpoints and
-   dispatching. All of an issue's records go out in the same cycle, so an
-   issue that does not fit in the room left waits and is first in line next
-   cycle; the driver does not skip ahead to a smaller issue. An issue is
-   always taken when the cycle holds no records yet, so a cycle can exceed
-   the configured limit by that one issue. One issue contributes at most 250
-   records and, on the GitHub target, 768 KB: the driver keeps the oldest
-   records, drops the rest with a warning, and advances the checkpoint.
+   dispatching. Reading one issue is limited to two minutes. An issue that
+   takes longer is treated as a failed read is today: the driver warns,
+   naming the issue, takes none of its records, leaves its checkpoint where
+   it was, and goes on to the next issue. All of an issue's records go out
+   in the same cycle, so an issue that does not fit in the room left waits
+   and is first in line next cycle; the driver does not skip ahead to a
+   smaller issue. An issue is always taken when the cycle holds no records
+   yet, so a cycle can exceed the configured limit by that one issue. One
+   issue contributes at most 250 records and, on the GitHub target, 768 KB:
+   the driver keeps the oldest records, drops the rest with a warning, and
+   advances the checkpoint.
    Today's cap of 100 events per issue, which also drops its overflow and
    advances the checkpoint, is unchanged. At any of these limits the driver
    stops reading, leaves an issue it has not finished for the next cycle,
@@ -136,10 +140,12 @@ limit, the random pick, and the lock.
    describes its measure as approximate. It applies on the GitHub target only,
    since GitLab starts each pipeline separately and has no batch output. Five
    minutes is the managed GitHub schedule's interval and leaves ten minutes of
-   that poll job's default 15-minute timeout. The default, the size limit,
-   and the time limit are initial values; revisit them when a deployment needs
-   more. This one key replaces both keys of ADR 0160, neither of which
-   shipped.
+   that poll job's default 15-minute timeout. Two minutes per issue is many
+   times what an ordinary issue takes, and it leaves room for an issue with
+   the longest comment and history listings the driver reads. The default,
+   the size limit, and the two time limits are initial values; revisit them
+   when a deployment needs more. This one key replaces both keys of ADR 0160,
+   neither of which shipped.
 5. **Unchanged.** Change detection, bot filtering, authorization, the 24-hour
    window with its clamps and ADR 0160's one log line per cycle naming the
    clamped candidates, the checkpoint commit with ADR 0160's `updated` clause,
@@ -174,9 +180,10 @@ Forgejo has no Jira poll target.
   fails the poll step, and the issues whose commits succeeded lose their
   requests. All three exist today, and a larger batch raises what is lost;
   changing the hand-over is left to a separate change.
-- An issue the driver cannot write to is checked again every cycle until its
-  change leaves the window. Its requests are not served, and it takes no room
-  from other issues.
+- An issue the driver cannot write to, or cannot read within two minutes, is
+  tried again every cycle until its change leaves the window. Its requests
+  are not served. It takes no record room from other issues, and a slow one
+  costs up to two minutes of each cycle.
 - Any change to a waiting issue, including a comment from anyone allowed to
   comment, moves it to the back of the line; under a sustained backlog that
   can cost the issue its request.
