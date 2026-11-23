@@ -273,3 +273,23 @@ func TestClassifyNotRetriedWriteTimeout(t *testing.T) {
 	assert.Equal(t, behaviourfail.Scenario, Classify(exhausted),
 		"a timeout the client retried to exhaustion without the guard has no typed error and stays scenario")
 }
+
+// TestClassifyNotRetriedProvisioningWrite covers the NotRetriedError
+// rule's scope (PR #9339 review): the rule matches the type, whoever
+// set forge.WithoutAmbiguousRetry, so an install-path write that times
+// out ambiguously — the shared-lock init commit, wrapped the way
+// orglock wraps it after abandonInit — classifies as infrastructure
+// like the 5xx not-retried path, not as a step-time-only rule.
+func TestClassifyNotRetriedProvisioningWrite(t *testing.T) {
+	t.Parallel()
+
+	giveUp := fmt.Errorf("http PUT /repos/org/e2e-lock: %w (not retried: the request may have been applied)",
+		context.DeadlineExceeded)
+	notRetried := &gh.NotRetriedError{Err: giveUp}
+
+	// Wrapped the way the install path surfaces its init-commit error
+	// (orglock.go: fmt.Errorf("initialising shared lock %s/%s: %w", …)),
+	// the class survives the chain.
+	assert.Equal(t, behaviourfail.Infrastructure,
+		Classify(fmt.Errorf("initialising shared lock %s/%s: %w", "org", "e2e-lock", notRetried)))
+}
