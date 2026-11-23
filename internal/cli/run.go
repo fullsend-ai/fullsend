@@ -2783,7 +2783,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// (which may unshallow the checkout) and immediately before the only
 	// upload. Every later download and validation iteration is reconciled
 	// to it.
-	hostRepositorySnapshot, err := sandbox.CaptureRepositorySnapshot(hostRepositoryDir)
+	hostRepositorySnapshot, err := sandbox.CaptureRepositorySnapshot(hostRepositoryDir, uploadExcludes...)
 	if err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("validating target repository before upload: %w", err)

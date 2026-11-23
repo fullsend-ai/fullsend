@@ -231,6 +231,10 @@ func captureTrustedConfig(cwd, worktreeRoot string, configPaths ...string) ([]co
 	// effect and a repeated earlier value must not survive as the last entry.
 	finalValue := make(map[string]string)
 	var finalOrder []string
+	// urlLists holds the multi-valued remote destination lists, whose empty
+	// entries reset the list in Git's readers.
+	urlLists := make(map[string][]configEntry)
+	var urlOrder []string
 	// seen drops a tracking entry whose exact key and value an earlier config
 	// file already contributed: a refspec present in both config and
 	// config.worktree must replay once, or Git applies it twice.
@@ -287,7 +291,7 @@ func captureTrustedConfig(cwd, worktreeRoot string, configPaths ...string) ([]co
 				// precedence: a later empty override clears an earlier
 				// setting instead of being dropped for it.
 				single[key] = record.value
-			case remoteTrackingKey(key), branchTrackingKey(key), submoduleActivationKey(key):
+			case remoteTrackingKey(key), branchTrackingKey(key), submoduleActivationKey(key), submoduleActivePathspecKey(key):
 				value := record.value
 				if value != "" && (strings.HasSuffix(key, ".url") || strings.HasSuffix(key, ".pushurl")) {
 					if isExecutableTransport(value) {
@@ -306,9 +310,16 @@ func captureTrustedConfig(cwd, worktreeRoot string, configPaths ...string) ([]co
 					finalValue[record.key] = value
 					continue
 				}
-				if value == "" {
-					// A multi-valued setting has no meaningful empty entry;
-					// only the single-valued paths above keep one.
+				if urlResetKey(key) {
+					// Git reads remote URL lists with reset semantics: an
+					// empty entry clears everything before it, including
+					// values inherited from global config. Replay the
+					// sequence verbatim, empties included, so the restored
+					// config carries the same reset the host's did.
+					if _, ok := urlLists[record.key]; !ok {
+						urlOrder = append(urlOrder, record.key)
+					}
+					urlLists[record.key] = append(urlLists[record.key], configEntry{Key: record.key, Value: value})
 					continue
 				}
 				pair := record.key + "\x00" + value
@@ -319,6 +330,9 @@ func captureTrustedConfig(cwd, worktreeRoot string, configPaths ...string) ([]co
 				ordered = append(ordered, configEntry{Key: record.key, Value: value})
 			}
 		}
+	}
+	for _, key := range urlOrder {
+		ordered = append(ordered, urlLists[key]...)
 	}
 	for _, key := range finalOrder {
 		ordered = append(ordered, configEntry{Key: key, Value: finalValue[key]})
@@ -393,6 +407,29 @@ func branchTrackingKey(key string) bool {
 	}
 	for _, suffix := range []string{".remote", ".merge", ".pushremote"} {
 		if strings.HasSuffix(key, suffix) && len(key) > len("branch.")+len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// submoduleActivePathspecKey matches the bare multi-valued submodule.active
+// pathspec list, which Git consults after the per-name activation booleans
+// and before URL presence, so it must round-trip for activation to hold.
+func submoduleActivePathspecKey(key string) bool {
+	return key == "submodule.active"
+}
+
+// urlResetKey matches the multi-valued destination lists whose empty entries
+// newer Git versions read as list resets. The replay is verbatim either way,
+// so the round trip preserves whatever the host's Git reads. Refspec-shaped
+// lists keep their raw sequence instead.
+func urlResetKey(key string) bool {
+	if !strings.HasPrefix(key, "remote.") {
+		return false
+	}
+	for _, suffix := range []string{".url", ".pushurl"} {
+		if strings.HasSuffix(key, suffix) && len(key) > len("remote.")+len(suffix) {
 			return true
 		}
 	}
@@ -617,6 +654,21 @@ func captureStoreConfigs(repoDir string) (map[string]storeSnapshot, error) {
 		if walkErr != nil {
 			return walkErr
 		}
+		// A symlinked entry under modules/ points Git at metadata this
+		// capture never reads, and the download walk rejects it; fail
+		// before upload with the same rule.
+		if path != modules && d.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("module store path %s is a symlink", path)
+		}
+		// A directory under modules/ that holds a HEAD entry but not Git's
+		// store layout is a store the download walk rejects as
+		// unrecognized. Metadata directories inside a recognized store
+		// (its logs hold a HEAD too) sit under a supported parent and are
+		// excluded by that guard, matching the walk's own skip rule.
+		if d.IsDir() && path != modules && !isSupportedModuleGitDir(filepath.Dir(path)) &&
+			hasDirectEntry(path, "HEAD") && !isSupportedModuleGitDir(path) {
+			return fmt.Errorf("unsupported module store layout %s", path)
+		}
 		if !d.IsDir() || !isSupportedModuleGitDir(path) {
 			// Store metadata directories cannot hold a nested store, so their
 			// contents (every loose object among them) need no walk. A
@@ -836,18 +888,49 @@ func captureShallowState(gitDir string) (shallowState, error) {
 	return shallowState{Present: true, Data: data}, nil
 }
 
-// findNestedGitDir returns the first .git entry below root that Git itself
-// would discover, case variants included, or "". With dirsOnly, gitfiles —
-// the supported submodule layout in a checkout — are skipped. skip names a
-// directory not to enter, the checkout's own .git.
-func findNestedGitDir(root, skip string, dirsOnly bool) (string, error) {
-	var nested string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+// resolvedExcludes joins each upload exclude to the walk root, the form the
+// walks compare against.
+func resolvedExcludes(root string, excludes []string) []string {
+	dirs := make([]string, 0, len(excludes))
+	for _, rel := range excludes {
+		dirs = append(dirs, filepath.Join(root, rel))
+	}
+	return dirs
+}
+
+// checkNestedLayouts walks a target worktree once for repository layouts the
+// download walk rejects only after the agent has run: a Git-shaped directory
+// under a name other than .git, such as a committed bare fixture; a nested
+// .git entry — a directory (a vendored clone), or an entry that is neither a
+// real directory nor a gitfile (a symlink); and, for a checkout, a gitfile
+// whose target lies outside the target's own module store. With
+// anyGitEntry, the plain-target rule, every .git entry counts as nested,
+// including gitfiles. skipDirs names directories not to enter: the
+// checkout's own .git and upload-excluded output directories. modulesDir is
+// empty for a plain target, which rejects every .git entry outright. The
+// nested finding is returned for the caller to word; gitfile validation
+// runs after the walk.
+func checkNestedLayouts(root string, skipDirs []string, anyGitEntry bool, modulesDir string) (nested string, err error) {
+	var gitfiles []string
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if path == skip {
-			return filepath.SkipDir
+		for _, skip := range skipDirs {
+			if path == skip {
+				return filepath.SkipDir
+			}
+		}
+		if path != root && strings.EqualFold(d.Name(), "HEAD") {
+			shaped, shapeErr := headExposesGitDir(path, func(dir string) bool {
+				return dir == root
+			})
+			if shapeErr != nil {
+				return shapeErr
+			}
+			if shaped {
+				return fmt.Errorf("unsupported bare-style Git directory %s", filepath.Dir(path))
+			}
 		}
 		if path == root || !strings.EqualFold(d.Name(), ".git") {
 			return nil
@@ -868,56 +951,47 @@ func findNestedGitDir(root, skip string, dirsOnly bool) (string, error) {
 		if !os.SameFile(lowerInfo, info) {
 			return nil
 		}
-		if dirsOnly && !info.IsDir() {
-			return nil
+		// A nested .git that is neither a real directory nor a gitfile — a
+		// symlink or another special entry — redirects Git at metadata this
+		// walk never inspects, and the download walk rejects it.
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("repository git metadata %s is a symlink", path)
 		}
-		nested = path
-		return fs.SkipAll
-	})
-	return nested, err
-}
-
-// checkNestedLayouts walks a target worktree for repository layouts the
-// download walk rejects only after the agent has run: a Git-shaped directory
-// under a name other than .git, such as a committed bare fixture, and — for
-// a checkout — a gitfile whose target lies outside the target's own module
-// store. skip names a directory not to enter, the checkout's own .git; a
-// plain target passes skip empty, and an empty modulesDir skips the gitfile
-// check because a plain target rejects every .git entry outright.
-func checkNestedLayouts(root, skip, modulesDir string) error {
-	var gitfiles []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+		if info.IsDir() || anyGitEntry {
+			nested = path
+			return fs.SkipAll
 		}
-		if path == skip {
-			return filepath.SkipDir
-		}
-		if path != root && strings.EqualFold(d.Name(), "HEAD") {
-			shaped, shapeErr := headExposesGitDir(path, func(dir string) bool {
-				return dir == root
-			})
-			if shapeErr != nil {
-				return shapeErr
-			}
-			if shaped {
-				return fmt.Errorf("unsupported bare-style Git directory %s", filepath.Dir(path))
-			}
-		}
-		if modulesDir != "" && !d.IsDir() && strings.EqualFold(d.Name(), ".git") {
+		// A checkout's gitfile is the supported submodule layout; validate
+		// its target after the walk.
+		if modulesDir != "" {
 			gitfiles = append(gitfiles, path)
 		}
 		return nil
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, gitfile := range gitfiles {
 		if err := checkGitfileTarget(filepath.Dir(root), gitfile, modulesDir); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return nil
+	return nested, nil
+}
+
+// hasDirectEntry reports whether dir holds a direct entry matching name
+// case-insensitively.
+func hasDirectEntry(dir, name string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), name) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkGitfileTarget fails closed when a worktree gitfile's target lies
@@ -929,7 +1003,7 @@ func checkGitfileTarget(cwd, gitfile, modulesDir string) error {
 	if err != nil {
 		return fmt.Errorf("inspecting module store %s: %w", modulesDir, err)
 	}
-	_, resolved, err := resolveGitfileDir(cwd, gitfile)
+	resolved, err := resolveGitfileDir(cwd, gitfile)
 	if err != nil {
 		return err
 	}
@@ -945,8 +1019,9 @@ func checkGitfileTarget(cwd, gitfile, modulesDir string) error {
 // input returns a zero snapshot without Git discovery, so a parent checkout is
 // never captured. A plain input containing a nested checkout is rejected
 // instead of being snapshotted as plain. Includes are not followed and no
-// repository hook or helper is executed.
-func CaptureRepositorySnapshot(repoDir string) (RepositorySnapshot, error) {
+// repository hook or helper is executed. excludes names top-level directories
+// the upload omits, matching UploadDir; their layouts are not walked.
+func CaptureRepositorySnapshot(repoDir string, excludes ...string) (RepositorySnapshot, error) {
 	absRepo, err := filepath.Abs(repoDir)
 	if err != nil {
 		return RepositorySnapshot{}, err
@@ -955,23 +1030,22 @@ func CaptureRepositorySnapshot(repoDir string) (RepositorySnapshot, error) {
 	if err != nil {
 		return RepositorySnapshot{}, fmt.Errorf("validating target repository: %w", err)
 	}
+	// WalkDir does not follow a symlinked root, but the upload path does, so
+	// resolve the target first: nested layouts cannot hide behind a symlinked
+	// target path. Upload-excluded directories never round-trip, so their
+	// layouts do not matter; skip them like the upload does.
+	resolvedRoot, err := filepath.EvalSymlinks(absRepo)
+	if err != nil {
+		return RepositorySnapshot{}, fmt.Errorf("checking target repository %s: %w", absRepo, err)
+	}
+	skipDirs := resolvedExcludes(resolvedRoot, excludes)
 	if plain {
-		// WalkDir does not follow a symlinked root, but the upload path does.
-		// Resolve the plain target first so nested metadata cannot hide behind
-		// a root symlink.
-		resolvedRoot, err := filepath.EvalSymlinks(absRepo)
-		if err != nil {
-			return RepositorySnapshot{}, fmt.Errorf("checking plain repository %s: %w", absRepo, err)
-		}
-		nested, walkErr := findNestedGitDir(resolvedRoot, "", false)
+		nested, walkErr := checkNestedLayouts(resolvedRoot, skipDirs, true, "")
 		if walkErr != nil {
-			return RepositorySnapshot{}, fmt.Errorf("checking plain repository %s: %w", absRepo, walkErr)
+			return RepositorySnapshot{}, rejectRepository(fmt.Errorf("checking plain repository %s: %w", absRepo, walkErr))
 		}
 		if nested != "" {
 			return RepositorySnapshot{}, rejectRepository(fmt.Errorf("plain repository %s contains nested Git metadata %s; use a normal .git checkout or a plain directory without nested checkouts", absRepo, nested))
-		}
-		if err := checkNestedLayouts(resolvedRoot, "", ""); err != nil {
-			return RepositorySnapshot{}, rejectRepository(fmt.Errorf("checking plain repository %s: %w", absRepo, err))
 		}
 		return RepositorySnapshot{}, nil
 	}
@@ -989,23 +1063,15 @@ func CaptureRepositorySnapshot(repoDir string) (RepositorySnapshot, error) {
 	// an unabsorbed embedded repository — is not a supported submodule
 	// layout, and the download round trip would strip its config and corrupt
 	// its shallow state, so fail before upload like a plain target does.
-	// Gitfile submodules are the supported layout and are skipped here.
-	// WalkDir does not follow a symlinked root, but the upload path does, so
-	// resolve the checkout first: nested layouts cannot hide behind a
-	// symlinked target path.
-	resolvedRepo, resolveErr := filepath.EvalSymlinks(absRepo)
-	if resolveErr != nil {
-		return RepositorySnapshot{}, fmt.Errorf("checking checkout %s: %w", absRepo, resolveErr)
-	}
-	nested, nestedErr := findNestedGitDir(resolvedRepo, filepath.Join(resolvedRepo, ".git"), true)
+	// Gitfile submodules are the supported layout and are skipped here. The
+	// walk also skips the checkout's own .git.
+	skipDirs = append(skipDirs, filepath.Join(resolvedRoot, ".git"))
+	nested, nestedErr := checkNestedLayouts(resolvedRoot, skipDirs, false, filepath.Join(resolvedRoot, ".git", "modules"))
 	if nestedErr != nil {
-		return RepositorySnapshot{}, fmt.Errorf("checking checkout %s: %w", absRepo, nestedErr)
+		return RepositorySnapshot{}, rejectRepository(fmt.Errorf("checking checkout %s: %w", absRepo, nestedErr))
 	}
 	if nested != "" {
 		return RepositorySnapshot{}, rejectRepository(fmt.Errorf("checkout %s contains nested Git directory %s; a checkout target supports submodules through .git/modules, not nested checkouts", absRepo, nested))
-	}
-	if err := checkNestedLayouts(resolvedRepo, filepath.Join(resolvedRepo, ".git"), filepath.Join(resolvedRepo, ".git", "modules")); err != nil {
-		return RepositorySnapshot{}, rejectRepository(fmt.Errorf("checking checkout %s: %w", absRepo, err))
 	}
 
 	// Validation proved .git is a real directory that resolves as itself, so

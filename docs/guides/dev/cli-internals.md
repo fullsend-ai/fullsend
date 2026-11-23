@@ -855,9 +855,11 @@ agent-chosen cutoffs cannot be trusted. This includes sandbox `git fetch
 entries or unshallowing is allowed, but the original trusted marker is
 restored; fetching objects without changing the boundary is also allowed.
 Restoration does not undo history rewrites or recover missing objects. A store
-the snapshot does not name keeps its content but loses its boundary, and a
-plain target contributes no trusted marker, so a checkout created in the
-sandbox must not introduce a shallow boundary.
+the snapshot does not name fails the download when it returns a non-empty
+shallow boundary — a submodule cannot be shallow-initialized inside the
+sandbox — and an empty marker is removed; a plain target contributes no
+trusted marker, so a checkout created in the sandbox must not introduce a
+shallow boundary.
 
 ---
 

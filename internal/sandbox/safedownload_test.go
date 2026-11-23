@@ -2368,6 +2368,102 @@ func TestSanitizeDownload_NestedCheckoutKeepsBoundary(t *testing.T) {
 	assert.FileExists(t, filepath.Join(nested, "shallow"), "a nested checkout keeps its boundary")
 }
 
+// TestSafeDownload_PreservesEmptyFetchRefspec proves an empty remote.<name>
+// fetch entry round-trips: it means "fetch HEAD" to Git, and dropping it
+// changes what git fetch retrieves.
+func TestSafeDownload_PreservesEmptyFetchRefspec(t *testing.T) {
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	r.git("config", "--add", "remote.origin.fetch", "")
+	r.git("config", "--add", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+	before := r.git("config", "--get-all", "remote.origin.fetch")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+	after, err := runGit(t, localDir, gitTestEnv(t.TempDir()), "config", "--get-all", "remote.origin.fetch")
+	require.NoError(t, err, after)
+	assert.Equal(t, before, after, "the empty fetch refspec must round-trip")
+}
+
+// TestSafeDownload_PushURLResetSemantics proves the round trip preserves
+// whatever Git reads from remote URL lists, including empty entries whose
+// meaning varies by Git version (newer versions treat them as list resets,
+// older ones keep them as ordinary values). The replay is verbatim, so the
+// post-round-trip listing must match the native one regardless of version.
+func TestSafeDownload_PushURLResetSemantics(t *testing.T) {
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	r.git("config", "remote.origin.url", "https://a.example/x")
+	r.git("config", "--add", "remote.origin.pushurl", "https://a.example/A")
+	r.git("config", "--add", "remote.origin.pushurl", "")
+	r.git("config", "--add", "remote.origin.pushurl", "https://b.example/B")
+	before := r.git("remote", "get-url", "--push", "--all", "origin")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+	after, err := runGit(t, localDir, gitTestEnv(t.TempDir()), "remote", "get-url", "--push", "--all", "origin")
+	require.NoError(t, err, after)
+	assert.Equal(t, before, after,
+		"the round trip must preserve whatever Git reads natively, empty entries included")
+
+	// An empty first entry must not lose the destinations that follow it.
+	r2 := newGitRepo(t)
+	r2.commitFile("f.txt", "x")
+	r2.git("config", "remote.origin.url", "https://a.example/x")
+	r2.git("config", "--add", "remote.origin.pushurl", "")
+	r2.git("config", "--add", "remote.origin.pushurl", "https://c.example/C")
+	before2 := r2.git("remote", "get-url", "--push", "--all", "origin")
+	snapshot2, err := CaptureRepositorySnapshot(r2.dir)
+	require.NoError(t, err)
+	serveDownloadFrom(t, r2.dir)
+	localDir2 := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir2, snapshot2))
+	after2, err := runGit(t, localDir2, gitTestEnv(t.TempDir()), "remote", "get-url", "--push", "--all", "origin")
+	require.NoError(t, err, after2)
+	assert.Equal(t, before2, after2,
+		"an empty-first entry must not lose later destinations")
+}
+
+// TestSafeDownload_PreservesSubmoduleActivePathspec proves the bare
+// submodule.active pathspec round-trips: Git consults it after the per-name
+// activation booleans and before URL presence, so a submodule the pathspec
+// excludes keeps its activation.
+func TestSafeDownload_PreservesSubmoduleActivePathspec(t *testing.T) {
+	dep := newGitRepo(t)
+	dep.commitFile("dep.txt", "dep")
+	dep2 := newGitRepo(t)
+	dep2.commitFile("dep2.txt", "dep2")
+	super := newGitRepo(t)
+	super.commitFile("f.txt", "x")
+	super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "keep")
+	super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep2.dir, "skip")
+	super.git("commit", "--quiet", "-m", "add submodules")
+	super.git("config", "--add", "submodule.active", "!skip")
+	super.git("config", "--add", "submodule.active", ".")
+	beforeStatus := super.git("submodule", "status")
+	beforeActive := super.git("config", "--get-all", "submodule.active")
+	require.Contains(t, beforeActive, "!skip")
+
+	snapshot, err := CaptureRepositorySnapshot(super.dir)
+	require.NoError(t, err)
+	serveDownloadFrom(t, super.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+	env := gitTestEnv(t.TempDir())
+	afterStatus, err := runGit(t, localDir, env, "submodule", "status")
+	require.NoError(t, err, afterStatus)
+	afterActive, err := runGit(t, localDir, env, "config", "--get-all", "submodule.active")
+	require.NoError(t, err, afterActive)
+	assert.Equal(t, beforeActive, afterActive, "the pathspec must round-trip")
+	assert.Equal(t, beforeStatus, afterStatus, "activation must be unchanged")
+}
+
 // TestCaptureRepositorySnapshot_RejectsBareFixtureAndForeignGitfile fails
 // before upload for the layouts the download walk rejects: a committed bare
 // fixture such as testdata/x.git, and a gitfile whose target lies outside
@@ -2455,6 +2551,188 @@ func TestCaptureRepositorySnapshot_RejectsNestedCheckoutInCheckoutTarget(t *test
 	snapshot, err := CaptureRepositorySnapshot(super2.dir)
 	require.NoError(t, err)
 	assert.Contains(t, snapshot.stores, ".git/modules/vendor/dep")
+}
+
+// TestLayoutRejectionSymmetry runs one table of repository layouts through
+// both capture and the download walk, so the two sides cannot drift: every
+// layout the walk rejects after the agent has run must fail capture before
+// upload. Nested .git directories are asymmetric by design — capture
+// rejects host-present ones while the walk keeps agent-added ones — and are
+// therefore not in this table.
+func TestLayoutRejectionSymmetry(t *testing.T) {
+	newCheckout := func(t *testing.T) *gitRepo {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		return r
+	}
+	cases := []struct {
+		name    string
+		plant   func(t *testing.T, r *gitRepo)
+		capture string // substring of the capture error
+		walk    string // substring of the walk error
+	}{
+		{
+			name: "bare fixture under any name",
+			plant: func(t *testing.T, r *gitRepo) {
+				bare := filepath.Join(r.dir, "testdata", "x.git")
+				require.NoError(t, os.MkdirAll(filepath.Join(bare, "objects"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(bare, "refs"), 0o755))
+				writeFile(t, r.dir, "testdata/x.git/HEAD", "ref: refs/heads/main\n")
+			},
+			capture: "bare-style Git directory",
+			walk:    "bare-style Git directory",
+		},
+		{
+			name: "registered worktrees",
+			plant: func(t *testing.T, r *gitRepo) {
+				require.NoError(t, os.MkdirAll(filepath.Join(r.dir, ".git", "worktrees", "wt"), 0o755))
+			},
+			capture: "worktree",
+			walk:    "worktree",
+		},
+		{
+			name: "symlinked nested git",
+			plant: func(t *testing.T, r *gitRepo) {
+				require.NoError(t, os.MkdirAll(filepath.Join(r.dir, "vendor"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(r.dir, ".git", "modules", "dep"), 0o755))
+				writeFile(t, r.dir, ".git/modules/dep/HEAD", "ref: refs/heads/main\n")
+				require.NoError(t, os.Symlink("../../.git/modules/dep", filepath.Join(r.dir, "vendor", "dep")))
+				require.NoError(t, os.Symlink("../.git/modules/dep", filepath.Join(r.dir, "vendor", "link.git")))
+			},
+			capture: "symlink",
+			walk:    "symlink",
+		},
+		{
+			name: "symlinked modules entry",
+			plant: func(t *testing.T, r *gitRepo) {
+				store := filepath.Join(r.dir, ".git", "modules", "real")
+				require.NoError(t, os.MkdirAll(filepath.Join(store, "objects"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(store, "refs"), 0o755))
+				writeFile(t, r.dir, ".git/modules/real/config", "[core]\n")
+				writeFile(t, r.dir, ".git/modules/real/HEAD", "ref: refs/heads/main\n")
+				require.NoError(t, os.Symlink("real", filepath.Join(r.dir, ".git", "modules", "link")))
+				writeFile(t, r.dir, "dep/.git", "gitdir: ../.git/modules/link\n")
+			},
+			capture: "symlink",
+			walk:    "symlink",
+		},
+		{
+			name: "foreign gitfile",
+			plant: func(t *testing.T, r *gitRepo) {
+				dep := newGitRepo(t)
+				dep.commitFile("dep.txt", "dep")
+				require.NoError(t, os.MkdirAll(filepath.Join(r.dir, ".git", "modules"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(r.dir, "vendor"), 0o755))
+				writeFile(t, r.dir, "vendor/dep/.git", "gitdir: "+filepath.Join(dep.dir, ".git")+"\n")
+			},
+			capture: "module store",
+			walk:    "redirects outside",
+		},
+		{
+			name: "non-regular store head",
+			plant: func(t *testing.T, r *gitRepo) {
+				store := filepath.Join(r.dir, ".git", "modules", "broken")
+				require.NoError(t, os.MkdirAll(filepath.Join(store, "objects"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(store, "refs"), 0o755))
+				writeFile(t, r.dir, ".git/modules/broken/config", "[core]\n")
+				require.NoError(t, os.MkdirAll(filepath.Join(r.dir, ".git", "modules", "target"), 0o755))
+				require.NoError(t, os.Symlink("../target", filepath.Join(store, "HEAD")))
+			},
+			capture: "module store layout",
+			walk:    "module store layout",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCheckout(t)
+			tc.plant(t, r)
+			_, err := CaptureRepositorySnapshot(r.dir)
+			require.Error(t, err, "capture must fail before upload")
+			assert.Contains(t, err.Error(), tc.capture)
+			err = sanitizeDownload(r.dir, RepositorySnapshot{})
+			require.Error(t, err, "the walk must reject the same layout")
+			assert.Contains(t, err.Error(), tc.walk)
+		})
+	}
+}
+
+// TestCaptureRepositorySnapshot_SkipsExcludedOutputDir proves the layout
+// walks skip an upload-excluded output directory: its content never
+// round-trips, so a Git-shaped directory an earlier run left there must not
+// fail the next capture.
+func TestCaptureRepositorySnapshot_SkipsExcludedOutputDir(t *testing.T) {
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "x")
+	bare := filepath.Join(r.dir, "output", "iteration-1", "x.git")
+	require.NoError(t, os.MkdirAll(filepath.Join(bare, "objects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(bare, "refs"), 0o755))
+	writeFile(t, r.dir, "output/iteration-1/x.git/HEAD", "ref: refs/heads/main\n")
+
+	_, err := CaptureRepositorySnapshot(r.dir)
+	require.Error(t, err, "without the exclusion the fixture rejects")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir, "output")
+	require.NoError(t, err, "the excluded output dir must not be walked")
+	require.True(t, snapshot.isCheckout)
+}
+
+// TestSafeDownload_SameFileTrustedStoreNotSpoofed proves the identity
+// fallback cannot let an agent-created store pass as trusted: a trusted key
+// containing slashes must resolve against the download root, not against the
+// store being checked.
+func TestSafeDownload_SameFileTrustedStoreNotSpoofed(t *testing.T) {
+	dep := newGitRepo(t)
+	dep.commitFile("dep.txt", "dep")
+	super := newGitRepo(t)
+	super.commitFile("file.txt", "x")
+	super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "libs/dep")
+	super.git("commit", "--quiet", "-m", "add submodule")
+	snapshot, err := CaptureRepositorySnapshot(super.dir)
+	require.NoError(t, err)
+	require.Contains(t, snapshot.stores, ".git/modules/libs/dep")
+
+	// The agent creates a store whose path makes the old keyPath arithmetic
+	// resolve to itself, with a shallow boundary the host never captured.
+	agentStore := filepath.Join(super.dir, ".git", "modules", "x", "libs", "dep")
+	require.NoError(t, os.MkdirAll(filepath.Join(agentStore, "objects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(agentStore, "refs"), 0o755))
+	writeFile(t, super.dir, ".git/modules/x/libs/dep/config", "[core]\n\trepositoryformatversion = 0\n")
+	writeFile(t, super.dir, ".git/modules/x/libs/dep/HEAD", "ref: refs/heads/main\n")
+	other := newGitRepo(t)
+	otherHead := other.commitFile("other.txt", "other")
+	writeFile(t, super.dir, ".git/modules/x/libs/dep/shallow", otherHead+"\n")
+
+	serveDownloadFrom(t, super.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot)
+	require.Error(t, err, "the agent-created store's shallow boundary must be rejected")
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	assert.Contains(t, err.Error(), "shallow boundary")
+}
+
+// TestSafeDownload_SameFileCaseVariantTrustedStore proves a case-renamed
+// trusted store still reconciles by filesystem identity on a
+// case-insensitive host.
+func TestSafeDownload_SameFileCaseVariantTrustedStore(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("case-insensitive filesystem required")
+	}
+	dep := newGitRepo(t)
+	dep.commitFile("dep.txt", "dep")
+	super := newGitRepo(t)
+	super.commitFile("file.txt", "x")
+	super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "dep")
+	super.git("commit", "--quiet", "-m", "add submodule")
+	snapshot, err := CaptureRepositorySnapshot(super.dir)
+	require.NoError(t, err)
+	require.Contains(t, snapshot.stores, ".git/modules/dep")
+
+	// The walk discovers the store through a case-variant path on a
+	// case-insensitive host; the identity fallback must still match it.
+	serveDownloadFrom(t, super.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+	assert.DirExists(t, filepath.Join(localDir, ".git", "modules", "dep"))
 }
 
 // TestSanitizeDownload_RejectsUnrecognizedModuleStore proves a directory

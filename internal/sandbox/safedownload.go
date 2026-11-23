@@ -253,12 +253,13 @@ func sanitizeDownload(localDir string, snapshot RepositorySnapshot) error {
 			case "shallow":
 				// Every git dir's boundary is reconciled after the walk: the
 				// root's and each trusted module store's against the trusted
-				// host snapshot, and every other store's boundary is removed.
-				// Defer the entry so the generic symlink handling below
-				// cannot discard a supplied symlink before that validation
-				// rejects it. The name matched case-insensitively, so a case
-				// variant would defer too and skip the generic symlink
-				// handling.
+				// host snapshot, and every other module store fails the
+				// download when it returns a non-empty boundary, with an
+				// empty marker removed. Defer the entry so the generic
+				// symlink handling below cannot discard a supplied symlink
+				// before that validation rejects it. The name matched
+				// case-insensitively, so a case variant would defer too and
+				// skip the generic symlink handling.
 				if !d.Type().IsRegular() {
 					return rejectRepository(fmt.Errorf("git shallow metadata %s is not a regular file", path))
 				}
@@ -403,7 +404,7 @@ func sanitizeDownload(localDir string, snapshot RepositorySnapshot) error {
 		if !strings.HasPrefix(strings.ToLower(relKey), ".git/modules/") {
 			continue
 		}
-		if _, ok := trusted[relKey]; ok {
+		if trustedStore(trusted, relKey, gitDir, absLocal) {
 			continue
 		}
 		if err := restoreTrustedShallowAt(gitDir, shallowState{}); err != nil {
@@ -518,6 +519,26 @@ func nearestGitDirRoot(path, absLocal string, gitDirs map[string]bool) (string, 
 	return "", false
 }
 
+// trustedStore reports whether a module store is one the trusted snapshot
+// names, by exact key or by filesystem identity: a case-insensitive host can
+// name the same store with different casing.
+func trustedStore(trusted map[string]gitConfigFormat, relKey, gitDir, absLocal string) bool {
+	if _, ok := trusted[relKey]; ok {
+		return true
+	}
+	dirInfo, err := os.Stat(gitDir)
+	if err != nil {
+		return false
+	}
+	for key := range trusted {
+		keyPath := filepath.Join(absLocal, filepath.FromSlash(key))
+		if info, statErr := os.Stat(keyPath); statErr == nil && os.SameFile(dirInfo, info) {
+			return true
+		}
+	}
+	return false
+}
+
 // isGitMetadataEntry reports whether path is an entry Git reads directly from a
 // git dir root recorded by the walk (case-insensitively).
 func isGitMetadataEntry(path string, gitDirs map[string]bool, name string) bool {
@@ -558,20 +579,19 @@ func owningCheckout(gitfile, absLocal string) (string, error) {
 }
 
 // resolveGitfileDir returns the git directory a gitfile redirects to: the
-// raw path Git's own resolution opens, and that path with symlinks resolved.
-// The capture scan and the download walk share it so both agree on where a
-// gitfile points. cwd must be outside any untrusted tree.
-func resolveGitfileDir(cwd, gitfile string) (raw, resolved string, err error) {
+// realpath Git's own resolution computes, with every symlink already
+// resolved. The capture scan and the download walk share it so both agree
+// on where a gitfile points. cwd must be outside any untrusted tree.
+func resolveGitfileDir(cwd, gitfile string) (string, error) {
 	out, err := runBoundedGit(cwd, "", nil, "rev-parse", "--resolve-git-dir", gitfile)
 	if err != nil {
-		return "", "", fmt.Errorf("gitfile %s is not a valid gitdir redirect: %w", gitfile, err)
+		return "", fmt.Errorf("gitfile %s is not a valid gitdir redirect: %w", gitfile, err)
 	}
-	raw = strings.TrimSuffix(string(out), "\n")
-	resolved, err = filepath.EvalSymlinks(raw)
+	resolved, err := filepath.EvalSymlinks(strings.TrimSuffix(string(out), "\n"))
 	if err != nil {
-		return "", "", fmt.Errorf("gitfile %s target is not reachable: %w", gitfile, err)
+		return "", fmt.Errorf("gitfile %s target is not reachable: %w", gitfile, err)
 	}
-	return raw, resolved, nil
+	return resolved, nil
 }
 
 // headExposesGitDir reports whether a HEAD-named entry at path exposes a
@@ -587,12 +607,12 @@ func headExposesGitDir(path string, excluded func(dir string) bool) (bool, error
 	return gitDirEntriesPresent(dir)
 }
 
-// validateNestedGitFile resolves a nested .git gitfile with native Git and
-// requires the target to be a symlink-free path inside the owning checkout's
-// module store, which this walk sanitizes. A redirect through a symlinked
-// module container (or anywhere else) fails closed.
+// validateNestedGitFile resolves a nested .git gitfile with native Git —
+// which returns the target's realpath — and requires the target to lie
+// inside the owning checkout's module store, which this walk sanitizes.
+// Symlinked module containers are rejected by the walk's own symlink rules.
 func validateNestedGitFile(gitfile, absLocal string, gitDirs map[string]bool) error {
-	raw, resolved, err := resolveGitfileDir(filepath.Dir(absLocal), gitfile)
+	resolved, err := resolveGitfileDir(filepath.Dir(absLocal), gitfile)
 	if err != nil {
 		return rejectRepository(err)
 	}
@@ -606,9 +626,6 @@ func validateNestedGitFile(gitfile, absLocal string, gitDirs map[string]bool) er
 	}
 	if !inDir(resolved, modules) {
 		return rejectRepository(fmt.Errorf("gitfile %s redirects outside %s", gitfile, modules))
-	}
-	if resolved != filepath.Clean(raw) {
-		return rejectRepository(fmt.Errorf("gitfile %s target redirects through a symlink", gitfile))
 	}
 	// Only a git dir this walk recorded as sanitized may be used: a target
 	// nested inside another store's objects, or one without the layout a real
@@ -801,10 +818,6 @@ func validateGitCheckout(tree string) error {
 	return nil
 }
 
-// ValidateRepositoryRoot validates tree as a plain directory or a real .git
-// checkout, reporting whether it is plain. A root with a .git entry keeps the
-// strict checkout validation and is never treated as plain; plain roots are
-// classified by entry presence without invoking Git.
 // gitDirEntriesPresent reports whether dir's entries match Git's
 // is_git_directory() layout by presence: a HEAD plus either a commondir
 // redirect or both objects and refs. Entry names match case-insensitively,
