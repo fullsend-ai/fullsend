@@ -796,10 +796,12 @@ func TestSanitizeJSONLines_RepeatedRecordsFailsClosed(t *testing.T) {
 	assert.Equal(t, `{"v":"bbb"}`, lines[4], "an untouched duplicate outside the change must survive")
 }
 
-// TestSanitizeJSONLines_RepeatedCleanRecordInsideCrossRecordMatch pins the
-// inverse misattribution: a clean record that also appears later must not be
-// kept in place of the covered copy, and the later clean copy must not be
-// dropped for it.
+// TestSanitizeJSONLines_RepeatedCleanRecordInsideCrossRecordMatch pins that a
+// clean record between a quoted header and footer survives, whether or not it
+// repeats later. The cross-record check replaces only the records that carry
+// block content, so a record that also appears after the block must not be
+// dropped from the match and its copy outside the match must not be attributed to
+// it.
 func TestSanitizeJSONLines_RepeatedCleanRecordInsideCrossRecordMatch(t *testing.T) {
 	p := OutputPipeline()
 	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
@@ -818,11 +820,71 @@ func TestSanitizeJSONLines_RepeatedCleanRecordInsideCrossRecordMatch(t *testing.
 
 	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
 	require.Len(t, lines, 4, "record count must not change")
-	for _, line := range lines[:3] {
+	for _, i := range []int{0, 2} {
+		assert.True(t, json.Valid([]byte(lines[i])), "each replaced record must stay valid JSON: %s", lines[i])
+		assert.Contains(t, lines[i], "output removed")
+	}
+	assert.Equal(t, `{"value":"middle"}`, lines[1], "a clean record inside the match must survive")
+	assert.Equal(t, `{"value":"middle"}`, lines[3], "its copy outside the match must survive too")
+}
+
+// TestSanitizeJSONLines_QuotedMarkersKeepCleanRecords pins that a transcript that
+// quotes a PEM header in one record and the footer in a later one loses only the
+// records that carry block content. Replacing every record the lazy match touches
+// gutted a transcript of work on this code — grep output and tool results quoting
+// the markers — which is the #5705 outcome the single-document path avoids
+// (6dca72790, 078ffa2, b0ab1e2).
+func TestSanitizeJSONLines_QuotedMarkersKeepCleanRecords(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	content := []byte(
+		"{\"event\":\"quote\",\"text\":\"" + begin + "\"}\n" +
+			"{\"event\":\"normal record one\"}\n" +
+			"{\"event\":\"normal record two\"}\n" +
+			"{\"event\":\"quote\",\"text\":\"" + end + "\"}\n")
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.NotContains(t, string(out), begin)
+	assert.NotContains(t, string(out), end)
+
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	require.Len(t, lines, 4, "record count must not change")
+	for _, i := range []int{0, 3} {
+		assert.True(t, json.Valid([]byte(lines[i])), "each replaced record must stay valid JSON: %s", lines[i])
+		assert.Contains(t, lines[i], "output removed")
+	}
+	assert.Equal(t, `{"event":"normal record one"}`, lines[1], "a record carrying no block content must survive")
+	assert.Equal(t, `{"event":"normal record two"}`, lines[2], "a record carrying no block content must survive")
+}
+
+// TestSanitizeJSONLines_BodySplitAcrossRecordsCovered pins the other half: a
+// middle record is kept only when it really is clean. A body split so that every
+// record holds one short, digit-free chunk is still body material once the chunks
+// are joined, and every record carrying it must be replaced.
+func TestSanitizeJSONLines_BodySplitAcrossRecordsCovered(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	content := []byte(
+		"[\"" + begin + "\"]\n" +
+			"[\"dfghjk\"]\n" +
+			"[\"QWERTYuiop\"]\n" +
+			"[\"" + end + "\"]\n")
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.NotContains(t, string(out), "dfghjkQWERTYuiop")
+
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	require.Len(t, lines, 4, "record count must not change")
+	for _, line := range lines {
 		assert.True(t, json.Valid([]byte(line)), "each replaced record must stay valid JSON: %s", line)
 		assert.Contains(t, line, "output removed")
 	}
-	assert.Equal(t, `{"value":"middle"}`, lines[3], "the repeated clean record outside the match must survive")
 }
 
 // TestSanitizeJSONDocument_SensitiveBeginMemberMasksBlock pins that masking a
@@ -1083,6 +1145,50 @@ func TestSanitizeJSONLines_EscapedBeginRecordFailsClosed(t *testing.T) {
 		assert.True(t, json.Valid([]byte(line)), "each record must stay valid JSON: %s", line)
 		assert.Contains(t, line, "output removed")
 	}
+}
+
+// TestSanitizeJSONLines_BOMRecordEscapedBeginFailsClosed pins that a BOM on the
+// first record does not hide a cross-record block. encoding/json rejects the mark,
+// so the record was read as plain text, its \u-escaped BEGIN marker was never
+// decoded, and the key body survived — bypassing the escaped-marker fix from
+// bb35a97f6 (#5705).
+func TestSanitizeJSONLines_BOMRecordEscapedBeginFailsClosed(t *testing.T) {
+	p := OutputPipeline()
+	bom := "\ufeff"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	content := []byte(bom + `{"a":"\u002d` + "----BEGIN RSA" + " PRIVATE KEY-----" + `"}` + "\n" +
+		`{"b":"MIIEspanningkeymaterial0"}` + "\n" +
+		`{"c":"` + end + `"}` + "\n")
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.NotContains(t, string(out), "MIIEspanningkeymaterial0")
+	assert.NotContains(t, string(out), "END RSA")
+
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	require.Len(t, lines, 3, "record count must not change")
+	for _, line := range lines {
+		assert.True(t, json.Valid([]byte(line)), "each record must stay valid JSON: %s", line)
+		assert.Contains(t, line, "output removed")
+	}
+}
+
+// TestSanitizeJSONLines_CleanBOMRecordPreserved pins that a BOM-prefixed record is
+// routed through the structural path and keeps its encoding mark, exactly as a
+// BOM-prefixed single document does.
+func TestSanitizeJSONLines_CleanBOMRecordPreserved(t *testing.T) {
+	p := OutputPipeline()
+	bom := []byte("\ufeff")
+	content := append(append([]byte{}, bom...), []byte(`{"event":"clean"}`+"\n")...)
+	content = append(content, []byte("{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\"}\n")...)
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, bytes.HasPrefix(out, bom), "the BOM must survive: %q", out)
+	assert.Contains(t, string(out), `{"event":"clean"}`, "a clean BOM-prefixed record must be unchanged")
+	assert.NotContains(t, string(out), "ghp_FAKEtesttoken")
 }
 
 // TestSanitizeJSONDocument_CRLFNoStrayCarriageReturn pins that trailing CRLF

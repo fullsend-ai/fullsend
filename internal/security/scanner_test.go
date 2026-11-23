@@ -556,6 +556,19 @@ func TestSecretRedactor(t *testing.T) {
 		assert.NotContains(t, result.Sanitized, "ijklmnop")
 	})
 
+	t.Run("json_field trailing backslash in a flow mapping keeps the next field", func(t *testing.T) {
+		// Go's regexp alternation is leftmost-first, so the escape-reading branch
+		// used to match first and read the closing quote as an escaped quote,
+		// running on to the next quote on the same line and swallowing the field
+		// that follows in a YAML flow mapping (#5705).
+		input := `{'api_key': 'abcdefghi\', 'x': 'yyyyyyyyyyyy'}`
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "abcdefghi")
+		assert.Contains(t, result.Sanitized, "'x': 'yyyyyyyyyyyy'", "the field that follows must survive intact")
+	})
+
 	t.Run("json_field redacts a single-quoted value spanning a raw newline", func(t *testing.T) {
 		// Base matched `'([^']{8,})'`, which crosses newlines. Handling escaped
 		// delimiters must not narrow the pattern: a raw newline inside the

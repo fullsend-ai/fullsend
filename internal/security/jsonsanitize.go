@@ -368,11 +368,17 @@ func (v *jsonProvenance) maskSpanBody(hit []int, spans *privateKeySpans) {
 
 // valueCarriesKeyMaterial reports whether the string value at index i has to be
 // replaced whole: it carries a block marker, or one of its runs holds base64
-// body material. A value outside those two shapes is free text or a
-// schema-constrained token that the match only covers because a lazy pattern ran
-// from one member's marker to another's, so it keeps its content.
+// body material.
 func (v *jsonProvenance) valueCarriesKeyMaterial(i int) bool {
-	text := v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end]
+	return textCarriesKeyMaterial(v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end])
+}
+
+// textCarriesKeyMaterial reports whether a decoded key or value's text carries a
+// block marker or a run of base64 body material. A leaf outside those two shapes
+// is free text or a schema-constrained token that a framing-spanning match only
+// covers because a lazy pattern ran from one member's marker to another's, so it
+// keeps its content.
+func textCarriesKeyMaterial(text []byte) bool {
 	if privateKeyMarkerRe.Match(text) {
 		return true
 	}
@@ -536,7 +542,7 @@ func SanitizeJSONLines(content []byte, p *Pipeline) ([]byte, []Finding, error) {
 		switch {
 		case len(trimmed) == 0:
 			out.Write(line)
-		case json.Valid(trimmed):
+		case IsJSONDocument(trimmed):
 			record, recordFindings, err := SanitizeJSONDocument(trimmed, p)
 			if err != nil {
 				return nil, findings, fmt.Errorf("could not sanitize JSONL record: %w", err)
@@ -596,57 +602,17 @@ type recordSpan struct {
 	start, end int
 }
 
-// failClosedCrossRecordPrivateKeys replaces every record covered by a
-// private-key block that crosses record boundaries with a valid marker. Match
-// offsets come straight from the original stream, so localization is exact.
+// failClosedCrossRecordPrivateKeys replaces the records that carry part of a
+// private-key block crossing record boundaries with a valid marker. Match
+// offsets come from a decoded view of the whole stream, so a marker written with
+// \u escapes is still recognized, and every match maps back to the records that
+// carry it.
 func failClosedCrossRecordPrivateKeys(content []byte) ([]byte, []Finding) {
 	spans := jsonLineSpans(content)
 	if len(spans) == 0 {
 		return content, nil
 	}
-	// Match in a decoded, order-preserving view so a marker written with
-	// \u escapes is still recognized, and keep each record's range in that
-	// view so a match maps back to the records it covers.
-	var (
-		view      bytes.Buffer
-		viewSpans []recordSpan
-	)
-	for _, span := range spans {
-		start := view.Len()
-		line := content[span.start:span.end]
-		if trimmed := bytes.TrimSpace(line); json.Valid(trimmed) {
-			writeDecodedJSONView(&view, trimmed)
-		} else {
-			view.Write(line)
-		}
-		view.WriteByte('\n')
-		viewSpans = append(viewSpans, recordSpan{start: start, end: view.Len() - 1})
-	}
-	matches := privateKeyRe.FindAllIndex(view.Bytes(), -1)
-	covered := make([]bool, len(spans))
-	var findings []Finding
-	for _, match := range matches {
-		var hit []int
-		for i, span := range viewSpans {
-			if span.end > match[0] && span.start < match[1] {
-				hit = append(hit, i)
-			}
-		}
-		// A block confined to one record is handled by that record's own
-		// sanitization.
-		if len(hit) < 2 {
-			continue
-		}
-		findings = append(findings, Finding{
-			Scanner:  "secret_redactor",
-			Name:     "private_key",
-			Severity: "critical",
-			Detail:   "Private key block spans records and cannot be localized; output removed",
-		})
-		for _, i := range hit {
-			covered[i] = true
-		}
-	}
+	covered, findings := newJSONLineView(content, spans).spanningRecordPrivateKeys()
 	if len(findings) == 0 {
 		return content, nil
 	}
@@ -664,11 +630,160 @@ func failClosedCrossRecordPrivateKeys(content []byte) ([]byte, []Finding) {
 	return out.Bytes(), findings
 }
 
-// writeDecodedJSONView appends every decoded object key and string leaf of doc
-// to buf in document order, one per line, so a value split across members is
-// still visible as one contiguous run of text.
-func writeDecodedJSONView(buf *bytes.Buffer, doc []byte) {
-	buf.Write(collectJSONLeaves(doc).decoded.Bytes())
+// jsonLineView is an order-preserving, decoded view of a JSONL stream: every
+// object key and string value of every record, in document order, with a newline
+// between records so nothing a record does not contain can join its neighbours.
+// The raw bytes are not usable for cross-record matching: a record may encode a
+// marker with \u escapes, and a BOM-prefixed record is not valid JSON until the
+// mark is stripped.
+type jsonLineView struct {
+	decoded bytes.Buffer
+	// records holds each record's range in the view, excluding the separator.
+	records []recordSpan
+	// leaves holds every decoded key and string value with the record it came
+	// from, so a match can be mapped back to whole records.
+	leaves []jsonLineLeaf
+}
+
+// jsonLineLeaf is one decoded object key or string value in a jsonLineView.
+type jsonLineLeaf struct {
+	record int
+	span   recordSpan
+	key    bool
+}
+
+// newJSONLineView builds the decoded view of a stream whose non-empty records
+// start at spans. A record that is one JSON document contributes its decoded
+// leaves; anything else contributes its raw text as a single leaf, so a stream of
+// PEM text lines is still matched line by line.
+func newJSONLineView(content []byte, spans []recordSpan) *jsonLineView {
+	view := &jsonLineView{}
+	for i, span := range spans {
+		start := view.decoded.Len()
+		line := content[span.start:span.end]
+		if body := jsonRecordBody(line); json.Valid(body) {
+			prov := collectJSONLeaves(body)
+			view.decoded.Write(prov.decoded.Bytes())
+			for j, r := range prov.ranges {
+				view.leaves = append(view.leaves, jsonLineLeaf{
+					record: i,
+					span:   recordSpan{start: start + r.start, end: start + r.end},
+					key:    prov.keys[j],
+				})
+			}
+		} else {
+			view.decoded.Write(line)
+			if end := view.decoded.Len(); end > start {
+				view.leaves = append(view.leaves, jsonLineLeaf{record: i, span: recordSpan{start: start, end: end}})
+			}
+		}
+		view.records = append(view.records, recordSpan{start: start, end: view.decoded.Len()})
+		view.decoded.WriteByte('\n')
+	}
+	return view
+}
+
+// spanningRecordPrivateKeys finds the private-key blocks in the decoded view that
+// cross a record boundary and reports which records must be replaced.
+//
+// A block whose markers sit in different records is not proof that key material
+// spans them — a transcript that quotes the header in one record and the footer
+// in another matches too — so only the records the block carries content into are
+// replaced. The records the match starts and ends in always carry marker text and
+// are replaced; a record in between is replaced only when its leaves hold a block
+// marker or PEM body material (textCarriesKeyMaterial), or when the joined text
+// of consecutive leaves looks like a PEM body line (maskMiddleRecordBody). Those
+// are the two shapes key material takes, while free text and structural values
+// between a quoted marker pair stay readable, so a transcript of work on this very
+// code is not gutted. The single-document path localizes the same way (#5705).
+func (v *jsonLineView) spanningRecordPrivateKeys() ([]bool, []Finding) {
+	covered := make([]bool, len(v.records))
+	var findings []Finding
+	for _, match := range privateKeyRe.FindAllIndex(v.decoded.Bytes(), -1) {
+		var hit []int
+		for i, record := range v.records {
+			if record.start < match[1] && match[0] < record.end {
+				hit = append(hit, i)
+			}
+		}
+		// A block confined to one record is handled by that record's own
+		// sanitization.
+		if len(hit) < 2 {
+			continue
+		}
+		findings = append(findings, Finding{
+			Scanner:  "secret_redactor",
+			Name:     "private_key",
+			Severity: "critical",
+			Detail:   "Private key block spans records; removed the records carrying block content",
+		})
+		covered[hit[0]] = true
+		covered[hit[len(hit)-1]] = true
+		v.maskMiddleRecordBody(hit, covered)
+	}
+	return covered, findings
+}
+
+// maskMiddleRecordBody covers the records between a cross-record block's boundary
+// records when their leaves carry key material. It is the record-level counterpart
+// of maskSpanBody: consecutive candidate leaves are decided together, because a
+// body split so that every line is short or digit-free is only recognizable once
+// the lines are joined. An object key breaks the run, since a key is structure
+// rather than body, and so does a value with punctuation or whitespace: those are
+// structural tokens and free text, not body lines.
+func (v *jsonLineView) maskMiddleRecordBody(hit []int, covered []bool) {
+	first, last := hit[0], hit[len(hit)-1]
+	var group []int
+	flush := func() {
+		if len(group) == 0 {
+			return
+		}
+		joined := make([]byte, 0, len(group)*16)
+		for _, i := range group {
+			joined = append(joined, v.decoded.Bytes()[v.leaves[i].span.start:v.leaves[i].span.end]...)
+		}
+		if pemBodyJoined(joined) {
+			for _, i := range group {
+				covered[v.leaves[i].record] = true
+			}
+		}
+		group = group[:0]
+	}
+	for i, leaf := range v.leaves {
+		// The boundary records are already covered, and their leaves neither
+		// extend nor join a middle run.
+		if leaf.record <= first || leaf.record >= last {
+			flush()
+			continue
+		}
+		text := v.decoded.Bytes()[leaf.span.start:leaf.span.end]
+		if leaf.key {
+			flush()
+			if privateKeyMarkerRe.Match(text) {
+				covered[leaf.record] = true
+			}
+			continue
+		}
+		if textCarriesKeyMaterial(text) {
+			covered[leaf.record] = true
+			flush()
+			continue
+		}
+		if !pemChunkCandidateRe.Match(text) {
+			flush()
+			continue
+		}
+		group = append(group, i)
+	}
+	flush()
+}
+
+// jsonRecordBody returns a JSONL record's JSON body: surrounding whitespace and a
+// leading UTF-8 BOM removed. encoding/json rejects a BOM, so a record carrying one
+// would otherwise be read as plain text and its \u-escaped markers never decoded,
+// which hid a cross-record block and left the key body behind (#5705).
+func jsonRecordBody(line []byte) []byte {
+	return bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(line), utf8BOM))
 }
 
 // collectJSONLeaves walks doc and records every decoded object key and string

@@ -345,15 +345,20 @@ func defaultStructuralPatterns() []secretPattern {
 		// space, as in the PostToolUse hook.
 		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*(?:['"](?:(?:basic|bearer|token)[ \t]+)?)?([^\s"'}\]),;]{8,})['"]?`},
 		// json_field captures a value out of a quoted field. The double-quoted
-		// branch and the first single-quoted branch consume escaped delimiters, so
-		// a JSON or YAML string with an embedded quote is matched whole. The second
+		// branch and the second single-quoted branch consume escaped delimiters, so
+		// a JSON or YAML string with an embedded quote is matched whole. The first
 		// single-quoted branch covers a value that ends in a literal backslash,
-		// where that backslash must not escape the closing quote. The last branch
-		// keeps a raw newline inside a single-quoted value matchable, as it was
-		// before the escape handling was added: it cannot cross a quote, so it
-		// never swallows the field that follows. The minimum length is enforced in
-		// scan, not here.
-		{"json_field", `(?i)(?:"[^"]*(?:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"((?:\\[\s\S]|[^"\\])*)"|'((?:''|\\\r?\n|\\.|[^'\r\n\\])*[^'\r\n\\])'|'((?:''|[^'\r\n])*\\)'|'([^']*)')`},
+		// where that backslash must not escape the closing quote; it comes first
+		// because Go's regexp alternation is leftmost-first, so the escape-reading
+		// branch would otherwise match first and read the closing quote of
+		// 'api_key': 'secret\' in a YAML flow mapping as an escape, running on to
+		// the next quote on the same line and swallowing the field that follows.
+		// That branch therefore matches only when the quote after the backslash is
+		// followed by a field or line boundary. The last branch keeps a raw newline
+		// inside a single-quoted value matchable, as it was before the escape
+		// handling was added: it cannot cross a quote, so it never swallows the
+		// field that follows. The minimum length is enforced in scan, not here.
+		{"json_field", `(?i)(?:"[^"]*(?:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"((?:\\[\s\S]|[^"\\])*)"|'((?:''|[^'\r\n])*\\)'[ \t]*(?:,|\}|\]|$)|'((?:''|\\\r?\n|\\.|[^'\r\n\\])*[^'\r\n\\])'|'([^']*)')`},
 		// The optional quote covers YAML: authorization: "Bearer <token>".
 		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*['"]?(?:(?:Basic|Bearer|Token)\s+)?([^\s"'}\]),;]{12,})`},
 		{"private_key", `-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----`},
