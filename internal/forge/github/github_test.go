@@ -1078,8 +1078,10 @@ func TestGetPullRequestInfo(t *testing.T) {
 			},
 			"base": map[string]any{
 				"ref":  "main",
+				"sha":  "base-sha",
 				"repo": map[string]any{"full_name": "owner/repo"},
 			},
+			"changed_files": 3,
 		})
 	}))
 	defer srv.Close()
@@ -1090,6 +1092,10 @@ func TestGetPullRequestInfo(t *testing.T) {
 	assert.Equal(t, 42, info.Number)
 	assert.Equal(t, "feature", info.HeadRef)
 	assert.False(t, info.IsFork)
+	assert.Equal(t, "deadbeef", info.HeadSHA)
+	assert.Equal(t, "main", info.BaseRef)
+	assert.Equal(t, "base-sha", info.BaseSHA)
+	assert.Equal(t, 3, info.ChangedFiles)
 }
 
 func TestCreateChangeProposal(t *testing.T) {
