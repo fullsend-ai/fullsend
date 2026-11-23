@@ -673,3 +673,39 @@ forgejo:
 	assert.Contains(t, runErr.Error(), "still serves 1 consumer(s) declared in repos.yaml: forgejo:home/org/app")
 	assert.Contains(t, home.files, "fullsend/workflows/.forgejo/workflows/fullsend-dispatch.yml")
 }
+
+// A workflow host whose ownership index is gone keeps its bundle files, so
+// it stays declared even though its consumer is removed in the same run.
+func TestReposForgejo_UnownedHostStaysDeclared(t *testing.T) {
+	home := newForgejoServer(t, "/forgejo")
+	p := writeTestManifest(t, `version: 1
+forgejo:
+  instances:
+    - alias: home
+      url: `+home.url()+`
+      repos:
+        - name: fullsend/workflows
+          workflow_host: true
+        - name: org/app
+`)
+	hooks := forgejoEnv(map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"})
+	var runErr error
+	captureStdout(t, func() {
+		runErr = runReposInstall(context.Background(), &reposInstallConfig{manifest: p, concurrency: 4, testForgejo: hooks})
+	})
+	require.NoError(t, runErr)
+
+	idx := "fullsend/workflows/.fullsend/forgejo-workflows.yaml"
+	require.Contains(t, home.files, idx)
+	delete(home.files, idx)
+
+	captureStdout(t, func() {
+		runErr = runReposUninstall(context.Background(), &reposUninstallConfig{manifest: p, concurrency: 4, yes: true, testForgejo: hooks}, nil)
+	})
+	require.NoError(t, runErr)
+	assert.Contains(t, home.files, "fullsend/workflows/.forgejo/workflows/fullsend-dispatch.yml", "the unowned bundle is left in place")
+	m, err := repos.LoadManifest(context.Background(), p)
+	require.NoError(t, err)
+	require.Len(t, m.Forgejo.Instances[0].Repos, 1)
+	assert.Equal(t, "fullsend/workflows", m.Forgejo.Instances[0].Repos[0].Name, "the retained host stays declared")
+}

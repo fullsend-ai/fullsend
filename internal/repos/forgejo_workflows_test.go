@@ -556,6 +556,8 @@ func TestForgejoWorkflows_MissingIndexReportsLeftoverFilesUnmanaged(t *testing.T
 	assert.Equal(t, ForgejoStateUnmanaged, res[0].State)
 	assert.Contains(t, res[0].Detail, forgejoDispatchPath)
 	assert.Contains(t, res[0].Detail, "left unchanged")
+	assert.True(t, res[0].WorkflowsKept, "the retained host stays declared")
+	assert.False(t, res[1].WorkflowsKept, "the consumer was removed")
 	assert.Contains(t, home.files, "fullsend/workflows/"+forgejoDispatchPath)
 }
 

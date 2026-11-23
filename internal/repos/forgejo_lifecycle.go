@@ -783,7 +783,8 @@ func (l *ForgejoLifecycle) uninstallHost(ctx context.Context, c ForgejoFileClien
 		r.State = ForgejoStateNotInstalled
 		return r
 	case ForgejoStateUnmanaged:
-		r.State, r.Detail = ForgejoStateUnmanaged, plan.unmanagedDetail()
+		// The bundle files are retained, so callers keep the host declared.
+		r.State, r.Detail, r.WorkflowsKept = ForgejoStateUnmanaged, plan.unmanagedDetail(), true
 		return r
 	}
 	if !l.DryRun {
