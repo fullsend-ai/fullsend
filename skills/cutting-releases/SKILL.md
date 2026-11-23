@@ -10,8 +10,9 @@ allowed-tools: Read, Grep, Glob, AskUserQuestion, Agent, Bash(git tag:*), Bash(g
 # Cutting Releases
 
 Releases are driven by annotated git tags. When a tag matching `v*` is pushed,
-`.github/workflows/release.yml` runs GoReleaser to build binaries, generate a
-changelog, and create the GitHub release.
+`.github/workflows/release.yml` gathers release notes from `release-note`
+blocks in PR bodies, runs GoReleaser to build binaries, and publishes the
+GitHub release with the gathered notes.
 
 ## Process
 
@@ -80,7 +81,9 @@ git log --oneline <previous-final>..HEAD
 ```
 
 Summarize changes into categories (features, fixes, refactors). Exclude
-`docs:`, `test:`, `chore:`, `ci:`, `build:`, `style:` commits — GoReleaser filters these anyway.
+`docs:`, `test:`, `chore:`, `ci:`, `build:`, `style:` commits — their
+release-note blocks typically say NONE, so they do not reach the release
+notes.
 
 ### 6. Create the RC tag
 
@@ -286,12 +289,16 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 - **Never delete a tag that published binaries or a GitHub Release.** If
   a shipped release is bad, cut a new patch or RC. Only a blocked final
   may be deleted (see "When a release run fails").
-- **The changelog** is auto-generated from commit subjects (which must follow
-  conventional commit format). GoReleaser uses `changelog.use: github` in
-  `.goreleaser.yml`, which lists every commit in the release range, so
-  individual commit subjects — not PR titles — are the source of release-note
-  entries. PRs land as merge commits, which are excluded, so PR titles never
-  appear. Subjects with `!` are grouped first under **Breaking Changes**.
+- **The changelog** is gathered from `release-note` blocks in merged PR
+  bodies (see COMMITS.md, "Release notes"). The release workflow runs the
+  Kubernetes `release-notes` tool over the tag range and passes the
+  result to GoReleaser via `--release-notes`, so PR bodies — not commit
+  subjects — are the source of release-note entries. NONE blocks are
+  skipped. The published body starts with a `## Changelog` header
+  (prepended by the workflow so `prepend-release-highlights.sh` keeps
+  working), followed by **Urgent Upgrade Notes** (PRs labeled
+  `release-note-action-required`, applied automatically when a PR's
+  block starts with `action required`) and **Changes by Kind**.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. It is automatically moved by the release workflow after
   GoReleaser completes (skipped for pre-release tags).

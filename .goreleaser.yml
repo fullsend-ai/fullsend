@@ -2,7 +2,7 @@ version: 2
 
 git:
   # Ignore major-version floating tags (v0, v1, ...) so they don't
-  # confuse GoReleaser's previous-tag detection for changelogs.
+  # confuse GoReleaser's tag detection.
   ignore_tags:
     - v0
     - v1
@@ -31,35 +31,11 @@ archives:
 checksum:
   name_template: checksums.txt
 
-changelog:
-  use: github
-  sort: asc
-  filters:
-    exclude:
-      - '^Merge '
-      - '^ci(\(.*\))?:'
-      - '^docs(\(.*\))?:'
-      - '^test(\(.*\))?:'
-      - '^chore(\(.*\))?:'
-      - '^build(\(.*\))?:'
-      - '^style(\(.*\))?:'
-  # Groups match in list order and the first match wins, so Breaking
-  # Changes must stay first to pull `!` commits out of the type groups.
-  groups:
-    - title: Breaking Changes
-      regexp: '^[a-z]+(\([^)]*\))?!:'
-      order: 0
-    - title: Features
-      regexp: '^.*?feat(\([^)]+\))??!?:.+$'
-      order: 1
-    - title: Bug Fixes
-      regexp: '^.*?fix(\([^)]+\))??!?:.+$'
-      order: 2
-    - title: Refactoring
-      regexp: '^.*?refactor(\([^)]+\))??!?:.+$'
-      order: 3
-    - title: Others
-      order: 999
+# Release notes are not built from commit subjects. The release
+# workflow gathers `release-note` blocks from merged PR bodies with the
+# Kubernetes release-notes tool and passes the markdown to GoReleaser
+# via `--release-notes` (see .github/workflows/release.yml and
+# COMMITS.md, "Release notes").
 
 # `fullsend self-update` verifies this signature. Read the comment on the
 # GoReleaser step in .github/workflows/release.yml before changing it.
@@ -79,7 +55,7 @@ release:
     name: fullsend
   name_template: "{{ .Tag }}{{ if and .TagSubject (ne .TagSubject .Tag) }}: {{ .TagSubject }}{{ end }}"
   prerelease: auto
-  # The changelog above lists fullsend commits only. The agents release
+  # The release notes above list fullsend changes only. The agents release
   # for the same tag (created by release.yml's tag-agents job) carries the
   # agents changelog, so link it from every release.
   footer: |

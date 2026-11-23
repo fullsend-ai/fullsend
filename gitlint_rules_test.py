@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
 from gitlint.rules import RuleViolation
 
 from gitlint_rules.forbidden_type_scope import ForbiddenTypeScope
@@ -92,7 +91,7 @@ def test_ignores_non_conventional(title):
     assert not violations
 
 
-# --- .gitlint, COMMITS.md and .goreleaser.yml must agree on commit types ---
+# --- .gitlint and COMMITS.md must agree on commit types ---
 
 ROOT = Path(__file__).parent
 
@@ -104,7 +103,7 @@ def gitlint_types():
 
 
 def commits_md_rows():
-    """Map type -> 'Appears in release notes?' cell from the COMMITS.md types table."""
+    """Map type -> 'Needs a release-note entry?' cell from the COMMITS.md types table."""
     rows = re.findall(
         r"^\| `(\w+)` \| [^|]+ \| ([^|]+) \|$", (ROOT / "COMMITS.md").read_text(), re.M
     )
@@ -113,11 +112,3 @@ def commits_md_rows():
 
 def test_gitlint_types_match_commits_md():
     assert gitlint_types() == set(commits_md_rows())
-
-
-@pytest.mark.parametrize(
-    "ctype", sorted(t for t, notes in commits_md_rows().items() if notes == "No")
-)
-def test_hidden_types_excluded_from_release_notes(ctype):
-    goreleaser = yaml.safe_load((ROOT / ".goreleaser.yml").read_text())
-    assert f"^{ctype}(\\(.*\\))?:" in goreleaser["changelog"]["filters"]["exclude"]

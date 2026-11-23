@@ -1,9 +1,10 @@
 """Gitlint rule that forbids misleading type+scope combinations.
 
-Types like ``feat`` and ``fix`` appear in user-facing release notes.
-Scopes like ``ci`` and ``e2e`` describe infrastructure, not user-visible
-changes.  Using them together pollutes the release notes with entries
-that mean nothing to end users.
+Types like ``feat`` and ``fix`` describe user-facing changes, which now
+belong in the PR body's ``release-note`` block rather than the commit
+subject.  Scopes like ``ci`` and ``e2e`` describe infrastructure, not
+user-visible changes.  Using them together produces commit subjects that
+misleadingly suggest user-facing infrastructure changes.
 """
 
 import re

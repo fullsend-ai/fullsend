@@ -13,6 +13,12 @@ jobs:
   release:
     needs: [validate-agents, resolve-agents, recheck-tag]
     runs-on: ubuntu-24.04
+    # pull-requests: read is needed by release-notes generate, which reads
+    # merged PR bodies to gather the release-note blocks.
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: read
     # Historically ~2 minutes. Bounded so a hung publish cannot hold the
     # tag-agents sync (and the default 6h limit) open.
     timeout-minutes: 20
@@ -51,6 +57,81 @@ jobs:
           fi
           echo "current=${TAG} previous=${PREV:-<goreleaser default>}"
 
+      # Release notes come from `release-note` blocks in PR bodies (see
+      # COMMITS.md, "Release notes"), gathered with the Kubernetes
+      # release-notes tool — the same approach kubearchive uses. The tool
+      # reads the blocks from the merged PRs in the tag range, skips NONE
+      # entries, and renders markdown. GoReleaser then publishes that
+      # markdown instead of its commit-subject changelog.
+      - name: Install release-notes
+        env:
+          # SHA-256 of release-notes-amd64-linux from the v0.17.1 release.
+          # Update the URL and this digest together (see
+          # scripts/renovate/ for the checksum-pinning convention).
+          RELEASE_NOTES_SHA256: 16e0ada3e3602c229e97fa789ea97c7d128710d7fe1fee9f12c00f7eaa770d6a
+        run: |
+          set -euo pipefail
+          curl -fsSLo "${RUNNER_TEMP}/release-notes" \
+            https://github.com/kubernetes/release/releases/download/v0.17.1/release-notes-amd64-linux
+          echo "${RELEASE_NOTES_SHA256}  ${RUNNER_TEMP}/release-notes" | sha256sum -c -
+          chmod +x "${RUNNER_TEMP}/release-notes"
+          sudo mv "${RUNNER_TEMP}/release-notes" /usr/local/bin/release-notes
+
+      - name: Generate release notes from PR bodies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Previous tag: for a final release, the last final release, so
+          # the notes span the whole release. For an rc, the tag
+          # immediately before this one (usually the previous rc), so an
+          # rc only lists what changed since that tag — matching
+          # GoReleaser's default previous-tag resolution for rc tags.
+          TAGS=$(git tag --merged "${TAG}^{commit}" --sort=-v:refname --list 'v[0-9]*.[0-9]*.[0-9]*')
+          case "${TAG}" in
+            *-*) PREV=$(printf '%s\n' "$TAGS" | grep -vxF -e "$TAG" | head -n1 || true) ;;
+            *)   PREV=$(printf '%s\n' "$TAGS" | grep -v -e '-' | grep -vxF -e "$TAG" | head -n1 || true) ;;
+          esac
+          if [[ -z "${PREV}" ]]; then
+            # Static message: interpolating TAG here would need workflow-command
+            # escaping (%0A/%0D) to stay injection-safe.
+            echo "::error::Could not find a previous release tag before the current tag"
+            exit 1
+          fi
+          echo "Gathering notes from ${PREV} to ${TAG}"
+          # The tool lists commits from START_SHA's commit date onward
+          # (inclusive). Use the first first-parent commit after PREV:
+          # picking the oldest-dated commit in the range would open the
+          # window before PREV (PR-branch commits can carry dates older
+          # than PREV) and re-list PRs from the previous release.
+          RANGE=$(git rev-list --first-parent --reverse "${PREV}..${TAG}")
+          if [[ -n "${RANGE}" ]]; then
+            START_SHA=$(head -n1 <<<"${RANGE}")
+          else
+            # PREV and TAG share a commit (a re-tag); fall back to PREV.
+            START_SHA=$(git rev-list -n1 "${PREV}")
+          fi
+          END_SHA=$(git rev-list -n1 "${TAG}")
+          export START_SHA END_SHA
+          # The tool reads its range and branch from these env vars. Use
+          # the tag's SHA as the listing ref (the `sha` parameter accepts
+          # a SHA): listing from main would include PRs merged to main
+          # after the tag but dated inside the window. --required-author=""
+          # includes bot-authored PRs (agents open many of our PRs). Write
+          # outside the checkout: GoReleaser refuses a dirty git tree.
+          export BRANCH="${END_SHA}"
+          release-notes generate \
+            --required-author="" \
+            --dependencies=false \
+            --output "${RUNNER_TEMP}/release-notes-body.md" \
+            --org fullsend-ai --repo fullsend
+          # Prepend the header prepend-release-highlights.sh expects, so
+          # the release-highlights step keeps working with the
+          # gathered-notes body.
+          printf '## Changelog\n\n' | cat - "${RUNNER_TEMP}/release-notes-body.md" \
+            > "${RUNNER_TEMP}/release-notes.md"
+
       # GoReleaser signs the release here. Installed CLIs only accept a
       # signature made by this workflow file, for the tag, on a
       # GitHub-hosted runner (internal/selfupdate/verify.go). Renaming this
@@ -60,7 +141,10 @@ jobs:
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: "~> v2"
-          args: release --clean
+          # --release-notes replaces the changelog with the markdown
+          # gathered from PR bodies above. The path is outside the
+          # checkout so the git tree stays clean.
+          args: release --clean --release-notes ${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}

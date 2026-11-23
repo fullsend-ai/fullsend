@@ -10,4 +10,4 @@
 - The vouch gate is separate from the e2e authorization gate. Vouch determines whether a PR stays open; e2e authorization determines whether tests run.
 - PRs from unvouched external contributors are automatically closed with a comment linking to the vouch process. The PR is closed before the comment is posted, and the comment (marker `<!-- vouch-check -->`) is posted once per PR, even when overlapping runs or a reopen close it again.
 - An API error never closes a PR: a failed `VOUCHED.td` read aborts the sweep, and a failed permission lookup skips that PR until the next run.
-- PRs should follow the PR template structure: Summary, Related Issue, Changes, Testing, Checklist.
+- PRs should follow the PR template structure: Summary, Related Issue, Changes, Testing, Release Note, Checklist.
