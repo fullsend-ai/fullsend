@@ -58,9 +58,22 @@ contribution.
 
 ### Review etiquette
 
-- A maintainer who **approves** a pull request should go ahead and merge that pull request, unless it is authored by / originates from another maintainer, in which case the originator is responsible for merge after receiving approval from the approver.
-- **Comment resolution belongs to the PR author,** but can also be done by the merging maintainer. In general, when a reviewer leaves a comment, the PR author is free to address the feedback and resolve the conversation themselves. This keeps the review cycle moving. If the approving / merging maintainer is ready to merge, they may resolve remaining comments in a sweep to unblock the PR.
-- **If you need to block a PR on your feedback, use "Request changes."** A comment alone is advisory — the author may resolve it at their discretion. The "Request changes" review status is how a reviewer signals that the PR should not merge until their concern is addressed. This is the only mechanism for enforcing your review.
+- **The approving maintainer merges the pull request** after requested reviewers
+  have responded and the PR has all required approvals. Some changes, such as
+  ADRs, may require more than one maintainer approval.
+  - If another maintainer authored or drove the change, that maintainer merges
+    it after a different maintainer approves. For an agent-authored PR, treat
+    the maintainer who triggered or drove the work as its originator.
+  - The approving maintainer merges bot-authored PRs and PRs from contributors
+    with Write access, unless another maintainer drove the change.
+- **The PR author resolves review comments.** The author can address feedback
+  and resolve the conversation themselves.
+- **If you need to block a PR on your feedback, use "Request changes."** A
+  comment alone is advisory; the author may resolve it at their discretion.
+  The "Request changes" review status signals that the PR should not merge
+  until the reviewer withdraws that status after their concern is addressed.
+  Keep threads under a standing "Request changes" review open until the
+  reviewer withdraws it. This is the only mechanism for enforcing your review.
 - **Be constructive.** Disagreement is expected and valuable. Critique ideas, not people. When you push back on a proposal, suggest an alternative or explain what concern drives your objection.
 
 ### Reworking a PR
