@@ -2269,10 +2269,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// After the pre-script, which may write a host file source.
 	warnDurableCredentialWriteProviders(h, providerProfiles, printer)
 
-	// 4a. Create sandbox. A private harness image on the CI job's registry
-	// (ghcr.io on GitHub Actions, CI_REGISTRY on GitLab CI) is pulled first
-	// with the job's credential; the gateway's own pull is anonymous (#9019).
-	prePullSandboxImage(ctx, h.Image, printer)
+	// 4a. Create sandbox. A private ghcr.io harness image is pulled first
+	// with the workflow token; the gateway's own pull is anonymous (#9019).
+	prePullGHCRImage(ctx, h.Image, printer)
 
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)

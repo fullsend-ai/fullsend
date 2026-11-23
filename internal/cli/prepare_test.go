@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,7 +53,6 @@ func stubPrepareSandbox(t *testing.T) *fakePrepareSandbox {
 	neutralizeAgentsRepoFallback(t)
 	t.Setenv("FULLSEND_SANDBOX_IMAGE", "")
 	t.Setenv("FULLSEND_SANDBOX_ARCH", "")
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "")
 
 	f := &fakePrepareSandbox{}
 	origEnsure, origGateway, origCreate, origDelete := prepareEnsureOpenshellFn, prepareCheckGatewayFn, prepareCreateSandboxFn, deleteSandboxFn
@@ -85,13 +83,8 @@ func stubPrepareSandbox(t *testing.T) *fakePrepareSandbox {
 		f.deleted = append(f.deleted, name)
 		return f.deleteErr
 	}
-	origRemote := gatewayIsRemoteFn
-	gatewayIsRemoteFn = func(ctx context.Context) bool {
-		return sandbox.GatewayEndpointIsRemote(ctx, os.Getenv("OPENSHELL_GATEWAY_ENDPOINT"))
-	}
 	t.Cleanup(func() {
 		prepareEnsureOpenshellFn, prepareCheckGatewayFn, prepareCreateSandboxFn, deleteSandboxFn = origEnsure, origGateway, origCreate, origDelete
-		gatewayIsRemoteFn = origRemote
 	})
 	return f
 }
@@ -133,7 +126,7 @@ func runPrepareJSON(t *testing.T, opts prepareOptions) (prepareResult, string, e
 	return res, progress.String(), err
 }
 
-func TestPrepare_CachedImageSkipsPullButRunsPreflight(t *testing.T) {
+func TestPrepare_LocallyPresentImageSkipsPullButRunsPreflight(t *testing.T) {
 	fake, _, _ := setupImagePull(t)
 	fake.respond("image", "", nil) // already present
 	sb := stubPrepareSandbox(t)
@@ -145,13 +138,13 @@ func TestPrepare_CachedImageSkipsPullButRunsPreflight(t *testing.T) {
 	assert.True(t, res.OK)
 	assert.Equal(t, "code", res.Agent)
 	assert.Equal(t, sandboxArch(), res.Arch)
-	assert.Equal(t, prepareGatewayLocal, res.Gateway)
 	assert.Equal(t, filepath.Join(dir, "harness", "code.yaml"), res.Harness)
 	require.Len(t, res.Images, 1)
-	assert.Equal(t, prepareImage{Role: "sandbox", Ref: privateImage, Source: prepareSourceHarness, Status: prepareImageCached}, res.Images[0])
-	assert.Equal(t, []string{"image"}, fake.subcommands(), "a cached image is not pulled")
+	assert.Equal(t, prepareImage{Role: "sandbox", Ref: privateImage, Source: prepareSourceHarness, Status: prepareImageReady,
+		Detail: "already in the local Podman store; the preflight sandbox started from it, so the gateway has pulled it"}, res.Images[0])
+	assert.Equal(t, []string{"image"}, fake.subcommands(), "an image in the local store is not pulled again")
 
-	require.Len(t, sb.created, 1, "the preflight still runs for a cached image")
+	require.Len(t, sb.created, 1, "the preflight still runs for a locally present image")
 	assert.Equal(t, []string{privateImage}, sb.images)
 	require.Len(t, sb.policies, 1)
 	assert.NotEmpty(t, sb.policies[0], "the preflight sandbox is created with a policy")
@@ -191,7 +184,7 @@ func TestPrepare_PublicImageIsLeftToGateway(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Empty(t, fake.calls, "no local pull for an image the gateway can pull itself")
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Equal(t, prepareImageReady, res.Images[0].Status)
 	assert.Contains(t, res.Images[0].Detail, "no registry credential applies")
 	assert.Contains(t, progress, "gateway pulls the image into its own image store")
 	assert.Equal(t, []string{prepareTestImage}, sb.images)
@@ -205,7 +198,8 @@ func TestPrepare_PullsGHCRImageWithWorkflowToken(t *testing.T) {
 	res, progress, err := runPrepareJSON(t, prepareOpts(dir))
 
 	require.NoError(t, err)
-	assert.Equal(t, prepareImagePulled, res.Images[0].Status)
+	assert.Equal(t, prepareImageReady, res.Images[0].Status)
+	assert.Contains(t, res.Images[0].Detail, "pulled into the local Podman store")
 	require.Len(t, fake.authFiles, 1, "the run's registry credential is used")
 	assert.Contains(t, progress, "the workflow token")
 	assert.NotContains(t, progress, testWorkflowToken)
@@ -262,7 +256,8 @@ func TestPrepare_NoImageUsesGatewayDefault(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", res.Images[0].Ref)
 	assert.Equal(t, prepareSourceDefault, res.Images[0].Source)
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Equal(t, prepareImageReady, res.Images[0].Status)
+	assert.Contains(t, res.Images[0].Detail, "gateway uses its default sandbox image")
 	assert.Empty(t, fake.calls)
 	assert.Equal(t, []string{""}, sb.images)
 }
@@ -291,7 +286,7 @@ func TestPrepare_PullsGHCRImageWithoutWorkflowTokenVariable(t *testing.T) {
 			res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
 
 			require.NoError(t, err)
-			assert.Equal(t, prepareImagePulled, res.Images[0].Status)
+			assert.Equal(t, prepareImageReady, res.Images[0].Status)
 			require.Len(t, fake.authFiles, 1, "the actions token authenticates the pull")
 			var authFile struct {
 				Auths map[string]struct{ Auth string } `json:"auths"`
@@ -314,7 +309,7 @@ func TestPrepare_NoWorkflowCredentialLeavesPrivateImageToGateway(t *testing.T) {
 	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
 
 	require.NoError(t, err)
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Equal(t, prepareImageReady, res.Images[0].Status)
 	assert.Empty(t, fake.calls)
 }
 
@@ -327,60 +322,10 @@ func TestPrepare_MalformedActionsTokenIsWarnedAndNotUsed(t *testing.T) {
 	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
 
 	require.NoError(t, err)
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Equal(t, prepareImageReady, res.Images[0].Status)
 	assert.Empty(t, fake.calls)
 	assert.Contains(t, progress, "GH_TOKEN has an unexpected format")
 	assert.NotContains(t, progress, "not a token;")
-}
-
-// A gateway registered with openshell, with no endpoint exported, is
-// classified from its own endpoint.
-func TestPrepare_RegisteredRemoteGatewayIsNotWarmedLocally(t *testing.T) {
-	fake, _, _ := setupImagePull(t)
-	sb := stubPrepareSandbox(t)
-	gatewayIsRemoteFn = func(context.Context) bool { return true }
-
-	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
-
-	require.NoError(t, err)
-	assert.Equal(t, prepareGatewayRemote, res.Gateway)
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
-	assert.Empty(t, fake.calls, "the local Podman store is not the remote gateway's")
-	assert.Contains(t, progress, "cannot be used with the remote gateway")
-	assert.Len(t, sb.created, 1)
-}
-
-// The gateway is classified after the gateway check, which can set the
-// endpoint for a containerized CLI.
-func TestPrepare_GatewayClassifiedAfterGatewayCheck(t *testing.T) {
-	setupImagePull(t)
-	stubPrepareSandbox(t)
-	checked := false
-	prepareCheckGatewayFn = func() error { checked = true; return nil }
-	gatewayIsRemoteFn = func(context.Context) bool {
-		assert.True(t, checked, "classified before the gateway was checked")
-		return false
-	}
-
-	_, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
-
-	require.NoError(t, err)
-}
-
-// A non-loopback endpoint that is one of this host's own addresses names a
-// local gateway: the credentialed pull still runs.
-func TestPrepare_OwnAddressEndpointIsWarmedLocally(t *testing.T) {
-	ip := localNonLoopbackIP(t)
-	fake, _, _ := setupImagePull(t)
-	stubPrepareSandbox(t)
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://"+net.JoinHostPort(ip, "17670"))
-
-	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
-
-	require.NoError(t, err)
-	assert.Equal(t, prepareGatewayLocal, res.Gateway)
-	assert.Equal(t, prepareImagePulled, res.Images[0].Status)
-	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
 }
 
 // Cancellation that arrives while the preflight sandbox becomes ready is
@@ -424,74 +369,6 @@ func TestPrepare_CanceledAfterPreflightReadyWithDeleteFailureNamesSandbox(t *tes
 	assert.Contains(t, res.Error.Hint, "openshell sandbox delete "+sb.created[0])
 }
 
-func TestPrepare_RemoteGatewayIsNotWarmedLocally(t *testing.T) {
-	fake, _, _ := setupImagePull(t)
-	sb := stubPrepareSandbox(t)
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
-
-	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
-
-	require.NoError(t, err)
-	assert.Equal(t, prepareGatewayRemote, res.Gateway)
-	assert.Empty(t, fake.calls, "the local Podman store is not the remote gateway's")
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
-	assert.Contains(t, res.Images[0].Detail, "the sandbox preflight pulled it through the gateway")
-	assert.Equal(t, []string{prepareTestImage}, sb.images, "a public image still works on a remote gateway")
-}
-
-// A credential cannot be delivered to a remote gateway: prepare says so
-// instead of pulling into the wrong store, and the public-image fallback
-// (the gateway's anonymous pull) is kept.
-func TestPrepare_RemoteGatewayCannotAuthenticatePrivateImage(t *testing.T) {
-	fake, _, _ := setupImagePull(t)
-	sb := stubPrepareSandbox(t)
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
-
-	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
-
-	require.NoError(t, err, "a public image under a credential-eligible name still works")
-	assert.Empty(t, fake.calls, "nothing is pulled into the local store of a remote gateway")
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
-	assert.Contains(t, res.Images[0].Detail, "cannot be used with the remote gateway")
-	assert.Contains(t, progress, "cannot be used with the remote gateway")
-	assert.NotContains(t, progress, testWorkflowToken)
-	assert.Equal(t, []string{privateImage}, sb.images)
-}
-
-func TestPrepare_RemoteGatewayPrivateImageFailureNamesUnsupportedAuth(t *testing.T) {
-	setupImagePull(t)
-	sb := stubPrepareSandbox(t)
-	sb.createErr = errors.New("sandbox create failed: unauthorized: authentication required")
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
-
-	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
-
-	require.Error(t, err)
-	require.NotNil(t, res.Error)
-	assert.Equal(t, prepareErrAuth, res.Error.Kind)
-	assert.Equal(t, prepareRemoteAuthHint, res.Error.Hint)
-	assert.Equal(t, prepareImageFailed, res.Images[0].Status)
-}
-
-func TestPrepare_RemoteGatewayPreflightPullFailure(t *testing.T) {
-	setupImagePull(t)
-	sb := stubPrepareSandbox(t)
-	sb.createErr = errors.New("sandbox create failed: Error: initializing source: unauthorized: authentication required")
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
-
-	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+prepareTestImage)))
-
-	require.Error(t, err)
-	assert.False(t, res.OK)
-	assert.Equal(t, prepareImageFailed, res.Images[0].Status)
-	require.NotNil(t, res.Error)
-	assert.Equal(t, prepareErrAuth, res.Error.Kind)
-	assert.Contains(t, res.Error.Hint, "CI_REGISTRY_PASSWORD")
-	require.NotNil(t, res.Preflight)
-	assert.Equal(t, preparePreflightFailed, res.Preflight.Status)
-	assert.Empty(t, sb.deleted, "CreateWithRetry deletes a failed sandbox itself")
-}
-
 func TestPrepare_PodmanMissingLeavesWarmingToPreflight(t *testing.T) {
 	fake, _, _ := setupImagePull(t)
 	imagePullLookPathFn = func(string) (string, error) { return "", errors.New("not found") }
@@ -501,17 +378,20 @@ func TestPrepare_PodmanMissingLeavesWarmingToPreflight(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Empty(t, fake.calls)
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
-	assert.Contains(t, res.Images[0].Detail, "podman not found")
+	assert.Contains(t, res.Images[0].Detail, "the gateway pulls the image without registry credentials")
 	assert.Len(t, sb.created, 1)
 }
 
-func TestPrepare_PullFailureDiskSpace(t *testing.T) {
+// A full disk during the local pull is not decided here: the pull is a
+// warning, as in fullsend run, and the preflight, whose gateway pull would
+// hit the same disk, reports the failure.
+func TestPrepare_LocalPullDiskSpaceFailureIsLeftToPreflight(t *testing.T) {
 	fake, _, _ := setupImagePull(t)
 	fake.respond("pull", "Error: writing blob: storing blob to file: write /var/tmp/x: no space left on device", errors.New("exit status 125"))
 	sb := stubPrepareSandbox(t)
+	sb.createErr = errors.New("sandbox create failed: no space left on device")
 
-	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+	res, progress, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no space left on device")
@@ -522,8 +402,25 @@ func TestPrepare_PullFailureDiskSpace(t *testing.T) {
 	assert.NotContains(t, res.Error.Message, "hint:", "the hint has its own field")
 	assert.NotEmpty(t, res.Error.Hint)
 	assert.Equal(t, prepareImageFailed, res.Images[0].Status)
-	assert.Nil(t, res.Preflight, "no preflight after a failed pull")
-	assert.Empty(t, sb.created)
+	assert.Contains(t, progress, "no space left on device", "the local pull failure is warned about")
+	require.NotNil(t, res.Preflight, "the preflight decides")
+	assert.Equal(t, preparePreflightFailed, res.Preflight.Status)
+	assert.Len(t, sb.created, 1)
+}
+
+// A local pull never marks the image ready: if the preflight fails for a
+// reason that is not the image's, the image stays unverified.
+func TestPrepare_LocalPullDoesNotMakeImageReady(t *testing.T) {
+	setupImagePull(t)
+	sb := stubPrepareSandbox(t)
+	sb.createErr = errors.New("sandbox \"x\" not ready after 42s")
+
+	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
+
+	require.Error(t, err)
+	assert.Equal(t, prepareImageUnverified, res.Images[0].Status)
+	assert.Contains(t, res.Images[0].Detail, "pulled into the local Podman store")
+	assert.NotContains(t, res.Images[0].Detail, "the gateway has pulled it")
 }
 
 // A failed credentialed pull falls back to the gateway's own pull, as
@@ -538,7 +435,7 @@ func TestPrepare_PullFailureFallsBackToGatewayPull(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, res.OK)
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status)
+	assert.Equal(t, prepareImageReady, res.Images[0].Status)
 	assert.Contains(t, res.Images[0].Detail, "the gateway pulls the image without registry credentials")
 	assert.NotContains(t, res.Images[0].Detail, testWorkflowToken)
 	assert.NotContains(t, progress, testWorkflowToken)
@@ -628,7 +525,7 @@ func TestPrepare_PreflightFailureUnclassified(t *testing.T) {
 	require.NotNil(t, res.Error)
 	assert.Equal(t, prepareErrPreflight, res.Error.Kind)
 	assert.Empty(t, res.Error.Hint)
-	assert.Equal(t, prepareImageCached, res.Images[0].Status, "a cached image is not blamed for the preflight")
+	assert.Equal(t, prepareImageUnverified, res.Images[0].Status, "an unrelated preflight failure does not blame the image")
 }
 
 // A preflight sandbox that cannot be deleted is reported, not ignored: a
@@ -649,7 +546,7 @@ func TestPrepare_PreflightDeleteFailureFails(t *testing.T) {
 	require.NotNil(t, res.Preflight)
 	assert.Equal(t, preparePreflightPassed, res.Preflight.Status, "the sandbox itself started")
 	assert.Equal(t, prepareCleanupFailed, res.Preflight.Cleanup)
-	assert.Equal(t, prepareImageSkipped, res.Images[0].Status, "a teardown failure is not the image's failure")
+	assert.Equal(t, prepareImageReady, res.Images[0].Status, "a teardown failure is not the image's failure")
 	assert.Contains(t, progress, "Could not delete preflight sandbox")
 }
 
@@ -723,48 +620,6 @@ func TestPrepare_CanceledDuringPullIsNotAFallback(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Empty(t, sb.created, "a canceled pull does not fall back to a gateway pull")
-}
-
-// A loopback or host-gateway endpoint names a gateway on this host, whose
-// image store is the local Podman store: the credentialed pull still runs.
-func TestPrepare_LocalEndpointIsWarmedLocally(t *testing.T) {
-	for _, endpoint := range []string{
-		"http://127.0.0.1:17670",
-		"https://localhost:17670",
-		"http://[::1]:17670",
-		"http://host.containers.internal:17670",
-	} {
-		t.Run(endpoint, func(t *testing.T) {
-			fake, _, _ := setupImagePull(t)
-			stubPrepareSandbox(t)
-			t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", endpoint)
-
-			res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
-
-			require.NoError(t, err)
-			assert.Equal(t, prepareGatewayLocal, res.Gateway)
-			assert.Equal(t, prepareImagePulled, res.Images[0].Status)
-			assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
-		})
-	}
-}
-
-// The remote-gateway hint replaces the generic registry hint for an
-// authentication failure, but a sandbox that may still exist stays named.
-func TestPrepare_RemoteGatewayAuthFailureKeepsCleanupHint(t *testing.T) {
-	setupImagePull(t)
-	sb := stubPrepareSandbox(t)
-	sb.createErr = fmt.Errorf("unauthorized: authentication required (%w for sandbox x: delete refused)", sandbox.ErrCleanupFailed)
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
-
-	res, _, err := runPrepareJSON(t, prepareOpts(writePrepareFixture(t, "image: "+privateImage)))
-
-	require.Error(t, err)
-	require.NotNil(t, res.Error)
-	assert.Equal(t, prepareErrAuth, res.Error.Kind)
-	assert.Contains(t, res.Error.Hint, prepareRemoteAuthHint)
-	assert.NotContains(t, res.Error.Hint, "CI_REGISTRY_PASSWORD")
-	assert.Contains(t, res.Error.Hint, "openshell sandbox delete "+sb.created[0])
 }
 
 // Cancellation stops preparation between steps, before the next one starts.
@@ -1001,13 +856,13 @@ func TestClassifyPrepareFailure(t *testing.T) {
 		{"reading manifest 1 in quay.io/x/y: manifest unknown", prepareErrUnresolvable},
 		{"invalid reference format", prepareErrUnresolvable},
 		{"dial tcp: lookup registry.invalid: no such host", prepareErrUnresolvable},
-		{"open /etc/x: permission denied", prepareErrPull},
-		{"something else", prepareErrPull},
+		{"open /etc/x: permission denied", prepareErrPreflight},
+		{"something else", prepareErrPreflight},
 	}
 	for _, tc := range tests {
-		kind, hint := classifyPrepareFailure(tc.msg, prepareErrPull)
+		kind, hint := classifyPrepareFailure(tc.msg)
 		assert.Equal(t, tc.kind, kind, tc.msg)
-		if kind == prepareErrPull {
+		if kind == prepareErrPreflight {
 			assert.Empty(t, hint, tc.msg)
 		} else {
 			assert.NotEmpty(t, hint, tc.msg)
@@ -1018,7 +873,7 @@ func TestClassifyPrepareFailure(t *testing.T) {
 func TestPrepareError(t *testing.T) {
 	base := errors.New("boom")
 	assert.Equal(t, "boom", (&prepareError{err: base}).Error())
-	err := &prepareError{kind: prepareErrPull, hint: "do this", err: base}
+	err := &prepareError{kind: prepareErrPreflight, hint: "do this", err: base}
 	assert.Equal(t, "boom\nhint: do this", err.Error())
 	assert.ErrorIs(t, err, base)
 }

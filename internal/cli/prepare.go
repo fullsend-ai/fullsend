@@ -29,12 +29,13 @@ var (
 	prepareCreateSandboxFn   = sandbox.CreateWithRetryContext
 )
 
-// Image statuses reported by fullsend prepare.
+// Image statuses reported by fullsend prepare. A local pull never makes an
+// image "ready": only the preflight sandbox, which the gateway creates from
+// the image out of its own image store, shows the gateway can use it.
 const (
-	prepareImageCached  = "cached"  // already in the gateway's image store; not pulled
-	prepareImagePulled  = "pulled"  // pulled into the gateway's image store
-	prepareImageSkipped = "skipped" // not pulled; the preflight pulls it through the gateway
-	prepareImageFailed  = "failed"
+	prepareImageUnverified = "unverified" // not yet confirmed by the preflight sandbox
+	prepareImageReady      = "ready"      // the preflight sandbox started from it
+	prepareImageFailed     = "failed"     // the preflight could not start a sandbox from it
 )
 
 // Preflight statuses reported by fullsend prepare.
@@ -50,12 +51,6 @@ const (
 	prepareSourceDefault  = "gateway-default"        // no image: the gateway's default sandbox image
 )
 
-// Gateway locations reported by fullsend prepare.
-const (
-	prepareGatewayLocal  = "local"
-	prepareGatewayRemote = "remote"
-)
-
 // Failure kinds reported by fullsend prepare, so callers can branch on the
 // cause without parsing messages.
 const (
@@ -65,7 +60,6 @@ const (
 	prepareErrDiskSpace    = "disk-space"
 	prepareErrAuth         = "registry-auth"
 	prepareErrUnresolvable = "image-unresolvable"
-	prepareErrPull         = "image-pull"
 	prepareErrPreflight    = "sandbox-preflight"
 	prepareErrCleanup      = "sandbox-cleanup"
 	prepareErrCanceled     = "canceled"
@@ -84,7 +78,6 @@ type prepareResult struct {
 	Agent     string              `json:"agent"`
 	Harness   string              `json:"harness,omitempty"`
 	Arch      string              `json:"arch"`
-	Gateway   string              `json:"gateway,omitempty"`
 	Images    []prepareImage      `json:"images"`
 	Preflight *preparePreflight   `json:"preflight,omitempty"`
 	Error     *prepareResultError `json:"error,omitempty"`
@@ -150,11 +143,11 @@ func newPrepareCmd() *cobra.Command {
 		Use:   "prepare <agent-name>",
 		Short: "Warm an agent's sandbox image and run a sandbox preflight",
 		Long: `Resolve the agent's sandbox image exactly as 'fullsend run' does (harness image:
-field, FULLSEND_SANDBOX_IMAGE override), warm a private image in the local
-Podman store with the CI job's registry credential, and create and delete a
-minimal sandbox under a restrictive policy to check that the gateway can start
-one. The gateway pulls any other image when that sandbox starts. It runs no
-pre-script, agent, or inference.
+field, FULLSEND_SANDBOX_IMAGE override), pre-pull a private ghcr.io image with
+the workflow token as 'fullsend run' does, and create and delete a minimal
+sandbox under a restrictive policy to check that the gateway can start one. The
+gateway pulls the image into its own image store when that sandbox starts. It
+runs no pre-script, agent, or inference.
 
 Run it once before starting many 'fullsend run' invocations in parallel, so a
 missing image is pulled once and a broken environment fails fast. It exits
@@ -245,7 +238,7 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	if err := prepareCanceled(ctx); err != nil {
 		return res, err
 	}
-	res.Images = append(res.Images, prepareImage{Role: "sandbox", Ref: image, Source: source})
+	res.Images = append(res.Images, prepareImage{Role: "sandbox", Ref: image, Source: source, Status: prepareImageUnverified})
 	img := &res.Images[0]
 	printer.KeyValue("Image", displayPrepareImage(image))
 	printer.KeyValue("Arch", res.Arch)
@@ -270,17 +263,6 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	}
 	printer.StepDone("Gateway available")
 
-	// A gateway on another host has an image store that is not this host's.
-	// The gateway is the one named by OPENSHELL_GATEWAY_ENDPOINT or, without
-	// it, the registered one. Decided after the gateway check, which may set
-	// the endpoint for a containerized CLI. Loopback, host-gateway and this
-	// host's own addresses name a gateway on this host.
-	remote := gatewayIsRemoteFn(ctx)
-	res.Gateway = prepareGatewayLocal
-	if remote {
-		res.Gateway = prepareGatewayRemote
-	}
-
 	// fullsend run gets GH_WORKFLOW_TOKEN from minting its agent token;
 	// prepare mints nothing, so it resolves the same token from the
 	// environment (preparedWorkflowToken) for the image pull.
@@ -288,14 +270,11 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 	if tokenProblem != "" {
 		printer.StepWarn(tokenProblem)
 	}
-	cred, hasCred := sandboxImageCredentialWithToken(image, workflowToken)
 
 	if err := prepareCanceled(ctx); err != nil {
 		return res, err
 	}
-	if err := warmPrepareImage(ctx, img, remote, cred, hasCred, printer); err != nil {
-		return res, err
-	}
+	warmPrepareImage(ctx, img, workflowToken, printer)
 	if err := prepareCanceled(ctx); err != nil {
 		return res, err
 	}
@@ -308,35 +287,21 @@ func prepareAgent(ctx context.Context, opts prepareOptions, printer *ui.Printer)
 
 	res.Preflight = &preparePreflight{Sandbox: generateSandboxName(opts.agentName)}
 	if err := runPrepareSandboxPreflight(ctx, res.Preflight, image, policyPath, sandboxTimeout, printer); err != nil {
-		// The preflight is the first pull of an image the gateway had to
-		// fetch itself; a pull failure there is the image's failure.
-		// A failure after the sandbox reached Ready is a teardown failure,
-		// not the image's.
-		if img.Status == prepareImageSkipped && res.Preflight.Status == preparePreflightFailed {
-			img.Status = prepareImageFailed
-		}
-		// fullsend cannot authenticate a pull on a remote gateway, so a
-		// private image fails there for a reason the generic hints miss.
-		// The sandbox cleanup hint stays: the sandbox may still exist.
+		// The image is at fault only when the gateway could not pull or
+		// resolve it; other preflight failures say nothing about it.
+		// A sandbox that reached Ready and failed only afterwards, in
+		// teardown or cancellation, did start from the image.
 		var pe *prepareError
-		if remote && hasCred && errors.As(err, &pe) &&
-			(pe.kind == prepareErrAuth || pe.kind == prepareErrPull || pe.kind == prepareErrPreflight) {
-			rest := pe.hint
-			if pe.kind == prepareErrAuth {
-				// The generic registry hint tells the user to supply a
-				// credential, which a remote gateway cannot use; keep only
-				// the cleanup hint.
-				rest = prepareCleanupHint(res.Preflight)
-			}
-			pe.hint = prepareRemoteAuthHint
-			if rest != "" {
-				pe.hint += "; " + rest
-			}
+		if res.Preflight.Status == preparePreflightPassed {
+			img.Status = prepareImageReady
+		} else if errors.As(err, &pe) && (pe.kind == prepareErrDiskSpace || pe.kind == prepareErrAuth || pe.kind == prepareErrUnresolvable) {
+			img.Status = prepareImageFailed
 		}
 		return res, err
 	}
-	if img.Status == prepareImageSkipped && image != "" {
-		img.Detail += "; the sandbox preflight pulled it through the gateway"
+	img.Status = prepareImageReady
+	if image != "" {
+		img.Detail += "; the preflight sandbox started from it, so the gateway has pulled it"
 	}
 
 	res.OK = true
@@ -430,6 +395,36 @@ func resolvePrepareImage(ctx context.Context, opts prepareOptions, printer *ui.P
 	return image, source, harnessPath, time.Duration(h.SandboxTimeoutSeconds) * time.Second, nil
 }
 
+// preparedWorkflowToken returns the GitHub Actions workflow token for
+// fullsend prepare, which does not mint an agent token and so never has
+// GH_WORKFLOW_TOKEN preserved for it the way fullsend run does
+// (mintAgentTokenAtLevel). It resolves the same value without minting and
+// without touching the environment: an existing GH_WORKFLOW_TOKEN, else the
+// caller's GH_TOKEN, else its GITHUB_TOKEN, which must look like a token.
+// Outside GitHub Actions there is no workflow token and it returns "". A
+// non-empty problem explains why a token that was present is not used.
+func preparedWorkflowToken() (token, problem string) {
+	if os.Getenv("GITHUB_ACTIONS") != "true" {
+		return "", ""
+	}
+	if existing := os.Getenv(workflowTokenEnv); existing != "" {
+		return existing, ""
+	}
+	name := "GH_TOKEN"
+	token = os.Getenv(name)
+	if token == "" {
+		name = "GITHUB_TOKEN"
+		token = os.Getenv(name)
+	}
+	if token == "" {
+		return "", ""
+	}
+	if !mintTokenPattern.MatchString(token) {
+		return "", name + " has an unexpected format, so it is not used as the workflow token"
+	}
+	return token, ""
+}
+
 // displayPrepareImage renders image for progress output.
 func displayPrepareImage(image string) string {
 	if image == "" {
@@ -437,10 +432,6 @@ func displayPrepareImage(image string) string {
 	}
 	return image
 }
-
-// prepareRemoteAuthHint explains a private image's failure on a remote
-// gateway: fullsend authenticates pulls only into this host's Podman store.
-const prepareRemoteAuthHint = "fullsend cannot authenticate a pull on a remote gateway (OPENSHELL_GATEWAY_ENDPOINT); make the image public, or pull it on the gateway host with the registry credential first"
 
 // prepareCanceled returns a canceled failure when ctx is done.
 func prepareCanceled(ctx context.Context) error {
@@ -497,74 +488,29 @@ func writePreflightPolicy() (path string, remove func(), err error) {
 	return path, remove, nil
 }
 
-// warmPrepareImage records on img how the image reaches the gateway's image
-// store. The gateway pulls a public image into its own store when the
-// preflight sandbox starts, so that image is left to the preflight: a local
-// pull would fill only this host's store, which is the gateway's only when
-// the gateway is local. A pull here is worth doing for one case — a private
-// image the gateway cannot authenticate for. That is the local Podman store,
-// which OpenShell's Podman driver pulls into, with the credential
-// fullsend run uses. A remote gateway's store is out of reach from this host,
-// so a private image cannot be warmed there: it is reported and left to the
-// preflight, which pulls anonymously.
-//
-// A failed credentialed pull falls back to the gateway's own pull, as
-// fullsend run does, so a public image still works; only a full disk, which
-// the gateway's pull would hit too, fails here.
-func warmPrepareImage(ctx context.Context, img *prepareImage, remote bool, cred registryCredential, hasCred bool, printer *ui.Printer) error {
+// warmPrepareImage pre-pulls a private image the way fullsend run does
+// (pullGHCRImage: ghcr.io image, GitHub Actions workflow token, private auth
+// file, redacted output), and records on img what happened in this host's
+// Podman store. It does not say the gateway's image store is warm: the
+// gateway pulls into its own store when the preflight sandbox starts, which
+// is what confirms the image. A failed pull is a warning, as in fullsend run,
+// so a public image still works and a full disk fails in the preflight.
+func warmPrepareImage(ctx context.Context, img *prepareImage, workflowToken string, printer *ui.Printer) {
 	if img.Ref == "" {
-		img.Status = prepareImageSkipped
 		img.Detail = "no image configured; the gateway uses its default sandbox image"
-		return nil
+		return
 	}
-	switch {
-	case !hasCred:
-		img.Status = prepareImageSkipped
+	switch pullGHCRImage(ctx, img.Ref, workflowToken, printer) {
+	case localPullCached:
+		img.Detail = "already in the local Podman store"
+	case localPullPulled:
+		img.Detail = "pulled into the local Podman store with the workflow token"
+	case localPullFailed:
+		img.Detail = "the local pull did not complete; the gateway pulls the image without registry credentials"
+	default:
 		img.Detail = "no registry credential applies, so nothing was pulled locally; the gateway pulls the image into its own image store"
 		printer.StepInfo(img.Detail)
-		return nil
-	case remote:
-		img.Status = prepareImageSkipped
-		img.Detail = "the registry credential from " + cred.source + " cannot be used with the remote gateway named by OPENSHELL_GATEWAY_ENDPOINT, whose image store is not on this host; the gateway pulls the image anonymously, which works only for a public image"
-		printer.StepWarn(img.Detail)
-		return nil
 	}
-	if _, err := imagePullLookPathFn("podman"); err != nil {
-		img.Status = prepareImageSkipped
-		img.Detail = "podman not found, so the gateway's image store could not be checked or warmed from this host; the gateway pulls the image without registry credentials"
-		printer.StepWarn(img.Detail)
-		return nil
-	}
-
-	pullCtx, cancel := context.WithTimeout(ctx, sandboxImagePullTimeout)
-	defer cancel()
-
-	if localImageExists(pullCtx, img.Ref) {
-		img.Status = prepareImageCached
-		printer.StepDone("Image already present: " + img.Ref)
-		return nil
-	}
-
-	printer.StepStart("Pulling sandbox image with " + cred.source + ": " + img.Ref)
-	if err := pullLocalImage(pullCtx, img.Ref, &cred); err != nil {
-		if cErr := prepareCanceled(ctx); cErr != nil {
-			printer.StepFail("Pull of " + img.Ref + " canceled")
-			return cErr
-		}
-		kind, hint := classifyPrepareFailure(err.Error(), prepareErrPull)
-		if kind == prepareErrDiskSpace {
-			img.Status = prepareImageFailed
-			printer.StepFail("Failed to pull " + img.Ref)
-			return &prepareError{kind: kind, hint: hint, err: err}
-		}
-		img.Status = prepareImageSkipped
-		img.Detail = err.Error() + "; the gateway pulls the image without registry credentials"
-		printer.StepWarn(img.Detail)
-		return nil
-	}
-	img.Status = prepareImagePulled
-	printer.StepDone("Pulled sandbox image " + img.Ref)
-	return nil
 }
 
 // runPrepareSandboxPreflight creates a minimal sandbox from image — no
@@ -591,7 +537,7 @@ func runPrepareSandboxPreflight(ctx context.Context, pf *preparePreflight, image
 			return cErr
 		}
 		printer.StepFail("Preflight sandbox could not be created")
-		kind, hint := classifyPrepareFailure(err.Error(), prepareErrPreflight)
+		kind, hint := classifyPrepareFailure(err.Error())
 		if cleanup := prepareCleanupHint(pf); cleanup != "" {
 			if hint != "" {
 				hint += "; "
@@ -629,10 +575,10 @@ func prepareCleanupHint(pf *preparePreflight) string {
 	return "the preflight sandbox may still exist; delete it with 'openshell sandbox delete " + pf.Sandbox + "'"
 }
 
-// classifyPrepareFailure maps an image pull or sandbox creation error
-// message to a failure kind and an actionable hint, or returns fallback
-// with no hint when the cause is not recognized.
-func classifyPrepareFailure(msg, fallback string) (kind, hint string) {
+// classifyPrepareFailure maps a sandbox creation error message to a failure
+// kind and an actionable hint, or returns the generic preflight kind with no
+// hint when the cause is not recognized.
+func classifyPrepareFailure(msg string) (kind, hint string) {
 	m := strings.ToLower(msg)
 	containsAny := func(subs ...string) bool {
 		for _, s := range subs {
@@ -646,9 +592,9 @@ func classifyPrepareFailure(msg, fallback string) (kind, hint string) {
 	case containsAny("no space left on device", "disk quota exceeded"):
 		return prepareErrDiskSpace, "the host running the gateway's image store is out of disk space; free space (for example with 'podman system prune') or use a runner with a larger disk"
 	case containsAny("unauthorized", "authentication required", "access to the resource is denied", "403 forbidden"):
-		return prepareErrAuth, "the registry refused the pull; make the image public or provide the CI job's registry credential (the workflow token, GH_WORKFLOW_TOKEN or the job's GH_TOKEN/GITHUB_TOKEN, with packages: read for ghcr.io on GitHub Actions, CI_REGISTRY_USER and CI_REGISTRY_PASSWORD for CI_REGISTRY on GitLab CI)"
+		return prepareErrAuth, "the registry refused the pull; make the image public or, on GitHub Actions, provide the workflow token (GH_WORKFLOW_TOKEN or the job's GH_TOKEN/GITHUB_TOKEN, with packages: read for ghcr.io)"
 	case containsAny("manifest unknown", "name unknown", "invalid reference format", "no such host", "not found: manifest", "repository does not exist"):
 		return prepareErrUnresolvable, "the image reference could not be resolved; check the harness image: field and FULLSEND_SANDBOX_IMAGE"
 	}
-	return fallback, ""
+	return prepareErrPreflight, ""
 }

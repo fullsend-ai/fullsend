@@ -130,15 +130,13 @@ fullsend
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
-├── prepare          <agent-name>              # Warm the sandbox image and run a sandbox preflight
+├── prepare          <agent-name>              # Pre-pull a private image and run a sandbox preflight
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
 │   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --event-file <path>                  #   Normalized event JSON for overlay resolution
 │   ├── --json                               #   Print the result as JSON on stdout
-│   ├── --offline                            #   Reject network fetches
-│   ├── --max-depth <int>                    #   Max transitive dependency depth
-│   └── --max-resources <int>                #   Max total remote resources
+│   └── --offline                            #   Reject network fetches
 ├── run                                      # Execute an agent in a sandbox
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --target-repo <path>                 #   Path to the target repository

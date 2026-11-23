@@ -384,9 +384,7 @@ also need the Go toolchain. Pin the parent tag to a digest before CI use.
 The image can be a **private** package on `ghcr.io` for the code and fix
 agents, whose shipped workflows grant `packages: read`. On GitHub Actions,
 `fullsend run` pulls the image with the job's workflow token
-(`GH_WORKFLOW_TOKEN`) before it creates the sandbox. On GitLab CI, an image on
-the instance's container registry is pulled the same way with the job's
-registry credentials. Prerequisites and
+(`GH_WORKFLOW_TOKEN`) before it creates the sandbox. Prerequisites and
 failure behaviour: [GitHub Packages credentials](../../cli/run.md#github-packages-credentials).
 
 ### Adding executables

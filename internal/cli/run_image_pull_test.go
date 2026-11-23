@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -80,38 +78,41 @@ func setupImagePull(t *testing.T) (*fakePodman, *bytes.Buffer, *ui.Printer) {
 	// Image not present locally unless a test says otherwise.
 	fake.respond("image", "", errors.New("exit status 1"))
 
-	origRun, origLook, origRemote := runPodmanFn, imagePullLookPathFn, gatewayIsRemoteFn
+	origRun, origLook := runPodmanFn, imagePullLookPathFn
 	runPodmanFn = fake.run
 	imagePullLookPathFn = func(string) (string, error) { return "/usr/bin/podman", nil }
-	// Hermetic: only OPENSHELL_GATEWAY_ENDPOINT names the gateway, never a
-	// real `openshell gateway info`.
-	gatewayIsRemoteFn = func(ctx context.Context) bool {
-		return sandbox.GatewayEndpointIsRemote(ctx, os.Getenv("OPENSHELL_GATEWAY_ENDPOINT"))
-	}
 	t.Cleanup(func() {
 		runPodmanFn = origRun
 		imagePullLookPathFn = origLook
-		gatewayIsRemoteFn = origRemote
 	})
 
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv(workflowTokenEnv, testWorkflowToken)
-	t.Setenv("GH_TOKEN", "")
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GITLAB_CI", "")
-	t.Setenv("CI_REGISTRY", "")
-	t.Setenv("CI_REGISTRY_USER", "")
-	t.Setenv("CI_REGISTRY_PASSWORD", "")
 	t.Setenv("TMPDIR", t.TempDir())
 
 	var buf bytes.Buffer
 	return fake, &buf, ui.New(&buf)
 }
 
-func TestPrePullSandboxImage_PullsWithRunScopedAuthFile(t *testing.T) {
+func TestIsGHCRImage(t *testing.T) {
+	tests := map[string]bool{
+		privateImage:                         true,
+		"GHCR.io/org/img:tag":                true,
+		"docker.io/library/alpine:3":         false,
+		"quay.io/org/ghcr.io:tag":            false,
+		"ghcr.io.example.com/org/img:latest": false,
+		"ghcr.io":                            false,
+		"":                                   false,
+	}
+	for image, want := range tests {
+		assert.Equal(t, want, isGHCRImage(image), image)
+	}
+}
+
+func TestPrePullGHCRImage_PullsWithRunScopedAuthFile(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
 
-	prePullSandboxImage(context.Background(), privateImage, printer)
+	prePullGHCRImage(context.Background(), privateImage, printer)
 
 	require.Equal(t, []string{"image", "pull"}, fake.subcommands())
 	assert.Equal(t, []string{"image", "exists", privateImage}, fake.calls[0])
@@ -141,11 +142,11 @@ func TestPrePullSandboxImage_PullsWithRunScopedAuthFile(t *testing.T) {
 	assert.NotContains(t, buf.String(), testWorkflowToken)
 }
 
-func TestPrePullSandboxImage_PullFailureRedactsTokenAndCleansUp(t *testing.T) {
+func TestPrePullGHCRImage_PullFailureRedactsTokenAndCleansUp(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
 	fake.respond("pull", "Error: initializing source: unauthorized "+testWorkflowToken, errors.New("exit status 125"))
 
-	prePullSandboxImage(context.Background(), privateImage, printer)
+	prePullGHCRImage(context.Background(), privateImage, printer)
 
 	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
 	out := buf.String()
@@ -159,16 +160,16 @@ func TestPrePullSandboxImage_PullFailureRedactsTokenAndCleansUp(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "auth directory must be removed after a failed pull")
 }
 
-func TestPrePullSandboxImage_SkipsImageAlreadyPresent(t *testing.T) {
+func TestPrePullGHCRImage_SkipsImageAlreadyPresent(t *testing.T) {
 	fake, _, printer := setupImagePull(t)
 	fake.respond("image", "", nil)
 
-	prePullSandboxImage(context.Background(), privateImage, printer)
+	prePullGHCRImage(context.Background(), privateImage, printer)
 
 	assert.Equal(t, []string{"image"}, fake.subcommands())
 }
 
-func TestPrePullSandboxImage_NoAttempt(t *testing.T) {
+func TestPrePullGHCRImage_NoAttempt(t *testing.T) {
 	tests := []struct {
 		name    string
 		image   string
@@ -186,7 +187,7 @@ func TestPrePullSandboxImage_NoAttempt(t *testing.T) {
 			t.Setenv("GITHUB_ACTIONS", tc.actions)
 			t.Setenv(workflowTokenEnv, tc.token)
 
-			prePullSandboxImage(context.Background(), tc.image, printer)
+			prePullGHCRImage(context.Background(), tc.image, printer)
 
 			assert.Empty(t, fake.calls)
 			assert.Empty(t, buf.String())
@@ -194,65 +195,35 @@ func TestPrePullSandboxImage_NoAttempt(t *testing.T) {
 	}
 }
 
-// A remote gateway has its own image store: a local pull would not help it.
-func TestPrePullSandboxImage_RemoteGatewaySkipsLocalPull(t *testing.T) {
+func TestPrePullGHCRImage_PodmanMissing(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.com:17670")
+	imagePullLookPathFn = func(string) (string, error) { return "", errors.New("not found") }
 
-	prePullSandboxImage(context.Background(), privateImage, printer)
+	prePullGHCRImage(context.Background(), privateImage, printer)
 
 	assert.Empty(t, fake.calls)
-	assert.Contains(t, buf.String(), "gateway is remote")
+	assert.Contains(t, buf.String(), "podman not found")
 }
 
-// A local endpoint is not remote: the pull still runs.
-func TestPrePullSandboxImage_LocalEndpointStillPulls(t *testing.T) {
-	fake, _, printer := setupImagePull(t)
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "http://127.0.0.1:17670")
-
-	prePullSandboxImage(context.Background(), privateImage, printer)
-
-	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
-}
-
-// A registered remote gateway, with no endpoint exported, also has its own
-// image store.
-func TestPrePullSandboxImage_RegisteredRemoteGatewaySkipsLocalPull(t *testing.T) {
+func TestPrePullGHCRImage_TempDirFailure(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
-	gatewayIsRemoteFn = func(context.Context) bool { return true }
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "does-not-exist"))
 
-	prePullSandboxImage(context.Background(), privateImage, printer)
+	prePullGHCRImage(context.Background(), privateImage, printer)
 
-	assert.Empty(t, fake.calls)
-	assert.Contains(t, buf.String(), "gateway is remote")
+	assert.Equal(t, []string{"image"}, fake.subcommands())
+	assert.Contains(t, buf.String(), "creating registry auth directory failed")
 }
 
-// A non-loopback endpoint that is this host's own address is a local
-// gateway: run still pulls into the local store.
-func TestPrePullSandboxImage_OwnAddressEndpointStillPulls(t *testing.T) {
-	ip := localNonLoopbackIP(t)
-	fake, _, printer := setupImagePull(t)
-	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://"+net.JoinHostPort(ip, "17670"))
+func TestRunPodmanFn_PassesArgs(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho \"args:$*\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "podman"), []byte(script), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	prePullSandboxImage(context.Background(), privateImage, printer)
-
-	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
-}
-
-// localNonLoopbackIP returns an address assigned to one of this host's
-// interfaces that is not loopback, or skips the test when there is none.
-func localNonLoopbackIP(t *testing.T) string {
-	t.Helper()
-	addrs, err := net.InterfaceAddrs()
-	if err == nil {
-		for _, a := range addrs {
-			if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() && n.IP.To4() != nil {
-				return n.IP.String()
-			}
-		}
-	}
-	t.Skip("no non-loopback IPv4 interface address on this host")
-	return ""
+	out, err := runPodmanFn(context.Background(), "image", "exists", "img")
+	require.NoError(t, err)
+	assert.Equal(t, "args:image exists img\n", string(out))
 }
 
 func TestPreparedWorkflowToken(t *testing.T) {
@@ -293,155 +264,51 @@ func TestPreparedWorkflowToken(t *testing.T) {
 	}
 }
 
-func TestPrePullSandboxImage_PodmanMissing(t *testing.T) {
+func TestPullGHCRImage_ReportsLocalOutcome(t *testing.T) {
+	t.Run("pulled", func(t *testing.T) {
+		_, _, printer := setupImagePull(t)
+		assert.Equal(t, localPullPulled, pullGHCRImage(context.Background(), privateImage, testWorkflowToken, printer))
+	})
+	t.Run("already present", func(t *testing.T) {
+		fake, _, printer := setupImagePull(t)
+		fake.respond("image", "", nil)
+		assert.Equal(t, localPullCached, pullGHCRImage(context.Background(), privateImage, testWorkflowToken, printer))
+	})
+	t.Run("pull failed", func(t *testing.T) {
+		fake, _, printer := setupImagePull(t)
+		fake.respond("pull", "Error: unauthorized", errors.New("exit status 125"))
+		assert.Equal(t, localPullFailed, pullGHCRImage(context.Background(), privateImage, testWorkflowToken, printer))
+	})
+	t.Run("podman missing", func(t *testing.T) {
+		_, _, printer := setupImagePull(t)
+		imagePullLookPathFn = func(string) (string, error) { return "", errors.New("not found") }
+		assert.Equal(t, localPullFailed, pullGHCRImage(context.Background(), privateImage, testWorkflowToken, printer))
+	})
+	t.Run("no credential applies", func(t *testing.T) {
+		fake, _, printer := setupImagePull(t)
+		assert.Equal(t, localPullNone, pullGHCRImage(context.Background(), privateImage, "", printer))
+		assert.Equal(t, localPullNone, pullGHCRImage(context.Background(), "quay.io/org/img:tag", testWorkflowToken, printer))
+		assert.Empty(t, fake.calls)
+	})
+}
+
+// prepare supplies the token it resolved without minting; the pull must use
+// that token, not the environment's, and still keep it out of argv.
+func TestPullGHCRImage_UsesSuppliedToken(t *testing.T) {
+	const supplied = "supplied-token-for-tests"
 	fake, buf, printer := setupImagePull(t)
-	imagePullLookPathFn = func(string) (string, error) { return "", errors.New("not found") }
 
-	prePullSandboxImage(context.Background(), privateImage, printer)
+	require.Equal(t, localPullPulled, pullGHCRImage(context.Background(), privateImage, supplied, printer))
 
-	assert.Empty(t, fake.calls)
-	assert.Contains(t, buf.String(), "podman not found")
-}
-
-func TestPrePullSandboxImage_TempDirFailure(t *testing.T) {
-	fake, buf, printer := setupImagePull(t)
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "does-not-exist"))
-
-	prePullSandboxImage(context.Background(), privateImage, printer)
-
-	assert.Equal(t, []string{"image"}, fake.subcommands())
-	assert.Contains(t, buf.String(), "creating registry auth directory failed")
-}
-
-func TestRunPodmanFn_PassesArgs(t *testing.T) {
-	bin := t.TempDir()
-	script := "#!/bin/sh\necho \"args:$*\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "podman"), []byte(script), 0o755))
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	out, err := runPodmanFn(context.Background(), "image", "exists", "img")
-	require.NoError(t, err)
-	assert.Equal(t, "args:image exists img\n", string(out))
-}
-
-const (
-	testGitLabRegistry = "gitlab.example.com:5050"
-	testGitLabPassword = "fake-gitlab-registry-password"
-	gitLabImage        = testGitLabRegistry + "/group/project/sandbox:1"
-)
-
-// setGitLabCI makes the environment look like a GitLab CI job with
-// registry credentials, and not like GitHub Actions.
-func setGitLabCI(t *testing.T) {
-	t.Helper()
-	t.Setenv("GITHUB_ACTIONS", "")
-	t.Setenv("GITLAB_CI", "true")
-	t.Setenv("CI_REGISTRY", testGitLabRegistry)
-	t.Setenv("CI_REGISTRY_USER", "gitlab-ci-token")
-	t.Setenv("CI_REGISTRY_PASSWORD", testGitLabPassword)
-}
-
-func TestSandboxImageCredential(t *testing.T) {
-	t.Run("github actions ghcr", func(t *testing.T) {
-		setupImagePull(t)
-		cred, ok := sandboxImageCredential(privateImage)
-		require.True(t, ok)
-		assert.Equal(t, ghcrRegistry, cred.registry)
-		assert.Equal(t, ghcrAuthUsername, cred.username)
-		assert.Equal(t, testWorkflowToken, cred.secret)
-	})
-	t.Run("gitlab ci registry", func(t *testing.T) {
-		setupImagePull(t)
-		setGitLabCI(t)
-		cred, ok := sandboxImageCredential(gitLabImage)
-		require.True(t, ok)
-		assert.Equal(t, testGitLabRegistry, cred.registry)
-		assert.Equal(t, "gitlab-ci-token", cred.username)
-		assert.Equal(t, testGitLabPassword, cred.secret)
-	})
-	t.Run("gitlab ci other registry", func(t *testing.T) {
-		setupImagePull(t)
-		setGitLabCI(t)
-		_, ok := sandboxImageCredential("quay.io/org/img:tag")
-		assert.False(t, ok)
-	})
-	t.Run("gitlab ci missing password", func(t *testing.T) {
-		setupImagePull(t)
-		setGitLabCI(t)
-		t.Setenv("CI_REGISTRY_PASSWORD", "")
-		_, ok := sandboxImageCredential(gitLabImage)
-		assert.False(t, ok)
-	})
-	t.Run("gitlab registry outside gitlab ci", func(t *testing.T) {
-		setupImagePull(t)
-		setGitLabCI(t)
-		t.Setenv("GITLAB_CI", "")
-		_, ok := sandboxImageCredential(gitLabImage)
-		assert.False(t, ok)
-	})
-	t.Run("unqualified image", func(t *testing.T) {
-		setupImagePull(t)
-		_, ok := sandboxImageCredential("alpine")
-		assert.False(t, ok)
-	})
-}
-
-func TestPrePullSandboxImage_GitLabRegistry(t *testing.T) {
-	fake, buf, printer := setupImagePull(t)
-	setGitLabCI(t)
-
-	prePullSandboxImage(context.Background(), gitLabImage, printer)
-
-	require.Equal(t, []string{"image", "pull"}, fake.subcommands())
 	var authFile struct {
 		Auths map[string]struct{ Auth string } `json:"auths"`
 	}
 	require.NoError(t, json.Unmarshal(fake.authJSON, &authFile))
-	require.Contains(t, authFile.Auths, testGitLabRegistry)
-	decoded, err := base64.StdEncoding.DecodeString(authFile.Auths[testGitLabRegistry].Auth)
+	decoded, err := base64.StdEncoding.DecodeString(authFile.Auths[ghcrRegistry].Auth)
 	require.NoError(t, err)
-	assert.Equal(t, "gitlab-ci-token:"+testGitLabPassword, string(decoded))
+	assert.Equal(t, ghcrAuthUsername+":"+supplied, string(decoded))
 	for _, c := range fake.calls {
-		assert.NotContains(t, strings.Join(c, " "), testGitLabPassword, "password must never appear in argv")
+		assert.NotContains(t, strings.Join(c, " "), supplied)
 	}
-	assert.Contains(t, buf.String(), "GitLab CI registry credentials")
-	assert.NotContains(t, buf.String(), testGitLabPassword)
-}
-
-func TestPullLocalImage_Anonymous(t *testing.T) {
-	fake, _, _ := setupImagePull(t)
-
-	require.NoError(t, pullLocalImage(context.Background(), "quay.io/org/img:tag", nil))
-
-	assert.Equal(t, [][]string{{"pull", "--quiet", "quay.io/org/img:tag"}}, fake.calls)
-	assert.Empty(t, fake.authFiles)
-}
-
-func TestPullLocalImage_AnonymousFailureKeepsOutput(t *testing.T) {
-	fake, _, _ := setupImagePull(t)
-	fake.respond("pull", "Error: no space left on device", errors.New("exit status 125"))
-
-	err := pullLocalImage(context.Background(), "quay.io/org/img:tag", nil)
-
-	require.Error(t, err)
-	assert.Equal(t, "pulling quay.io/org/img:tag failed: Error: no space left on device", err.Error())
-	var pullErr *imagePullError
-	require.ErrorAs(t, err, &pullErr)
-	assert.EqualError(t, errors.Unwrap(err), "exit status 125")
-}
-
-func TestPullLocalImage_AuthDirFailure(t *testing.T) {
-	fake, _, _ := setupImagePull(t)
-	// A regular file as TMPDIR makes MkdirTemp fail.
-	parent := filepath.Join(t.TempDir(), "file")
-	require.NoError(t, os.WriteFile(parent, nil, 0o600))
-	t.Setenv("TMPDIR", parent)
-
-	cred := registryCredential{registry: ghcrRegistry, username: ghcrAuthUsername, secret: testWorkflowToken}
-	err := pullLocalImage(context.Background(), privateImage, &cred)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "creating registry auth directory failed")
-	assert.NotContains(t, err.Error(), testWorkflowToken)
-	assert.Empty(t, fake.calls)
+	assert.NotContains(t, buf.String(), supplied)
 }
