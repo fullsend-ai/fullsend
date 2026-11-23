@@ -36,7 +36,7 @@ to preserve the parser's live reasoning-event coverage.
 | `turn_failed.ndjson` | `turn.failed` after a failed command — the run is an error, with the bounded message. |
 | `error_event.ndjson` | An `error` **item** (a warning/model-reroute) and a **top-level** `error`, both followed by `turn.completed`: neither fails the run. |
 | `critical_error_only.ndjson` | A top-level `error` and then nothing: no terminal event, so the run is incomplete and the parked message is the reason. |
-| `mcp_and_file_change.ndjson` | `file_change` (add/update/delete, and a failed patch), `mcp_tool_call` (success and error), `web_search`, `collab_tool_call`, `todo_list`, a `declined` command, and a multi-line command. |
+| `mcp_and_file_change.ndjson` | `file_change` (add/update/delete, and a failed patch), `mcp_tool_call` (success and error), `web_search` (with its two `id` keys, as codex writes it), `collab_tool_call`, `todo_list`, a `declined` command, and a multi-line command. |
 | `malformed_line.ndjson` | Garbage, half-written and empty lines mid-stream: skipped, the run still completes. |
 | `truncated.ndjson` | Killed mid-write — the last line stops mid-token and there is no terminal event. (The repo's `end-of-file-fixer` hook keeps a trailing newline after it; the line is still unparseable, which is what the fixture tests.) |
 | `unknown_types.ndjson` | An unknown top-level event type and an unknown item type: skipped, the run still completes. |
@@ -167,6 +167,8 @@ collab_tool_call  {tool: spawn_agent|send_input|wait|close_agent,
                    agents_states{}, status: in_progress|completed|failed}
 web_search        {id, query, action{type: search|open_page|find_in_page, …},
                    results?: [any JSON]}
+                  (this id is the search's raw id, a second "id" key
+                   after the item's item_N, which the parser uses)
 todo_list         {items: [{text, completed}]}
 error             {message}
 ```

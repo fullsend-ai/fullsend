@@ -50,7 +50,9 @@ import (
 //	                   sender_thread_id, receiver_thread_ids[], prompt?,
 //	                   agents_states{}, status}
 //	web_search        {id, query, action{type: search|open_page|find_in_page, ...},
-//	                   results?[]}
+//	                   results?[]} -- its own id is the search's raw id, a
+//	                   second "id" key after the item's (see
+//	                   decodeCodexItemHeader)
 //	todo_list         {items[{text, completed}]}
 //	error             {message}
 //
@@ -162,13 +164,59 @@ type codexItemEvent struct {
 }
 
 // codexItemHeader reads the two keys every item carries (`details` is
-// serde-flattened, so `type` sits next to `id`).
+// serde-flattened, so `type` sits next to `id`). Decode it with
+// decodeCodexItemHeader, which takes the item's own id.
 type codexItemHeader struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
 	// Status is in_progress|completed|failed (declined too, for a
 	// command); web_search has none.
 	Status string `json:"status"`
+}
+
+// decodeCodexItemHeader reads an item's header, taking its ID from the
+// item's first top-level "id". codex writes ThreadItem as {id,
+// ...details} with details flattened beside it, and a web_search's
+// details carry an id of their own, the search's raw id
+// (WebSearchItem.id, set from the app server's item id at
+// rust-v0.166.0), so that item has two "id" keys, the item's first.
+// encoding/json keeps the last copy of a repeated key, which would give a
+// web_search call the raw id, empty at times, instead of the item_N id
+// every other item kind carries.
+func decodeCodexItemHeader(raw json.RawMessage) (codexItemHeader, error) {
+	var head codexItemHeader
+	if err := json.Unmarshal(raw, &head); err != nil {
+		return head, err
+	}
+	head.ID = codexFirstID(raw)
+	return head, nil
+}
+
+// codexFirstID returns the first top-level "id" of a JSON object, or ""
+// when it has none or the first is not a string.
+func codexFirstID(raw json.RawMessage) string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return ""
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		if key, _ := tok.(string); key == "id" {
+			var id string
+			if dec.Decode(&id) != nil {
+				return ""
+			}
+			return id
+		}
+		var skip json.RawMessage
+		if dec.Decode(&skip) != nil {
+			return ""
+		}
+	}
+	return ""
 }
 
 type codexTextItem struct {
@@ -607,8 +655,8 @@ func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.T
 	// types are skipped: codex adds them faster than fullsend pins move, and a
 	// new tool kind must not abort the stream.
 	handleItem := func(raw json.RawMessage) {
-		var head codexItemHeader
-		if jsonErr := json.Unmarshal(raw, &head); jsonErr != nil {
+		head, jsonErr := decodeCodexItemHeader(raw)
+		if jsonErr != nil {
 			return
 		}
 		startedAt := started[head.ID]
@@ -889,8 +937,8 @@ func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.T
 			if json.Unmarshal(line, &evt) != nil || len(evt.Item) == 0 {
 				continue
 			}
-			var head codexItemHeader
-			if json.Unmarshal(evt.Item, &head) != nil || head.ID == "" {
+			head, jsonErr := decodeCodexItemHeader(evt.Item)
+			if jsonErr != nil || head.ID == "" {
 				continue
 			}
 			if _, ok := started[head.ID]; !ok {

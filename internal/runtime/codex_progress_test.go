@@ -945,6 +945,26 @@ func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
 		}
 	})
 
+	t.Run("a web_search call carries its item id, not the search's raw id", func(t *testing.T) {
+		t.Parallel()
+		// codex writes the item's id first and the search's own id after it
+		// (ThreadItem flattens WebSearchItem, which has an id field).
+		for _, raw := range []string{`"ws_0a1b2c3d4e5f"`, `""`} {
+			item := `{"id":"item_7","type":"web_search","id":` + raw + `,"query":"q","action":{"type":"search","query":"q"}}`
+			var events []AgentEvent
+			_, err := parseCodexStream(strings.NewReader(
+				`{"type":"item.started","item":`+item+"}\n"+
+					`{"type":"item.completed","item":`+item+"}\n"),
+				func(evt AgentEvent) { events = append(events, evt) })
+			require.NoError(t, err)
+			uses, results := codexToolPairs(t, events)
+			require.Len(t, uses, 1, "raw id %s", raw)
+			assert.Equal(t, "item_7", uses[0].ID, "raw id %s", raw)
+			assert.False(t, uses[0].StartedAt.IsZero(), "raw id %s: the item.started is matched by the item id", raw)
+			require.Len(t, results, 1, "raw id %s", raw)
+		}
+	})
+
 	t.Run("a failed patch that names no file still closes its call", func(t *testing.T) {
 		t.Parallel()
 		uses, results := parse(t, `{"type":"item.completed","item":{"id":"p1","type":"file_change","changes":[],"status":"failed"}}`)
@@ -975,6 +995,23 @@ func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
 		assert.Equal(t, t0, uses[0].StartedAt,
 			"the second item.started does not restamp the call")
 	})
+}
+
+func TestCodexFirstID(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ raw, want string }{
+		{`{"id":"item_5","type":"web_search","id":"ws_1"}`, "item_5"},
+		{`{"type":"command_execution","id":"item_2"}`, "item_2"},
+		{`{"type":"x","nested":{"id":"inner"},"id":"item_3"}`, "item_3"},
+		{`{"id":"","id":"ws_1"}`, ""},
+		{`{"id":5}`, ""},
+		{`{"type":"x"}`, ""},
+		{`["item_1"]`, ""},
+		{``, ""},
+	} {
+		assert.Equal(t, tc.want, codexFirstID(json.RawMessage(tc.raw)), tc.raw)
+	}
 }
 
 func TestCodexStructuredText(t *testing.T) {
