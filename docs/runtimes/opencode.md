@@ -164,7 +164,7 @@ example above.
   read regular files or file symlinks through that tool.
 - **The agent is reset before every iteration.** The runner removes agent, tool and config overrides
   from writable config locations, re-uploads the agent definition, and checks that OpenCode loads it.
-  Adapter/script digests are checked before agent verification and before and after `.env` is sourced.
+  Adapter/script digests are checked before agent verification and before and after `.env` is read as data.
   Each iteration also requires the loaded plugin to return a runner-held activation challenge; a
   missing signal detects an unhooked iteration after it exits; it does not prevent that iteration's
   side effects. Verification still runs when transcript or exit-status
@@ -172,7 +172,7 @@ example above.
   Preflight activation prevention remains follow-up hardening alongside #9022.
   Each intercepted tool call rechecks the script directory. Native
   write/edit/patch tools cannot write outside the workspace or into `.env`,
-  `.security` or `runner-state`, including via symlinks.
+  `.env.d`, `.fullsend`, `.security`, `bin` or `runner-state`, including via symlinks.
   Write and trusted path-permission checks inspect both OpenCode's normalized
   destination and the physical symlink destination when a path contains `..`.
 - **Hook configuration is not a same-user secret boundary.** The activation challenge and hook

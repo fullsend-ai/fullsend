@@ -409,8 +409,7 @@ three interception cases inside a Task child, checking that the parent Task and 
 events have distinct session IDs. Original output markers must be absent from every captured
 model request; replacement and denial markers must appear in the continuations.
 
-The [sandbox image CI run on 2026-11-12](https://github.com/fullsend-ai/fullsend/actions/runs/43204480951)
-records a successful OpenCode **1.19.1** native-probe suite at commit `c7ae4d81`.
+The OpenCode **1.19.1** native-probe suite demonstrated the following behavior.
 A pre-tool exception prevented execution. A post-tool exception
 withheld the result and surfaced the denial reason as a tool error; mutating the post-tool
 output replaced what the model received. All three behaviors also held in a Task child session.
