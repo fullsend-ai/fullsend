@@ -93,7 +93,7 @@ the proposed overlay on the proposed (declared) preset rather than the
 installed base; an absent base is an empty layer, so adding a preset is
 compared too. A pristine first install (no installation, no overlay and no
 base) has nothing to compare against and inherits the preset. See
-[Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration).
+[fullsend repos — Managed configuration](../../cli/repos.md#managed-configuration).
 
 ### Marshal behavior
 
