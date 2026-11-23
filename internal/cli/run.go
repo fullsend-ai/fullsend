@@ -7089,7 +7089,9 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 
 	pipeline := security.OutputPipeline()
 	findingCount := 0
-	// At quiet, unreadable and unwritable files are counted, not named.
+	// At quiet, unreadable, unwritable and unsanitizable files are counted, not
+	// named, in the printed log. The collected failures still name each file and
+	// wrap its cause, so telemetry keeps the full text (ADR 0163).
 	unreadable, unwritable, unsanitizable := 0, 0, 0
 	// Write and sanitizer failures are collected rather than returned from the
 	// walk callback so every remaining file is still scanned and redacted. The
@@ -7102,7 +7104,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 			// An entry the walk cannot open is output that cannot be scanned:
 			// everything under it would reach the artifact unredacted. The walk
 			// continues and the run fails closed once it finishes (#5705).
-			writeErrs = append(writeErrs, walkFailure(quiet, outputDir, path, err, &unreadable))
+			writeErrs = append(writeErrs, walkFailure(outputDir, path, err, &unreadable))
 			return nil
 		}
 		if d.IsDir() {
@@ -7134,7 +7136,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 			// A file that cannot be read cannot be scanned, so its bytes would
 			// reach the artifact unredacted. It is contained like a write
 			// failure and the run fails closed (#5705).
-			writeErrs = append(writeErrs, readFailure(quiet, path, relPath, readErr, &unreadable))
+			writeErrs = append(writeErrs, readFailure(path, relPath, readErr, &unreadable))
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))
@@ -7144,7 +7146,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 		if ext == ".jsonl" || ext == ".ndjson" {
 			out, jsonLineFindings, scanErr := sanitizeJSONLines(content, pipeline)
 			if scanErr != nil {
-				writeErrs = append(writeErrs, sanitizeFailure(quiet, path, relPath, scanErr, &unsanitizable))
+				writeErrs = append(writeErrs, sanitizeFailure(path, relPath, scanErr, &unsanitizable))
 				return nil
 			}
 			// A record that was replaced with a marker is not a whole-file
@@ -7166,7 +7168,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 					})
 				}
 				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
-					writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
+					writeErrs = append(writeErrs, writeFailure(path, relPath, writeErr, &unwritable))
 				}
 			}
 			return nil
@@ -7180,7 +7182,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 		if security.IsJSONDocument(content) {
 			out, jsonFindings, jsonErr := sanitizeJSONDocument(content, pipeline)
 			if jsonErr != nil {
-				writeErrs = append(writeErrs, sanitizeFailure(quiet, path, relPath, jsonErr, &unsanitizable))
+				writeErrs = append(writeErrs, sanitizeFailure(path, relPath, jsonErr, &unsanitizable))
 				return nil
 			}
 			if len(jsonFindings) > 0 {
@@ -7196,7 +7198,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 				}
 				alertOnOutputRemoval(printer, out)
 				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
-					writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
+					writeErrs = append(writeErrs, writeFailure(path, relPath, writeErr, &unwritable))
 				}
 			}
 			return nil
@@ -7226,7 +7228,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 			// report.
 			out := result.Sanitized
 			if writeErr := writeFile(path, []byte(out), 0o644); writeErr != nil {
-				writeErrs = append(writeErrs, writeFailure(quiet, path, relPath, writeErr, &unwritable))
+				writeErrs = append(writeErrs, writeFailure(path, relPath, writeErr, &unwritable))
 			}
 		}
 		return nil
@@ -7287,41 +7289,35 @@ func alertOnRecordRemoval(printer *ui.Printer, sanitized []byte) {
 	}
 }
 
-// writeFailure records a sanitized-output write error. At the quiet progress
-// level the path is withheld because it can carry an agent-chosen name
-// (ADR 0163); non-quiet callers name it.
-func writeFailure(quiet bool, path, relPath string, writeErr error, unwritable *int) error {
+// writeFailure records a sanitized-output write error. The returned error always
+// names the file and wraps the cause, whatever the progress level: only printed
+// lines are trimmed at quiet (the count warnings below, failureLine and
+// quietRunError), while the run error recorded by telemetry keeps the full text
+// (ADR 0163).
+func writeFailure(path, relPath string, writeErr error, unwritable *int) error {
 	*unwritable++
 	quarantineErr := quarantineOutput(path)
-	if quiet {
-		return errors.Join(errors.New("could not write sanitized output file"), quarantineErr)
-	}
 	return errors.Join(fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr), quarantineErr)
 }
 
 // readFailure records an output file that could not be read. Its bytes cannot be
 // scanned, so it is contained like a write failure: the file is replaced with a
 // marker, or removed, when the filesystem allows it, and the run fails closed
-// afterwards (#5705).
-func readFailure(quiet bool, path, relPath string, readErr error, unreadable *int) error {
+// afterwards (#5705). Like every failure here, the error names the file at every
+// progress level; only the printed line is trimmed at quiet (ADR 0163).
+func readFailure(path, relPath string, readErr error, unreadable *int) error {
 	*unreadable++
 	quarantineErr := quarantineOutput(path)
-	if quiet {
-		return errors.Join(errors.New("could not read output file"), quarantineErr)
-	}
 	return errors.Join(fmt.Errorf("could not read %s: %w", relPath, readErr), quarantineErr)
 }
 
 // walkFailure records an entry the walk could not open. Nothing under it was
 // scanned, so the run fails closed instead of shipping those bytes as an
 // artifact (#5705). The entry is not quarantined: it may be a directory, and the
-// files it holds were never opened.
-func walkFailure(quiet bool, outputDir, path string, walkErr error, unreadable *int) error {
+// files it holds were never opened. The path stays in the error at every
+// progress level; only the printed line is trimmed at quiet (ADR 0163).
+func walkFailure(outputDir, path string, walkErr error, unreadable *int) error {
 	*unreadable++
-	if quiet {
-		// The path can carry an agent-chosen name (ADR 0163).
-		return errors.New("could not read an output entry")
-	}
 	relPath, err := filepath.Rel(outputDir, path)
 	if err != nil {
 		relPath = path
@@ -7332,13 +7328,11 @@ func walkFailure(quiet bool, outputDir, path string, walkErr error, unreadable *
 // sanitizeFailure records a sanitization error and contains the file it could
 // not sanitize, so the walk continues to the remaining files instead of leaving
 // them unredacted. The unredacted bytes are replaced with the marker when the
-// filesystem allows it, as on a write failure (#5705).
-func sanitizeFailure(quiet bool, path, relPath string, scanErr error, unsanitizable *int) error {
+// filesystem allows it, as on a write failure (#5705). The error names the file
+// and wraps the cause at every progress level (ADR 0163).
+func sanitizeFailure(path, relPath string, scanErr error, unsanitizable *int) error {
 	*unsanitizable++
 	quarantineErr := quarantineOutput(path)
-	if quiet {
-		return errors.Join(errors.New("could not sanitize output file"), quarantineErr)
-	}
 	return errors.Join(fmt.Errorf("could not sanitize %s: %w", relPath, scanErr), quarantineErr)
 }
 

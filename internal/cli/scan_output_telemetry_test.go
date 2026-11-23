@@ -549,15 +549,22 @@ func TestScanOutputFiles_NoAnnotationForPreexistingMarkerLine(t *testing.T) {
 	assert.Equal(t, content, string(got), "a clean stream must be written back unchanged")
 }
 
-func TestScanOutputFiles_QuietJSONWriteFailureIsFatal(t *testing.T) {
+// TestScanOutputFiles_QuietWriteFailureKeepsPathAndCause pins that a quiet run
+// still reports what failed in the error it returns: the file and the wrapped
+// write error reach telemetry and the root span, and only the printed line is
+// trimmed (failureLine, quietRunError) under ADR 0163.
+func TestScanOutputFiles_QuietWriteFailureKeepsPathAndCause(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"token":"ghp_FAKEtesttoken000000000000000000000000"}`), 0o644))
+	writeErr := errors.New("no space left on device")
 	err := scanOutputFilesWithWriter(dir, "trace-id", "quiet", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
-		return os.ErrPermission
+		return writeErr
 	})
 	require.Error(t, err)
-	assert.EqualError(t, err, "could not write sanitized output file")
+	assert.Contains(t, err.Error(), "could not write sanitized secret.json",
+		"the run error keeps the path at quiet, so telemetry can name it")
+	assert.ErrorIs(t, err, writeErr, "the run error keeps the wrapped cause at quiet")
 }
 
 // TestScanOutputFiles_ContinuesRedactingAfterWriteFailure pins that one
@@ -739,10 +746,11 @@ func TestScanOutputFiles_UnreadableDirectoryFailsClosed(t *testing.T) {
 	assert.Contains(t, err.Error(), "could not read agent-dir")
 }
 
-// TestScanOutputFiles_QuietReadFailureKeepsPathOutOfMessage pins the quiet
-// contract for a read failure: the run fails closed, and the file name — which
-// can be agent-chosen — stays out of the message (ADR 0163).
-func TestScanOutputFiles_QuietReadFailureKeepsPathOutOfMessage(t *testing.T) {
+// TestScanOutputFiles_QuietReadFailureKeepsPathInErrorOnly pins the quiet
+// contract for a read failure: the file name — which can be agent-chosen
+// (ADR 0163) — stays out of the printed log but stays in the run error, so
+// telemetry records which file could not be scanned.
+func TestScanOutputFiles_QuietReadFailureKeepsPathInErrorOnly(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission checks do not apply to root")
 	}
@@ -759,8 +767,10 @@ func TestScanOutputFiles_QuietReadFailureKeepsPathOutOfMessage(t *testing.T) {
 	var output bytes.Buffer
 	err := scanOutputFiles(dir, "trace-id", "quiet", ui.New(&output))
 	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "agent-chosen-secret-name.txt")
-	assert.NotContains(t, output.String(), "agent-chosen-secret-name.txt")
+	assert.Contains(t, err.Error(), "agent-chosen-secret-name.txt",
+		"the run error keeps the path at quiet, so telemetry can name it")
+	assert.NotContains(t, output.String(), "agent-chosen-secret-name.txt",
+		"the printed log must not name an agent-chosen file at quiet")
 }
 
 // TestScanOutputFiles_SanitizesBOMPrefixedJSONStructurally pins that a JSON

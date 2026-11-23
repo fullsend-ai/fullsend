@@ -726,8 +726,9 @@ never reached. The unredacted file is replaced with the fail-closed marker so it
 bytes do not reach the uploaded artifact when the filesystem allows it; if the
 marker write and the fallback removal both fail, that failure is added to the
 joined error rather than left unreported, so the run says the unredacted file is
-still on disk. In `quiet` mode the affected paths are counted, not named
-(ADR 0163).
+still on disk. In `quiet` mode the printed log counts the affected paths
+instead of naming them (ADR 0163); the run error and telemetry keep the path
+and the wrapped cause at every level, and only the printed line is trimmed.
 
 ## Agent rule layering
 
