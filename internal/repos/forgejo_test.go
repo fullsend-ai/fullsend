@@ -30,6 +30,11 @@ forgejo:
         - name: team/tool
 `
 
+// vendoredTwoInstanceManifest vendors the workflow bundle into every
+// repository, so lifecycle tests focused on the managed config need no
+// workflow host.
+var vendoredTwoInstanceManifest = strings.Replace(twoInstanceManifest, "version: 1\n", "version: 1\ndefaults:\n  vendor: true\n", 1)
+
 func parseTestManifest(t *testing.T, data string) *Manifest {
 	t.Helper()
 	var m Manifest
@@ -482,6 +487,10 @@ type memForgejo struct {
 	files  map[string]string
 	writes int
 	failOn string
+	// commits holds the files at each commit ChangeFiles or CreateTag
+	// recorded; tags maps owner/repo@tag to a commit.
+	commits map[string]map[string]string
+	tags    map[string]string
 	// afterGet runs after a successful GetFile, to simulate a concurrent
 	// change between the ownership-checked read and the write.
 	afterGet func(files map[string]string, key string)
@@ -543,6 +552,94 @@ func (c *memForgejo) DeleteFile(_ context.Context, owner, repo, path, _, sha str
 	return nil
 }
 
+// snapshot records the current files as a commit and returns its SHA.
+func (c *memForgejo) snapshot() string {
+	if c.commits == nil {
+		c.commits = map[string]map[string]string{}
+	}
+	sha := fmt.Sprintf("%040x", len(c.commits)+1)
+	snap := make(map[string]string, len(c.files))
+	for k, v := range c.files {
+		snap[k] = v
+	}
+	c.commits[sha] = snap
+	return sha
+}
+
+func (c *memForgejo) GetFileAt(_ context.Context, owner, repo, path, ref string) (*ForgejoFile, error) {
+	if c.failOn == "getat" {
+		return nil, errors.New("boom")
+	}
+	snap, ok := c.commits[ref]
+	if !ok {
+		return nil, fmt.Errorf("ref: %w", forge.ErrNotFound)
+	}
+	v, ok := snap[owner+"/"+repo+"/"+path]
+	if !ok {
+		return nil, fmt.Errorf("get at: %w", forge.ErrNotFound)
+	}
+	return &ForgejoFile{Content: []byte(v), SHA: memSHA(v)}, nil
+}
+
+func (c *memForgejo) ChangeFiles(_ context.Context, owner, repo, _ string, changes []ForgejoFileChange) (string, error) {
+	if c.failOn == "write" || c.failOn == "change" {
+		return "", errors.New("boom")
+	}
+	for _, ch := range changes {
+		cur, exists := c.files[owner+"/"+repo+"/"+ch.Path]
+		switch ch.Operation {
+		case ForgejoFileCreate:
+			if exists {
+				return "", errors.New("change: file already exists")
+			}
+		default:
+			if !exists || memSHA(cur) != ch.SHA {
+				return "", errors.New("change: sha conflict")
+			}
+		}
+	}
+	for _, ch := range changes {
+		key := owner + "/" + repo + "/" + ch.Path
+		if ch.Operation == ForgejoFileDelete {
+			delete(c.files, key)
+		} else {
+			c.files[key] = string(ch.Content)
+		}
+	}
+	c.writes++
+	return c.snapshot(), nil
+}
+
+func (c *memForgejo) GetTag(_ context.Context, owner, repo, tag string) (string, error) {
+	if c.failOn == "tag" {
+		return "", errors.New("boom")
+	}
+	sha, ok := c.tags[owner+"/"+repo+"@"+tag]
+	if !ok {
+		return "", fmt.Errorf("tag: %w", forge.ErrNotFound)
+	}
+	return sha, nil
+}
+
+func (c *memForgejo) CreateTag(_ context.Context, owner, repo, tag, target, _ string) (string, error) {
+	if c.failOn == "createtag" {
+		return "", errors.New("boom")
+	}
+	if c.tags == nil {
+		c.tags = map[string]string{}
+	}
+	key := owner + "/" + repo + "@" + tag
+	if _, exists := c.tags[key]; exists {
+		return "", errors.New("tag exists")
+	}
+	if target == "" {
+		target = c.snapshot()
+	}
+	c.tags[key] = target
+	c.writes++
+	return target, nil
+}
+
 func newTestLifecycle(t *testing.T, manifest string, clients map[string]*memForgejo, env map[string]string) (*ForgejoLifecycle, *[]string) {
 	t.Helper()
 	var contacted []string
@@ -566,7 +663,7 @@ func TestForgejoLifecycle_InstallStatusUninstall(t *testing.T) {
 	cb := &memForgejo{files: map[string]string{}}
 	clients := map[string]*memForgejo{"https://git.example.com/forgejo": home, "https://codeberg.org": cb}
 	env := map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "home-tok", "FULLSEND_FORGEJO_CODE_BERG_TOKEN": "cb-tok"}
-	lc, contacted := newTestLifecycle(t, twoInstanceManifest, clients, env)
+	lc, contacted := newTestLifecycle(t, vendoredTwoInstanceManifest, clients, env)
 
 	sel, err := lc.Manifest.SplitForgejoSelectors([]string{"forgejo:home/org/app"})
 	require.NoError(t, err)
@@ -587,7 +684,9 @@ func TestForgejoLifecycle_InstallStatusUninstall(t *testing.T) {
 	res, err = lc.Install(ctx, sel.Targets)
 	require.NoError(t, err)
 	assert.Equal(t, ForgejoStateUpToDate, res[0].State)
-	assert.Equal(t, 1, home.writes, "second install makes no change")
+	assert.Equal(t, 2, home.writes, "second install makes no change")
+	assert.Contains(t, home.files, "org/app/"+forgejoDispatchPath, "the vendored repository carries the bundle")
+	assert.Contains(t, home.files["org/app/"+forgejoShimPath], "uses: ./"+forgejoDispatchPath)
 
 	home.files["org/app/.fullsend/config.yaml"] = installed + "extra: true\n"
 	st, err = lc.Status(ctx, sel.Targets)
@@ -613,7 +712,7 @@ func TestForgejoLifecycle_InstallStatusUninstall(t *testing.T) {
 func TestForgejoLifecycle_UnmanagedFileIsNeverOverwrittenOrDeleted(t *testing.T) {
 	ctx := context.Background()
 	home := &memForgejo{files: map[string]string{"org/lib/.fullsend/config.yaml": "hand: written\n"}}
-	lc, _ := newTestLifecycle(t, twoInstanceManifest, map[string]*memForgejo{"https://git.example.com/forgejo": home},
+	lc, _ := newTestLifecycle(t, vendoredTwoInstanceManifest, map[string]*memForgejo{"https://git.example.com/forgejo": home},
 		map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"})
 	targets := []ForgejoTarget{{Alias: "home", BaseURL: "https://git.example.com/forgejo", Owner: "org", Repo: "lib"}}
 
@@ -636,7 +735,7 @@ func TestForgejoLifecycle_UnmanagedFileIsNeverOverwrittenOrDeleted(t *testing.T)
 
 func TestForgejoLifecycle_MissingTokenFailsBeforeAnyForgeCall(t *testing.T) {
 	ctx := context.Background()
-	lc, contacted := newTestLifecycle(t, twoInstanceManifest, nil, map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"})
+	lc, contacted := newTestLifecycle(t, vendoredTwoInstanceManifest, nil, map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"})
 	sel, err := lc.Manifest.SplitForgejoSelectors(nil)
 	require.NoError(t, err)
 	for name, run := range map[string]func(context.Context, []ForgejoTarget) ([]ForgejoRepoResult, error){
@@ -652,7 +751,7 @@ func TestForgejoLifecycle_MissingTokenFailsBeforeAnyForgeCall(t *testing.T) {
 func TestForgejoLifecycle_DryRunAndErrors(t *testing.T) {
 	ctx := context.Background()
 	home := &memForgejo{files: map[string]string{}}
-	lc, _ := newTestLifecycle(t, twoInstanceManifest, map[string]*memForgejo{"https://git.example.com/forgejo": home},
+	lc, _ := newTestLifecycle(t, vendoredTwoInstanceManifest, map[string]*memForgejo{"https://git.example.com/forgejo": home},
 		map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"})
 	targets := []ForgejoTarget{{Alias: "home", BaseURL: "https://git.example.com/forgejo", Owner: "org", Repo: "app"}}
 

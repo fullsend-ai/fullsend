@@ -288,3 +288,121 @@ func (c *LiveClient) CurrentUser(ctx context.Context) (string, error) {
 	}
 	return out.Login, nil
 }
+
+// repoURL returns the API URL of owner/repo followed by suffix.
+func (c *LiveClient) repoURL(owner, repo, suffix string) string {
+	return c.baseURL.String() + "/api/v1/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + suffix
+}
+
+// GetFileAt returns the content of path at ref (a commit SHA, tag, or
+// branch), or an error wrapping forge.ErrNotFound when it does not exist
+// there.
+func (c *LiveClient) GetFileAt(ctx context.Context, owner, repo, filePath, ref string) (*File, error) {
+	var out contentsResponse
+	if err := c.do(ctx, http.MethodGet, c.contentsURL(owner, repo, filePath)+"?ref="+url.QueryEscape(ref), nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Type != "file" {
+		return nil, fmt.Errorf("%q in %q/%q at %q is a %q, not a file", filePath, owner, repo, ref, out.Type)
+	}
+	if out.Encoding != "base64" {
+		return nil, fmt.Errorf("%q in %q/%q: unsupported content encoding %q", filePath, owner, repo, out.Encoding)
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(out.Content, "\n", ""))
+	if err != nil {
+		return nil, fmt.Errorf("%q in %q/%q: decoding content: %w", filePath, owner, repo, err)
+	}
+	return &File{Content: data, SHA: out.SHA}, nil
+}
+
+// File change operations accepted by ChangeFiles.
+const (
+	FileCreate = "create"
+	FileUpdate = "update"
+	FileDelete = "delete"
+)
+
+// FileChange is one file operation of a ChangeFiles commit. SHA is the
+// revision the caller read and is required for update and delete.
+type FileChange struct {
+	Operation string
+	Path      string
+	Content   []byte
+	SHA       string
+}
+
+// ChangeFiles applies every change to the default branch in a single
+// commit and returns the commit SHA. Forgejo rejects the whole commit when
+// a created file already exists or an updated or deleted file no longer
+// matches its SHA, so nothing is partially written.
+func (c *LiveClient) ChangeFiles(ctx context.Context, owner, repo, message string, changes []FileChange) (string, error) {
+	if len(changes) == 0 {
+		return "", errors.New("no file changes to commit")
+	}
+	type fileOp struct {
+		Operation string `json:"operation"`
+		Path      string `json:"path"`
+		Content   string `json:"content,omitempty"`
+		SHA       string `json:"sha,omitempty"`
+	}
+	ops := make([]fileOp, 0, len(changes))
+	for _, ch := range changes {
+		switch ch.Operation {
+		case FileCreate, FileUpdate, FileDelete:
+		default:
+			return "", fmt.Errorf("unsupported file operation %q for %q", ch.Operation, ch.Path)
+		}
+		op := fileOp{Operation: ch.Operation, Path: ch.Path, SHA: ch.SHA}
+		if ch.Operation != FileDelete {
+			op.Content = base64.StdEncoding.EncodeToString(ch.Content)
+		}
+		ops = append(ops, op)
+	}
+	body := map[string]any{"message": message, "files": ops}
+	var out struct {
+		Commit struct {
+			SHA string `json:"sha"`
+		} `json:"commit"`
+	}
+	if err := c.do(ctx, http.MethodPost, c.repoURL(owner, repo, "/contents"), body, &out); err != nil {
+		return "", err
+	}
+	if out.Commit.SHA == "" {
+		return "", fmt.Errorf("changing files in %q/%q: response has no commit SHA", owner, repo)
+	}
+	return out.Commit.SHA, nil
+}
+
+// tagResponse is the subset of Forgejo's Tag the client reads.
+type tagResponse struct {
+	Commit struct {
+		SHA string `json:"sha"`
+	} `json:"commit"`
+}
+
+// GetTag returns the commit SHA tag points at, or an error wrapping
+// forge.ErrNotFound when the tag does not exist.
+func (c *LiveClient) GetTag(ctx context.Context, owner, repo, tag string) (string, error) {
+	var out tagResponse
+	if err := c.do(ctx, http.MethodGet, c.repoURL(owner, repo, "/tags/"+url.PathEscape(tag)), nil, &out); err != nil {
+		return "", err
+	}
+	if out.Commit.SHA == "" {
+		return "", fmt.Errorf("tag %q in %q/%q has no commit SHA", tag, owner, repo)
+	}
+	return out.Commit.SHA, nil
+}
+
+// CreateTag creates an annotated tag at target (a commit SHA or branch)
+// and returns the commit SHA it points at. It fails when the tag exists.
+func (c *LiveClient) CreateTag(ctx context.Context, owner, repo, tag, target, message string) (string, error) {
+	body := map[string]string{"tag_name": tag, "target": target, "message": message}
+	var out tagResponse
+	if err := c.do(ctx, http.MethodPost, c.repoURL(owner, repo, "/tags"), body, &out); err != nil {
+		return "", err
+	}
+	if out.Commit.SHA == "" {
+		return "", fmt.Errorf("created tag %q in %q/%q has no commit SHA", tag, owner, repo)
+	}
+	return out.Commit.SHA, nil
+}

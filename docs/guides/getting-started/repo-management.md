@@ -143,6 +143,14 @@ forgejo:
   `owner/repo` selects a Forgejo repository only when it is declared on
   exactly one instance and no `github`/`gitlab` declaration also matches;
   otherwise the command fails and lists the qualified choices.
+- **Workflow host.** Fullsend's Forgejo workflows come from the same
+  instance. Mark one repository per instance with `workflow_host: true`:
+  `repos install` publishes the versioned workflow bundle there, and the
+  other repositories on that instance pin their shim to the bundle's
+  tagged commit. A repository with `vendor: true` carries its own copy
+  and needs no host. Without either, install fails before any write and
+  names the instance. `repos uninstall` refuses to remove the host while
+  consumers declared in `repos.yaml` still depend on it.
 - **Uninstall confirmation.** A selection that spans several repositories
   is confirmed once, as a whole, before anything is torn down.
 - **Compatibility.** `forgejo` is a new key in `repos.yaml`, and the

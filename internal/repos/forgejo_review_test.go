@@ -61,7 +61,7 @@ func TestForgejoLifecycle_ConcurrentReplacementIsNotOverwritten(t *testing.T) {
 
 	setup := func(t *testing.T) (*ForgejoLifecycle, *memForgejo) {
 		home := &memForgejo{files: map[string]string{}}
-		lc, _ := newTestLifecycle(t, twoInstanceManifest, map[string]*memForgejo{"https://git.example.com/forgejo": home}, env)
+		lc, _ := newTestLifecycle(t, vendoredTwoInstanceManifest, map[string]*memForgejo{"https://git.example.com/forgejo": home}, env)
 		res, err := lc.Install(ctx, targets)
 		require.NoError(t, err)
 		require.Equal(t, ForgejoStateInstalled, res[0].State)
