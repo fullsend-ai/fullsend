@@ -59,7 +59,7 @@ The former `repos migrate <org>` command (per-org to per-repo migration) has bee
 fullsend repos install [repos...] [flags]
 ```
 
-Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it provisions repositories declared in the manifest, repairs component drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — a disabled GitLab schedule is reported as drift and reactivated only when `--reactivate-schedules` is passed; typed GitLab jobs require verified `no_one_allowed` before template delivery, even with `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` — see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)), repairs scaffold content drift (including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref), and upgrades scaffold refs.
+Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it provisions repositories declared in the manifest, repairs component drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — a disabled GitLab schedule is reported as drift and reactivated only when `--reactivate-schedules` is passed; typed GitLab jobs require verified `no_one_allowed` before template delivery, even with `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced`, unless the repository entry sets `allow_insecure_pipeline_variables` — see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)), repairs scaffold content drift (including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref), and upgrades scaffold refs.
 
 `repos.yaml` is the single source of persistent, non-secret install settings and of repository membership. Install reads every setting from the manifest; its flags supply only credentials, local vendoring artifacts, and controls for one run (see [Flags](#flags)). To change a setting or add a repository, edit `repos.yaml` or use [`repos set`](#repos-set), then run install. Moving from `github setup` or from the removed configuration flags is covered in [Migrating to manifest-driven `repos install`](../guides/getting-started/migrating-from-github-setup.md).
 
@@ -84,6 +84,15 @@ Runs in two phases:
 
 1. **Select** — the repositories to converge are chosen from the entries declared in the manifest (see [Selecting repositories](#selecting-repositories)). Positional arguments only filter declared entries; they never create, copy, or carve out entries. Every selected repository must resolve an [inference authentication selection](#inference-authentication-selection), and its [effective infrastructure values](#effective-infrastructure-values) must be consistent, or that repository fails before any write.
 2. **Converge** — all selected repos are converged through a unified probe → diff → apply pipeline. Repos whose shim workflow is not yet on the default branch are freshly installed (scaffold files, variables, secrets, a declared configuration preset as `.fullsend/config.base.yaml`, and a canonical managed `.fullsend/config.yaml`) onto the initialization branch (`fullsend/scaffold-install`). That includes a re-run while the initialization PR/MR is still open: variables and secrets may already exist from the first run, but the installer still updates the same initialization PR rather than opening a competing upgrade PR. Repos whose workflow is already on the default branch are checked for drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — repaired automatically, except a disabled GitLab schedule, which is reported as drift and reactivated only with `--reactivate-schedules`; typed GitLab dispatch's required pipeline-variable restriction; legacy variable-based wrappers are refused, and a leftover pipeline variable on a managed schedule is not repaired and must be removed manually), scaffold content drift (repaired automatically, including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref), declared configuration-preset drift against `.fullsend/config.base.yaml` (replaced wholesale; `.fullsend/config.yaml` is preserved), managed `.fullsend/config.yaml` drift (replaced wholesale; an existing file without the ownership marker stops that repository before any writes until it is adopted, while the other selected repositories still converge), and scaffold ref drift (upgraded automatically). When no configuration preset resolves for a repo, the desired state is no `.fullsend/config.base.yaml`. An existing base file then stops that repo's fresh or repeat install, including `--dry-run`, before any writes, with an error telling you to declare a `config_base` source or remove the file. A declared preset that cannot be loaded (fetch failure, `sha256` mismatch, invalid content) fails only that repository: install reports the error in that repository's result, converges the other selected repositories, and exits non-zero. An HTTPS preset fetch that fails at the transport level (for example, a dropped connection reported as `EOF`) is retried once, and the error names the phase that failed (DNS, connect, TLS handshake, awaiting the response), the remote address, and the elapsed time.
+
+```bash
+fullsend repos install -f repos.yaml
+fullsend repos install --dry-run
+fullsend repos install acme/api acme/web
+fullsend repos install "acme/*" --direct --concurrency 8
+```
+
+### Managed configuration
 
 `defaults.config`, `github.config`, `gitlab.config`, and per-repository `config`
 declare a sparse typed managed configuration for `.fullsend/config.yaml` ([ADR
@@ -198,12 +207,36 @@ github:
     - name: acme/plain          # no config key: still managed (sparse, marker only)
 ```
 
-```bash
-fullsend repos install -f repos.yaml
-fullsend repos install --dry-run
-fullsend repos install acme/api acme/web
-fullsend repos install "acme/*" --direct --concurrency 8
-```
+The `# Source manifest:` line becomes part of the target repository's Git
+history, which may be public. A file without this line still carries the
+ownership marker, so it never requires adoption.
+
+An existing zero-byte `.fullsend/config.yaml` counts as an existing file
+without the marker, so it also requires adoption. When install skips a
+repository for adoption, it prints the same guidance as `repos status`: the
+proposed `repos.yaml` entry, the difference between the existing file and the
+managed file adoption would produce, and the effective layered-configuration
+change (see [`repos status` output](#output)).
+
+The pre-write safety gate reads each compared key through the full overlay →
+base → code-defaults chain. Omitted keys fall through rather than being treated
+as unset, and an explicit empty `allowed_remote_resources: []` remains
+deny-all. A blanket adoption acknowledgement does not satisfy the gate: each
+relaxation must be declared in the manifest. Install checks
+`.fullsend/config.yaml` and `.fullsend/config.base.yaml` together, before any
+manifest or forge write. When the overlay needs adoption and the base needs
+action, install reports both problems. The same checks run again inside
+convergence. They apply to repositories with an explicit entry and to
+glob-covered repositories. A malformed or non-per-repo file, or a read error,
+fails with a clear error and is never replaced.
+
+A manifest is read-only when it is an HTTPS URL, a pipe or FIFO such as
+`<(cmd)`, or a local file without write permission or on a read-only file
+system. From a read-only manifest, install fails before any manifest write and
+prints the exact entry to add to its source. That includes a glob-covered
+repository whose first-install `tracker` default needs its own entry.
+`--dry-run`, a live install and `repos status` agree. Trace signing keys follow
+their own rule; see [Trace signing keys](#trace-signing-keys).
 
 ### Configuration schema of a pinned ref
 
@@ -1784,7 +1817,7 @@ The command returns a non-zero exit code when any repo has drift, is not install
 
 ### Authentication
 
-Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass `--gitlab-token` to the `repos` command group.
+Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass `--gitlab-token` to the `repos` command group. For Forgejo repos, set the per-instance variable or use the OAuth login described in [Forgejo credentials](#forgejo-credentials).
 
 ## `repos uninstall`
 
@@ -1993,6 +2026,17 @@ fullsend repos set gitlab.agent_runner_tags '[fullsend-agent, gpu-runner]'
 fullsend repos set gitlab.control_runner_tags '[fullsend-api]'
 ```
 
+Opt one GitLab project in to a "Minimum role to use pipeline variables"
+weaker than "No one allowed". The field is accepted only on a concrete GitLab
+repository entry. Install and status then accept the weaker setting on every
+run, and `repos install` warns each time. Read
+[Opting in to a relaxed setting](../guides/getting-started/configuring-gitlab.md#opting-in-to-a-relaxed-setting)
+for what it exposes before you set it:
+
+```bash
+fullsend repos set 'gitlab.repos["group/project"].allow_insecure_pipeline_variables' true
+```
+
 Set the GitLab instance URL and pin a ref:
 
 ```bash
@@ -2027,6 +2071,120 @@ Differences to watch for in scripts:
 - `gitlab.runner_tags` can no longer be set; set `gitlab.agent_runner_tags` instead.
 - Keys outside the old list, including `defaults.config.*`, `github.config.*`, `gitlab.config.*`, and repository entries, can now be set directly.
 - `repos set` edits the file in place and validates the whole result, so it rejects an edit that leaves the manifest invalid (for example adding a GitLab entry before `gitlab.url` is set).
+
+## Forgejo instances
+
+`repos install`, `repos status` and `repos uninstall` also manage repositories declared on named Forgejo instances. Declare each instance under `forgejo.instances` with an alias, its base URL, and its repositories as `owner/repo` paths relative to that URL:
+
+```yaml
+version: 1
+forgejo:
+  instances:
+    - alias: home
+      url: https://git.example.com/forgejo   # a path prefix is preserved
+      oauth:                                 # optional: enables browser login
+        client_id: 7d2b0c1e-5f3a-4c8e-9b1d-2a6f0e4c3b9a
+      repos:
+        - name: org/app
+    - alias: codeberg
+      url: https://codeberg.org
+      repos:
+        - name: org/app
+        - name: team/tool
+```
+
+The `forgejo:` key needs a `fullsend` CLI version that includes Forgejo support; an older binary rejects a manifest that declares it as an unknown field. A repository's identity is its alias plus its path, so the same path can be declared on more than one instance. The base URL must use `https`. Plain `http` is accepted only for loopback hosts, such as a local development stack. The URL must not contain credentials, a query, or a fragment. Aliases are case-insensitively unique.
+
+### Selecting Forgejo repositories
+
+- `forgejo:<alias>/<owner>/<repo>` always selects that instance's repository. The `<owner>/<repo>` part may be a glob, for example `forgejo:home/org/*`.
+- A bare `owner/repo` selector or glob selects a Forgejo repository only when every path it matches is declared on exactly one instance. Otherwise the command fails before any credential lookup or write, and lists the qualified choices. With the manifest above, `team/tool` selects `forgejo:codeberg/team/tool`, while `org/app` fails and lists `forgejo:codeberg/org/app` and `forgejo:home/org/app`.
+- An unknown alias, or a repository the selected instance does not declare, is an error. The selector never falls through to another instance.
+- A bare selector that matches both a Forgejo repository and a `github`/`gitlab` declaration is ambiguous. Qualify the Forgejo repository instead. A bare glob that matches only Forgejo repositories (such as `fj/*` next to an unrelated `github` entry) is not ambiguous. Two globs are ambiguous only when some path matches both, so `org/[ab]` next to a declared `org/[cd]` is not.
+- `repos install` validates the whole selection, including every selector left for `github`/`gitlab`, before it writes to any forge. `repos uninstall` asks for one confirmation covering every selected repository, Forgejo and `github`/`gitlab` together, before it tears anything down.
+- With no selector, `repos install` and `repos status` act on every declared repository. `repos uninstall` always needs explicit selectors.
+
+### Forgejo credentials
+
+Each instance reads its API token from `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN`. To normalize the alias, uppercase it and replace each run of non-alphanumeric characters with one underscore. For example, alias `home` reads `FULLSEND_FORGEJO_HOME_TOKEN` and alias `code-berg` reads `FULLSEND_FORGEJO_CODE_BERG_TOKEN`. Two aliases that normalize to the same variable are rejected. Tokens are never read from or written to `repos.yaml`.
+
+The command resolves selectors first. It then gets a credential for every
+selected instance, and only then makes its first Forgejo write. Each selected
+instance tries these sources in order:
+
+1. Its `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN` variable. When the variable
+   is set, the CLI uses it and skips the keyring and OAuth.
+2. An OAuth token cached in the operating-system keyring (macOS Keychain,
+   Windows Credential Manager, or the Secret Service on Linux). This source
+   needs `oauth.client_id` on the instance. The CLI refreshes an expired
+   token, then checks the token against the instance. When the instance
+   rejects it, for example because you revoked it, the CLI removes it from
+   the keyring.
+3. An interactive browser login. This source also needs `oauth.client_id`,
+   and runs only when the command runs in a terminal.
+
+A selected instance that still has no credential fails the command. The error
+names each alias and variable, and the command changes nothing. The CLI
+reports every such instance before any login starts, so it asks you to log in
+only when the command can succeed. A non-interactive command (CI, or stdin not
+a terminal) never opens a browser: it uses a usable cached token or fails. The
+CLI never contacts or prompts for an unselected instance, and never uses one
+alias's token for another. The CLI sends the API token only to the configured
+URL. The Forgejo client refuses to follow any redirect, so a redirect cannot
+carry the token to another origin or over plain HTTP.
+
+#### OAuth login
+
+To turn on browser login for an instance, register a public OAuth2
+application on it:
+
+1. In Forgejo, open **Settings → Applications → Manage OAuth2 applications**.
+2. Clear **Confidential client**.
+3. Set the redirect URI to `http://127.0.0.1/callback`. Forgejo accepts any
+   port on a loopback redirect URI, so the CLI can listen on a random local
+   port.
+4. Put the application's client ID in `forgejo.instances[].oauth.client_id`.
+
+The client ID is not secret. The login uses no client secret, and
+`repos.yaml` rejects a `client_secret` field. Older `fullsend` CLIs reject a
+manifest that sets `oauth.client_id`, so use a CLI version with OAuth support.
+
+The login uses the Authorization Code flow with PKCE (`S256`). Forgejo
+redirects the browser to a listener on `127.0.0.1`, and the CLI rejects a
+callback whose `state` value does not match. The authorize and token endpoints
+(`/login/oauth/authorize` and `/login/oauth/access_token`) keep the base URL's
+path prefix. The CLI waits up to five minutes for the browser callback. It
+writes prompts and progress to stderr, so `--json` output stays parseable.
+
+::: warning OAuth tokens carry your full Forgejo permissions
+Forgejo does not implement OAuth scopes, so an OAuth token can act with your
+full Forgejo user permissions on that instance. That covers every repository,
+organization, and setting your account can reach, not only the selected
+repositories. Before each login the CLI explains this and asks you to confirm
+(`[y/N]`). If you decline, the CLI opens no browser and the command fails.
+Prefer a scoped access token in `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN`;
+it always takes precedence. Only the local CLI uses the OAuth token. Agent
+workflows never use it.
+:::
+
+The CLI stores the access and refresh tokens only in the operating-system
+keyring, under the service name `fullsend-forgejo-oauth`, keyed to the alias,
+base URL, and client ID. It never writes them to `repos.yaml` or prints them.
+If the CLI cannot read or write the keyring, for example on a headless Linux
+host without a Secret Service, it warns. It then uses the token for the
+current command only, and asks you to log in again next time. To sign out,
+delete the `fullsend-forgejo-oauth` entry from your keyring, or revoke the
+application under **Settings → Applications** on the instance.
+
+### Forgejo lifecycle
+
+The Fullsend-managed resource on Forgejo is the managed `.fullsend/config.yaml`. It carries the ownership marker and `defaults.config`.
+
+- `repos install` creates the file when it is missing and rewrites it when it has drifted. Running it again makes no changes. A `.fullsend/config.yaml` without the ownership marker is never overwritten: install reports an error for that repository. Updates and deletes are conditional on the revision whose marker was checked, so a file replaced in between causes a conflict error instead of an overwrite or delete. `--dry-run` reports what would change without writing.
+- `repos status` is read-only. Each selected repository is reported as `up-to-date`, `drift`, `not-installed`, `unmanaged` (a file without the ownership marker), or `error`, in a `FORGEJO REPO` table or in the `forgejo` array of `--json` output. Any state other than `up-to-date` gives a non-zero exit code. In `--json` output, `summary` covers only the `github`/`gitlab` repositories; Forgejo results appear only in the separate `forgejo` array, so a run that selects only Forgejo repositories has an empty `repos` array and a zeroed `summary` even when a Forgejo repository errored. Check the `forgejo` array or the exit code.
+- `repos uninstall` deletes the managed file and then removes the repository's entry from `repos.yaml`. A file without the ownership marker is never deleted. The entry is removed only when teardown succeeded. `--uninstall-only`, `--manifest-only`, `--dry-run` and `--yes` behave as they do for other forges. Forgejo file changes are committed directly to the default branch, whether or not `--direct` is set.
+
+Reusable workflow hosts and vendored agent workflows for Forgejo are tracked separately under [#9642](https://github.com/fullsend-ai/fullsend/issues/9642).
 
 ## See also
 

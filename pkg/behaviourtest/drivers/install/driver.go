@@ -101,6 +101,12 @@ type RepoLease struct {
 	// workflow host of the mint group serving the lease's org. Nil when
 	// the driver does not configure the mint's workflow hosts.
 	MintWorkflowHostRepos []string
+
+	// FreshInstall is true when the allocation installed fullsend into a
+	// repository it had just created, so no event has reached the
+	// repository's workflows yet. The behaviour suite classifies a first
+	// event that starts no run there as infrastructure (#9779).
+	FreshInstall bool
 }
 
 // LeaseDriver is a Driver that leases slots across pool orgs. Callers

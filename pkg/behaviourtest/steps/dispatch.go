@@ -597,6 +597,12 @@ func givenPullRequestChangingPath(w *world.World, path string) error {
 // author (and the sender of its opened event) is driver's identity. It
 // returns the head branch.
 func openPullRequest(w *world.World, driver scm.Driver, path, body string) (string, error) {
+	return openPullRequestWithContent(w, driver, path, body, []byte("behaviour test\n"))
+}
+
+// openPullRequestWithContent is openPullRequest with the committed file
+// content given.
+func openPullRequestWithContent(w *world.World, driver scm.Driver, path, body string, content []byte) (string, error) {
 	if w.RepoOwner == "" || w.RepoName == "" {
 		return "", fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
 	}
@@ -608,7 +614,7 @@ func openPullRequest(w *world.World, driver scm.Driver, path, body string) (stri
 		return "", err
 	}
 	msg := fmt.Sprintf("behaviour pr %s", branch)
-	if err := driver.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, path, msg, []byte("behaviour test\n")); err != nil {
+	if err := driver.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, path, msg, content); err != nil {
 		return branch, err
 	}
 	pr, err := driver.CreateChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour test PR", body, branch, "main")

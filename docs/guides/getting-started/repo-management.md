@@ -68,7 +68,9 @@ select repositories that are already declared.
 
 Each platform (`github`, `gitlab`) is a top-level key containing its
 infrastructure config and repos list. Repos are grouped under their
-platform — no per-entry forge selector is needed:
+platform — no per-entry forge selector is needed. Forgejo repositories
+are declared separately under `forgejo.instances`; see
+[Forgejo instances](#forgejo-instances) below.
 
 ```yaml
 version: 1
@@ -102,6 +104,55 @@ takes precedence for the `FULLSEND_MINT_URL` variable. When it differs
 from an explicit manifest `mint_url`, install and status report a
 conflict for that repository; see
 [Effective infrastructure values](../../cli/repos.md#effective-infrastructure-values).
+
+#### Forgejo instances
+
+Repositories on one or more Forgejo instances are declared under
+`forgejo.instances`. Each instance has an `alias`, its base `url`, and
+its `repos` as `owner/repo` paths relative to that URL. The same path can
+be declared on several instances because a repository is identified by
+its alias plus its path:
+
+```yaml
+forgejo:
+  instances:
+    - alias: home
+      url: https://git.example.com/forgejo
+      repos:
+        - name: org/app
+    - alias: codeberg
+      url: https://codeberg.org
+      repos:
+        - name: org/app
+```
+
+- **Credentials.** Each instance reads its API token from
+  `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN` (the alias uppercased, with
+  each run of non-alphanumeric characters replaced by one underscore, so
+  `code-berg` reads `FULLSEND_FORGEJO_CODE_BERG_TOKEN`). Tokens are never
+  stored in `repos.yaml`. When the variable is unset and the instance sets
+  `oauth.client_id` (the client ID of a public OAuth application
+  registered on it), an interactive command asks you to log in through
+  your browser. It does this only for the selected instances that need
+  it, and caches the token in your operating-system keyring. Forgejo does
+  not implement OAuth scopes, so that token carries your full Forgejo
+  user permissions; a scoped access token is preferred. See
+  [Forgejo credentials](../../cli/repos.md#forgejo-credentials).
+- **Selectors.** `forgejo:<alias>/<owner>/<repo>` selects a repository on
+  one instance (the `<owner>/<repo>` part may be a glob). A bare
+  `owner/repo` selects a Forgejo repository only when it is declared on
+  exactly one instance and no `github`/`gitlab` declaration also matches;
+  otherwise the command fails and lists the qualified choices.
+- **Uninstall confirmation.** A selection that spans several repositories
+  is confirmed once, as a whole, before anything is torn down.
+- **Compatibility.** `forgejo` is a new key in `repos.yaml`, and the
+  manifest parser rejects unknown keys. A fullsend binary from before
+  Forgejo support fails to load a manifest that contains `forgejo:`, so
+  upgrade every machine and CI job that reads the manifest before adding
+  the section. Manifests without it are unaffected.
+
+See [Forgejo instances](../../cli/repos.md#forgejo-instances) in the CLI
+reference for the full lifecycle and selector rules.
 
 `github.app_set` names the GitHub App set (apps named `{app-set}-{role}`)
 and is persisted as the `FULLSEND_APP_SET` repository variable, mirroring
@@ -331,13 +382,13 @@ repositories it can also supply `inference.wif_audience` and
 
 ### Managed configuration
 
-`repos.yaml` can also declare a sparse managed `.fullsend/config.yaml` in
-`defaults.config`, `github.config`, `gitlab.config`, and each repository
-entry's `config`. Every section uses the same schema as per-repo
-`config.yaml`, including `runtime` and `allowed_remote_resources`, except
-`trace_context`, which only a concrete repository entry accepts (see
-[Config Reference — `trace_context`](../../reference/config-reference.md#trace_context)).
-Each section is sparse: declare only the values you want to set.
+`repos.yaml` also declares the contents of each repository's
+`.fullsend/config.yaml`. Set values in `defaults.config` (all repositories),
+`github.config` or `gitlab.config` (repositories of that forge only), and each
+repository entry's `config`. Every section uses the same fields as a per-repo
+`config.yaml` (see the [Config Reference](../../reference/config-reference.md)),
+including `runtime` and `allowed_remote_resources`. Only a concrete repository
+entry accepts `trace_context`. Declare only the values you want to set.
 
 ```yaml
 version: 1
@@ -366,56 +417,18 @@ gitlab:
     - name: group/project
 ```
 
-Every repository selected from the manifest has a managed
-`.fullsend/config.yaml`; neither `defaults.config` nor a repository
-`config` is required. A repository with no `config` gets the sparse file
-with only the ownership marker. An existing overlay without the marker
-blocks that repository's install (adoption required) even when the
-repository has no `config` key; the other selected repositories still
-converge. On a first install with no `config_base` preset and no
-explicit `tracker` declaration, install records
-`config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` in the
-GitHub repository's manifest entry before rendering the overlay. For GitLab, it
-records `config.tracker.gitlab.allowed_targets: {}` instead: additional project
-targets must be configured explicitly for the GitLab host. If the manifest is an
-HTTPS URL or read-only, install fails with the exact edit to make.
-Resolution is code defaults, then `config_base`, then `defaults.config`,
-then the repository's forge section `config` (`github.config` or
-`gitlab.config`), then the repository entry's `config` (glob entries
-included). More specific values win using each field's normal layered
-merge rule: scalars are replaced, nested maps merge key by key, a
-non-empty `allowed_remote_resources` list is unioned with the inherited
-prefixes, and an explicit empty list replaces the inherited value. The
-managed file is sparse and cannot record that reset, so validation rejects a
-non-empty `allowed_remote_resources` list declared in a more specific layer
-than an explicit empty one; declare the full list in a single layer.
-Validation also rejects an agent's `harness:` block that is set in more than
-one of the `defaults`, forge section and repository `config` layers, because
-they render into one `config.yaml`. Set the block in one layer (see the
-[config reference](../../reference/config-reference.md#agents)). A
-forge section's `config` never affects repositories of the other forge.
-The managed configuration contains only explicitly supplied values —
-code defaults and `config.base.yaml` are not baked into the file.
-Unknown fields and invalid values fail manifest validation with errors
-that name the section. `config` is the managed overlay (written to
-`.fullsend/config.yaml`); `config_base` is a separate preset copied to
-`.fullsend/config.base.yaml`.
+The more specific section wins: a repository entry's `config` over the forge
+section, and the forge section over `defaults.config`. Values you leave out
+come from the `config_base` preset (see
+[Configuration presets](#configuration-presets)) and then the code defaults.
+Most fields follow the normal layered merge rules described in the
+[Layered Configuration Reference](../infrastructure/layered-config-reference.md).
+Manifest validation rejects unknown fields and invalid values, naming the
+section that holds them.
 
-`runtime` and `allowed_remote_resources` are no longer accepted as sibling
-keys under `defaults` or a repository entry. A manifest that still uses
-them fails to load with the replacement path, and there is no automatic
-migration:
-
-```yaml
-# Invalid — rejected at manifest load:
-#   defaults.runtime is no longer supported; move it to defaults.config.runtime
-defaults:
-  runtime: pi
-  allowed_remote_resources: []
-```
-
-Every managed `.fullsend/config.yaml` begins with a stable ownership
-marker and otherwise contains only the declared values:
+Install writes a `.fullsend/config.yaml` to every repository in the manifest,
+even one with no `config` key. The file starts with an ownership marker and
+contains only the values you declared:
 
 ```yaml
 # This file is managed by 'fullsend repos': repos-config-v1
@@ -426,115 +439,42 @@ inference:
   region: us-east1
 ```
 
-When the manifest is loaded from an HTTPS URL (`--manifest
-https://...`), a third comment line after the marker names that
-manifest, so readers of the target repository can find where to change
-the file:
+Do not edit this file in the repository. Change `repos.yaml`, or use
+[`fullsend repos set`](#editing-the-manifest-from-the-command-line), and run
+install again.
 
-```yaml
-# This file is managed by 'fullsend repos': repos-config-v1
-# Do not edit this file directly; changes will be overwritten.
-# Source manifest: https://raw.githubusercontent.com/acme/infra/main/repos.yaml
-```
+On a first install, install may add a `config.tracker` default to the
+repository's manifest entry. If the manifest cannot be written, for example
+because it is an HTTPS URL, install stops and prints the edit to make.
 
-The line is recorded only for recognized raw-file URL structures of public
-source hosts, where the path is repository coordinates rather than a
-credential: `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`,
-`github.com/<owner>/<repo>/raw/<ref>/<path>` and
-`gitlab.com/<group>/<project>/-/raw/<ref>/<path>`, with no port and only
-letters, digits and `._~-` in each path segment. Only the scheme, host and
-path are written: userinfo, query string and fragment are removed. For any
-other URL (a self-hosted server, a URL with a port, a percent-escaped or
-otherwise non-plain segment) the line is omitted entirely, because a
-credential in the path cannot be told apart from a directory name. The
-recorded line becomes part of the target repository's Git history, which
-may be public, so still do not put a credential in the path of a manifest
-URL on a recognized host. A manifest loaded from a local path records
-no source line, because its location on the operator's machine is not
-meaningful to readers and would differ between operators. The line is
-informational: `repos status` and `repos install` ignore it when comparing
-the installed file with the managed configuration, so changing the
-manifest URL (or switching between a URL and a local path for the same
-manifest content) is not reported as drift and does not rewrite the file.
-The line is updated the next time a configuration change rewrites the
-file. A file without this line still carries the ownership marker, so it
-never requires adoption.
+If a repository already has a `.fullsend/config.yaml` without the ownership
+marker, `repos status` reports `managed configuration (adoption required)` and
+install skips that repository. The status output shows a proposed `repos.yaml`
+entry with the file's current settings. To adopt the file:
 
-If a config-managed repository already has an existing
-`.fullsend/config.yaml` without that marker, `repos status` reports it as
-`managed configuration (adoption required)` rather than ordinary drift,
-and `repos install`/convergence leave the file untouched until it is
-manually adopted (edited to carry the marker, or replaced with the
-rendered managed body). An existing zero-byte file counts as an existing
-file without the marker. The status output (table and JSON `detail`) also
-shows the proposed `repos.yaml` entry that carries every setting the
-existing file declares, including values equal to the code defaults, and
-the difference between the existing file and the managed file adoption
-would produce, followed by the effective layered-configuration change
-(existing overlay over the installed base against the managed overlay over
-the base layer the run would leave in place), so any setting adoption would
-drop, or that changes only through the base layer, is visible first. A
-markerless file that is malformed or not a per-repo configuration is
-reported by `repos status` as an error instead. Once
-a file carries the marker, `repos install`
-writes the canonical sparse `.fullsend/config.yaml` (for an explicitly pinned
-`fullsend_ref`, rendered in the configuration schema that ref reads, and left
-unchanged with an error when that schema cannot be determined; see
-[Configuration schema of a pinned ref](../../cli/repos.md#configuration-schema-of-a-pinned-ref)), `repos status`
-reports any whole-file difference (including a single-key change) as
-drift, and convergence rewrites the file deterministically — unless the
-candidate would become less restrictive than the current effective
-configuration without an explicit manifest declaration. That pre-write
-safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
-agent `enabled: false` suppressions, `tracker.<provider>.allowed_targets`,
-`inference.gateway.url`, `inference.gateway.audience`, `artifacts.content`,
-`artifacts.by_source.<source>`, `progress.verbosity`, and
-`progress.by_source.<source>` through the full
-overlay → base → code-defaults accessor chain. Omitted
-keys fall through rather than being treated as unset; an explicit empty
-`allowed_remote_resources: []` remains deny-all. A change to either
-`inference.gateway` field, including a preset introducing a gateway where
-an established installation has none configured, must be declared in the
-manifest. Status and install output
-identify the affected keys. A blanket adoption acknowledgement is not
-enough. Both files are checked together, before any manifest or forge
-write: when the overlay needs adoption and the base needs action, install
-reports both problems, and an adoption failure prints the same proposed
-`repos.yaml` entry and file and effective-configuration differences that
-`repos status` shows. A repository whose only problem is adoption is
-skipped: install prints that guidance for it, lists it as `FAILED` in the
-summary, converges the other selected repositories and exits non-zero, in
-a dry run and a live run alike. Any other problem these checks find stops
-the whole run before any write. The same checks run again inside convergence: a fresh
-install blocked by adoption or the safety gate stops before any variable,
-secret, scaffold file or PR/MR write, in a dry run and a live run alike.
-Adding a `config_base` preset to a repository with no base file is compared
-like replacing one (the absent base is an empty layer), even when its
-managed overlay is unchanged; only a pristine first install, with neither
-file present, is exempt because there is no current configuration to relax
-and it simply inherits what the preset declares. This applies to repositories with an explicit entry
-and to glob-covered repositories. A malformed or
-non-per-repo file, or a read error, fails with a clear error and is never
-replaced. `.fullsend/config.base.yaml` is managed as described under
-[Configuration presets](#configuration-presets).
+1. Copy the settings you want to keep into the repository's `repos.yaml` entry.
+2. Replace the file with the managed version, or add the ownership marker to
+   it.
+3. Run `fullsend repos install` again.
 
-When the manifest is read-only (an HTTPS URL, a pipe or FIFO such as `<(cmd)`,
-or a local file without write permission or on a read-only file system),
-install fails before attempting any manifest write and prints the exact entry
-to add to its source, including for a glob-covered repository whose
-first-install `tracker` default needs an explicit
-entry. `--dry-run`, live install and `repos status` agree. Trace signing keys
-follow their own rule on GitHub: from such a manifest, a fresh install without
-`--rotate-trace-signing-key` goes ahead without keys and says so, any other
-repository that must record a key fails, and `--rotate-trace-signing-key`
-stops the run before it writes a key (see
-[Trace signing keys](../../cli/repos.md#trace-signing-keys)).
+Install refuses to make a repository's configuration less restrictive, for
+example by enabling more roles or allowing more remote resources, unless the
+manifest declares that change explicitly. The output names the affected keys.
 
 ```bash
 fullsend repos status -f repos.yaml --json   # whole-file managed drift
 fullsend repos install -f repos.yaml --dry-run
 fullsend repos install -f repos.yaml         # rewrite the managed file
 ```
+
+Manifests that still set `runtime` or `allowed_remote_resources` directly under
+`defaults` or a repository entry fail to load. Move them under `config`; see
+[`runtime` and `allowed_remote_resources` moved into `config`](../../cli/repos.md#runtime-and-allowed_remote_resources-moved-into-config-breaking).
+
+For the complete rules, including validation of layered lists and `harness:`
+blocks, the `# Source manifest:` comment line, adoption details, the pre-write
+safety gate and read-only manifests, see
+[`fullsend repos` — Managed configuration](../../cli/repos.md#managed-configuration).
 
 ### Editing the manifest from the command line
 
@@ -1097,7 +1037,9 @@ The repository runs an old shim. Upgrade it as described in
 ### Unknown field errors in repos.yaml
 
 The manifest parser strictly validates field names in all sections
-(`defaults`, `github`, `gitlab`, and top-level).
+(`defaults`, `github`, `gitlab`, `forgejo`, and top-level). A `forgejo:`
+section needs a `fullsend` CLI version that includes Forgejo support; an
+older binary rejects it as an unknown top-level field.
 Unrecognized fields are rejected with an error naming the offending key:
 
 ```

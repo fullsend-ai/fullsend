@@ -783,6 +783,9 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	if err := validateConcurrency(cfg.MaxConcurrency); err != nil {
 		return nil, err
 	}
+	// ADR 0175: the GitLab restriction checks read the saved
+	// allow_insecure_pipeline_variables opt-in from the context.
+	ctx = WithGitLabPipelineVarOptIns(ctx, cfg.Manifest)
 
 	if progress == nil {
 		progress = func(_, _, _ string) {}

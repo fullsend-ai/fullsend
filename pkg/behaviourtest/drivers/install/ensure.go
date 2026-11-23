@@ -47,10 +47,21 @@ var resetRetryDelay = time.Second
 // apart and double up to settlePollMax, until settleTimeout has passed.
 // With the defaults, polls run at about 0s, 5s, 15s, 35s, then every
 // 30s to 5m. Overridden in tests to avoid slow polling loops.
+//
+// GetWorkflow can report "active" before Actions reacts to events: an
+// issue opened 7s after the first active poll started no run (#9779).
+// So the first active poll is confirmed by another poll
+// settleConfirmDelay later, and a confirmed workflow gets settleQuiet
+// more before the repo is handed to the scenario. Only freshly
+// installed repos pay this, since awaitWorkflowReady runs only after an
+// install. It is a heuristic: a missing first run on a fresh repo is
+// also classified infrastructure (steps.CollectFailureLogs).
 var (
-	settleTimeout     = 5 * time.Minute
-	settlePollInitial = 5 * time.Second
-	settlePollMax     = 30 * time.Second
+	settleTimeout      = 5 * time.Minute
+	settlePollInitial  = 5 * time.Second
+	settlePollMax      = 30 * time.Second
+	settleConfirmDelay = 5 * time.Second
+	settleQuiet        = 15 * time.Second
 )
 
 // errWorkflowNotReady marks a settle timeout: Actions never reported the
@@ -874,6 +885,12 @@ func (e *repoEnsurer) cacheWIFProvider(target, wifProvider string) {
 // amount of time to index committed workflow files; events dispatched
 // before the workflow is indexed are silently dropped.
 //
+// The workflow is ready only when two polls settleConfirmDelay apart
+// both report it active; awaitWorkflowReady then waits settleQuiet more
+// before returning (#9779). A confirming poll that is not active resumes
+// normal polling. The confirming poll runs even when the first active
+// poll was the last one before the deadline.
+//
 // Polls back off exponentially from settlePollInitial to settlePollMax.
 // A timeout returns an error wrapping errWorkflowNotReady so
 // AllocateLease can claim a fresh repo, unless the last poll failed with
@@ -893,6 +910,9 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 	// something other than "not found"; nil when the last poll saw a
 	// 404 or a workflow that is not active yet.
 	var lastAPIErr error
+	// confirming is true when the previous poll saw the workflow active
+	// and the next poll must see it active again.
+	confirming := false
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, err)
@@ -900,6 +920,8 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 
 		wf, err := client.GetWorkflow(ctx, org, repo, workflowFile)
 		lastAPIErr = nil
+		wasConfirming := confirming
+		confirming = false
 		switch {
 		case errors.Is(err, forge.ErrNotFound):
 			last = err
@@ -908,11 +930,33 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 			lastAPIErr = err
 		case wf == nil:
 			last = errors.New("no workflow returned")
-		case wf.State == settleWorkflowActive:
-			logf("[ensure] %s active on %s after %d attempt(s) in %v", workflowFile, target, attempt, time.Since(start).Round(time.Second))
+		case wf.State == settleWorkflowActive && wasConfirming:
+			logf("[ensure] %s active on %s after %d attempt(s) in %v; waiting %v before the first event",
+				workflowFile, target, attempt, time.Since(start).Round(time.Second), settleQuiet)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, ctx.Err())
+			case <-time.After(settleQuiet):
+			}
 			return nil
+		case wf.State == settleWorkflowActive:
+			confirming = true
+			last = errors.New("state=active, not yet confirmed")
 		default:
 			last = fmt.Errorf("state=%s", wf.State)
+		}
+		if wasConfirming && !confirming {
+			logf("[ensure] %s on %s was active but the confirming poll saw %v; polling again", workflowFile, target, last)
+		}
+
+		if confirming {
+			logf("[ensure] %s active on %s (attempt %d); confirming in %v", workflowFile, target, attempt, settleConfirmDelay)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, ctx.Err())
+			case <-time.After(settleConfirmDelay):
+			}
+			continue
 		}
 
 		remaining := time.Until(deadline)

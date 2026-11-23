@@ -1348,7 +1348,15 @@ func TestGitLabScheduleReactivationDeferral(t *testing.T) {
 		e := newTrigEnv()
 		seedTypedScheduleTemplates(t, e)
 		e.state.PipelineVarOverrideRoles[trigOwner+"/"+trigRepo] = forge.PipelineVarOverrideDeveloper
-		assert.Contains(t, GitLabScheduleReactivationDeferral(ctx, e.state, trigOwner, trigRepo), "override restriction")
+		assert.Equal(t, "the pipeline-variable override restriction is not verified as no_one_allowed, and the manifest does not set allow_insecure_pipeline_variables",
+			GitLabScheduleReactivationDeferral(ctx, e.state, trigOwner, trigRepo))
+	})
+	t.Run("weak override role with the ADR 0175 opt-in", func(t *testing.T) {
+		e := newTrigEnv()
+		seedTypedScheduleTemplates(t, e)
+		e.state.PipelineVarOverrideRoles[trigOwner+"/"+trigRepo] = forge.PipelineVarOverrideDeveloper
+		assert.NotContains(t, GitLabScheduleReactivationDeferral(optInCtx(trigOwner+"/"+trigRepo), e.state, trigOwner, trigRepo), "override restriction",
+			"the saved opt-in satisfies the restriction for schedule reactivation")
 	})
 	t.Run("unreadable template", func(t *testing.T) {
 		e := newTrigEnv()

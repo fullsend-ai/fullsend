@@ -1210,6 +1210,15 @@ Forgejo and local runs have no supported job OIDC integration, so an explicit
 Vault selection fails there. Secrets that omit
 `connection` or select `native` keep working on every forge.
 
+**Trace correlation.** Every Vault request (login, read, and token revocation)
+carries the run's inbound W3C trace context as `traceparent` and `tracestate`
+headers, taken from `TRACEPARENT` and `TRACESTATE`. Nothing is sent when no
+valid trace context is set. Vault resolution runs before the run's own tracer
+starts, because the OTLP headers it resolves configure that tracer. To match
+Vault requests to the run's trace, configure your Vault audit device to record
+these headers, for example with
+`vault write sys/config/auditing/request-headers/traceparent hmac=false`.
+
 **Consumers.** Resolved OTLP header values are handed to the same consumer as
 their native values: Fullsend's trace exporter. A resolved `JIRA_TOKEN` reaches
 only host-side scripts that declare it in a harness `env.runner` entry.

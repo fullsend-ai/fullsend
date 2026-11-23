@@ -411,6 +411,7 @@ func TestComposedDriver_NeverResetsOrDeletesOccupiedSlot(t *testing.T) {
 	l, err := td.AllocateLease(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "test-repo-02", l.Repo, "the occupied slot is skipped")
+	assert.True(t, l.FreshInstall, "the claim created the repo and the allocation installed it (#9779)")
 	require.NoError(t, td.DeallocateLease(ctx, l.Org, l.Repo))
 
 	got, err := td.pool.fc.GetRepo(ctx, org, "test-repo-01")

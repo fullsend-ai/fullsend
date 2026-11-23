@@ -6,11 +6,153 @@ End-to-end Gherkin tests under `e2e/behaviour/` validate **deterministic platfor
 |---|-----------------|-----------|------------|
 | **Target** | Platform workflows, sandbox, SCM | Prompts, models | Go functions |
 | **Inference** | Dummy runtime | Real LLM | N/A |
-| **Infrastructure** | Live GitHub + GHA | Varies | None |
+| **Infrastructure** | GitHub emulator on pull requests; live GitHub + GHA in the merge queue and on `main` | Varies | None |
 
 ## When to add a behaviour test
 
 Add one when a **user-visible workflow** must be verified end-to-end (dispatch → workflow → post-script → SCM state) and the assertion is **binary**. Prefer unit tests for pure Go logic.
+
+Pull requests run the scenarios on a GitHub emulator, and the merge queue and
+`main` run them on live GitHub. Write the scenario so it runs on the emulator,
+which lets every pull request run it; see
+[Adding a scenario](#adding-a-scenario).
+
+## On a pull request
+
+Every pull request runs the behaviour scenarios against the
+[GitHub emulator](#running-against-a-github-emulator), from
+[`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml).
+The run needs no repository secrets.
+
+### What runs, and what you see in Checks
+
+- **`behaviour-github-emulator`** is the required check. It passes only when
+  the 16 shard jobs, `behaviour-github-emulator (a)` to
+  `behaviour-github-emulator (p)`, and the `behaviour-github-emulator
+  (playback)` job all pass.
+- **`behaviour-github-emulator (agents)`** runs the agents repository's suite
+  against your change. It is advisory, not required: it shows whether a fullsend
+  change breaks the agents suite.
+- **`behaviour`** and **`playback`**, from `e2e.yml`, show as skipped. This is
+  expected, and a skipped job still satisfies these required checks.
+
+The live `behaviour` and `playback` suites run in the merge queue and on push
+to `main`. The merge queue runs `behaviour-github-emulator` as well. To run the
+live suites on a pull request before it is enqueued, see
+[Run the live suites on a pull request](e2e-testing.md#run-the-live-suites-on-a-pull-request).
+
+### When the check fails
+
+1. Open the failed job. Find the failing scenario in the log of its main step:
+   `Run behaviour features` for a shard, `Run the playback suite` or
+   `Run the agents suite`.
+2. Download the job's artifact from the **Artifacts** list on the run's
+   summary page. Every job uploads it, whether it passed or failed.
+
+   | Job | Artifact |
+   |-----|----------|
+   | A shard | `behaviour-github-emulator-logs-<shard>` (`a` to `p`, or `custom` for a [dispatch with features](#running-chosen-scenarios-in-ci)) |
+   | Playback | `behaviour-github-emulator-logs-playback` |
+   | Agents | `behaviour-github-emulator-logs-agents` |
+
+   The `Upload logs` step in `behaviour-github-emulator.yml` lists the paths.
+   Each artifact holds:
+
+   - the run's `*.log` files: `bt-run.log` (the suite output),
+     `stack/emulator.log` (the emulator) and `stack/runner-<n>.log` (one per
+     emulator runner);
+   - `phases.tsv`, with the time each phase of the job took;
+   - `emulator-profile.json`, a profile of the emulator process. Only the
+     shard artifacts hold it;
+   - `bt-artifacts/`, the per-scenario output, such as
+     `debug-scenario-<name>-<suffix>/failure-summary.txt` for a failed
+     scenario;
+   - `openshell-logs/`, the OpenShell logs of each agent run.
+3. Decide whether the failure comes from your change or from the emulator.
+   - It is likely an **emulator failure** when the emulator returns HTTP 4xx
+     or 5xx for an API call that GitHub supports, or when a workflow job never
+     starts because no emulator runner picks it up. Look for the call in
+     `bt-run.log` and `stack/emulator.log`, and for the job in
+     `stack/runner-<n>.log`.
+   - Otherwise, treat it as a failure in the code under test. A scenario
+     that fails on an assertion, or a fullsend command that exits with an
+     error, usually points at the change.
+4. Re-run the failed jobs once, with **Re-run failed jobs** on the run's
+   summary page.
+   Re-running needs write access to the repository. Without it, ask a
+   maintainer to re-run the jobs, or push a new commit.
+5. If the job fails again and the failure looks like an emulator bug, file an issue
+   at <https://github.com/fullsend-ai/github-emulator/issues>. Include the
+   run link, the scenario and the emulator log lines.
+
+#### Troubleshooting
+
+Each row is error text a failed run prints. `N.N` stands for the elapsed time in seconds.
+
+| Error text | What it means | What to do |
+|------------|---------------|------------|
+| `behaviour suite failed with status 1: scenario failure (0 infrastructure, 1 scenario); report: .../failure-class.json` | A summary line. The counts say how many failed scenarios were classified as infrastructure and how many as scenario failures. | Scroll up to the `Error:` line under `Failed steps:` for the cause. |
+| `harness agent "retro": workflow run 5 concluded with "failure" before producing artifact (url=https://ghemu.localhost/...)` | The agent's workflow ran on the emulator and failed. | Find the run's job in `stack/runner-<n>.log` and read the failing step. In past runs, the cause was in the change under test. |
+| `harness agent "pr-ping" did not complete successfully; no recent workflow runs found after trigger time; no repository artifacts listed` | The trigger started no workflow run. | Look in `stack/emulator.log` for the event and the run. If the emulator answered HTTP 4xx or 5xx to an API that GitHub supports, the bug is likely in the emulator. |
+| `"review" agent was not dispatched since <time>` | Playback: the expected agent dispatch did not happen. | Same checks as the row above. |
+| `the emulator did not start: no answer after N.Ns (CI_STACK_START_TIMEOUT=120); last lines of /home/runner/work/_temp/bt-github-emulator/stack/emulator.log:` | The emulator was still starting when the 120 s start deadline ran out. No scenario ran. | In `stack/emulator.log`, each `Startup:` line gives the time one startup step took (app import, database init, admin user seed, SSH server). Use them to see which step was slow. Re-run the failed jobs once. If it happens again, file an emulator issue with the log lines and the `Startup:` lines. |
+| `the emulator did not start: it exited after N.Ns; last lines of /home/runner/work/_temp/bt-github-emulator/stack/emulator.log:` | The emulator process exited before it answered. No scenario ran. | Read the log lines printed below the message for the error. File an emulator issue with those log lines. |
+| `! [remote rejected] HEAD -> main (shallow update not allowed)` | The agents job pushes its checkout into the emulator, and the checkout was shallow. | Only seen when editing the workflow: the agents checkout needs `fetch-depth: 0`. |
+
+To run the job yourself, see
+[Running the emulator job on a VM](#running-the-emulator-job-on-a-vm).
+For the emulator version the job uses, see
+[Moving to a new emulator release](#moving-to-a-new-emulator-release).
+
+### Running chosen scenarios in CI
+
+`behaviour-github-emulator.yml` has a `workflow_dispatch` trigger with three
+inputs:
+
+| Input | Meaning |
+|-------|---------|
+| `features` | Space-separated feature paths under `e2e/behaviour`, each with an optional `:line`. They run as one shard named `custom`, and the playback and agents jobs are skipped. Empty runs the 16 shards, playback and agents. |
+| `workers` | Scenarios run in parallel: the slot pool size and the godog concurrency. Empty uses the shard's value from `shards.txt`, or `DEFAULT_WORKERS` (2) with `features`. |
+| `runners` | Real `actions/runner` processes on the emulator. Empty uses the shard's value from `shards.txt`, or `DEFAULT_RUNNERS` (4) with `features`. |
+
+Dispatching needs write access to the repository that runs the workflow. The job
+uses no repository secrets, so it runs the same way in your own fork:
+
+1. Sync your fork's default branch with `fullsend-ai/fullsend`, for example
+   with `gh repo sync <your-user>/fullsend`. GitHub only dispatches a workflow
+   that exists on the default branch. If the fork's **Actions** tab asks you
+   to enable workflows, enable them.
+2. Push your branch to your fork.
+3. Dispatch it there. With write access to `fullsend-ai/fullsend`, you can
+   also pass `--repo fullsend-ai/fullsend` with a branch in that repository.
+
+   ```console
+   $ gh workflow run behaviour-github-emulator.yml --repo <your-user>/fullsend \
+       --ref <your-branch> -f features=features/triage/triage.feature
+   https://github.com/<your-user>/fullsend/actions/runs/<run-id>
+   ```
+
+The run has a `behaviour-github-emulator (custom)` job, and the playback and
+agents jobs show as skipped. In the run above, the custom job's log ended
+with `1 scenarios (1 passed)`. `gh workflow run` prints the run URL.
+
+### Adding a scenario
+
+Prefer a scenario that uses the dummy runtime, with no real model, and runs on
+the emulator, so every pull request runs it. List it in
+`e2e/behaviour/github-emulator/shards.txt` (see
+[Checklist for new scenarios](#checklist-for-new-scenarios)).
+
+If the emulator lacks a GitHub behaviour that the scenario needs, add that
+behaviour to the emulator. Do not list the scenario in
+`e2e/behaviour/github-emulator/not-sharded.txt` for that reason. The
+emulator's
+[CONTRIBUTING.md](https://github.com/fullsend-ai/github-emulator/blob/main/CONTRIBUTING.md)
+and
+[development guide](https://github.com/fullsend-ai/github-emulator/blob/main/docs/guides/development.md)
+describe how to change it. `not-sharded.txt` is for scenarios that cannot run
+on the emulator for another reason, such as a real model behind a
+`@requires:capability:` tag.
 
 ## Layout
 
@@ -338,6 +480,15 @@ Before merging a scenario that dispatches an agent stage:
    And the agent will succeed to Emit <stage> JSON
    ```
 5. Verify that fixture field values satisfy downstream CLI validation, not just the JSON schema. For example, `head_sha` in `review-result` must be a full-length 40-character hex SHA (`abcdef0123456789abcdef0123456789abcdef01`), not a short prefix.
+6. List the scenario in `e2e/behaviour/github-emulator/shards.txt`, or in
+   `e2e/behaviour/github-emulator/not-sharded.txt` with the reason it cannot
+   run on the emulator (see [Adding a scenario](#adding-a-scenario)).
+   `e2e/behaviour/shards_test.go` fails when a scenario is in neither list.
+   It has no build tag, so plain `go test` runs it:
+   ```console
+   $ go test ./e2e/behaviour/
+   ok  	github.com/fullsend-ai/fullsend/e2e/behaviour	0.026s
+   ```
 
 ### Fixture inventory
 
@@ -378,18 +529,21 @@ The first row proves execution via an auxiliary file; the second row emits the s
 
 ## Prerequisites
 
-The procedures in this guide need the following before the first step:
+The procedures in this guide need the following before the first step. Items
+marked "(live suite only)" are not needed for an emulator run, which creates
+its own credentials (see
+[Running against a GitHub emulator](#running-against-a-github-emulator)).
 
 - **Go toolchain.** The repo's Go version (see `go.mod`), used by the
   `make behaviour-test`, `make playback-test`, and
   `make behaviour-test-unit` targets.
 - **`jq`.** `scripts/run-with-infra-retry.sh` reads the failure-class
   report with `jq` when deciding whether a failed attempt can be retried.
-- **GitHub credentials.** Locally, `gh auth login` or export
+- **GitHub credentials (live suite only).** Locally, `gh auth login` or export
   `GH_TOKEN`/`GITHUB_TOKEN` with access to the `halfsend` org pool. In
   CI, the suite mints per-org tokens through the mint service
   (`id-token: write` and `ACTIONS_ID_TOKEN_REQUEST_URL`).
-- **Driver credentials.** The install factories read the role PEM files
+- **Driver credentials (live suite only).** The install factories read the role PEM files
   (`TEST_*_PEM`) and Cloudflare credentials (`TEST_CLOUDFLARE_*`), and
   `E2E_GCP_*` configures the GCP side, as described in
   [Running the playback suite in CI](#running-the-playback-suite-in-ci).
@@ -458,7 +612,7 @@ The target runs `go test -tags playback -race -v -count=1 -timeout 45m ./e2e/beh
 The `playback` job mirrors the `behaviour` job in [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml), with these specifics:
 
 - **Target and environment.** Run `make playback-test` with `shell: bash`, teeing output (for example to `playback-test.log`) so `pipefail` propagates failures. Pass the same `env:` block as the behaviour job: `BEHAVIOUR_SCM=github`, `BEHAVIOUR_CI=githubactions`, `BEHAVIOUR_INSTALL_MODE=per-repo`, `E2E_GCP_*`, `TEST_*_PEM`, and the `TEST_CLOUDFLARE_*` credentials. Point `BEHAVIOUR_ARTIFACT_DIR` at a playback-specific directory (for example `${{ runner.temp }}/playback-artifacts`). You do not need to set `GODOG_TAGS` or `PLAYBACK_RUNTIME`, because `RunPlaybackSuite` sets them itself.
-- **Triggers, gate, and environment binding.** Use `needs: gate` with `!cancelled()` and run for `merge_group` and push to `main`; manual dispatch runs playback when `run_playback=true`. Skip pull requests, including the `issue_comment` call from `e2e-ok-to-test.yml`: they get playback from the GitHub emulator ([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml)), and a skipped job satisfies the required `playback` check. Bind to the same GitHub Environment (`stage` on push, `dev` otherwise) and set `ENVIRONMENT` to match. The job checks out and runs the code under test with secrets, so the [CI Workflows security rules](../../contributing/ci-workflows.md#review-checklist-for-secrets-in-behaviourplayback-jobs) apply.
+- **Triggers, gate, and environment binding.** Use `needs: gate` with `!cancelled()` and run for `merge_group` and push to `main`; manual dispatch runs playback when `run_playback=true`. Skip pull requests: they get playback from the GitHub emulator ([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml)), and a skipped job satisfies the required `playback` check. The exception is the `issue_comment` call from `e2e-ok-to-test.yml` after an authorized `/ok-to-test <sha> live`: it runs playback in `dev` on that sha, reported as the non-required `playback-live` check. Bind to the same GitHub Environment (`stage` on push, `dev` otherwise) and set `ENVIRONMENT` to match. The job checks out and runs the code under test with secrets, so the [CI Workflows security rules](../../contributing/ci-workflows.md#review-checklist-for-secrets-in-behaviourplayback-jobs) apply.
 - **Slot leasing.** Neither suite reserves a whole org. `RunPlaybackSuite` and `RunSuite` lease individual `(org, test-repo-NN)` slots through the same shared install driver and allocator (see [Repo allocation via the shared slot driver](#repo-allocation-via-the-shared-slot-driver)), so the two suites and other concurrent runs can share an org without resetting each other's repos. Neither suite takes the exclusive `e2e-lock` (`e2etest.AcquireOrg`) or runs the broad startup `e2etest.CleanupStaleResources`. Abandoned slot repos are reclaimed by the allocator's [repo-slot GC](#repo-slot-gc). The playback and behaviour jobs still share a job concurrency group within each stage workflow run, because the STAGE pool is the single `halfsend` org with only 12 slots. Dev jobs use distinct groups and run concurrently across the numbered orgs.
 - **Change detection.** Reuse the behaviour job's file filter (its `grep -qE` path list and the `push.paths` entries under the same `SYNC-WITH` comment). It already covers `e2e/behaviour/` (playback features, fixtures and results), `pkg/behaviourtest/`, `internal/runtime/` (the `dummy-playback` runtime), and `Makefile`. Keep the two filters in sync, and keep the behaviour job's fallback of running the tests when the file list cannot be fetched or may be truncated.
 - **Cancellation.** The job inherits the workflow-level `concurrency` group and `cancel-in-progress` expression. A cancelled or killed run cannot run `t.Cleanup`, so its slot repos stay occupied until the [repo-slot GC](#repo-slot-gc) reclaims them, exactly as for the behaviour job. Gate post-test steps on `always()` rather than `success()` so that redaction still runs after a failure.
@@ -566,13 +720,19 @@ The script does these steps:
    creates the human-like test actors and their tokens.
 7. It builds a supervisor image that trusts the run's CA
    (`supervisor-ca-image.sh`) and samples VM load (`sample-vm.sh`).
-8. It runs the given features, or the playback suite when
-   `BT_SUITE=playback`.
+8. It runs the given features, the playback suite when
+   `BT_SUITE=playback`, or the agents repository's `make behaviour-test`
+   when `BT_SUITE=agents`. The agents suite needs `AGENTS_DIR`, an agents
+   checkout: its `HEAD` is pushed into the emulator as `fullsend-ai/agents`
+   main, and its suite is built against this checkout through a modfile in
+   the state directory, so the checkout's `go.mod` and `go.sum` are not
+   changed.
 
 The script header lists every setting. The main ones are `EMULATOR_DIR` and
 `EMULATOR_PY` (required), `STATE_DIR` (logs; default
 `$RUNNER_TEMP/bt-github-emulator`, or `/tmp/bt-github-emulator`), `BT_SUITE`,
-`AGENTS_SEED`, `AGENTS_REF`, `AGENTS_PRS` and `BEHAVIOUR_CAPABILITIES`. When
+`AGENTS_DIR`, `AGENTS_SEED`, `AGENTS_REF`, `AGENTS_PRS` and
+`BEHAVIOUR_CAPABILITIES`. When
 the run passes, the suite's summary line shows the passed scenarios. The
 state directory holds the logs, `phases.tsv` (time per phase) and the
 suite's artifacts.
@@ -584,7 +744,48 @@ are balanced on measured scenario time, not on scenario count. When you add
 or move a scenario, update its line. List a Scenario Outline by its own line
 so all its rows stay on one shard.
 
+`e2e/behaviour/shards_test.go` enforces the list as part of the plain
+`go test ./...` unit run. It fails, naming each entry, when a scenario is in no
+shard, when an entry does not point at a `Scenario:` or `Scenario Outline:`
+header (for example after lines are added above it), or when a scenario is
+listed more than once. A scenario that cannot run on the emulator, such as one
+gated on a `@requires:capability:` tag, goes in
+`e2e/behaviour/github-emulator/not-sharded.txt` instead, one
+`<feature[:line]>` per line with a `#` comment giving the reason.
+
+On pull requests, `behaviour-github-emulator.yml` also runs the agents
+repository's suite (`BT_SUITE=agents`) against the PR and fullsend-ai/agents
+`main`, as the `behaviour-github-emulator (agents)` job. It is not part of the
+required `behaviour-github-emulator` check: it shows a fullsend change that
+breaks the agents suite before it merges.
+
+#### Moving to a new emulator release
+
+1. The pin is `EMULATOR_REPO` / `EMULATOR_REF` in
+   `.github/workflows/behaviour-github-emulator.yml`. `EMULATOR_REF` is written
+   like an action pin: `<full 40-character commit sha> # <release tag>`.
+   Releases are CalVer tags on fullsend-ai/github-emulator. The
+   [release notes](https://github.com/fullsend-ai/github-emulator/releases)
+   list behaviour changes.
+2. Make a branch from current fullsend `main` that changes only
+   `EMULATOR_REF`, to `<release commit sha> # <release tag>`, and open a draft
+   pull request from it: the workflow runs on `pull_request`. Run it a second
+   time with **Re-run all jobs** on the pull request's
+   `behaviour-github-emulator` run. Every shard, the playback job and the
+   `behaviour-github-emulator (agents)` job must pass both times.
+3. A maintainer opens or takes over the pull request that moves the pin, since
+   it edits a workflow file, and links the two validation runs in it.
+
+The agents repository's emulator job reads the pin from the fullsend checkout it
+builds, so it follows this pin with no change in that repository.
+
 ### Failure classification and infrastructure retry
+
+This section applies to the live suite. For a failure in the
+`behaviour-github-emulator` check, see
+[When the check fails](#when-the-check-fails).
+The `behaviour-artifacts-*` artifact below belongs to the live `behaviour`
+job; the emulator jobs upload `behaviour-github-emulator-logs-*`.
 
 Behaviour tests run against live infrastructure — the GitHub API, Actions
 runners, GCP WIF and the mint — and historically about one required-check
@@ -608,6 +809,7 @@ everything else stays `scenario` — never retried, never masked.
 | Pool capacity exhausted — every org rate-limited, denied or failed | `install.CapacityError` (all causes), when it reaches the classifier on its own |
 | Collaborator invitation pending (access requested, not yet granted) | the `gh.ErrInvitationPending` sentinel |
 | Terminal setup-poll exhaustion — repo never visible after creation, or dispatch workflow never settles | `behaviourfail.Mark` in the install ensure path |
+| A not-dispatched timeout on a repo installed fresh for the scenario, where the [dispatch diagnostics](#dispatch-diagnostics) find, after the full grace wait and an untruncated listing, that the waited-for workflow has no run at all, for any event. GitHub can report the workflow `active` before Actions reacts to events, and the first event is then dropped ([#9779](https://github.com/fullsend-ai/fullsend/issues/9779)). A timeout joined with another error stays `scenario` | `behaviourfail.Mark` in `CollectFailureLogs` (`markFreshRepoNoRun` in `steps/debuglogs.go`), recorded by the After hook |
 | Post-install validation reads a file setup has just committed and GitHub still answers 404 after every retry (5 attempts, backing off 2, 4, 8 and 16 seconds) | `behaviourfail.Mark` in `getFileWithRetry` (`drivers/install/validate.go`) |
 | GCP WIF quota or rate limit during inference provisioning (provision and status wait) | `behaviourfail.Mark` on matched CLI stderr signatures |
 | `fullsend github setup` fails during repo setup because the forge client gave up on a GitHub 500–504, or GitHub reset the HTTP/2 stream (`stream error: stream ID N; CANCEL; received from peer`). Setup runs as a subprocess, so `gh.IsServerError` cannot see a typed error. Any other setup failure, a 4xx or validation error for example, stays `scenario`. A GraphQL server error during setup also stays `scenario`, because none has been observed there (#9497). | `behaviourfail.Mark` on the CLI's final `Error:` line (`markGitHubSetupTransient` in `drivers/install/common/setup.go`) |
@@ -646,9 +848,10 @@ was not dispatched` on GitHub Actions, `pipeline (<event>) was not
 dispatched` on GitLab CI. A wait for any event drops the ` (<event>)` part,
 for example `pipeline was not dispatched`. The issue-open and dispatch-run
 waits retry it once, allowing 30 s of clock skew. If the retry also times
-out, the failure stays `scenario` and gets no infrastructure retry. Whether
-the run arrives late or never is not yet established. To see what happened
-in a failing GitHub Actions job:
+out, the failure stays `scenario` and gets no infrastructure retry. The one
+exception is a workflow that never ran at all in a repo installed fresh for
+the scenario (see the table above). To see what happened in a failing
+GitHub Actions job:
 
 1. Download the `behaviour-artifacts-*` artifact of the failing job.
 2. Open `debug-scenario-<name>-<suffix>/failure-summary.txt`.
@@ -837,9 +1040,15 @@ deletes the repository. The section shows, in this order:
   matching run also reads `no (inconclusive: the listing was truncated;
   ...)` when the run listing hit its limit.
 
-Whatever the verdict, the timeout stays a `scenario` failure; re-run the job
-as usual, and add the summary's verdict line to #9469 so the cause can be
-settled from data.
+The timeout stays a `scenario` failure, with one exception. If the verdict is
+`no` with no matching run, the waited-for workflow has no run for any event,
+and the leased repository was installed fresh for the scenario, then the
+failure is `infrastructure`. The section then ends with a
+`classification: infrastructure` line, and the suite's single retry reruns
+the scenario on another repo
+([#9779](https://github.com/fullsend-ai/fullsend/issues/9779)). Otherwise
+re-run the job as usual, and add the summary's verdict line to #9469 so the
+cause can be settled from data.
 
 Total grace wait time is bounded at about 6 minutes of wall-clock time per
 test process. Time already covered by another running wait is free, so a
@@ -938,7 +1147,8 @@ BEHAVIOUR_TRACE_COLLECTOR=     # job-scoped OTel Collector: unset = on in GitHub
 BEHAVIOUR_OPENBAO=             # feature-scoped OpenBao for Vault scenarios: unset = on in GitHub Actions with Podman, else skipped; true = required; false = off
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
-ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), github-emulator (a GitHub emulator), or forgejo-dev (Forgejo driver stubs)
+ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs), stage (push to main), github-emulator (a GitHub emulator), or forgejo-dev (managed local Forgejo stack)
+DOCKER_HOST=                  # forgejo-dev only: unix:// engine socket (then CONTAINER_HOST, then the Docker/Podman default sockets)
 E2E_GCP_PROJECT_ID=...        # inference project; install resolves (and if needed provisions) inference WIF once per pool repo name
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
 TEST_ACTOR_WRITE_PAT=...      # write-level human-like actor PAT (CI: same-named repo secret)
@@ -946,7 +1156,7 @@ TEST_ACTOR_TRIAGE_PAT=...     # triage-level human-like actor PAT
 TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on base)
 ```
 
-`ENVIRONMENT` is `dev`, `stage`, `github-emulator`, or `forgejo-dev`. Local runs default to `dev` when unset. `github-emulator` runs the suite against a GitHub emulator instead of github.com (see [Running against a GitHub emulator](#running-against-a-github-emulator)). `forgejo-dev` selects the Forgejo SCM, CI, and install drivers, which are not-implemented stubs for now (see [Forgejo driver stubs](behaviour-drivers.md#forgejo-driver-stubs)). The standard `behaviour` job sets it to match its GitHub Environment (`dev` in the merge queue, `stage` on push to `main`). The separate, non-required `forgejo-behaviour` job selects only `@forgejo` scenarios and always sets `ENVIRONMENT=forgejo-dev`; its GitHub Environment is `forgejo-stage` on push to `main` and `forgejo-dev` otherwise. Promotion to a required check is tracked in [#9656](https://github.com/fullsend-ai/fullsend/issues/9656).
+`ENVIRONMENT` is `dev`, `stage`, `github-emulator`, or `forgejo-dev`. Local runs default to `dev` when unset. `github-emulator` runs the suite against a GitHub emulator instead of github.com (see [Running against a GitHub emulator](#running-against-a-github-emulator)). `forgejo-dev` selects the Forgejo SCM, CI, and install drivers. The install driver starts an isolated Forgejo 17.0.1 and Forgejo Runner 13.2.1 stack on the host's Docker or Podman engine for the run, waits until it is ready, and tears it down when the run ends (see [Managed forgejo-dev stack](behaviour-drivers.md#managed-forgejo-dev-stack)). Repository allocation and the SCM and CI drivers are still not-implemented stubs (see [Forgejo drivers](behaviour-drivers.md#forgejo-drivers)). The standard `behaviour` job sets it to match its GitHub Environment (`dev` in the merge queue and on an authorized `/ok-to-test <sha> live`, `stage` on push to `main`). The separate, non-required `forgejo-behaviour` job selects only `@forgejo` scenarios and always sets `ENVIRONMENT=forgejo-dev`; its GitHub Environment is `forgejo-stage` on push to `main` and `forgejo-dev` otherwise. Promotion to a required check is tracked in [#9656](https://github.com/fullsend-ai/fullsend/issues/9656).
 
 When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
 
@@ -1115,9 +1325,22 @@ start it.
 4. Start a Cloudflare quick tunnel to give the server a public HTTPS address,
    as Vault connections require. The address goes into trusted base
    configuration as the connection's `vault_address`.
-5. Log the startup time and the server container's memory use
+5. Enable a stdout audit device and record the `traceparent` and `tracestate`
+   request headers unhashed. OpenBao has no OpenTelemetry support, so this
+   is how a request is correlated with a trace: the Fullsend Vault client
+   sends the run's W3C trace context on every request. The audit log is
+   diagnostic. If OpenBao refuses the audit device, the server logs a
+   warning and starts without it.
+6. Log the startup time and the server container's memory use
    (`podman stats`), so the cost on the behaviour-test runner is visible in
    the job log.
+
+`Stop` saves the server log, audit entries included, and a
+`measurements.json` file under `openbao/<container>/` in
+`BEHAVIOUR_ARTIFACT_DIR`. `measurements.json` holds the startup time and the
+memory use at start and at stop. Both files have the root token masked and
+mode `0600`. The log is read before the container is removed. If reading it
+fails, the container is kept and the next `Stop` call retries.
 
 `AllowRepo` writes the default `fullsend-runner` role. The role binds the
 default Fullsend Vault audience (`https://fullsend.sh/vault`) and the job
@@ -1136,6 +1359,37 @@ in GitHub Actions with Podman available, because the tested workflows need a
 job-issued OIDC token. Otherwise `StartVaultServer` returns a skip reason, so
 local runs skip them. Set it to `true` to make a missing prerequisite an error
 instead of a skip, or `false` to turn the scenarios off.
+
+`features/platform/vault-runner-secrets.feature` exercises the server. Its
+steps live in `pkg/behaviourtest/steps/vault.go`:
+
+- `Given the Vault test server is running` binds the feature's server to the
+  scenario. The registry is keyed by feature file. The first scenario of a
+  feature starts the server, and the feature's later scenarios reuse it. A
+  failed start is remembered, so later scenarios do not retry it.
+  `steps.StopVaultServers`, registered with `t.Cleanup` in the suite runner,
+  stops every server at job cleanup. The step skips the scenario when
+  `BEHAVIOUR_OPENBAO` disables the Vault scenarios.
+- `the Vault test server holds a synthetic "<NAME>"` stores a random value
+  shaped for the secret's consumer, under a per-scenario prefix.
+  `the trusted base configuration selects the Vault test server for "<NAME>"`
+  declares the `bt-openbao` connection and selects that path in the leased
+  repository's `config.base.yaml`.
+- The scenarios commit a host-side `pre_script`
+  (`a Vault fingerprint script "<path>"`). For each secret it received through
+  `env.runner`, the script prints `vault-fingerprint <NAME>=<fp>`: the first 16
+  hex digits of `sha256("fullsend-bt-vault:" + value)`. The fingerprint steps
+  compare that line, so no secret value reaches the logs.
+- The trace scenario stores the trace collector's headers in OpenBao and
+  replaces the repository's native `OTEL_EXPORTER_OTLP_TRACES_HEADERS` secret
+  with a wrong token. It then waits for a trace file from the harness run.
+  It is skipped when no trace collector is running.
+
+The scenarios are listed in `github-emulator/not-sharded.txt`: the emulator
+issues no GitHub Actions job OIDC token, so they run only in the live
+behaviour job. To debug a failure, find the run's trace ID in its trace file
+or job log. Then search `openbao/<container>/openbao.log` for that ID in the
+`traceparent` header of each login and read request.
 
 ### Rate-limit observability
 
@@ -1509,8 +1763,18 @@ After creating a repo and committing workflow files via `fullsend github setup`,
 
 The install driver's internal ensurer handles this by polling `GetWorkflow`
 until the workflow is visible and its state is `active`. Polls back off
-exponentially from 5 seconds to a 30-second cap, for up to 5 minutes. Indexing
-on a freshly created repo sometimes never finishes in that window, so a timeout
+exponentially from 5 seconds to a 30-second cap, for up to 5 minutes.
+`active` can come before Actions reacts to events
+([#9779](https://github.com/fullsend-ai/fullsend/issues/9779)). So the first
+`active` poll must be confirmed by a second poll 5 seconds later, and the
+ensurer then waits 15 seconds more before handing the repo to the scenario.
+A confirming poll that does not see `active` resumes normal polling. This
+gate is a heuristic. When the first event still starts no run, the failure
+is classified `infrastructure` (see
+[Failure classification](#failure-classification-and-infrastructure-retry)).
+
+Indexing on a freshly created repo sometimes never finishes within the 5
+minutes, so a timeout
 does not fail the allocation straight away: the driver releases the slot
 (deleting its repo), claims a fresh repo, installs, and waits again, up to 2
 claimed repos in total
@@ -1520,13 +1784,14 @@ than "not found" do not claim a fresh repo. When writing new provisioning code
 or modifying the install flow, always poll for workflow readiness before
 dispatching events that depend on the workflow.
 
-Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is active; [`AllocateLease`](../../../pkg/behaviourtest/drivers/install/composed.go) claims a fresh repo when it times out.
+Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until two polls in a row see the workflow active, then waits a short settle time; [`AllocateLease`](../../../pkg/behaviourtest/drivers/install/composed.go) claims a fresh repo when it times out.
 
 ### CI timeout budgeting for lazy provisioning
 
 Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete
-leftover state + create + `github setup` + Actions settle; the first lease of
-each name also resolves inference WIF), including when a later scenario reuses
+leftover state + create + `github setup` + Actions settle, which includes
+about 20 seconds to confirm the workflow is active and let it settle; the
+first lease of each name also resolves inference WIF), including when a later scenario reuses
 the same `test-repo-NN` name. A lease whose workflow Actions does not index in
 time can take about 10 minutes longer: up to two 5-minute settle waits plus one
 more claim and `github setup`

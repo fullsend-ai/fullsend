@@ -73,8 +73,9 @@ repository.
 - Pull requests from any author, forks included, run the behaviour and
   playback scenarios on the GitHub emulator automatically (the required
   `behaviour-github-emulator` check).
-  `/ok-to-test <sha>`, from someone with the Write role, authorizes only
-  the optional Forgejo behaviour suite on your PRs.
+  `/ok-to-test <sha>`, from someone with the Write role, authorizes the
+  optional Forgejo behaviour suite on your PRs; `/ok-to-test <sha> live`
+  also runs the live behaviour and playback suites.
 
 **Criteria:**
 
@@ -123,6 +124,9 @@ repository.
   a `/ok-to-test <sha>` comment for it, which you may post yourself.
   The required `behaviour-github-emulator` check needs no
   authorization: every PR, forks included, runs it
+- Running the live behaviour and playback suites on a PR, by commenting
+  `/ok-to-test <sha> live` (reported as `behaviour-live` and
+  `playback-live`)
 
 **Criteria:**
 
