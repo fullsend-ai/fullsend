@@ -795,6 +795,18 @@ func (l *ForgejoLifecycle) uninstallHost(ctx context.Context, c ForgejoFileClien
 	}
 	r.State = ForgejoStateRemoved
 	r.Detail = "bundle files removed; version tags are kept"
+	if !plansDeleteOf(plan, forgejoDispatchPath) {
+		// The index does not list the dispatch workflow, so removal leaves
+		// it in place; keep the host declared rather than reporting the
+		// bundle as gone.
+		if _, err := c.GetFile(ctx, t.Owner, t.Repo, forgejoDispatchPath); err == nil {
+			r.WorkflowsKept = true
+			r.Detail = forgejoDispatchPath + " is not listed in " + forgejoWorkflowIndexPath + "; the dispatch workflow is left unchanged"
+		} else if !forge.IsNotFound(err) {
+			r.fail(err)
+			return r
+		}
+	}
 	return r
 }
 

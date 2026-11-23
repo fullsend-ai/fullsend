@@ -709,3 +709,39 @@ forgejo:
 	require.Len(t, m.Forgejo.Instances[0].Repos, 1)
 	assert.Equal(t, "fullsend/workflows", m.Forgejo.Instances[0].Repos[0].Name, "the retained host stays declared")
 }
+
+// A workflow host whose ownership index omits the dispatch workflow leaves
+// that file in place on uninstall, so the host stays declared.
+func TestReposForgejo_HostIndexOmittingDispatchStaysDeclared(t *testing.T) {
+	home := newForgejoServer(t, "/forgejo")
+	p := writeTestManifest(t, `version: 1
+forgejo:
+  instances:
+    - alias: home
+      url: `+home.url()+`
+      repos:
+        - name: fullsend/workflows
+          workflow_host: true
+`)
+	hooks := forgejoEnv(map[string]string{"FULLSEND_FORGEJO_HOME_TOKEN": "t"})
+	var runErr error
+	captureStdout(t, func() {
+		runErr = runReposInstall(context.Background(), &reposInstallConfig{manifest: p, concurrency: 4, testForgejo: hooks})
+	})
+	require.NoError(t, runErr)
+
+	idx := "fullsend/workflows/.fullsend/forgejo-workflows.yaml"
+	require.Contains(t, home.files, idx)
+	home.files[idx] = strings.ReplaceAll(home.files[idx], "  - .forgejo/workflows/fullsend-dispatch.yml\n", "")
+	require.NotContains(t, home.files[idx], "fullsend-dispatch.yml")
+
+	captureStdout(t, func() {
+		runErr = runReposUninstall(context.Background(), &reposUninstallConfig{manifest: p, concurrency: 4, yes: true, testForgejo: hooks}, nil)
+	})
+	require.NoError(t, runErr)
+	assert.Contains(t, home.files, "fullsend/workflows/.forgejo/workflows/fullsend-dispatch.yml", "the unlisted dispatch workflow is left in place")
+	m, err := repos.LoadManifest(context.Background(), p)
+	require.NoError(t, err)
+	require.Len(t, m.Forgejo.Instances[0].Repos, 1)
+	assert.Equal(t, "fullsend/workflows", m.Forgejo.Instances[0].Repos[0].Name, "the retained host stays declared")
+}
