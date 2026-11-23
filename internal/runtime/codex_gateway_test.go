@@ -155,7 +155,7 @@ func TestCodexGatewayAuthSeed_Concurrent(t *testing.T) {
 }
 
 // The gateway auth.command prints the seeded placeholder and nothing else;
-// every other content fails the model call with no fallback.
+// every other content exits non-zero, with no fallback.
 func TestCodexGatewayAuthScript_Executes(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, codexGatewayAuthScriptFile)

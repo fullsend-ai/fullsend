@@ -277,7 +277,7 @@ serve, and native children have not been run on that route.
 |---|---|
 | Credentials | A runner-exchanged OpenAI WIF token in CI, or your `OPENAI_API_KEY` on the runner locally — never in the sandbox. Codex reads a placeholder from a runner-owned token file and re-reads it when the credential is refreshed ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). A `gateway/` model uses the inference gateway's credential the same way ([Models through an inference gateway](#models-through-an-inference-gateway-experimental)) |
 | Unattended | Approvals off; codex's own sandbox off, because OpenShell is the boundary. A missing credential exits before the agent starts |
-| Artifacts | `output.jsonl` (the `codex exec --json` stream), `transcripts/<agent>-<rollout>.jsonl` for the root thread and `transcripts/<agent>-sub<seq>-<role>.jsonl` for each native child (`generic` for the `default` role, which codex records as no role when the spawn names no `agent_type`; `explore` keeps its name), `metrics.json` with `runtime: codex` (and `per_model_usage` for a delegating agent), plus `codex-debug.log` with `--debug`. Only uncompressed rollouts are extracted — codex compresses older sessions, so a `.jsonl.zst` is never the run's own transcript. The agent's final message is in the stream; `--output-last-message` also drops it in the runner-owned config directory inside the sandbox, which is a convenience when inspecting a kept sandbox rather than a downloaded artifact |
+| Artifacts | `output.jsonl` (the `codex exec --json` stream), `transcripts/<agent>-<rollout>.jsonl` for the root thread and `transcripts/<agent>-sub<seq>-<role>.jsonl` for each native child (`generic` for the `default` role, which codex records as no role when the spawn names no `agent_type`; `explore` keeps its name), `metrics.json` with `runtime: codex` (and `per_model_usage` for a delegating agent), plus `codex-debug.log` with `--debug`. Only uncompressed rollouts are extracted — codex compresses older sessions, so a `.jsonl.zst` is never the run's own transcript. The agent's final message is in the stream |
 | Sub-agents | Native Codex children for an agent whose tools include `Agent` (or that declares no `tools:`), with harness security on, on a parent model Codex resolves to collaboration V1 or V2 on the direct route, under a runner-owned policy: registered roles only, fresh context, depth one, four at once, and on V2 each child's result checked before the parent receives it; see [Sub-agents](#sub-agents) |
 | Extra knobs | `FULLSEND_CODEX_MODEL` (the runner-side model default for codex runs; see [Models](#models)), `FULLSEND_CODEX_SUBAGENT_MODEL` (the run-level child model; the GitHub fleet workflows do not pass it; see [Child models](#child-models)) |
 | Not supported | `plugins:`, fallback chains, non-OpenAI providers (other than through a Responses-capable inference gateway), Chat Completions or Messages on a gateway, delegation from a `gateway/` parent, or from a V2 parent with a V2 child model (see [Sub-agents](#sub-agents)) |
@@ -319,7 +319,7 @@ bare — and `metrics.json` records the same (`runtime`, `runtime_source`, `requ
 ...
 runtime: selected "codex" from --runtime flag
 ...
-→ Agent: gpt-5.6-luna (v0.166.0)
+→ Agent: gpt-5.6-luna (v0.170.0)
   ✓ Agent exited with code 0
 ```
 
@@ -335,7 +335,7 @@ What a local codex run needs, beyond the guide:
 - **fullsend from the release that carries `CODEX_VERSION`** — the first one cut after the codex
   runtime lands. The release download and the container image both work as-is.
 - **A sandbox image that includes codex** — `ghcr.io/fullsend-ai/fullsend-sandbox` built with
-  `CODEX_VERSION` (0.166.0 today). A stale image fails Bootstrap's preflight before the agent
+  `CODEX_VERSION` (0.170.0 today). A stale image fails Bootstrap's preflight before the agent
   starts, with ``codex preflight: `codex --version` exited 127``; `podman pull
   ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
 - **A harness that declares the provider and a policy** — `providers: [openai]` and
@@ -401,7 +401,10 @@ What a local codex run needs, beyond the guide:
   `PATH` that codex and its tools inherit does not change.
 - **The repository's own `.codex/` config is never loaded.** fullsend pins the cloned repo's
   project trust to untrusted, so `.codex/config.toml` and `.codex/hooks.json` (model, instructions,
-  MCP servers, hooks) never apply. A target repo cannot change how the agent runs.
+  MCP servers, hooks) never apply. A target repo cannot change how the agent runs. When the repo
+  has a `.codex/` directory at its root, codex warns on stderr at every run that untrusted
+  project-local configuration is disabled and suggests `codex exec --trust`; the warning is
+  expected, and fullsend never passes `--trust`.
 - **Two tools, not a menu.** Codex works through a shell and `apply_patch`, so a harness `tools:`
   list has no native allowlist to map onto. A `Bash(...)` allowlist is **recorded but not enforced**
   on codex, and the run says so:
@@ -428,7 +431,7 @@ What a local codex run needs, beyond the guide:
   scrubbed before they are written.
 - **Skills** work as they do on Claude Code: the harness's skills, plus your repository's own
   `.agents/skills` (codex's documented location for repository skills), both scanned for injected
-  content before the agent sees them. Codex 0.166.0 also picks up `.codex/skills` even though the
+  content before the agent sees them. Codex 0.170.0 also picks up `.codex/skills` even though the
   project is untrusted; that is not documented upstream and may change, so keep repository skills
   in `.agents/skills`. Codex's bundled skills (`skill-installer`, `imagegen` and friends) are
   switched off, so an agent sees only yours.
@@ -487,12 +490,12 @@ so there is no codex to run. Pull a current
 when its `codex` is found only through a directory the sandbox user owns or can
 write. Install it, and `node`, outside such directories.
 
-**Denied requests in the sandbox egress log at startup.** Expected noise, not failures. Codex
-probes on the way up and the policy refuses what the run does not need:
+**Denied requests in the sandbox egress log.** Expected noise, not failures. Codex probes on
+the way up and again during the run, and the policy refuses what the run does not need:
 
 | Denied | Why it appears |
 |---|---|
-| `GET /v1/models` on `api.openai.com` | Codex refreshes its model catalog on a custom provider. The `fullsend-openai` profile allows only `POST /v1/responses`, so the probe is denied at L7, up to three times. The first allowed `POST` follows about 100 ms later. |
+| `GET /v1/models` on `api.openai.com` | Codex refreshes its model catalog on a custom provider. The `fullsend-openai` profile allows only `POST /v1/responses`, so the probe is denied at L7: up to three times at startup, again every 4.5 minutes while the run lasts, and once before each sub-agent starts (0.170.0; codex logs that one as `failed to initialize model catalog`). The first allowed `POST` follows about 100 ms later. |
 | `GET /v1/models` on the inference gateway host | The same catalog refresh on a `gateway/` run. The gateway profile allows only the model `POST`s, so it is denied at L7 and logged by codex as `failed to refresh available models: 403`. |
 | `chatgpt.com:443` | A sign-in/account probe the agent run has no use for; denied at L4. |
 | `api.github.com:443` | Denied at L4 from codex itself — the agent reaches GitHub through the `gh` CLI and its own provider, not from the model client. |
@@ -572,7 +575,7 @@ bytes`.
 ```
 codex_spawn_without_admission: a spawn was not sent by the primary thread
 ```
-A spawn item without a sender, or sent by a thread other than the run's own. Codex 0.166.0 emits
+A spawn item without a sender, or sent by a thread other than the run's own. Codex 0.170.0 emits
 neither; look for a malformed or planted stream line.
 ```
 codex_spawn_without_admission: a spawn_agent item longer than 1048576 bytes could not be read
