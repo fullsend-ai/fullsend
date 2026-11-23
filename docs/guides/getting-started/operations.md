@@ -313,7 +313,7 @@ When using the split-responsibility workflow, each standalone command requires a
 | IAM Role | `inference provision` | `inference deprovision` | `inference status` | `mint deploy` | `mint delete` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
 |----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | `roles/iam.workloadIdentityPoolAdmin` | x | x | | x | x | | | x | x | |
-| `roles/resourcemanager.projectIamAdmin` | x | | | \* | | | | | | |
+| `roles/resourcemanager.projectIamAdmin` | x | †† | | \* | | | | | | |
 | `roles/iam.serviceAccountAdmin` | | | | x | x | | | | | |
 | `roles/secretmanager.admin` | | | | \* | x | \*\* | \*\*\* | | | |
 | `roles/cloudfunctions.developer` | | | | x | x | | | | | |
@@ -330,6 +330,8 @@ When using the split-responsibility workflow, each standalone command requires a
 \*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
 
 § `roles/secretmanager.viewer` is required for `mint add-role` when using `--use-existing-pem-secret` (checks that the PEM secret exists).
+
+†† `roles/resourcemanager.projectIamAdmin` is required for `inference deprovision` only in repo-scoped mode (`<owner/repo>`), where it revokes the repo's `roles/aiplatform.user` binding. Org-scoped deprovision does not change IAM bindings.
 
 † All commands that call GCP APIs also require `resourcemanager.projects.get` (typically available via `roles/browser` or any project-level viewer role). This is only notable for `inference status` where it is not covered by the other listed roles.
 
