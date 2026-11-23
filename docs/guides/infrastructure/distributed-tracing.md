@@ -258,7 +258,8 @@ its `is_error` unknown — provided the line shows the call id within its
 first 1 MiB, where Claude Code and pi normally write it (ahead of the content; an
 id serialized after the content is not recovered, and that call closes
 `unanswered`). Two cases are absent rather than truncated: any other stream
-line beyond 1 MiB is skipped whole by the parser, and results whose content is entirely non-text (for example
+line beyond 1 MiB is skipped whole by the parser (codex reports a call and its
+result from one line, so there the call goes with it and has no span), and results whose content is entirely non-text (for example
 images), or a pi result with no content list, produce no part unless the call
 failed. A result that mixed text with non-text blocks keeps
 its text and is marked `fullsend.truncated`; a failed call with empty
@@ -803,8 +804,8 @@ Non-finite float values (NaN, Infinity) are encoded as proto3 JSON strings
 The file is written synchronously per span. Spans are flushed to disk as
 they complete; the file is the forensic record for crashed runs. Every
 `execute_tool` span is one such line, so a tool-heavy iteration (a hundred
-or more id-bearing calls — Claude Code and pi) adds up to that many, capped
-at 1,024.
+or more id-bearing calls — Claude Code, pi and codex) adds up to that many,
+capped at 1,024.
 
 ## Cross-run trace correlation
 
