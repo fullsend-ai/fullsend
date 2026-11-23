@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -170,18 +171,9 @@ func TestFilterLockedDoesNotReadLockedLastCheck(t *testing.T) {
 			t.Errorf("read the lastCheck of the locked candidate %s", locked.Key)
 		}
 	}
-	if !contains(reads, free.Key+" "+p.lastCheckKey()) {
+	if !slices.Contains(reads, free.Key+" "+p.lastCheckKey()) {
 		t.Errorf("did not read the lastCheck of %s; reads: %v", free.Key, reads)
 	}
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 // Clamped lastCheck values are reported in one line per cycle, not one
