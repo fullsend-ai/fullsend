@@ -494,7 +494,30 @@ func (r ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pr
 	if gw != nil && result.exitCode == piCredentialSeedFailedExit {
 		return result.exitCode, fmt.Errorf("the inference gateway credential seed failed (the sandbox's gateway provider placeholder is missing or malformed, or the token file in %s could not be written); this is a runner setup failure, not an agent failure", sandbox.SandboxClaudeConfig)
 	}
+	if result.exitCode == 0 && claudeEmptyTerminalTurn(result.lastResult) {
+		printer.StepWarn(claudeEmptyTerminalTurnWarning)
+	}
 	return result.exitCode, nil
+}
+
+// claudeEmptyTerminalTurnWarning is the warning for a session that
+// claudeEmptyTerminalTurn matches. It is fixed text with nothing taken from
+// the stream, so it prints the same at every progress level (ADR 0163).
+const claudeEmptyTerminalTurnWarning = "claude exited 0 but the session ended right after a tool result, " +
+	"with an empty result and no assistant turn after it (subtype: success, stop_reason: end_turn, " +
+	"terminal_reason: completed); the agent may have stopped before finishing its task"
+
+// claudeEmptyTerminalTurn reports whether r is a success result that ended
+// the session with no assistant turn after the last tool result: empty
+// result text, subtype "success", stop_reason "end_turn", terminal_reason
+// "completed", and a tool result as the last conversation record. The model
+// never answered that tool result, so whatever it meant to do next never
+// ran, yet the result looks like a clean success (#9744). Why Claude Code
+// ends a session this way is not known; this only flags it.
+func claudeEmptyTerminalTurn(r *ResultEvent) bool {
+	return r != nil && !r.IsError && r.EndedAfterToolResult &&
+		r.Subtype == "success" && r.StopReason == "end_turn" && r.TerminalReason == "completed" &&
+		strings.TrimSpace(r.ErrorMessage) == ""
 }
 
 // runAttempt runs one Claude Code invocation with params.Model and
