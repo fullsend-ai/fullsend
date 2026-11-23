@@ -655,6 +655,48 @@ github:
 	assert.Equal(t, 1, apiRows)
 }
 
+func TestExpandGlobsFor_GlobMatchesCaseInsensitivelyLikeCarveOut(t *testing.T) {
+	// The forge returns "Infra-Tools" while the first glob is lowercase.
+	// Selection must pick the same glob entry that carveOutGlobEntry copies,
+	// otherwise a carve-out silently changes the repository's settings.
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/infra-*
+      fullsend_ref: infra
+    - name: acme/*
+      fullsend_ref: catch-all
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "Infra-Tools", FullName: "acme/Infra-Tools"},
+		{Name: "infra-lower", FullName: "acme/infra-lower"},
+		{Name: "web", FullName: "acme/web"},
+	}
+
+	resolved, err := m.ExpandGlobsFor(context.Background(), newTestClientFactory(fc), nil)
+	require.NoError(t, err)
+	require.Len(t, resolved, 3)
+
+	refs := make(map[string]string)
+	for _, rr := range resolved {
+		refs[rr.Repo] = rr.Entry.FullsendRef
+	}
+	assert.Equal(t, "infra", refs["Infra-Tools"])
+	assert.Equal(t, "infra", refs["infra-lower"])
+	assert.Equal(t, "catch-all", refs["web"])
+
+	carved, err := carveOutGlobEntry([]*PlatformConfig{m.GitHub}, "acme/Infra-Tools")
+	require.NoError(t, err)
+	require.NotNil(t, carved)
+	assert.Equal(t, refs["Infra-Tools"], carved.FullsendRef)
+}
+
 func TestExpandGlobsFor_EmptyFilterExpandsEveryPlatform(t *testing.T) {
 	input := `
 version: 1
