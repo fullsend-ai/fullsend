@@ -720,13 +720,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// composes through the same function, so the image it warms is the one
 	// this run creates its sandbox from.
 	composed, err := composeRunHarness(ctx, runHarnessInput{
-		agentName:       agentName,
-		fullsendDir:     fullsendDir,
-		absFullsendDir:  absFullsendDir,
-		orgConfigPath:   orgConfigPath,
-		orgCfg:          orgCfg,
-		composeGitToken: composeGitToken,
-		composeOpts:     composeOpts,
+		agentName:      agentName,
+		fullsendDir:    fullsendDir,
+		absFullsendDir: absFullsendDir,
+		orgConfigPath:  orgConfigPath,
+		orgCfg:         orgCfg,
+		composeOpts:    composeOpts,
 	}, printer)
 	if err != nil {
 		return err

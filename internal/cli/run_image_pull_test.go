@@ -98,21 +98,6 @@ func setupImagePull(t *testing.T) (*fakePodman, *bytes.Buffer, *ui.Printer) {
 	return fake, &buf, ui.New(&buf)
 }
 
-func TestIsGHCRImage(t *testing.T) {
-	tests := map[string]bool{
-		privateImage:                         true,
-		"GHCR.io/org/img:tag":                true,
-		"docker.io/library/alpine:3":         false,
-		"quay.io/org/ghcr.io:tag":            false,
-		"ghcr.io.example.com/org/img:latest": false,
-		"ghcr.io":                            false,
-		"":                                   false,
-	}
-	for image, want := range tests {
-		assert.Equal(t, want, isGHCRImage(image), image)
-	}
-}
-
 func TestPrePullSandboxImage_PullsWithRunScopedAuthFile(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
 

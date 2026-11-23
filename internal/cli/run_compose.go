@@ -55,13 +55,12 @@ func newRunComposeOpts(absFullsendDir string, policy fetch.FetchPolicy, forgePla
 // runHarnessInput is what composeRunHarness needs to resolve and compose an
 // agent's harness.
 type runHarnessInput struct {
-	agentName       string
-	fullsendDir     string // as the user gave it, for command hints
-	absFullsendDir  string
-	orgConfigPath   string
-	orgCfg          config.ConfigWriter // nil when no config exists
-	composeGitToken string
-	composeOpts     harness.ComposeOpts
+	agentName      string
+	fullsendDir    string // as the user gave it, for command hints
+	absFullsendDir string
+	orgConfigPath  string
+	orgCfg         config.ConfigWriter // nil when no config exists
+	composeOpts    harness.ComposeOpts
 }
 
 // composedRunHarness is the harness composeRunHarness produced, with the
@@ -94,7 +93,7 @@ func composeRunHarness(ctx context.Context, in runHarnessInput, printer *ui.Prin
 	// GITHUB_SERVER_URL instance; then the fallback resolves and reads the
 	// agents repo there (agentsRepoHostURLPrefix). GITHUB_API_URL alone
 	// never receives the compose token or picks the fallback commit.
-	fallbackForgeClient := newConfiguredHostGitHubClient(in.composeGitToken)
+	fallbackForgeClient := newConfiguredHostGitHubClient(composeOpts.GitToken)
 	// The configured host serves raw content from itself, so allow it in the
 	// fetch policy too; the default policy names only github.com hosts.
 	composeOpts.FetchPolicy = withAgentsRepoHostAllowed(composeOpts.FetchPolicy, fallbackForgeClient)

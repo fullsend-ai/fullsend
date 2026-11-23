@@ -132,7 +132,7 @@ func TestPrepare_CachedImageSkipsPullButRunsPreflight(t *testing.T) {
 	assert.Equal(t, []time.Duration{42 * time.Second}, sb.timeouts, "the harness sandbox timeout applies")
 	assert.Equal(t, sb.created, sb.deleted, "the preflight sandbox is deleted")
 	require.NotNil(t, res.Preflight)
-	assert.Equal(t, preparePreflight{Sandbox: sb.created[0], Status: "passed"}, *res.Preflight)
+	assert.Equal(t, preparePreflight{Sandbox: sb.created[0], Status: preparePreflightPassed}, *res.Preflight)
 	assert.Nil(t, res.Error)
 }
 
@@ -252,7 +252,7 @@ func TestPrepare_RemoteGatewayPreflightPullFailure(t *testing.T) {
 	assert.Equal(t, prepareErrAuth, res.Error.Kind)
 	assert.Contains(t, res.Error.Hint, "CI_REGISTRY_PASSWORD")
 	require.NotNil(t, res.Preflight)
-	assert.Equal(t, "failed", res.Preflight.Status)
+	assert.Equal(t, preparePreflightFailed, res.Preflight.Status)
 	assert.Empty(t, sb.deleted, "CreateWithRetry deletes a failed sandbox itself")
 }
 

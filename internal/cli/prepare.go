@@ -37,6 +37,12 @@ const (
 	prepareImageFailed  = "failed"
 )
 
+// Preflight statuses reported by fullsend prepare.
+const (
+	preparePreflightPassed = "passed"
+	preparePreflightFailed = "failed"
+)
+
 // Image sources reported by fullsend prepare.
 const (
 	prepareSourceHarness  = "harness"                // the harness image: field
@@ -329,13 +335,12 @@ func resolvePrepareImage(ctx context.Context, opts prepareOptions, printer *ui.P
 	policy := fetch.DefaultPolicy
 	policy.Offline = opts.rFlags.offline
 	composed, err := composeRunHarness(ctx, runHarnessInput{
-		agentName:       opts.agentName,
-		fullsendDir:     opts.fullsendDir,
-		absFullsendDir:  absFullsendDir,
-		orgConfigPath:   orgConfigPath,
-		orgCfg:          orgCfg,
-		composeGitToken: gitToken,
-		composeOpts:     newRunComposeOpts(absFullsendDir, policy, forgePlatform, orgAllowlist, opts.rFlags.treeFetcher, gitToken, eventMap, orgCfg),
+		agentName:      opts.agentName,
+		fullsendDir:    opts.fullsendDir,
+		absFullsendDir: absFullsendDir,
+		orgConfigPath:  orgConfigPath,
+		orgCfg:         orgCfg,
+		composeOpts:    newRunComposeOpts(absFullsendDir, policy, forgePlatform, orgAllowlist, opts.rFlags.treeFetcher, gitToken, eventMap, orgCfg),
 	}, printer)
 	if err != nil {
 		return fail(err)
@@ -421,12 +426,12 @@ func runPrepareSandboxPreflight(pf *preparePreflight, image string, readyTimeout
 	printer.StepStart("Creating preflight sandbox: " + pf.Sandbox)
 	start := time.Now()
 	if err := prepareCreateSandboxFn(pf.Sandbox, nil, image, "", 1, readyTimeout, false); err != nil {
-		pf.Status = "failed"
+		pf.Status = preparePreflightFailed
 		printer.StepFail("Preflight sandbox could not be created")
 		kind, hint := classifyPrepareFailure(err.Error(), prepareErrPreflight)
 		return &prepareError{kind: kind, hint: hint, err: fmt.Errorf("creating preflight sandbox: %w", err)}
 	}
-	pf.Status = "passed"
+	pf.Status = preparePreflightPassed
 	printer.StepDone(fmt.Sprintf("Preflight sandbox ready (%.1fs)", time.Since(start).Seconds()))
 	if err := deleteSandboxFn(pf.Sandbox); err != nil {
 		printer.StepWarn("Could not delete preflight sandbox " + pf.Sandbox + ": " + err.Error())

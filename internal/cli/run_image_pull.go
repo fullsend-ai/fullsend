@@ -35,11 +35,6 @@ var runPodmanFn = func(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "podman", args...).CombinedOutput()
 }
 
-// isGHCRImage reports whether image is a reference on ghcr.io.
-func isGHCRImage(image string) bool {
-	return strings.EqualFold(imageRegistryHost(image), ghcrRegistry)
-}
-
 // imageRegistryHost returns the part of image before the first slash, which
 // is the registry host (with any port) for a fully qualified reference, or
 // "" when image has no slash.
