@@ -59,8 +59,8 @@ contribution.
 ### Review etiquette
 
 - **The approving maintainer merges the pull request** after requested reviewers
-  have responded and the PR has all required approvals. Some changes, such as
-  ADRs, may require more than one maintainer approval.
+  have responded and the PR has all required approvals. ADRs require two
+  maintainer approvals; see [Working with ADRs](#working-with-adrs).
   - If another maintainer authored or drove the change, that maintainer merges
     it after a different maintainer approves. For an agent-authored PR, treat
     the maintainer who triggered or drove the work as its originator.
@@ -71,9 +71,10 @@ contribution.
 - **If you need to block a PR on your feedback, use "Request changes."** A
   comment alone is advisory; the author may resolve it at their discretion.
   The "Request changes" review status signals that the PR should not merge
-  until the reviewer withdraws that status after their concern is addressed.
-  Keep threads under a standing "Request changes" review open until the
-  reviewer withdraws it. This is the only mechanism for enforcing your review.
+  until the reviewer clears it by submitting an approving review. If the
+  reviewer is unavailable, only a maintainer may dismiss the review, with a
+  reason in the dismissal comment. Keep the reviewer's threads open; do not
+  resolve them to bypass the block.
 - **Be constructive.** Disagreement is expected and valuable. Critique ideas, not people. When you push back on a proposal, suggest an alternative or explain what concern drives your objection.
 
 ### Reworking a PR
@@ -91,6 +92,8 @@ Small adjustments in response to review feedback are normal iteration — this g
 - PRs require approval from a [CODEOWNERS](CODEOWNERS) member before merging.
 
 ## Working with ADRs
+
+ADRs require approval from two maintainers before merging.
 
 ADRs (Architecture Decision Records) are **point-in-time records**. Once accepted, do not substantially rewrite their Context, Decision, or Consequences sections — if a decision needs to change, write a new ADR that supersedes the old one. Minor annotations are welcome: cross-references to related ADRs, short notes linking to newer decisions, and typo fixes. See the [ADR template](docs/ADRs/0000-adr-template.md) and [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md) for full details.
 
