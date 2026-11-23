@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -426,22 +428,41 @@ func TestRunAgent_SyncTargetRepo_SkippedOnPreflightFailure(t *testing.T) {
 func TestRunCommand_FlagOverridesEnvVar(t *testing.T) {
 	t.Setenv("FULLSEND_SYNC_TARGET_REPO", "true")
 
-	// Case 1: Flag omitted -> environment fallback enables syncTargetRepo
-	cmd := newRunCmd()
-	cmd.SetArgs([]string{"dummy", "--fullsend-dir", t.TempDir(), "--target-repo", t.TempDir()})
-	// Parse flags without executing RunE
-	err := cmd.ParseFlags([]string{"--fullsend-dir", t.TempDir(), "--target-repo", t.TempDir()})
-	require.NoError(t, err)
-	assert.False(t, cmd.Flags().Changed("sync-target-repo"))
+	var capturedFlags runOverrideFlags
+	origRunAgentFunc := runAgentFunc
+	runAgentFunc = func(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, eventFile string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool, oFlags runOverrideFlags) error {
+		capturedFlags = oFlags
+		return nil
+	}
+	t.Cleanup(func() {
+		runAgentFunc = origRunAgentFunc
+	})
 
-	// Case 2: Flag explicitly set to false -> flagChanged is true, overrides env var
+	// Case 1: Flag omitted with FULLSEND_SYNC_TARGET_REPO=true
+	cmd := newRunCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"dummy", "--fullsend-dir", t.TempDir(), "--target-repo", t.TempDir()})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.False(t, capturedFlags.syncTargetRepoSet)
+	overrides1, err := resolveRunOverrides(capturedFlags, os.Getenv, "claude")
+	require.NoError(t, err)
+	assert.True(t, overrides1.syncTargetRepo)
+	assert.Equal(t, "FULLSEND_SYNC_TARGET_REPO", overrides1.syncTargetRepoSource)
+
+	// Case 2: Flag explicitly set --sync-target-repo=false with FULLSEND_SYNC_TARGET_REPO=true
 	cmd2 := newRunCmd()
-	err = cmd2.ParseFlags([]string{"--sync-target-repo=false", "--fullsend-dir", t.TempDir(), "--target-repo", t.TempDir()})
+	cmd2.SetOut(io.Discard)
+	cmd2.SetErr(io.Discard)
+	cmd2.SetArgs([]string{"dummy", "--sync-target-repo=false", "--fullsend-dir", t.TempDir(), "--target-repo", t.TempDir()})
+	err = cmd2.Execute()
 	require.NoError(t, err)
-	assert.True(t, cmd2.Flags().Changed("sync-target-repo"))
-	val, err := cmd2.Flags().GetBool("sync-target-repo")
+	assert.True(t, capturedFlags.syncTargetRepoSet)
+	overrides2, err := resolveRunOverrides(capturedFlags, os.Getenv, "claude")
 	require.NoError(t, err)
-	assert.False(t, val)
+	assert.False(t, overrides2.syncTargetRepo)
+	assert.Equal(t, sourceFlagSyncTargetRepo, overrides2.syncTargetRepoSource)
 }
 
 func TestSyncOutputExcludeRel(t *testing.T) {
@@ -1586,6 +1607,48 @@ func TestSyncTargetRepoDirWithManifest_SkipsNonRegularFilesWithoutBlocking(t *te
 	data, readErr := os.ReadFile(filepath.Join(dstDir, "regular.txt"))
 	require.NoError(t, readErr)
 	assert.Equal(t, "ok", string(data))
+}
+
+func TestSyncTargetRepoDirWithManifest_PreservesHostSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain sockets are not supported on Windows")
+	}
+
+	srcDir := t.TempDir()
+	// Use /tmp to keep Unix domain socket path short enough to fit
+	// within OS sockaddr_un.sun_path limits (104 bytes on Darwin).
+	tempBase := "/tmp"
+	if _, err := os.Stat(tempBase); err != nil {
+		tempBase = os.TempDir()
+	}
+	dstDir, err := os.MkdirTemp(tempBase, "fs-sock-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dstDir) })
+
+	sockPath := filepath.Join(dstDir, "test.sock")
+	l, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+	defer l.Close()
+
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+	require.Equal(t, "other", manifest["test.sock"])
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	changes := &syncChanges{}
+
+	err = syncTargetRepoDirInternal(srcDir, dstDir, []string{".git"}, manifest, nil, printer, nil, changes)
+	require.NoError(t, err)
+
+	fi, statErr := os.Lstat(sockPath)
+	require.NoError(t, statErr)
+	assert.True(t, fi.Mode()&os.ModeSocket != 0)
+
+	assert.NotContains(t, changes.Deleted, "test.sock")
+	assert.Empty(t, changes.Deleted)
+
+	assert.Contains(t, buf.String(), `Preserving host entry "test.sock" (non-regular file not synchronized from sandbox)`)
 }
 
 func TestRecordTargetRepoManifest_SkipsExcludesAndUnreadableFiles(t *testing.T) {

@@ -456,6 +456,8 @@ func applyAgentSettings(h *harness.Harness, o *runOverrides, entry config.AgentE
 	}
 }
 
+var runAgentFunc = runAgent
+
 func newRunCmd() *cobra.Command {
 	var fullsendDir string
 	var outputBase string
@@ -480,7 +482,7 @@ func newRunCmd() *cobra.Command {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
 			oFlags.syncTargetRepoSet = cmd.Flags().Changed("sync-target-repo")
-			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
+			return runAgentFunc(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
 
@@ -8301,6 +8303,9 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 			if d.Type()&os.ModeSymlink != 0 && strings.HasPrefix(recorded, "symlink-stripped:") {
 				return nil
 			}
+			if recorded == "other" {
+				return nil
+			}
 			if err := checkPathNotUnderResolvedGit(absDstResolved, path, rel); err != nil {
 				return err
 			}
@@ -8709,6 +8714,15 @@ func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunM
 					return nil
 				}
 				if d.Type()&os.ModeSymlink != 0 && strings.HasPrefix(recorded, "symlink-stripped:") {
+					return nil
+				}
+				if recorded == "other" {
+					if printer != nil {
+						printer.StepWarn(fmt.Sprintf("Preserving host entry %q (non-regular file not synchronized from sandbox)", rel))
+					}
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
 					return nil
 				}
 				if fromSD, fromUnsafe := isPreservedStrippedSymlink(rel); fromSD || fromUnsafe {
