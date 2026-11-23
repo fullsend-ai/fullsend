@@ -15,6 +15,10 @@ These flags are inherited by all `repos` subcommands:
 | `--gitlab-token` | | GitLab personal or project access token (overrides `GITLAB_TOKEN` env var) |
 | `--verbose` | `false` | Show the underlying API error text (for example the GitLab HTTP status and server message) instead of `(server error text withheld)`, and log each GitLab API request to stderr as `gitlab api: <METHOD> <path> -> <status>` |
 
+### GitLab token permissions
+
+For `repos install` on GitLab, use a project-scoped fine-grained personal access token from a user with the Maintainer (or Owner) role on the project. Grant it the permissions in [Configuring GitLab § Installer token permissions](../guides/getting-started/configuring-gitlab.md#installer-token-permissions). That set was validated end to end for an MR-based installation; it is not a guaranteed minimum for every GitLab version, tier, or project state. Without the optional Resource Group permissions, install warns and skips resource-group lock healing. Without Push Rule: Read, it skips the push-rule branch-name preflight. Add Project: Update when you ask fullsend to change `ci_pipeline_variables_minimum_override_role`. `repos uninstall` needs more: at least Resource Access Token: Read to list and revoke role project access tokens. Where fine-grained tokens are not available, or a fine-grained token lacks a permission, use a personal or group access token with the legacy `api` scope.
+
 ### Verbose output
 
 By default, API failures from credential-bearing calls are reported without
