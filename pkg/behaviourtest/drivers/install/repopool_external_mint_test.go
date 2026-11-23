@@ -89,7 +89,9 @@ func TestNewForgejoDev_DoesNotRequireGitHubToken(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("PATH", t.TempDir())
 
-	d, err := NewForgejoDev(PoolConfig{})
+	// The fake starter stands in for the container stack; the factory
+	// itself must not check for a GitHub token.
+	d, err := newForgejoDev(PoolConfig{}, startedWith(&fakeForgejoStack{}, nil))
 	require.NoError(t, err)
 	require.NotNil(t, d)
 }

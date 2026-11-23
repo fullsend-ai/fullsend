@@ -65,6 +65,11 @@ outputs:
       PR head sha a /ok-to-test comment authorized or refused (empty for an
       untrusted commenter and in other modes)
     value: ${{ steps.check.outputs.head_sha }}
+  live:
+    description: >-
+      true when an authorized comment was `/ok-to-test <sha> live`, asking for
+      the live behaviour and playback suites as well
+    value: ${{ steps.check.outputs.live }}
 
 runs:
   using: composite
@@ -119,7 +124,7 @@ runs:
         "
             ;;
           issue_comment:missing_sha)
-            body+="\`/ok-to-test\` must name the commit you reviewed, as its full 40-character sha: \`/ok-to-test <sha>\`. The PR head is now \`${HEAD_SHA}\`; if that is not the commit you reviewed, review it first. A later push needs a new comment.
+            body+="\`/ok-to-test\` must name the commit you reviewed, as its full 40-character sha: \`/ok-to-test <sha>\`, or \`/ok-to-test <sha> live\` to run the live suites too. The PR head is now \`${HEAD_SHA}\`; if that is not the commit you reviewed, review it first. A later push needs a new comment.
         "
             ;;
           issue_comment:untrusted_commenter)

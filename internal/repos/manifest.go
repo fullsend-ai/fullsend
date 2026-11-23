@@ -114,6 +114,9 @@ type Manifest struct {
 	Defaults DefaultsConfig  `yaml:"defaults,omitempty"`
 	GitHub   *PlatformConfig `yaml:"github,omitempty"`
 	GitLab   *PlatformConfig `yaml:"gitlab,omitempty"`
+	// Forgejo declares named Forgejo instances and the repositories each
+	// one manages (see ForgejoConfig).
+	Forgejo *ForgejoConfig `yaml:"forgejo,omitempty"`
 
 	// sourceRemote and sourceDir are set only when the manifest is loaded
 	// through LoadManifest. They keep config preset paths tied to the
@@ -235,6 +238,11 @@ type RepoEntry struct {
 	// forge section's config and defaults.config. A glob entry refuses
 	// trace_context, which only a concrete entry may declare.
 	Config config.ManagedConfig `yaml:"config,omitempty"`
+	// AllowInsecurePipelineVariables is the ADR 0175 opt-in: fullsend
+	// accepts a ci_pipeline_variables_minimum_override_role weaker than
+	// no_one_allowed for this repository and warns on every run. GitLab
+	// only, and only on a concrete entry, never a glob.
+	AllowInsecurePipelineVariables bool `yaml:"allow_insecure_pipeline_variables,omitempty"`
 }
 
 // DefaultsConfig holds default field values applied to every repo
@@ -910,6 +918,10 @@ func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) er
 		}
 	}
 
+	if err := m.Forgejo.validate(); err != nil {
+		return err
+	}
+
 	if err := validateManifestManaged(m); err != nil {
 		return err
 	}
@@ -966,6 +978,14 @@ func (m *Manifest) validatePlatformRepos(forgeName string, platform *PlatformCon
 			}
 			if entry.AppSet != "" {
 				return fmt.Errorf("%s.repos[%d]: app_set is only supported for GitHub repos", forgeName, i)
+			}
+		}
+		if entry.AllowInsecurePipelineVariables {
+			if forgeName != ForgeGitLab {
+				return fmt.Errorf("%s.repos[%d]: allow_insecure_pipeline_variables is only supported for GitLab repos", forgeName, i)
+			}
+			if strings.ContainsAny(parts[1], "*?[") {
+				return fmt.Errorf("%s.repos[%d]: allow_insecure_pipeline_variables needs a concrete owner/repo entry, not the glob %q", forgeName, i, entry.Name)
 			}
 		}
 

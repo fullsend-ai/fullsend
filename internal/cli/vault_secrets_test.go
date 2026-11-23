@@ -19,6 +19,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // withVaultEnv replaces the Vault environment lookup with env for the test.
@@ -898,4 +899,31 @@ func TestRunAgent_VaultBundleReachesDeclaredScriptsOnly(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestVaultTraceContext(t *testing.T) {
+	const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	withVaultEnv(t, map[string]string{"TRACEPARENT": tp, "TRACESTATE": "k=v"})
+	sc := trace.SpanContextFromContext(vaultTraceContext(context.Background()))
+	if sc.TraceID().String() != "4bf92f3577b34da6a3ce929d0e0e4736" || sc.SpanID().String() != "00f067aa0ba902b7" {
+		t.Fatalf("span context = %v, want the inbound TRACEPARENT", sc)
+	}
+	if sc.TraceState().Get("k") != "v" {
+		t.Fatalf("trace state = %q, want k=v", sc.TraceState().String())
+	}
+
+	// A context that already carries a span context keeps it.
+	own := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1}, SpanID: trace.SpanID{2}, TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), own)
+	if got := trace.SpanContextFromContext(vaultTraceContext(ctx)); !got.Equal(own) {
+		t.Fatalf("span context = %v, want the caller's %v", got, own)
+	}
+
+	// A missing or malformed TRACEPARENT adds nothing.
+	withVaultEnv(t, map[string]string{"TRACEPARENT": "garbage"})
+	if sc := trace.SpanContextFromContext(vaultTraceContext(context.Background())); sc.IsValid() {
+		t.Fatalf("span context = %v, want none for a malformed TRACEPARENT", sc)
+	}
 }

@@ -17,8 +17,11 @@ import (
 // example, "workflow <file> (<event>) was not dispatched" (GitHub
 // Actions) or "pipeline (<event>) was not dispatched" (GitLab CI). The
 // timeout stays scenario-classified: whether the run arrives late or
-// never is not yet established (#9469). The details the dispatch
-// diagnostics use are carried only by *NotDispatchedError.
+// never is not yet established (#9469). The exception is a workflow that
+// the dispatch diagnostics find never ran in a repo installed fresh for
+// the scenario, which steps.CollectFailureLogs marks infrastructure
+// (#9779). The details the dispatch diagnostics use are carried only by
+// *NotDispatchedError.
 var ErrWorkflowNotDispatched = errors.New("was not dispatched")
 
 // NotDispatchedError is the GitHub Actions driver's WaitForWorkflow
