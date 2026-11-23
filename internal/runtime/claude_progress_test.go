@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2066,6 +2068,45 @@ func TestNewClaudeResultEventReasoningTokens(t *testing.T) {
 	}
 }
 
+// TestProgressParserMultiResultSumsTurns: num_turns covers one segment, so a
+// session that background tasks resumed five times records the sum, while the
+// cost and modelUsage, running totals, keep the last value. The turns, cost
+// and output tokens are those of a live review run (Claude Code 2.1.306).
+func TestProgressParserMultiResultSumsTurns(t *testing.T) {
+	turns := []int{18, 2, 1, 1, 1, 4}
+	var lines []string
+	for _, n := range turns {
+		lines = append(lines, fmt.Sprintf(
+			`{"type":"result","subtype":"success","num_turns":%d,"total_cost_usd":0.9311,"modelUsage":{"claude-sonnet-5-5":{"outputTokens":22504,"costUSD":0.9311}}}`, n))
+	}
+	stream := strings.Join(lines, "\n")
+
+	var soFar []int
+	if err := parseClaudeStream(strings.NewReader(stream), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			soFar = append(soFar, e.NumTurns)
+		}
+	}); err != nil {
+		t.Fatalf("parseClaudeStream returned error: %v", err)
+	}
+	if want := []int{18, 20, 21, 22, 23, 27}; !slices.Equal(soFar, want) {
+		t.Errorf("ResultEvent turns = %v, want %v (turns so far)", soFar, want)
+	}
+
+	var buf bytes.Buffer
+	metrics := &RunMetrics{}
+	if err := progressParser(strings.NewReader(stream), ui.New(&buf), metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+	if metrics.NumTurns != 27 {
+		t.Errorf("num_turns = %d, want 27", metrics.NumTurns)
+	}
+	if metrics.TotalCostUSD != 0.9311 || metrics.OutputTokens != 22504 {
+		t.Errorf("cost=%v out=%d, want 0.9311 and 22504 (running totals, not summed)",
+			metrics.TotalCostUSD, metrics.OutputTokens)
+	}
+}
+
 // TestProgressParserMultiResultModelUsageNotDoubleCounted: modelUsage is a
 // session running total, so a steered or retried session with two results
 // records the last one, not their sum.
@@ -2086,6 +2127,9 @@ func TestProgressParserMultiResultModelUsageNotDoubleCounted(t *testing.T) {
 	}
 	if metrics.TotalCostUSD != 0.3 {
 		t.Errorf("expected cost 0.3, got %v", metrics.TotalCostUSD)
+	}
+	if metrics.NumTurns != 6 {
+		t.Errorf("expected num_turns 6 (2+4, per segment), got %d", metrics.NumTurns)
 	}
 	want := map[string]ModelUsage{
 		"claude-opus-4-6": {InputTokens: 150, OutputTokens: 250, CacheReadInputTokens: 350, CacheCreationInputTokens: 450, CostUSD: 0.3},
