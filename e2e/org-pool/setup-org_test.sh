@@ -141,6 +141,7 @@ case "${method} ${path}" in
       esac
     fi ;;
   "GET /repos/${STUB_ORG}/test-repo")
+    [[ -f "${S}/test_repo_error" ]] && servererr
     [[ -f "${S}/test-repo" ]] || notfound
     out '{"name":"test-repo"}' ;;
   "POST /orgs/${STUB_ORG}/repos"|"GET /orgs/${STUB_ORG}/repos")
@@ -687,7 +688,23 @@ else
   fail "setup dry-run: rc=${RC}, changes: $(mutations): ${OUT}"
 fi
 
+# 17a-bis. --dry-run: a non-404 test-repo lookup error aborts instead of
+# planning a create (fail closed).
+provisioned_state
+touch "${STATE}/test_repo_error"
+run_setup --dry-run "${ORG}"
+if [[ "${RC}" -ne 0 ]] \
+    && grep -q "could not verify test-repo exists" <<< "${OUT}" \
+    && ! grep -q "DRY-RUN: would create test-repo" <<< "${OUT}" \
+    && ! grep -q "is ready for e2e testing" <<< "${OUT}" \
+    && [[ -z "$(mutations)" ]] ; then
+  pass "setup dry-run: non-404 test-repo lookup error aborts"
+else
+  fail "setup dry-run error: rc=${RC}, changes: $(mutations): ${OUT}"
+fi
+
 # 17b. normal run: creates test-repo; a re-run mutates nothing.
+provisioned_state
 run_setup "${ORG}"
 if [[ "${RC}" -eq 0 && -e "${STATE}/test-repo" ]] \
     && grep -q -- "-f name=test-repo" "${STATE}/gh.log" ; then

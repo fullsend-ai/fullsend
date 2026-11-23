@@ -33,8 +33,9 @@ org-admin `gh` session. The script walks through them, pausing for each:
    script accepts the invitations itself. Otherwise, run
    `setup-org.sh` with the PATs exported within 7 days — GitHub expires
    pending org invitations after 7 days — or trigger the *E2E Org Pool*
-   workflow manually (`workflow_dispatch`), which accepts them from the
-   environment secrets. Note that the workflow's push trigger is
+   workflow manually (`workflow_dispatch`), which accepts them using the
+   repository secrets `TEST_ACTOR_WRITE_PAT` and `TEST_ACTOR_TRIAGE_PAT`.
+   Note that the workflow's push trigger is
    path-filtered to `e2e/org-pool/**`, so it does not run on every push
    to `main`.
 4. **Install the GitHub Apps.** The script opens the install page for each

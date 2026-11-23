@@ -72,10 +72,13 @@ echo "    OK: ${BOT_USER} is an owner"
 echo
 
 # --- 3. check test-repo exists ---
+# Fail closed: only the documented "repo missing" 404 counts as absent.
+# Any other lookup error (rate limit, auth) aborts, so a failed check is
+# never reported as "ready for e2e testing".
 echo "==> Checking if ${ORG}/test-repo exists..."
-if gh api "/repos/${ORG}/test-repo" --silent 2>/dev/null; then
+if test_repo_body=$(gh api "/repos/${ORG}/test-repo" --silent 2>&1); then
   echo "    OK: test-repo exists"
-else
+elif echo "${test_repo_body}" | grep -q "HTTP 404"; then
   if [[ "${DRY_RUN}" == "1" ]]; then
     echo "    DRY-RUN: would create test-repo"
   else
@@ -87,6 +90,9 @@ else
       --silent
     echo "    OK: created test-repo"
   fi
+else
+  echo "    ERROR: could not verify test-repo exists: ${test_repo_body}" >&2
+  exit 1
 fi
 echo
 

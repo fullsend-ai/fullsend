@@ -14,11 +14,13 @@ on:
     paths:
       - 'e2e/org-pool/**'
       - '.github/workflows/e2e-org-pool.yml'
+      - 'pkg/behaviourtest/drivers/install/slotpool.go'
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
       - 'e2e/org-pool/**'
       - '.github/workflows/e2e-org-pool.yml'
+      - 'pkg/behaviourtest/drivers/install/slotpool.go'
   merge_group:
   workflow_dispatch:
     inputs:
@@ -71,7 +73,7 @@ jobs:
             echo "relevant=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if echo "$FILES" | grep -qE '^e2e/org-pool/|^\.github/workflows/e2e-org-pool\.yml$'; then
+          if echo "$FILES" | grep -qE '^e2e/org-pool/|^\.github/workflows/e2e-org-pool\.yml$|^pkg/behaviourtest/drivers/install/slotpool\.go$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No relevant files changed — skipping"
