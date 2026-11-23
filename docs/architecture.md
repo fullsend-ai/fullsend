@@ -422,6 +422,10 @@ flowchart TB
   ([ADR 0158](ADRs/0158-overlays-may-grant-runtime-fetch-within-the-config-allowlist.md)).
   Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
+- Pi agents select native extension tools by exact registered name from vetted
+  harness extensions. Missing or ambiguous selections fail before inference;
+  empty selections exclude all extension tools. Child runs retain the parent's
+  permission intersection. See [Pi tool selection](runtimes/pi.md#extension-tools-and-tools).
 - The runner-owned native Codex child policy covers collaboration V1 and V2.
   Bootstrap requires the `Agent` tool, harness security and a direct-route
   parent selecting V1 or V2 in the bundled model catalog (absent means V1);

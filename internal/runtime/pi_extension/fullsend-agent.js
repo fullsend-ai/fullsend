@@ -531,7 +531,9 @@ export function childArgs(agent, { seq, modelSpec, tools, activeTools = tools, p
   // The CLI allowlist controls registration as well as activation. Keep the
   // callable union registered, then restore only the inherited active subset
   // before the first model request. This child-only mode registers no Agent.
-  if (activeTools.length !== tools.length || activeTools.some((t, i) => t !== tools[i])) {
+  if (agent.toolSelector) {
+    args.push("-e", agent.toolSelector, "--fullsend-selected-tools", JSON.stringify({ tools, activeTools }));
+  } else if (activeTools.length !== tools.length || activeTools.some((t, i) => t !== tools[i])) {
     args.push("-e", fileURLToPath(import.meta.url), "--fullsend-child-active-tools", JSON.stringify(activeTools));
   }
   // pi 1.5.0 keeps MCP registrations when a nonempty --tools list has no

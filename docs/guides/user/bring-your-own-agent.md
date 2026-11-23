@@ -545,6 +545,14 @@ The agent definition is Markdown with YAML frontmatter:
 | `skills` | [Skill](../../glossary.md#skill) names to load, as uploaded under `skills/`: a skill's declared `SKILL.md` `name:`, or its directory basename when none is declared |
 | `disallowedTools` | Bash patterns the agent is forbidden from running, e.g. `Bash(git push *), Bash(gh issue edit *)` |
 
+On pi, select a vetted harness extension's native tool with its exact registered
+name, for example `tools: [inspect_record]`. Missing or ambiguous tools fail
+before inference. An explicit `tools: []` exposes no tools unless the runner
+adds `read` for skills. When migrating, remove previously ignored Claude-only
+names or provide the extension that implements them. See
+[Pi extension tool selection](../../runtimes/pi.md#extension-tools-and-tools).
+
+
 When writing the agent body:
 - **The agent writes JSON, scripts do actions.** The agent's only output is a
   structured JSON file matching the [output schema](#output-schema). All side

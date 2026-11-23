@@ -128,7 +128,7 @@ func TestOpenAIChildren(t *testing.T) {
 	// their model must not create a provider.
 	unregistrable := t.TempDir()
 	writePersonaFile(t, unregistrable, "bashy", "---\nname: bashy\nmodel: openai/gpt-5.6-luna\ntools: Bash(git)\n---\nRun git.\n")
-	writePersonaFile(t, unregistrable, "webby", "---\nname: webby\nmodel: openai/gpt-5.6-luna\ntools: WebSearch\n---\nSearch.\n")
+	writePersonaFile(t, unregistrable, "webby", "---\nname: webby\nmodel: openai/gpt-5.6-luna\ntools: WebSearch*\n---\nSearch.\n")
 	writePersonaFile(t, unregistrable, "empty", "---\nname: empty\nmodel: openai/gpt-5.6-luna\ntools: []\n---\nNothing.\n")
 	writePersonaFile(t, unregistrable, "multiline", "---\nname: multiline\nmodel: |\n  openai/gpt-5\n  ::warning::injected\n---\nInject.\n")
 	writePersonaFile(t, unregistrable, "dispatcher", "---\nname: dispatcher\nmodel: openai/gpt-5.6-luna\ntools: Agent, Task\n---\nDispatch.\n")

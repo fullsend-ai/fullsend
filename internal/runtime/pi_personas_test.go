@@ -263,7 +263,7 @@ func TestResolvePersonaModels_UnknownKeyWithoutPersonas(t *testing.T) {
 func TestResolvePersonaModels_UnservableTools(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 
-	personas := []piPersona{{Name: "webby", Model: "opus", Tools: []string{"WebFetch"}}}
+	personas := []piPersona{{Name: "webby", Model: "opus", Tools: []string{"WebFetch*"}}}
 	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
 
 	// Unreferenced: warned and left out of the manifest, the run proceeds.
@@ -274,11 +274,11 @@ func TestResolvePersonaModels_UnservableTools(t *testing.T) {
 	// Referenced by the repo's config: the repo asked for it, so it is fatal.
 	_, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"webby": strp("opus")}, testModels, nil, trusted)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "WebFetch")
+	assert.Contains(t, err.Error(), "WebFetch*")
 	assert.Contains(t, err.Error(), "cannot be served")
 
 	// Referenced through default: it would have received the model.
-	_, _, _, err = resolvePersonaModels([]piPersona{{Name: "webby", Tools: []string{"WebFetch"}}}, nil,
+	_, _, _, err = resolvePersonaModels([]piPersona{{Name: "webby", Tools: []string{"WebFetch*"}}}, nil,
 		map[string]*string{"default": strp("opus")}, testModels, nil, trusted)
 	require.Error(t, err)
 }

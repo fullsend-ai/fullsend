@@ -97,6 +97,13 @@ See [Harness Field Reference § `input_source`](../reference/harness-reference.m
 
 The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi uses it for aliased models on the top-level run when Vertex does not serve the model (two specific 404/403 messages, same provider only; sub-agent children get none); codex ignores it with a warning.
 
+With `--runtime pi`, native extension tools in agent `tools:` frontmatter must
+resolve to exact names from vetted harness extensions before inference. Unknown
+names are no longer silently dropped. An explicit empty list excludes built-in
+and extension tools; the runner may still add `read` for skills. See
+[Pi tool selection and migration](../runtimes/pi.md#extension-tools-and-tools).
+
+
 A `model` or `effort` set in the `harness:` block of the agent's `agents:`
 entry is a harness value. It ranks where harness `model:` and `effort:` do in
 the order above, and `override_source` reports the model as `harness`. Setting

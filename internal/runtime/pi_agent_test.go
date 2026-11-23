@@ -150,8 +150,8 @@ func TestPiToolsFor(t *testing.T) {
 	assert.Nil(t, unsupported)
 
 	tools, unsupported = piToolsFor([]string{"Read", "Edit", "MultiEdit", "Glob", "WebFetch", "Task", "LS"})
-	assert.Equal(t, []string{"read", "edit", "find", "Agent", "Task", "ls"}, tools, "Task is the legacy alias of Agent; both pi tool names are activated, in place")
-	assert.Equal(t, []string{"WebFetch"}, unsupported)
+	assert.Equal(t, []string{"read", "edit", "find", "WebFetch", "Agent", "Task", "ls"}, tools, "Task is the legacy alias of Agent; both pi tool names are activated, in place")
+	assert.Empty(t, unsupported)
 
 	tools, unsupported = piToolsFor([]string{"Agent", "Task", "Bash"})
 	assert.Equal(t, []string{"Agent", "Task", "bash"}, tools, "Agent and Task activate the same pair once")
@@ -283,4 +283,10 @@ func TestPiToolNameMapsUseClaudeVocabulary(t *testing.T) {
 		assert.True(t, security.KnownClaudeTool(claude),
 			"piToolForClaude key %q is not a canonical or legacy Claude tool name", claude)
 	}
+}
+
+func TestPiExactNativeSelection(t *testing.T) {
+	tools, invalid := piToolsFor([]string{"inspect_record", "Read", "inspect_record", "native*", "bad/name", "mcp__docs__*"})
+	assert.Equal(t, []string{"inspect_record", "read", "mcp__docs__*"}, tools)
+	assert.Equal(t, []string{"native*", "bad/name"}, invalid)
 }

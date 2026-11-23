@@ -307,7 +307,7 @@ What a local pi run needs, beyond the guide:
 | `MultiEdit` | `edit` | pi has one edit tool |
 | `Glob` | `find` | `find` takes a **glob pattern**, not a bare directory. A model that means "list this directory" and sends `{"path": "docs/"}` gets a validation error and has to retry |
 | `LS` | `ls` | The tool to grant for directory listing. Claude Code itself dropped `LS`, so the entry does nothing on that runtime, and codex lists through the shell — it is pi where it counts |
-| anything else | — | A persona naming a Claude-only tool (`WebFetch`, `TodoWrite`, ...) fails rather than silently losing it; see [Sub-agents troubleshooting](#troubleshooting-sub-agents) |
+| Exact native extension name | unchanged | Must resolve to one tool supplied by a vetted harness extension before inference; for example `inspect_record` |
 
 So an agent that browses the tree wants `Glob` **and** `LS`: `Glob` to match a pattern, `LS` to see
 what is in a directory. With `Glob` alone the model tends to reach for a listing it cannot make.
@@ -383,10 +383,26 @@ runtime, an interpreter, a proxy or a credential are refused; the deny-list is i
 
 ### Extension tools and `tools:`
 
-An agent that declares `tools:` keeps its strict `--tools` allowlist and pi hides extension tools
-under it — that is what a declared `tools:` means. An agent whose `tools:` maps to nothing pi
-provides gets `--no-builtin-tools`, and its extensions still load: `-e` is independent of `--tools`.
-An agent without `tools:` gets pi's default set plus whatever its extensions register.
+An agent that declares `tools:` gets an explicit selection across built-in and
+extension tools. Select a native tool by its exact registered name, for example
+`tools: [inspect_record]`. Native names begin with an ASCII letter or underscore
+and contain only ASCII letters, digits, underscores and hyphens; wildcards are
+reserved for supported MCP selectors. The tool must come from the declared,
+vetted harness extensions. Missing, hidden, ambiguous or non-vetted native
+selections fail before inference. Selecting one tool exposes neither its
+siblings nor built-in shell or editing tools.
+
+An explicit `tools: []` exposes no built-in or extension tools. An agent without
+`tools:` retains pi's default tools plus its extensions. Skills still require
+`read`, which the runner adds when the harness includes skills or the agent
+selects `Skill`.
+
+**Migration:** previously ignored unknown names now request exact native tools.
+Remove stale Claude-only names such as `WebFetch` unless a vetted extension
+registers them. Correct typos and declare the extension that supplies each
+requested tool. Invalid native patterns now fail setup instead of being dropped.
+Tool selection does not grant shell, network or publication authority; sandbox
+policy and hooks continue to apply, using each native tool's unchanged name.
 
 MCP tool names such as `mcp__docs__search` and patterns such as
 `mcp__docs__*` pass through the pi tool mapping. A bare server selector
@@ -394,7 +410,7 @@ MCP tool names such as `mcp__docs__search` and patterns such as
 tool names and existing patterns are unchanged. Selectors must start with
 `mcp__` and contain only ASCII letters, digits, underscores, hyphens and `*`,
 with a nonempty suffix. Invalid selectors (including commas and whitespace)
-are reported as unsupported rather than passed to pi's comma-delimited CLI.
+fail setup rather than being passed to pi's comma-delimited CLI.
 Names must match what the declared harness extension registers. Fullsend does
 not normalize server or tool names: Claude-style hyphenated names are preserved.
 Pi's built-in MCP naming rules do not apply automatically, because fullsend
