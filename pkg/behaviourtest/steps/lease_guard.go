@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -13,7 +14,19 @@ import (
 // errLeaseLost is returned by verifyLease when the repository under the
 // scenario's leased slot name is no longer this scenario's lease, so a
 // name-based mutation could land on another holder's resources.
+// verifyLease returns it marked as an infrastructure failure
+// (behaviourfail.Mark): the slot was taken away by the environment —
+// reclaimed or taken over mid-run, after the guard failed closed before
+// any write — and the suite's single retry re-runs the scenario on a
+// fresh slot. errors.Is still matches the sentinel through the mark.
+// The provisioning-time lease races the install path raises stay
+// unmarked (scenario) by design.
 var errLeaseLost = errors.New("leased slot is no longer this scenario's; refusing to mutate by name")
+
+// leaseLostInfraReason is the reason verifyLease marks a lost lease
+// with, so the suite's single infrastructure retry re-runs the scenario
+// on a fresh slot.
+const leaseLostInfraReason = "lease: slot lost while the scenario held it"
 
 // LeaseOwnership returns the check a scenario uses to confirm the slot
 // (org, name) is still this scenario's lease, or nil when the driver
@@ -44,8 +57,11 @@ func LeaseOwnership(driver install.Driver, org, name string) func(context.Contex
 
 // verifyLease fails closed unless the scenario still owns its leased
 // slot. It returns nil when ownership is not tracked (World.LeaseOwned
-// is nil), errLeaseLost when the slot was taken over, and a wrapped
-// error when ownership could not be verified. It changes no state.
+// is nil), errLeaseLost when the slot was taken over (marked as an
+// infrastructure failure, so the suite's single retry re-runs the
+// scenario on a fresh slot), and a wrapped error when ownership could
+// not be verified (unmarked: its class follows the verification error's
+// own cause). It changes no state.
 func verifyLease(w *world.World) error {
 	if w.LeaseOwned == nil {
 		return nil
@@ -55,7 +71,7 @@ func verifyLease(w *world.World) error {
 		return fmt.Errorf("cannot verify the leased slot is still this scenario's; refusing to mutate by name: %w", err)
 	}
 	if !owns {
-		return errLeaseLost
+		return behaviourfail.Mark(errLeaseLost, leaseLostInfraReason)
 	}
 	return nil
 }

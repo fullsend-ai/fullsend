@@ -11,8 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/failclass"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -240,6 +242,8 @@ func TestGivenTestInferenceGatewayAPIKey_LostLeaseStopsTheWrite(t *testing.T) {
 
 	err := givenTestInferenceGatewayAPIKey(w, "")
 	require.ErrorIs(t, err, errLeaseLost)
+	assert.Equal(t, behaviourfail.Infrastructure, failclass.Classify(err),
+		"a lost lease is an environment condition, so the scenario keeps its single infrastructure retry")
 	assert.Zero(t, client.writes, "no secret is written to a slot this scenario no longer holds")
 }
 

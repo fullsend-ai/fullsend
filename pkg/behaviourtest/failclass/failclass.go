@@ -35,9 +35,14 @@ import (
 //     final error is a GitHub 5xx the client gave up on or an HTTP/2
 //     CANCEL stream reset — the subprocess counterpart of the
 //     gh.IsServerError rule below, since the typed error does not
-//     cross the process boundary (#9497)), and a not-dispatched
+//     cross the process boundary (#9497)), a not-dispatched
 //     timeout whose workflow never ran in a repo installed fresh for
-//     the scenario (steps.CollectFailureLogs, #9779).
+//     the scenario (steps.CollectFailureLogs, #9779), and a step-time
+//     lease guard refusing to mutate because the scenario's leased
+//     slot was taken over (steps.verifyLease: the guard fails closed
+//     before any write, and the retried scenario allocates a fresh
+//     slot; the provisioning-time races the install path raises stay
+//     scenario).
 //   - a rate-limit gh.APIError: primary 429, or a 403 whose message
 //     says "rate limit" (secondary limit), per gh.IsRateLimitError.
 //   - a GitHub server error, per gh.IsServerError: a REST gh.APIError
@@ -47,6 +52,11 @@ import (
 //     scenario, it does not resend the request), or a GraphQL error
 //     with no type whose message starts with GitHub's generic
 //     "Something went wrong while executing your query" (#9472).
+//   - a gh.NotRetriedError: a write that failed on a transport timeout
+//     under forge.WithoutAmbiguousRetry and was not resent (the request
+//     may already have been applied) — the timeout counterpart of the
+//     server-error rule above; the suite retries the scenario, it does
+//     not resend the request.
 //   - an install.CapacityError: the slot pool could not provide
 //     capacity — every cause (rate-limited, denied, or failed orgs)
 //     is an environment condition, not a product assertion. A slot
@@ -128,6 +138,9 @@ func infraRuleAt(err error) bool {
 		return true
 	}
 	if gh.IsServerError(err) {
+		return true
+	}
+	if _, ok := err.(*gh.NotRetriedError); ok {
 		return true
 	}
 	if _, ok := err.(*install.CapacityError); ok {

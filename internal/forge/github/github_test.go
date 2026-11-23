@@ -2870,6 +2870,9 @@ func TestWithoutAmbiguousRetry_DoesNotRetryTimeout(t *testing.T) {
 	err := client.DeleteRepo(forge.WithoutAmbiguousRetry(context.Background()), "org", "repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not retried")
+	var nre *NotRetriedError
+	require.ErrorAs(t, err, &nre, "the not-retried write timeout is typed so failclass can classify it")
+	assert.Contains(t, nre.Err.Error(), "not retried", "the give-up message is the typed error's message, unchanged")
 	assert.Equal(t, int32(1), attempts.Load())
 }
 
@@ -2981,6 +2984,8 @@ func TestWithoutAmbiguousRetry_DoesNotRetryMutatingRequests(t *testing.T) {
 			_, err := client.do(forge.WithoutAmbiguousRetry(context.Background()), tt.method, "/repos/org/repo", nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "not retried")
+			var nre *NotRetriedError
+			require.ErrorAs(t, err, &nre, "the not-retried write timeout is typed so failclass can classify it")
 			assert.Equal(t, int32(1), attempts.Load())
 		})
 	}

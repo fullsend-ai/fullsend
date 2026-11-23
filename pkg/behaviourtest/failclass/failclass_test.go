@@ -246,3 +246,30 @@ func TestClassifyJoinedErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestClassifyNotRetriedWriteTimeout covers the NotRetriedError rule
+// (PR #9339 review): a step-time write that times out ambiguously under
+// forge.WithoutAmbiguousRetry is not resent — the server may already
+// have applied it — and classifies as infrastructure, the timeout
+// counterpart of the 5xx not-retried path IsServerError matches, while
+// a timeout the client retried to exhaustion without the guard has no
+// typed error and stays scenario.
+func TestClassifyNotRetriedWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	giveUp := fmt.Errorf("http DELETE /repos/org/repo: %w (not retried: the request may have been applied)",
+		context.DeadlineExceeded)
+	notRetried := &gh.NotRetriedError{Err: giveUp}
+
+	assert.Equal(t, behaviourfail.Infrastructure, Classify(notRetried))
+	// Wrapped the way a step surfaces its mutation's error, the class
+	// survives the chain.
+	assert.Equal(t, behaviourfail.Infrastructure,
+		Classify(fmt.Errorf("create repo secret: %w", notRetried)))
+	assert.Contains(t, notRetried.Error(), "not retried",
+		"the give-up message is the typed error's message, unchanged")
+
+	exhausted := fmt.Errorf("http DELETE /repos/org/repo: %w (after %d attempts)", context.DeadlineExceeded, 5)
+	assert.Equal(t, behaviourfail.Scenario, Classify(exhausted),
+		"a timeout the client retried to exhaustion without the guard has no typed error and stays scenario")
+}

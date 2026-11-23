@@ -10,8 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/failclass"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -41,6 +43,45 @@ func (h *slotHolder) leaseOwnedBy(scenario string) func(context.Context) (bool, 
 		}
 		return h.current.Load().(string) == scenario, nil
 	}
+}
+
+// markedLeaseLost is the message verifyLease's lost-lease error renders
+// to: the infrastructure mark around the errLeaseLost sentinel.
+func markedLeaseLost() string {
+	return behaviourfail.Mark(errLeaseLost, leaseLostInfraReason).Error()
+}
+
+// TestVerifyLeaseLostIsInfrastructure pins the classification the PR's
+// review asked for: a lease lost while the scenario holds it is an
+// environment condition — the guard failed closed before any write, and
+// the suite's single infrastructure retry re-runs the scenario on a
+// fresh slot — so verifyLease marks errLeaseLost as infrastructure
+// while the sentinel stays reachable for the ErrorIs assertions the
+// gateway and cleanup tests make. An unverifiable lease stays
+// unmarked: its class follows the verification error's own cause. The
+// provisioning-time races the install path raises stay scenario by
+// design.
+func TestVerifyLeaseLostIsInfrastructure(t *testing.T) {
+	holder := newSlotHolder("scenario")
+	w := &world.World{LeaseOwned: holder.leaseOwnedBy("scenario")}
+	holder.replaceWith("another holder")
+
+	err := verifyLease(w)
+	require.ErrorIs(t, err, errLeaseLost)
+	assert.True(t, behaviourfail.Is(err), "a lost lease is an environment condition")
+	assert.Equal(t, behaviourfail.Infrastructure, failclass.Classify(err))
+	var infra *behaviourfail.InfraError
+	require.ErrorAs(t, err, &infra)
+	assert.Equal(t, "lease: slot lost while the scenario held it", infra.Reason)
+	// Wrapped the way a step surfaces its mutation's error, the class
+	// survives the chain.
+	assert.Equal(t, behaviourfail.Infrastructure,
+		failclass.Classify(fmt.Errorf("create repo secret: %w", err)))
+
+	holder.err = errors.New("api down")
+	unverifiable := verifyLease(w)
+	assert.False(t, behaviourfail.Is(unverifiable), "an unverifiable lease is not marked")
+	assert.Equal(t, behaviourfail.Scenario, failclass.Classify(unverifiable))
 }
 
 // leaseGuardWorld returns a world with state for every kind of
@@ -100,8 +141,8 @@ func TestCleanupScenario_ReplacementHolderBeforeAfterHook_NothingMutated(t *test
 	assertNoMutations(t, scm)
 	assert.True(t, w.GatewayConfigOverridden, "the gateway restore was skipped, not recorded as done")
 	assert.NoFileExists(t, jiraDir, "local cleanup still runs")
-	assert.Contains(t, *logs, "behaviour cleanup: close issue #7: "+errLeaseLost.Error())
-	assert.Contains(t, *logs, "behaviour cleanup: delete fork repo org/test-repo-01-fork: "+errLeaseLost.Error())
+	assert.Contains(t, *logs, "behaviour cleanup: close issue #7: "+markedLeaseLost())
+	assert.Contains(t, *logs, "behaviour cleanup: delete fork repo org/test-repo-01-fork: "+markedLeaseLost())
 }
 
 func TestCleanupScenario_OwnedLease_CleansEverything(t *testing.T) {
@@ -277,7 +318,7 @@ func TestCleanupScenario_ReactionNotificationsNotDisabledOnReplacedSlot(t *testi
 	CleanupScenario(w)
 
 	assert.Empty(t, scm.commits)
-	assert.Contains(t, logs, "behaviour cleanup: disable reaction notifications: "+errLeaseLost.Error())
+	assert.Contains(t, logs, "behaviour cleanup: disable reaction notifications: "+markedLeaseLost())
 }
 
 func TestCleanupScenario_OwnersAuthCleanupGuarded(t *testing.T) {
@@ -322,5 +363,5 @@ func TestCleanupScenario_LeaseLostDuringConfigRead_NoCommit(t *testing.T) {
 
 	assert.Empty(t, scm.commits, "ownership is re-verified after the read, before the first commit")
 	assert.False(t, scm.commitFileCalled)
-	assert.Contains(t, logs, "behaviour cleanup: deactivate kill switch: updating config: "+errLeaseLost.Error())
+	assert.Contains(t, logs, "behaviour cleanup: deactivate kill switch: updating config: "+markedLeaseLost())
 }

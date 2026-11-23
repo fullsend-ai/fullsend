@@ -506,6 +506,26 @@ const (
 	ServerErrorNotRetriedPrefix = "server error on "
 )
 
+// NotRetriedError is the error do() returns when a request that is not
+// safe to replay (anything other than GET/HEAD) fails on a transport
+// timeout under forge.WithoutAmbiguousRetry, so the client did not
+// resend it: the server may already have applied the request. It wraps
+// the give-up error unchanged — same message, same cause chain — and
+// exists as a type so the behaviour suite's failure classifier can
+// recognize the mode as an environment condition: the timeout
+// counterpart of the 5xx ServerErrorNotRetriedPrefix path, which
+// IsServerError matches. The suite then retries the scenario; the
+// request itself is never resent.
+type NotRetriedError struct {
+	// Err is the wrapped give-up error; Error returns its message and
+	// Unwrap returns it, so the cause chain stays reachable.
+	Err error
+}
+
+func (e *NotRetriedError) Error() string { return e.Err.Error() }
+
+func (e *NotRetriedError) Unwrap() error { return e.Err }
+
 func ambiguousRetryDisabled(ctx context.Context) bool {
 	return forge.AmbiguousRetryDisabled(ctx)
 }
@@ -638,7 +658,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 			// with exponential backoff, same as transient server errors.
 			if isTimeoutError(ctx, err) {
 				if ambiguousRetryDisabled(ctx) && !replaySafeMethod(method) {
-					return nil, fmt.Errorf("http %s %s: %w (not retried: the request may have been applied)", method, path, err)
+					return nil, &NotRetriedError{Err: fmt.Errorf("http %s %s: %w (not retried: the request may have been applied)", method, path, err)}
 				}
 				if attempt == maxRetries-1 {
 					return nil, fmt.Errorf("http %s %s: %w (after %d attempts)", method, path, err, maxRetries)
