@@ -54,9 +54,11 @@ import (
 //     "Something went wrong while executing your query" (#9472).
 //   - a gh.NotRetriedError: a write that failed on a transport timeout
 //     under forge.WithoutAmbiguousRetry and was not resent (the request
-//     may already have been applied) — the timeout counterpart of the
-//     server-error rule above; the suite retries the scenario, it does
-//     not resend the request.
+//     may already have been applied) — whoever set the option, a guarded
+//     step-time mutation or an install-path write (the shared-lock init
+//     commit, a slot delete) alike; the timeout counterpart of the
+//     server-error rule above, with the same scope; the suite retries
+//     the scenario, it does not resend the request.
 //   - an install.CapacityError: the slot pool could not provide
 //     capacity — every cause (rate-limited, denied, or failed orgs)
 //     is an environment condition, not a product assertion. A slot
