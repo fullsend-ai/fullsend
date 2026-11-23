@@ -481,6 +481,19 @@ The OpenShell supervisor reads a fixed list of system CA paths in the sandbox co
 
 A successful sandboxed agent run against the private-CA GitLab instance is the end-to-end check: poll jobs reach `/user`, agent jobs reach the GitLab API, and git/curl inside the sandbox reach GitLab through the supervisor's upstream trust.
 
+## GitLab Runner VM disk reclamation
+
+GitLab Runner VMs provisioned via `hack/gitlab-runner-vm/` run rootless Podman to execute job containers and OpenShell agent sandboxes. Storage is periodically reclaimed by `podman-prune.sh` (via systemd user timer `fullsend-podman-prune.timer` and custom executor hooks in `prepare.sh` and `cleanup.sh`). In-flight jobs (`runner-*`, `openshell-*`, and `openshell.managed` agent sandboxes `fs-*`) are preserved and never stopped.
+
+Storage reclamation can be customized via the following environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `FULLSEND_PODMAN_LOW_DISK_KIB` | `10485760` (10 GiB) | Available disk space threshold on the root filesystem (`/`) in KiB. When free disk space drops below this threshold, container pruning bypasses the normal grace window (`until=0s`) to aggressively reclaim stopped containers and unreferenced images immediately. Set to `0` or empty string (`""`) to disable low-disk bypass; non-numeric values fall back safely to disabled. |
+| `FULLSEND_PODMAN_PRUNE_UNTIL` | `30m` | Grace window for stopped containers (`until` filter in `podman container prune`). Stopped containers younger than this duration are preserved during normal runs to allow post-mortem log retrieval. |
+| `FULLSEND_PODMAN_KEEP_IMAGES` | `~/.config/fullsend-gitlab-runner/keep-images` | Path to the keep-images file listing warm cache container images and supervisor digests that must never be removed. |
+| `FULLSEND_PODMAN_PRUNE_EXTRA_KEEP` | (empty) | Space- or newline-separated list of additional container image references or digests protected from deletion during prune runs (e.g. passed dynamically by `prepare.sh`). |
+
 ## See Also
 
 - [Getting Started](../getting-started/) — Standard per-repo installation
