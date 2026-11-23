@@ -1817,7 +1817,7 @@ The command returns a non-zero exit code when any repo has drift, is not install
 
 ### Authentication
 
-Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass `--gitlab-token` to the `repos` command group. For Forgejo repos, set the per-instance variable described in [Forgejo credentials](#forgejo-credentials).
+Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass `--gitlab-token` to the `repos` command group. For Forgejo repos, set the per-instance variable or use the OAuth login described in [Forgejo credentials](#forgejo-credentials).
 
 ## `repos uninstall`
 
@@ -2071,6 +2071,8 @@ forgejo:
   instances:
     - alias: home
       url: https://git.example.com/forgejo   # a path prefix is preserved
+      oauth:                                 # optional: enables browser login
+        client_id: 7d2b0c1e-5f3a-4c8e-9b1d-2a6f0e4c3b9a
       repos:
         - name: org/app
     - alias: codeberg
@@ -2095,7 +2097,73 @@ The `forgejo:` key needs a `fullsend` CLI version that includes Forgejo support;
 
 Each instance reads its API token from `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN`. To normalize the alias, uppercase it and replace each run of non-alphanumeric characters with one underscore. For example, alias `home` reads `FULLSEND_FORGEJO_HOME_TOKEN` and alias `code-berg` reads `FULLSEND_FORGEJO_CODE_BERG_TOKEN`. Two aliases that normalize to the same variable are rejected. Tokens are never read from or written to `repos.yaml`.
 
-The command resolves selectors first. It then looks up a token for every selected instance, and only then makes its first Forgejo call. A missing token fails the command, names each alias and variable, and changes nothing. An unselected instance is never contacted, and one alias's token is never used for another. Interactive OAuth login is not available yet. The API token is sent only to the configured URL: the Forgejo client refuses to follow any redirect, so a redirect cannot carry the token to another origin or over plain HTTP.
+The command resolves selectors first. It then gets a credential for every
+selected instance, and only then makes its first Forgejo write. Each selected
+instance tries these sources in order:
+
+1. Its `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN` variable. When the variable
+   is set, the CLI uses it and skips the keyring and OAuth.
+2. An OAuth token cached in the operating-system keyring (macOS Keychain,
+   Windows Credential Manager, or the Secret Service on Linux). This source
+   needs `oauth.client_id` on the instance. The CLI refreshes an expired
+   token, then checks the token against the instance. When the instance
+   rejects it, for example because you revoked it, the CLI removes it from
+   the keyring.
+3. An interactive browser login. This source also needs `oauth.client_id`,
+   and runs only when the command runs in a terminal.
+
+A selected instance that still has no credential fails the command. The error
+names each alias and variable, and the command changes nothing. The CLI
+reports every such instance before any login starts, so it asks you to log in
+only when the command can succeed. A non-interactive command (CI, or stdin not
+a terminal) never opens a browser: it uses a usable cached token or fails. The
+CLI never contacts or prompts for an unselected instance, and never uses one
+alias's token for another. The CLI sends the API token only to the configured
+URL. The Forgejo client refuses to follow any redirect, so a redirect cannot
+carry the token to another origin or over plain HTTP.
+
+#### OAuth login
+
+To turn on browser login for an instance, register a public OAuth2
+application on it:
+
+1. In Forgejo, open **Settings → Applications → Manage OAuth2 applications**.
+2. Clear **Confidential client**.
+3. Set the redirect URI to `http://127.0.0.1/callback`. Forgejo accepts any
+   port on a loopback redirect URI, so the CLI can listen on a random local
+   port.
+4. Put the application's client ID in `forgejo.instances[].oauth.client_id`.
+
+The client ID is not secret. The login uses no client secret, and
+`repos.yaml` rejects a `client_secret` field. Older `fullsend` CLIs reject a
+manifest that sets `oauth.client_id`, so use a CLI version with OAuth support.
+
+The login uses the Authorization Code flow with PKCE (`S256`). Forgejo
+redirects the browser to a listener on `127.0.0.1`, and the CLI rejects a
+callback whose `state` value does not match. The authorize and token endpoints
+(`/login/oauth/authorize` and `/login/oauth/access_token`) keep the base URL's
+path prefix. The CLI waits up to five minutes for the browser callback. It
+writes prompts and progress to stderr, so `--json` output stays parseable.
+
+::: warning OAuth tokens carry your full Forgejo permissions
+Forgejo does not implement OAuth scopes, so an OAuth token can act with your
+full Forgejo user permissions on that instance. That covers every repository,
+organization, and setting your account can reach, not only the selected
+repositories. Before each login the CLI explains this and asks you to confirm
+(`[y/N]`). If you decline, the CLI opens no browser and the command fails.
+Prefer a scoped access token in `FULLSEND_FORGEJO_<NORMALIZED_ALIAS>_TOKEN`;
+it always takes precedence. Only the local CLI uses the OAuth token. Agent
+workflows never use it.
+:::
+
+The CLI stores the access and refresh tokens only in the operating-system
+keyring, under the service name `fullsend-forgejo-oauth`, keyed to the alias,
+base URL, and client ID. It never writes them to `repos.yaml` or prints them.
+If the CLI cannot read or write the keyring, for example on a headless Linux
+host without a Secret Service, it warns. It then uses the token for the
+current command only, and asks you to log in again next time. To sign out,
+delete the `fullsend-forgejo-oauth` entry from your keyring, or revoke the
+application under **Settings → Applications** on the instance.
 
 ### Forgejo lifecycle
 
@@ -2105,7 +2173,7 @@ The Fullsend-managed resource on Forgejo is the managed `.fullsend/config.yaml`.
 - `repos status` is read-only. Each selected repository is reported as `up-to-date`, `drift`, `not-installed`, `unmanaged` (a file without the ownership marker), or `error`, in a `FORGEJO REPO` table or in the `forgejo` array of `--json` output. Any state other than `up-to-date` gives a non-zero exit code. In `--json` output, `summary` covers only the `github`/`gitlab` repositories; Forgejo results appear only in the separate `forgejo` array, so a run that selects only Forgejo repositories has an empty `repos` array and a zeroed `summary` even when a Forgejo repository errored. Check the `forgejo` array or the exit code.
 - `repos uninstall` deletes the managed file and then removes the repository's entry from `repos.yaml`. A file without the ownership marker is never deleted. The entry is removed only when teardown succeeded. `--uninstall-only`, `--manifest-only`, `--dry-run` and `--yes` behave as they do for other forges. Forgejo file changes are committed directly to the default branch, whether or not `--direct` is set.
 
-Reusable workflow hosts, vendored agent workflows, and OAuth login for Forgejo are tracked separately under [#9642](https://github.com/fullsend-ai/fullsend/issues/9642).
+Reusable workflow hosts and vendored agent workflows for Forgejo are tracked separately under [#9642](https://github.com/fullsend-ai/fullsend/issues/9642).
 
 ## See also
 

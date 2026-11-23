@@ -33,32 +33,107 @@ type ForgejoFileClient interface {
 // ForgejoClientFunc returns the API client for an instance using token.
 type ForgejoClientFunc func(baseURL, token string) (ForgejoFileClient, error)
 
-// ResolveForgejoCredentials returns the API token of every instance the
-// targets use, keyed by alias. Only selected instances are looked up, each
-// from its own ForgejoTokenEnvVar variable; one alias's token is never
-// used for another. Every missing token is reported together, before any
-// forge call, so a missing credential cannot leave a partial install.
-func ResolveForgejoCredentials(targets []ForgejoTarget, lookup func(string) (string, bool)) (map[string]string, error) {
+// forgejoOAuthScopeWarning states, in credential errors, the authority an
+// OAuth login grants. The login consent prompt explains it separately.
+const forgejoOAuthScopeWarning = "Forgejo does not implement OAuth scopes, so an OAuth token can act with your full Forgejo user permissions on that instance, not only on the selected repositories"
+
+// ForgejoOAuthRequest identifies the instance and public OAuth client an
+// OAuth token is for.
+type ForgejoOAuthRequest struct {
+	Alias    string
+	BaseURL  string
+	ClientID string
+	// TokenEnvVar is the instance's ForgejoTokenEnvVar, named in prompts
+	// as the scoped alternative to OAuth.
+	TokenEnvVar string
+}
+
+// ForgejoOAuth is the OAuth fallback for instances without an environment
+// token. Implementations never print or log token values.
+type ForgejoOAuth interface {
+	// CachedToken returns a usable cached token, refreshing it when it has
+	// expired. When no cached token is usable it returns "" and a short
+	// reason, and removes a cached token the instance rejected. An error
+	// means the cache could not be checked (for example, the instance is
+	// unreachable).
+	CachedToken(ctx context.Context, req ForgejoOAuthRequest) (token, reason string, err error)
+	// Login explains the OAuth authority and asks for consent, runs the
+	// browser authorization, caches the token, and returns it. It is
+	// called only for interactive commands.
+	Login(ctx context.Context, req ForgejoOAuthRequest) (string, error)
+}
+
+// ForgejoCredentials resolves per-instance Forgejo API credentials.
+type ForgejoCredentials struct {
+	// Lookup reads an environment variable (os.LookupEnv in production).
+	Lookup func(string) (string, bool)
+	// OAuth is the OAuth fallback; nil disables it.
+	OAuth ForgejoOAuth
+	// Interactive allows a browser login when no token is available.
+	Interactive bool
+}
+
+// Resolve returns the API token of every instance the targets use, keyed
+// by alias. Only selected instances are resolved, each in this order: its
+// own ForgejoTokenEnvVar variable; a cached OAuth token, when the instance
+// configures an OAuth client ID; then, for interactive commands only, a
+// browser login. One alias's token is never used for another.
+//
+// Every instance that cannot get a token without a login is reported
+// together, before any login or forge write, so a missing credential cannot
+// leave a partial install. Logins run only after every other selected
+// instance has a token.
+func (c ForgejoCredentials) Resolve(ctx context.Context, targets []ForgejoTarget) (map[string]string, error) {
 	tokens := make(map[string]string)
 	var missing []string
+	var logins []ForgejoOAuthRequest
+	oauthHint := false
 	for _, t := range targets {
 		if _, done := tokens[t.Alias]; done {
 			continue
 		}
+		tokens[t.Alias] = ""
 		env := ForgejoTokenEnvVar(t.Alias)
-		tok, ok := lookup(env)
-		tok = strings.TrimSpace(tok)
-		if !ok || tok == "" {
-			tokens[t.Alias] = ""
-			missing = append(missing, fmt.Sprintf("%s (set %s)", t.Alias, env))
+		if tok, ok := c.Lookup(env); ok && strings.TrimSpace(tok) != "" {
+			tokens[t.Alias] = strings.TrimSpace(tok)
 			continue
 		}
-		tokens[t.Alias] = tok
+		if t.ClientID == "" || c.OAuth == nil {
+			missing = append(missing, fmt.Sprintf("%s (set %s)", t.Alias, env))
+			oauthHint = oauthHint || t.ClientID == ""
+			continue
+		}
+		req := ForgejoOAuthRequest{Alias: t.Alias, BaseURL: t.BaseURL, ClientID: t.ClientID, TokenEnvVar: env}
+		tok, reason, err := c.OAuth.CachedToken(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("forgejo instance %q: checking the cached OAuth token: %w; nothing was changed", t.Alias, err)
+		}
+		if tok != "" {
+			tokens[t.Alias] = tok
+			continue
+		}
+		if !c.Interactive {
+			missing = append(missing, fmt.Sprintf("%s (%s; set %s, or rerun in a terminal to log in with OAuth)", t.Alias, reason, env))
+			continue
+		}
+		logins = append(logins, req)
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("missing Forgejo API credentials for instance %s; nothing was changed. "+
+		msg := fmt.Sprintf("missing Forgejo API credentials for instance %s; nothing was changed. "+
 			"Export a Forgejo access token for each selected instance; tokens are never read from repos.yaml",
 			strings.Join(missing, ", "))
+		if oauthHint {
+			msg += ". To log in through a browser instead, set forgejo.instances[].oauth.client_id and run the command in a terminal; " +
+				forgejoOAuthScopeWarning
+		}
+		return nil, errors.New(msg)
+	}
+	for _, req := range logins {
+		tok, err := c.OAuth.Login(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("forgejo instance %q: OAuth login failed: %w; nothing was changed. Set %s to use an access token instead", req.Alias, err, req.TokenEnvVar)
+		}
+		tokens[req.Alias] = tok
 	}
 	return tokens, nil
 }
@@ -99,7 +174,12 @@ type ForgejoLifecycle struct {
 	NewClient ForgejoClientFunc
 	// Lookup reads an environment variable (os.LookupEnv in production).
 	Lookup func(string) (string, bool)
-	DryRun bool
+	// OAuth is the OAuth credential fallback; nil disables it.
+	OAuth ForgejoOAuth
+	// Interactive allows a browser login for a selected instance that has
+	// no usable token.
+	Interactive bool
+	DryRun      bool
 }
 
 // desiredForgejoConfig renders the managed .fullsend/config.yaml for a
@@ -117,9 +197,10 @@ func (l *ForgejoLifecycle) desiredForgejoConfig() ([]byte, error) {
 }
 
 // clients resolves credentials for the targets' instances, then builds one
-// client per instance. No forge call happens here.
-func (l *ForgejoLifecycle) clients(targets []ForgejoTarget) (map[string]ForgejoFileClient, error) {
-	tokens, err := ResolveForgejoCredentials(targets, l.Lookup)
+// client per instance. No forge write happens here; checking a cached OAuth
+// token may read from the instance.
+func (l *ForgejoLifecycle) clients(ctx context.Context, targets []ForgejoTarget) (map[string]ForgejoFileClient, error) {
+	tokens, err := ForgejoCredentials{Lookup: l.Lookup, OAuth: l.OAuth, Interactive: l.Interactive}.Resolve(ctx, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +253,7 @@ func (l *ForgejoLifecycle) Status(ctx context.Context, targets []ForgejoTarget) 
 	if err != nil {
 		return nil, err
 	}
-	clients, err := l.clients(targets)
+	clients, err := l.clients(ctx, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +293,7 @@ func (l *ForgejoLifecycle) Install(ctx context.Context, targets []ForgejoTarget)
 	if err != nil {
 		return nil, err
 	}
-	clients, err := l.clients(targets)
+	clients, err := l.clients(ctx, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +336,7 @@ func (l *ForgejoLifecycle) Install(ctx context.Context, targets []ForgejoTarget)
 // Uninstall removes each target's Fullsend-managed file. A file without
 // the ownership marker is never deleted.
 func (l *ForgejoLifecycle) Uninstall(ctx context.Context, targets []ForgejoTarget) ([]ForgejoRepoResult, error) {
-	clients, err := l.clients(targets)
+	clients, err := l.clients(ctx, targets)
 	if err != nil {
 		return nil, err
 	}

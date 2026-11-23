@@ -175,6 +175,12 @@ func apiMessage(data []byte) string {
 	if json.Unmarshal(data, &body) == nil {
 		msg = body.Message
 	}
+	return sanitizeMessage(msg)
+}
+
+// sanitizeMessage bounds server-controlled text and neutralizes control
+// characters and workflow-command delimiters before it reaches CLI output.
+func sanitizeMessage(msg string) string {
 	truncated := false
 	if len(msg) > 300 {
 		msg, truncated = strings.ToValidUTF8(msg[:300], ""), true
@@ -269,4 +275,16 @@ func (c *LiveClient) UpdateFile(ctx context.Context, owner, repo, filePath, mess
 func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, filePath, message, sha string) error {
 	body := map[string]string{"message": message, "sha": sha}
 	return c.do(ctx, http.MethodDelete, c.contentsURL(owner, repo, filePath), body, nil)
+}
+
+// CurrentUser returns the login of the user the client's token
+// authenticates. A rejected token yields an *APIError with HTTP 401.
+func (c *LiveClient) CurrentUser(ctx context.Context) (string, error) {
+	var out struct {
+		Login string `json:"login"`
+	}
+	if err := c.do(ctx, http.MethodGet, c.baseURL.String()+"/api/v1/user", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Login, nil
 }

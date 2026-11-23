@@ -6,16 +6,35 @@ import (
 	"io"
 	"os"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge/forgejo"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// forgejoTestHooks replaces the live Forgejo client and environment
-// lookup in tests.
+// forgejoTestHooks replaces the live Forgejo client, environment lookup,
+// and OAuth fallback in tests. A nil oauth disables the OAuth fallback, so
+// tests never reach the OS keyring or a browser.
 type forgejoTestHooks struct {
-	newClient repos.ForgejoClientFunc
-	lookupEnv func(string) (string, bool)
+	newClient   repos.ForgejoClientFunc
+	lookupEnv   func(string) (string, bool)
+	oauth       repos.ForgejoOAuth
+	interactive bool
+}
+
+// liveForgejoOAuth adapts forgejo.OAuth to repos.ForgejoOAuth.
+type liveForgejoOAuth struct{ *forgejo.OAuth }
+
+func oauthInstance(req repos.ForgejoOAuthRequest) forgejo.OAuthInstance {
+	return forgejo.OAuthInstance{Alias: req.Alias, BaseURL: req.BaseURL, ClientID: req.ClientID, TokenEnvVar: req.TokenEnvVar}
+}
+
+func (o liveForgejoOAuth) CachedToken(ctx context.Context, req repos.ForgejoOAuthRequest) (string, string, error) {
+	return o.OAuth.CachedToken(ctx, oauthInstance(req))
+}
+
+func (o liveForgejoOAuth) Login(ctx context.Context, req repos.ForgejoOAuthRequest) (string, error) {
+	return o.OAuth.Login(ctx, oauthInstance(req))
 }
 
 // liveForgejoFiles adapts the Forgejo API client to repos.ForgejoFileClient.
@@ -42,6 +61,14 @@ func newForgejoLifecycle(m *repos.Manifest, dryRun bool, hooks *forgejoTestHooks
 			return liveForgejoFiles{c}, nil
 		},
 		Lookup: os.LookupEnv,
+		// Prompts go to stderr so --json output on stdout stays parseable.
+		OAuth: liveForgejoOAuth{&forgejo.OAuth{
+			Store:       forgejo.KeyringStore{},
+			OpenBrowser: appsetup.DefaultBrowser{}.Open,
+			In:          os.Stdin,
+			Out:         os.Stderr,
+		}},
+		Interactive: stdinIsInteractive(),
 	}
 	if hooks != nil {
 		if hooks.newClient != nil {
@@ -50,6 +77,8 @@ func newForgejoLifecycle(m *repos.Manifest, dryRun bool, hooks *forgejoTestHooks
 		if hooks.lookupEnv != nil {
 			lc.Lookup = hooks.lookupEnv
 		}
+		lc.OAuth = hooks.oauth
+		lc.Interactive = hooks.interactive
 	}
 	return lc
 }

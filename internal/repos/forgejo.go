@@ -24,11 +24,14 @@ const ForgejoSelectorPrefix = ForgeForgejo + ":"
 //	  instances:
 //	    - alias: codeberg
 //	      url: https://codeberg.org
+//	      oauth:
+//	        client_id: 7d2b0c1e-...   # optional, enables browser login
 //	      repos:
 //	        - name: acme/app
 //
 // API credentials are never stored here: each alias reads its token from
-// the environment variable ForgejoTokenEnvVar returns.
+// the environment variable ForgejoTokenEnvVar returns, or from an OAuth
+// token cached in the operating-system keyring.
 type ForgejoConfig struct {
 	Instances []ForgejoInstance `yaml:"instances"`
 }
@@ -41,9 +44,20 @@ type ForgejoInstance struct {
 	// URL is the canonical base URL of the instance. It may include a path
 	// prefix (https://example.com/forgejo), which every API request keeps.
 	URL string `yaml:"url"`
+	// OAuth enables interactive browser login for the instance when no
+	// token is set in the environment.
+	OAuth *ForgejoOAuthConfig `yaml:"oauth,omitempty"`
 	// Repos lists the managed repositories as owner/repo paths relative
 	// to URL.
 	Repos []ForgejoRepoEntry `yaml:"repos"`
+}
+
+// ForgejoOAuthConfig is the non-secret OAuth configuration of an instance.
+type ForgejoOAuthConfig struct {
+	// ClientID is the client ID of a public OAuth application registered
+	// on the instance. Login uses Authorization Code with PKCE, so no
+	// client secret is needed or accepted.
+	ClientID string `yaml:"client_id"`
 }
 
 // ForgejoRepoEntry is one repository declared on a Forgejo instance.
@@ -55,8 +69,11 @@ type ForgejoRepoEntry struct {
 type ForgejoTarget struct {
 	Alias   string
 	BaseURL string
-	Owner   string
-	Repo    string
+	// ClientID is the instance's public OAuth client ID, or "" when
+	// browser login is not configured.
+	ClientID string
+	Owner    string
+	Repo     string
 }
 
 // Path returns owner/repo.
@@ -69,7 +86,10 @@ var (
 	forgejoAliasPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
 	// forgejoNamePattern matches a Forgejo owner or repository name.
 	forgejoNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
-	nonAlnumRun        = regexp.MustCompile(`[^A-Z0-9]+`)
+	// forgejoClientIDPattern matches an OAuth client ID (Forgejo issues
+	// UUIDs) using only URL-safe characters.
+	forgejoClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,256}$`)
+	nonAlnumRun            = regexp.MustCompile(`[^A-Z0-9]+`)
 )
 
 // ForgejoTokenEnvVar returns the environment variable that supplies the
@@ -105,6 +125,9 @@ func (c *ForgejoConfig) validate() error {
 		envVars[env] = inst.Alias
 		if err := validateForgejoURL(field+".url", inst.URL); err != nil {
 			return err
+		}
+		if inst.OAuth != nil && !forgejoClientIDPattern.MatchString(inst.OAuth.ClientID) {
+			return fmt.Errorf("%s.oauth.client_id %q must be the client ID of a public OAuth application registered on the instance (letters, digits, '.', '_', '~' or '-')", field, inst.OAuth.ClientID)
 		}
 		seen := make(map[string]bool)
 		for j, r := range inst.Repos {
@@ -198,7 +221,11 @@ func (m *Manifest) forgejoTargets() []ForgejoTarget {
 			if !ok {
 				continue
 			}
-			out = append(out, ForgejoTarget{Alias: inst.Alias, BaseURL: inst.URL, Owner: owner, Repo: repo})
+			t := ForgejoTarget{Alias: inst.Alias, BaseURL: inst.URL, Owner: owner, Repo: repo}
+			if inst.OAuth != nil {
+				t.ClientID = inst.OAuth.ClientID
+			}
+			out = append(out, t)
 		}
 	}
 	return out
