@@ -112,6 +112,14 @@ tracker:
 
 See [Jira Integration § Custom JQL](jira-integration.md#custom-jql).
 
+> **If the poll job receives a `jira` authorization list secret** (see
+> [Keeping the lists out of the repository](jira-integration.md#keeping-the-lists-out-of-the-repository)),
+> do not set the `matrix` output in that job, as this example does. GitHub
+> drops a job output that contains the value of a secret the job has, and
+> the matrix contains the ID of the account that acted. Set the output from
+> a second job that receives no list secret. See
+> [GitHub: Vault or another secret store](jira-integration.md#github-vault-or-another-secret-store).
+
 ## Matrix Format
 
 The `matrix` input (a GitHub Actions [matrix strategy](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/running-variations-of-jobs-in-a-workflow#using-a-matrix-strategy) that runs parallel jobs) must follow the format produced by `fullsend dispatch --output-driver gha-matrix`:

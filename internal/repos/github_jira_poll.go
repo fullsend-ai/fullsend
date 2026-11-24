@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -152,18 +153,10 @@ func userJiraCallerOAuthUses(caller []byte) ([]string, bool) {
 // rejected, since its OAuth support cannot be established.
 func requireUserJiraCallerWorkflowsOAuth(ctx context.Context, resolved ResolvedConfig, refResolver *RefResolver, uses []string) error {
 	for _, u := range uses {
-		var content []byte
-		var err error
-		if localPath, local := strings.CutPrefix(u, "./"); local {
-			content, err = resolved.ForgeConfig.Client.GetFileContent(ctx, resolved.Owner, resolved.Repo, localPath)
-		} else {
-			target, ref, hasRef := strings.Cut(u, "@")
-			parts := strings.SplitN(target, "/", 3)
-			if !hasRef || len(parts) != 3 || refResolver == nil {
-				return fmt.Errorf("%s/%s: %s calls %q, whose Jira OAuth support cannot be verified; pin it to owner/repo/path@ref of a Fullsend version that supports OAuth credentials (existing Jira credentials were left unchanged)",
-					resolved.Owner, resolved.Repo, scaffold.JiraPollCallerPath, u)
-			}
-			content, err = refResolver.client.GetFileContentAtRef(ctx, parts[0], parts[1], parts[2], ref)
+		content, located, err := readUserJiraCallerWorkflow(ctx, resolved, refResolver, u)
+		if !located {
+			return fmt.Errorf("%s/%s: %s calls %q, whose Jira OAuth support cannot be verified; pin it to owner/repo/path@ref of a Fullsend version that supports OAuth credentials (existing Jira credentials were left unchanged)",
+				resolved.Owner, resolved.Repo, scaffold.JiraPollCallerPath, u)
 		}
 		if err != nil {
 			return fmt.Errorf("%s/%s: %s calls %q, whose Jira OAuth support could not be verified: %w (existing Jira credentials were left unchanged)",
@@ -177,6 +170,86 @@ func requireUserJiraCallerWorkflowsOAuth(ctx context.Context, resolved ResolvedC
 	return nil
 }
 
+// readUserJiraCallerWorkflow reads the reusable workflow a user-owned caller's
+// `uses` names: at the ref it pins, or from the caller's own repository for a
+// local `./` reference. located is false when the reference has no
+// owner/repo/path@ref form or no upstream client can read it.
+func readUserJiraCallerWorkflow(ctx context.Context, resolved ResolvedConfig, refResolver *RefResolver, uses string) (content []byte, located bool, err error) {
+	if localPath, local := strings.CutPrefix(uses, "./"); local {
+		content, err = resolved.ForgeConfig.Client.GetFileContent(ctx, resolved.Owner, resolved.Repo, localPath)
+		return content, true, err
+	}
+	target, ref, hasRef := strings.Cut(uses, "@")
+	parts := strings.SplitN(target, "/", 3)
+	if !hasRef || len(parts) != 3 || refResolver == nil {
+		return nil, false, nil
+	}
+	content, err = refResolver.client.GetFileContentAtRef(ctx, parts[0], parts[1], parts[2], ref)
+	return content, true, err
+}
+
+// checkUserJiraCallerAuthorizationEnv fails when a user-owned Jira poll caller
+// calls a reusable-poll-jira.yml that predates groups_from and accounts_from.
+// That workflow installs the CLI at its own ref, and an older CLI cannot load
+// the config, so every poll would fail. A vendored install runs its own
+// binary there, so it is not checked. Neither is a reference that cannot be
+// located.
+func checkUserJiraCallerAuthorizationEnv(ctx context.Context, d convergeDiscovery, refResolver *RefResolver) error {
+	resolved := d.resolved
+	if resolved.Forge != ForgeGitHub || !d.jira.enabled || resolved.Vendor {
+		return nil
+	}
+	caller, exists, err := readJiraPollCaller(ctx, jiraPollRequest{
+		Client: resolved.ForgeConfig.Client,
+		Owner:  resolved.Owner,
+		Repo:   resolved.Repo,
+	})
+	if err != nil {
+		return fmt.Errorf("%s/%s: checking %s for groups_from/accounts_from support: %w",
+			resolved.Owner, resolved.Repo, scaffold.JiraPollCallerPath, err)
+	}
+	if !exists || scaffold.IsManagedJiraPollCaller(caller) {
+		return nil
+	}
+	for _, u := range userJiraCallerPollUses(caller) {
+		content, located, err := readUserJiraCallerWorkflow(ctx, resolved, refResolver, u)
+		if !located {
+			continue
+		}
+		if err != nil && !forge.IsNotFound(err) {
+			return fmt.Errorf("%s/%s: checking %q, called by %s, for groups_from/accounts_from support: %w",
+				resolved.Owner, resolved.Repo, u, scaffold.JiraPollCallerPath, err)
+		}
+		if err != nil || !bytes.Contains(content, []byte(jiraAuthorizationEnvMarker)) {
+			return fmt.Errorf("%s/%s: config.yaml reads %s with groups_from/accounts_from, which %q, called by %s, does not support; update the reference to a release that includes them",
+				resolved.Owner, resolved.Repo, strings.Join(d.jira.authEnv, ", "), u, scaffold.JiraPollCallerPath)
+		}
+	}
+	return nil
+}
+
+// userJiraCallerPollUses returns the sorted, de-duplicated `uses` references
+// of a user-owned caller's jobs that call the reusable Jira poll workflow. A
+// caller that does not parse returns none.
+func userJiraCallerPollUses(caller []byte) []string {
+	var wf struct {
+		Jobs map[string]struct {
+			Uses string `yaml:"uses"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(caller, &wf); err != nil {
+		return nil
+	}
+	var uses []string
+	for _, job := range wf.Jobs {
+		if strings.Contains(job.Uses, "reusable-poll-jira.yml") && !slices.Contains(uses, job.Uses) {
+			uses = append(uses, job.Uses)
+		}
+	}
+	sort.Strings(uses)
+	return uses
+}
+
 // missingJiraOAuthSecret returns the first Jira OAuth client secret a workflow
 // does not declare, or "" when it declares them all.
 func missingJiraOAuthSecret(content []byte) string {
@@ -188,25 +261,82 @@ func missingJiraOAuthSecret(content []byte) string {
 	return ""
 }
 
+// splitJiraAuthorizationEnv splits the variables the jira authorization
+// lists read (#9132) into those the managed caller forwards to the poll
+// job, in scaffold.JiraAuthorizationSecrets order, and the others, which
+// it cannot pass.
+func splitJiraAuthorizationEnv(names []string) (forwarded, unforwarded []string) {
+	for _, name := range scaffold.JiraAuthorizationSecrets {
+		if slices.Contains(names, name) {
+			forwarded = append(forwarded, name)
+		}
+	}
+	for _, name := range names {
+		if !slices.Contains(scaffold.JiraAuthorizationSecrets, name) {
+			unforwarded = append(unforwarded, name)
+		}
+	}
+	return forwarded, unforwarded
+}
+
 // jiraJobForwardsOAuth reports whether a job's secrets node is `inherit` or a
 // mapping that names every Jira OAuth client secret.
 func jiraJobForwardsOAuth(secrets yaml.Node) bool {
+	return len(jiraJobUnforwarded(secrets, jiraOAuthSecrets)) == 0
+}
+
+// jiraJobUnforwarded returns the names a job's secrets node does not pass to
+// the workflow it calls: none for `inherit`, and for a mapping the names it
+// leaves out. Any other node passes nothing.
+func jiraJobUnforwarded(secrets yaml.Node, names []string) []string {
+	named := map[string]bool{}
 	switch secrets.Kind {
 	case yaml.ScalarNode:
-		return secrets.Value == "inherit"
+		if secrets.Value == "inherit" {
+			return nil
+		}
 	case yaml.MappingNode:
-		named := map[string]bool{}
 		for i := 0; i+1 < len(secrets.Content); i += 2 {
 			named[secrets.Content[i].Value] = true
 		}
-		for _, name := range jiraOAuthSecrets {
-			if !named[name] {
-				return false
+	}
+	var missing []string
+	for _, name := range names {
+		if !named[name] {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// userJiraCallerUnforwarded returns the names that a user-owned caller's
+// jobs calling the reusable Jira poll workflow do not pass to it, and
+// reports whether it has such a job. A caller that runs the poller itself,
+// or does not parse, returns none: only its owner knows what its
+// environment sets.
+func userJiraCallerUnforwarded(caller []byte, names []string) (missing []string, calls bool) {
+	var wf struct {
+		Jobs map[string]struct {
+			Uses    string    `yaml:"uses"`
+			Secrets yaml.Node `yaml:"secrets"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(caller, &wf); err != nil {
+		return nil, false
+	}
+	for _, job := range wf.Jobs {
+		if !strings.Contains(job.Uses, "reusable-poll-jira.yml") {
+			continue
+		}
+		calls = true
+		for _, name := range jiraJobUnforwarded(job.Secrets, names) {
+			if !slices.Contains(missing, name) {
+				missing = append(missing, name)
 			}
 		}
-		return true
 	}
-	return false
+	sort.Strings(missing)
+	return missing, calls
 }
 
 // requireJiraOAuthSecrets rejects a reusable workflow that does not declare
@@ -221,7 +351,8 @@ func requireJiraOAuthSecrets(resolved ResolvedConfig, source, ref, workflowPath 
 
 // Ensure makes the managed caller present and current.
 func (githubJiraPollReconciler) Ensure(ctx context.Context, req jiraPollRequest) ([]ComponentAction, error) {
-	want, err := scaffold.RenderJiraPollCaller(req.Render, req.EmailConfigured, req.OAuthConfigured)
+	forwarded, unforwarded := splitJiraAuthorizationEnv(req.AuthorizationEnv)
+	want, err := scaffold.RenderJiraPollCaller(req.Render, req.EmailConfigured, req.OAuthConfigured, forwarded)
 	if err != nil {
 		return nil, err
 	}
@@ -230,12 +361,30 @@ func (githubJiraPollReconciler) Ensure(ctx context.Context, req jiraPollRequest)
 		return nil, err
 	}
 	if exists && !scaffold.IsManagedJiraPollCaller(have) {
+		// A reusable workflow gets only the secrets its caller passes, and
+		// the poll workflow accepts only the fixed names.
+		missing, calls := userJiraCallerUnforwarded(have, forwarded)
+		if len(missing) > 0 && req.Warn != nil {
+			req.Warn(fmt.Sprintf("authorization: jira groups_from/accounts_from reads %s, which %s does not pass to reusable-poll-jira.yml; add it to that job's secrets, or that list grants no one",
+				strings.Join(missing, ", "), scaffold.JiraPollCallerPath))
+		}
+		if calls && len(unforwarded) > 0 && req.Warn != nil {
+			req.Warn(fmt.Sprintf("authorization: jira groups_from/accounts_from reads %s, which reusable-poll-jira.yml does not pass to the poller; rename it to one of %s, or run the poller in your own job",
+				strings.Join(unforwarded, ", "), strings.Join(scaffold.JiraAuthorizationSecrets, ", ")))
+		}
 		return []ComponentAction{{
 			Component: jiraPollComponent,
 			Action:    "none",
 			Detail: fmt.Sprintf("%s exists but is not managed by fullsend; left it untouched (remove it to let repos install manage the Jira poll workflow)",
 				scaffold.JiraPollCallerPath),
 		}}, nil
+	}
+	// The managed caller passes only the fixed names. The poller finds any
+	// other variable unset, so that list grants no one unless the runner
+	// itself sets it.
+	if len(unforwarded) > 0 && req.Warn != nil {
+		req.Warn(fmt.Sprintf("authorization: jira groups_from/accounts_from reads %s, which the managed %s does not pass to the poller; rename it to one of %s, or set it in the runner's environment",
+			strings.Join(unforwarded, ", "), scaffold.JiraPollCallerPath, strings.Join(scaffold.JiraAuthorizationSecrets, ", ")))
 	}
 	if exists && bytes.Equal(have, want) {
 		return []ComponentAction{{

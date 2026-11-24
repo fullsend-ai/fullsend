@@ -2,6 +2,7 @@ package scaffold
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -37,6 +38,22 @@ var jiraPollOAuthSecretLines = []string{
 	"      FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}\n",
 }
 
+// JiraAuthorizationSecrets are the secrets the managed GitHub Jira poll
+// caller can forward to the poll job for the jira authorization provider's
+// groups_from and accounts_from lists (#9132). The managed caller cannot pass
+// any other variable to the poller.
+var JiraAuthorizationSecrets = []string{
+	"FULLSEND_JIRA_WRITE_GROUPS",
+	"FULLSEND_JIRA_WRITE_ACCOUNTS",
+	"FULLSEND_JIRA_TRIAGE_GROUPS",
+	"FULLSEND_JIRA_TRIAGE_ACCOUNTS",
+}
+
+// jiraPollSecretLine is the caller line that forwards secret name.
+func jiraPollSecretLine(name string) string {
+	return "      " + name + ": ${{ secrets." + name + " }}\n"
+}
+
 // RenderJiraPollCaller renders the managed GitHub Jira poll caller. Its
 // reusable workflows are pinned to the upstream ref in opts; the caller
 // always references the upstream repository, so it does not depend on a
@@ -45,8 +62,11 @@ var jiraPollOAuthSecretLines = []string{
 // credentials to Jira-originated Fullsend status updates only. oauthConfigured
 // controls whether the OAuth client credentials are forwarded; a token-only
 // caller omits them so it stays valid against reusable workflows pinned to a
-// ref that predates OAuth support.
-func RenderJiraPollCaller(opts RenderOptions, emailConfigured, oauthConfigured bool) ([]byte, error) {
+// ref that predates OAuth support. authorizationSecrets lists the
+// JiraAuthorizationSecrets the poll job receives; the others are omitted for
+// the same reason, so a caller whose config reads none of them is unchanged.
+// Any other name is ignored: the caller cannot forward it.
+func RenderJiraPollCaller(opts RenderOptions, emailConfigured, oauthConfigured bool, authorizationSecrets []string) ([]byte, error) {
 	raw, err := FullsendRepoFile(jiraPollCallerTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("loading Jira poll caller template: %w", err)
@@ -64,6 +84,15 @@ func RenderJiraPollCaller(opts RenderOptions, emailConfigured, oauthConfigured b
 		}
 		if !oauthConfigured {
 			out = strings.ReplaceAll(out, line, "")
+		}
+	}
+	for _, name := range JiraAuthorizationSecrets {
+		line := jiraPollSecretLine(name)
+		if strings.Count(out, line) != 1 {
+			return nil, fmt.Errorf("the Jira poll caller template must forward %s to the poll job", name)
+		}
+		if !slices.Contains(authorizationSecrets, name) {
+			out = strings.Replace(out, line, "", 1)
 		}
 	}
 	upstream := opts
