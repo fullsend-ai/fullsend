@@ -69,6 +69,17 @@ jobs:
           if include != ["fullsend"]:
               sys.exit(f"restrictedRepos.include is {include!r}, expected ['fullsend']")
           EOF
+      # Fail closed: if settings.yml lost its environments key (e.g. a YAML
+      # indentation slip), the total-state sync would delete every environment.
+      - name: Verify environments config
+        run: |
+          python3 - <<'EOF'
+          import sys, yaml
+          with open(".github/safe-settings/settings.yml") as f:
+              cfg = yaml.safe_load(f)
+          if not isinstance(cfg, dict) or not isinstance(cfg.get("environments"), list):
+              sys.exit("settings.yml must be a mapping with an 'environments' list")
+          EOF
       - run: npm run full-sync
         working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
         env:

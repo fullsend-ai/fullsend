@@ -6,7 +6,7 @@
 # same goes for per-environment variables, reviewers, wait timers, and
 # protection rules -- anything added later through the GitHub UI is removed
 # by the next run. Edit this file, not the UI.
-#environments:
+environments:
 - name: dev
 - name: e2e-org-pool
   # safe-settings cannot manage environment secrets; these three live only on
