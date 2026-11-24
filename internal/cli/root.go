@@ -89,6 +89,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newScanCmd())
 	cmd.AddCommand(newReposCmd())
 	cmd.AddCommand(newPostReviewCmd())
+	cmd.AddCommand(newReviewDedupCmd())
 	cmd.AddCommand(newFetchReviewThreadsCmd())
 	cmd.AddCommand(newIssuesCmd())
 	cmd.AddCommand(newPostCommentCmd())

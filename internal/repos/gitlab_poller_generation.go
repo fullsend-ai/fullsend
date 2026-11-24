@@ -641,7 +641,9 @@ func (g *pollerGenerationRun) revokeBootstrap(uid int64) error {
 }
 
 // restoreDeveloper sets the account back to Developer, retrying the update
-// once, and verifies the effective access level through an independent read.
+// once, and verifies the effective access level through independent reads,
+// re-read with bounded backoff because GitLab can briefly report the previous
+// level after accepting the update.
 // It runs on a bounded context detached from cancellation so a canceled
 // operation cannot leave the account above Developer.
 func (g *pollerGenerationRun) restoreDeveloper(uid int64) error {
@@ -654,7 +656,9 @@ func (g *pollerGenerationRun) restoreDeveloper(uid int64) error {
 	if setErr != nil {
 		setErr = safeAPIError("updating the replacement Poller membership to Developer", setErr)
 	}
-	level, err := g.client.GetProjectMemberAccessLevel(ctx, g.owner, g.repo, uid)
+	level, err := awaitGitLabAccessLevel(ctx, forge.GitLabAccessLevelDeveloper, func(c context.Context) (int, error) {
+		return g.client.GetProjectMemberAccessLevel(c, g.owner, g.repo, uid)
+	})
 	if err != nil {
 		return errors.Join(setErr, safeAPIError("verifying effective access", err))
 	}

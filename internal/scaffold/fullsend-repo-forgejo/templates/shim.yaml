@@ -1,0 +1,26 @@
+---
+# fullsend shim workflow for Forgejo Actions, managed by 'fullsend repos'.
+#
+# Routes repository events to the fullsend reusable dispatch workflow on this
+# same Forgejo instance. repos install rewrites this file; change repos.yaml
+# instead of editing it.
+#
+# Workflow source: __DISPATCH_SOURCE__
+name: fullsend
+
+on:
+  issues:
+    types: [opened, reopened, labeled]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, closed]
+
+jobs:
+  dispatch:
+    if: >-
+      github.event_name != 'issue_comment'
+      || startsWith(github.event.comment.body, '/fs-')
+    uses: __REUSABLE_DISPATCH__
+    with:
+      runs_on: ${{ vars.FULLSEND_RUNS_ON || 'docker' }}

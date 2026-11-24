@@ -776,7 +776,7 @@ func piAgentModels(defModel string, configAliases map[string]string) map[string]
 
 // piGoogleVertexModels are the model ids pi's built-in google-vertex
 // provider registers, verbatim from the catalog the pinned pi bundles
-// (@earendil-works/pi-ai 1.5.0, dist/providers/data/google-vertex.json).
+// (@earendil-works/pi-ai 1.6.0, dist/providers/data/google-vertex.json).
 // Re-check it on a pi bump, the way the Anthropic ids in pi_run.go are:
 // diff that data file, not the generated wrapper (0.85.0 changed only the
 // data file); a missed entry means this table rejects an id the running pi
@@ -803,6 +803,10 @@ var piGoogleVertexModels = []string{
 	"gemini-3.7-flash",
 	"gemini-3.8-flash",
 	"gemini-4-argon",
+	"gemini-4-carbon",
+	"gemini-4-hydrogen",
+	"gemini-4-neon",
+	"gemini-robotics-er-2-preview",
 }
 
 // piXaiVertexModels are the model ids the vendored xai-vertex extension

@@ -365,6 +365,12 @@ Secrets and variables are deployed on the target repository.
 
 Gateway-only repositories (a complete `inference.gateway` block and no `inference.auth`) need no provider secrets and no `FULLSEND_GCP_*` secrets or variables. In the gateway's `api-key` mode, `repos install` and `repos status` check that `FULLSEND_INFERENCE_GATEWAY_API_KEY` exists and, on GitLab, that it is a masked, protected, non-file-type variable available to all environments. Install reports a missing or unusable key before any write. See [Inference gateway route](../../cli/repos.md#inference-gateway-route).
 
+`JIRA_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS`,
+and `FULLSEND_GITHUB_RUNNER_SECRETS` can come from HashiCorp Vault instead of a
+forge secret. Fullsend authenticates to Vault with the job's OIDC identity; on
+GitLab the agent job must declare a `FULLSEND_VAULT_ID_TOKEN` ID token. See
+[`connections` and `secrets`](../../reference/config-reference.md#connections).
+
 Repos whose `inference.auth` is `openai-wif` need no fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
 **Target repo variables:**
@@ -378,6 +384,8 @@ Repos whose `inference.auth` is `openai-wif` need no fullsend-managed inference 
   by `repos uninstall`
 
 #### GitLab
+
+Agent jobs that resolve Vault secrets must declare a job-level `FULLSEND_VAULT_ID_TOKEN` whose `aud` is the connection's `vault_audience`. The scaffolded agent job (`.gitlab/ci/fullsend-agent.yml`) declares it with the default audience `https://fullsend.sh/vault`, so GitLab connections must keep the default `vault_audience`. See the [`connections` forge support note](../../reference/config-reference.md#connections).
 
 **Target repo CI/CD variables (protected):**
 - `FULLSEND_FORGE_TOKEN` — Project access token for bot identity at Developer (30) access (stored as protected CI/CD variable). Reduced from Maintainer (40) once poller state moved onto unprotected poll-state branches (#7381).

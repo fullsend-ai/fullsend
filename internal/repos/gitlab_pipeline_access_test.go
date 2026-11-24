@@ -325,7 +325,7 @@ func TestAppendGitLabPipelineRefStatus(t *testing.T) {
 	fc := forge.NewFakeClient()
 	seedRepo(fc, "group", "project", "main")
 	fc.ProtectedBranchRules["group/project/main"] = maintainerOnlyRule("main")
-	status := &RepoStatus{Owner: "group", Repo: "project"}
+	status := &RepoStatus{Owner: "group", Repo: "project", Installed: true}
 
 	added := AppendGitLabPipelineRefStatus(context.Background(), fc, "group", "project", nil, status)
 	assert.True(t, added)
@@ -339,11 +339,29 @@ func TestAppendGitLabPipelineRefStatus(t *testing.T) {
 	assert.Len(t, status.Drifts, 1)
 }
 
+// Before install there is no poller identity and install grants its access,
+// so a Maintainer-only default branch is not drift on a not-installed repo
+// (#9705). Once installed, a poller without access is reported.
+func TestAppendGitLabPipelineRefStatus_SkipsNotInstalled(t *testing.T) {
+	fc := forge.NewFakeClient()
+	seedRepo(fc, "group", "project", "main")
+	fc.ProtectedBranchRules["group/project/main"] = maintainerOnlyRule("main")
+
+	notInstalled := &RepoStatus{Owner: "group", Repo: "project"}
+	assert.False(t, AppendGitLabPipelineRefStatus(context.Background(), fc, "group", "project", nil, notInstalled))
+	assert.Empty(t, notInstalled.Drifts)
+
+	installed := &RepoStatus{Owner: "group", Repo: "project", Installed: true}
+	assert.True(t, AppendGitLabPipelineRefStatus(context.Background(), fc, "group", "project", []int{99}, installed))
+	require.Len(t, installed.Drifts, 1)
+	assert.Equal(t, gitLabPipelineRefDriftField, installed.Drifts[0].Field)
+}
+
 func TestAppendGitLabPipelineRefStatus_NoDriftWhenAllowed(t *testing.T) {
 	fc := forge.NewFakeClient()
 	seedRepo(fc, "group", "project", "main")
 	fc.ProtectedBranches["group/project/main"] = true
-	status := &RepoStatus{}
+	status := &RepoStatus{Installed: true}
 
 	added := AppendGitLabPipelineRefStatus(context.Background(), fc, "group", "project", nil, status)
 	assert.False(t, added)
@@ -358,7 +376,7 @@ func TestAppendGitLabPipelineRefStatus_UserGrantClearsDrift(t *testing.T) {
 		MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}, {UserID: 99}},
 		PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
 	}
-	status := &RepoStatus{}
+	status := &RepoStatus{Installed: true}
 
 	added := AppendGitLabPipelineRefStatus(context.Background(), fc, "group", "project", []int{99}, status)
 	assert.False(t, added)
@@ -370,12 +388,12 @@ func TestAppendGitLabPipelineRefStatus_SkipsErrors(t *testing.T) {
 	assert.False(t, AppendGitLabPipelineRefStatus(context.Background(), forge.NewFakeClient(), "g", "p", nil, nil))
 
 	fc := forge.NewFakeClient()
-	assert.False(t, AppendGitLabPipelineRefStatus(context.Background(), fc, "g", "missing", nil, &RepoStatus{}))
+	assert.False(t, AppendGitLabPipelineRefStatus(context.Background(), fc, "g", "missing", nil, &RepoStatus{Installed: true}))
 
 	fc2 := forge.NewFakeClient()
 	seedRepo(fc2, "org", "repo", "main")
 	fc2.Errors["GetProtectedBranch"] = forge.ErrNotSupported
-	assert.False(t, AppendGitLabPipelineRefStatus(context.Background(), fc2, "org", "repo", nil, &RepoStatus{}))
+	assert.False(t, AppendGitLabPipelineRefStatus(context.Background(), fc2, "org", "repo", nil, &RepoStatus{Installed: true}))
 }
 
 func TestDescribePipelineAccess(t *testing.T) {

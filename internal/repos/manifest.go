@@ -24,6 +24,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/netutil"
+	"github.com/fullsend-ai/fullsend/internal/urlutil"
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -113,6 +114,9 @@ type Manifest struct {
 	Defaults DefaultsConfig  `yaml:"defaults,omitempty"`
 	GitHub   *PlatformConfig `yaml:"github,omitempty"`
 	GitLab   *PlatformConfig `yaml:"gitlab,omitempty"`
+	// Forgejo declares named Forgejo instances and the repositories each
+	// one manages (see ForgejoConfig).
+	Forgejo *ForgejoConfig `yaml:"forgejo,omitempty"`
 
 	// sourceRemote and sourceDir are set only when the manifest is loaded
 	// through LoadManifest. They keep config preset paths tied to the
@@ -234,6 +238,11 @@ type RepoEntry struct {
 	// forge section's config and defaults.config. A glob entry refuses
 	// trace_context, which only a concrete entry may declare.
 	Config config.ManagedConfig `yaml:"config,omitempty"`
+	// AllowInsecurePipelineVariables is the ADR 0175 opt-in: fullsend
+	// accepts a ci_pipeline_variables_minimum_override_role weaker than
+	// no_one_allowed for this repository and warns on every run. GitLab
+	// only, and only on a concrete entry, never a glob.
+	AllowInsecurePipelineVariables bool `yaml:"allow_insecure_pipeline_variables,omitempty"`
 }
 
 // DefaultsConfig holds default field values applied to every repo
@@ -849,11 +858,8 @@ func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) er
 		if mintURL == "" && mintMode == MintModePublic {
 			mintURL = DefaultPublicMintURL
 		}
-		if mintURL != "" {
-			mu, err := url.Parse(mintURL)
-			if err != nil || mu.Scheme != "https" || mu.Host == "" {
-				return fmt.Errorf("github.mint_url must be a valid HTTPS URL, got %q", mintURL)
-			}
+		if mintURL != "" && !urlutil.IsMintURL(mintURL) {
+			return fmt.Errorf("github.mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1, got %q", mintURL)
 		}
 		if m.GitHub.FullsendRef != "" && !IsValidRef(m.GitHub.FullsendRef) {
 			return fmt.Errorf("github.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.GitHub.FullsendRef)
@@ -910,6 +916,10 @@ func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) er
 		if err := m.validatePlatformRepos(ForgeGitLab, m.GitLab, allSeen); err != nil {
 			return err
 		}
+	}
+
+	if err := m.Forgejo.validate(); err != nil {
+		return err
 	}
 
 	if err := validateManifestManaged(m); err != nil {
@@ -970,6 +980,14 @@ func (m *Manifest) validatePlatformRepos(forgeName string, platform *PlatformCon
 				return fmt.Errorf("%s.repos[%d]: app_set is only supported for GitHub repos", forgeName, i)
 			}
 		}
+		if entry.AllowInsecurePipelineVariables {
+			if forgeName != ForgeGitLab {
+				return fmt.Errorf("%s.repos[%d]: allow_insecure_pipeline_variables is only supported for GitLab repos", forgeName, i)
+			}
+			if strings.ContainsAny(parts[1], "*?[") {
+				return fmt.Errorf("%s.repos[%d]: allow_insecure_pipeline_variables needs a concrete owner/repo entry, not the glob %q", forgeName, i, entry.Name)
+			}
+		}
 
 		// Validate per-repo app_set override (GitHub). The "none" sentinel
 		// resets to the built-in default and skips format validation.
@@ -980,11 +998,8 @@ func (m *Manifest) validatePlatformRepos(forgeName string, platform *PlatformCon
 		}
 
 		// Validate per-repo mint_url override.
-		if entry.MintURL != "" && entry.MintURL != NoneSentinel {
-			mu, muErr := url.Parse(entry.MintURL)
-			if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
-				return fmt.Errorf("%s.repos[%d]: per-repo mint_url must be a valid HTTPS URL, got %q", forgeName, i, entry.MintURL)
-			}
+		if entry.MintURL != "" && entry.MintURL != NoneSentinel && !urlutil.IsMintURL(entry.MintURL) {
+			return fmt.Errorf("%s.repos[%d]: per-repo mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1, got %q", forgeName, i, entry.MintURL)
 		}
 
 		// Validate per-repo mint_mode override.

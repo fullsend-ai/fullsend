@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -475,7 +476,9 @@ func thenHarnessWorkflowLogsContain(ctx context.Context, w *world.World, agent, 
 
 // defaultSettleDuration is the maximum time to wait for the dispatch
 // pipeline to settle before asserting artifact absence.
-const defaultSettleDuration = 90 * time.Second
+// BEHAVIOUR_NEGATIVE_SETTLE overrides it (a Go duration), for a local
+// forge that delivers events and starts runs at once.
+var defaultSettleDuration = env.MustDuration("BEHAVIOUR_NEGATIVE_SETTLE", 90*time.Second)
 
 // negativeSettleDuration returns how long to wait before a negative
 // (did-not-run) assertion.  When the scenario already completed a
@@ -594,6 +597,12 @@ func givenPullRequestChangingPath(w *world.World, path string) error {
 // author (and the sender of its opened event) is driver's identity. It
 // returns the head branch.
 func openPullRequest(w *world.World, driver scm.Driver, path, body string) (string, error) {
+	return openPullRequestWithContent(w, driver, path, body, []byte("behaviour test\n"))
+}
+
+// openPullRequestWithContent is openPullRequest with the committed file
+// content given.
+func openPullRequestWithContent(w *world.World, driver scm.Driver, path, body string, content []byte) (string, error) {
 	if w.RepoOwner == "" || w.RepoName == "" {
 		return "", fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
 	}
@@ -605,7 +614,7 @@ func openPullRequest(w *world.World, driver scm.Driver, path, body string) (stri
 		return "", err
 	}
 	msg := fmt.Sprintf("behaviour pr %s", branch)
-	if err := driver.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, path, msg, []byte("behaviour test\n")); err != nil {
+	if err := driver.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, path, msg, content); err != nil {
 		return branch, err
 	}
 	pr, err := driver.CreateChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour test PR", body, branch, "main")

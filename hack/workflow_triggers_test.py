@@ -14,9 +14,6 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 
-# The consumer shim moves in #9230; drop it from this set when that merges.
-ALLOWED = {"fullsend.yaml"}
-
 
 def triggers(path: Path) -> set[str]:
     doc = yaml.safe_load(path.read_text()) or {}
@@ -36,14 +33,7 @@ FILES = sorted(p for p in WORKFLOWS.iterdir() if p.suffix in {".yml", ".yaml"})
 
 @pytest.mark.parametrize("path", FILES, ids=lambda p: p.name)
 def test_no_pull_request_target_trigger(path: Path) -> None:
-    if path.name in ALLOWED:
-        pytest.skip("moves in #9230")
     assert "pull_request_target" not in triggers(path)
-
-
-def test_allowlist_entries_exist() -> None:
-    names = {p.name for p in FILES}
-    assert names >= ALLOWED
 
 
 def test_trigger_parser_reads_on_keys(tmp_path: Path) -> None:

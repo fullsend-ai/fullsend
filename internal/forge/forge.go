@@ -438,6 +438,10 @@ func IsTreeTruncated(err error) bool {
 // entries.
 var ErrDiffListingTruncated = errors.New("pull request file diff listing truncated")
 
+// ErrPaginationLimit indicates that a listing reached its safety page cap
+// before the complete result could be retrieved.
+var ErrPaginationLimit = errors.New("pagination limit reached")
+
 // ErrNoChanges indicates that a change proposal could not be created
 // because there are no differences between the head and base branches.
 var ErrNoChanges = errors.New("no changes between branches")
@@ -606,8 +610,12 @@ type PullRequestInfo struct {
 	HeadRef  string
 	BaseRef  string
 	HeadSHA  string
-	AuthorID string
-	IsFork   bool
+	BaseSHA  string
+	// ChangedFiles is the forge-reported total used to prove that a paginated
+	// file-diff listing is complete. Zero means the forge did not report it.
+	ChangedFiles int
+	AuthorID     string
+	IsFork       bool
 }
 
 // WorkflowRun represents a CI/CD workflow execution.
@@ -720,12 +728,15 @@ type GitHubCollaboratorPermissionDetail struct {
 
 // IssueComment represents a comment on an issue.
 type IssueComment struct {
-	ID        int
-	NodeID    string
-	HTMLURL   string
-	Body      string
-	Author    string
-	CreatedAt string
+	ID      int
+	NodeID  string
+	HTMLURL string
+	Body    string
+	Author  string
+	// AppClientID is populated when the forge identifies the GitHub App that
+	// authored the comment. It is empty for other forges or ordinary users.
+	AppClientID string
+	CreatedAt   string
 	// IssueNumber is the issue or pull request number the comment belongs to.
 	// GitHub populates this from the comment's issue_url field.
 	IssueNumber int
@@ -747,6 +758,9 @@ type PullRequestReview struct {
 	State       string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
 	Body        string
 	SubmittedAt string
+	// CommitID is the commit the review was submitted against, when the forge
+	// reports it.
+	CommitID string
 }
 
 // ReviewComment represents an inline comment on a specific line of a
@@ -1385,6 +1399,10 @@ type Client interface {
 	GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error)
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
+	// ListIssueComments returns all comments, or an error wrapping
+	// ErrPaginationLimit if the implementation reaches its pagination safety
+	// cap before the listing is complete. Callers that require a complete
+	// listing must fail open on that error.
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
 	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*IssueComment, error)
 	// GetIssueComment fetches a single comment by ID. Returns ErrNotFound if
@@ -1464,6 +1482,10 @@ type Client interface {
 	// GitHub rejects the request if the commit is not the PR's current HEAD.
 	// comments, when non-nil, attaches inline diff comments to the review.
 	CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error
+	// ListPullRequestReviews returns all reviews, or an error wrapping
+	// ErrPaginationLimit if the implementation reaches its pagination safety
+	// cap before the listing is complete. Callers that require a complete
+	// listing must fail open on that error.
 	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]PullRequestReview, error)
 	// ListPullRequestReviewThreads returns review threads, including their
 	// resolution state and comments. It returns ErrNotSupported when the forge

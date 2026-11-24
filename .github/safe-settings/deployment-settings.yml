@@ -1,0 +1,6 @@
+# Safe-settings deployment config for this repo's own run. The include list
+# restricts the sync to this repository only, so it never touches sibling
+# repos that the org repo's safe-settings run manages.
+restrictedRepos:
+  include:
+    - fullsend

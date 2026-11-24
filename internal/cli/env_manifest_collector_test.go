@@ -62,6 +62,8 @@ var sandboxEnvGates = map[string]string{
 	"FULLSEND_FETCH_URL":          "the runtime fetch service is enabled (ADR 0038)",
 	"FULLSEND_FETCH_TOKEN":        "the runtime fetch service is enabled (ADR 0038)",
 	"FULLSEND_TRACE_ID":           "trace-ID injection succeeds; the run warns and continues when it fails",
+	"GH_ENTERPRISE_TOKEN":         "GITHUB_SERVER_URL points to a GitHub server other than github.com; it carries the same GH_TOKEN placeholder, since gh reads only GH_ENTERPRISE_TOKEN on such a host",
+	"GH_HOST":                     "GITHUB_SERVER_URL points to a GitHub server other than github.com (GitHub Enterprise Server or a GitHub-compatible API)",
 	"TIRITH_FAIL_ON":              "security.sandbox_hooks.tirith.fail_on is set; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
 	"TIRITH_REQUIRED":             "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true); only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
 	"FULLSEND_EGRESS_ALLOWLIST":   "an SSRF egress allowlist is configured, including the auto-merged forge egress entry; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
@@ -108,6 +110,8 @@ func TestEnvManifestCollector(t *testing.T) {
 			"FULLSEND_SLUG",
 			"FULLSEND_TIMEOUT_MINUTES",
 			"FULLSEND_TRACE_ID",
+			"GH_ENTERPRISE_TOKEN",
+			"GH_HOST",
 			"TIRITH_FAIL_ON",
 			"TIRITH_REQUIRED",
 			"TRACEPARENT",
@@ -264,6 +268,7 @@ func TestEnvManifestCollector(t *testing.T) {
 			"FULLSEND_TIMEOUT_MINUTES",
 			"FULLSEND_TRACE_SIGNING_KEY",
 			"FULLSEND_TRIGGER_TOKEN",
+			"FULLSEND_VAULT_ID_TOKEN",
 			"FULLSEND_WEBHOOK_SECRET",
 			"GH_WORKFLOW_TOKEN",
 			"GIT_ASKPASS",
@@ -483,7 +488,12 @@ func bootstrapEnvExportKeys(t *testing.T, gated bool) map[string]bool {
 	captureDir := envManifestCaptureDir(envManifestOpenshell(t))
 	h := &harness.Harness{Role: envManifestAgentName}
 	var fetch []fetchServiceEnv
+	// GH_HOST is gated on the run's GitHub server, read from the host
+	// environment; pin it so the manifest does not depend on where the
+	// tests run.
+	t.Setenv("GITHUB_SERVER_URL", "")
 	if gated {
+		t.Setenv("GITHUB_SERVER_URL", "https://ghes.example.com")
 		schemaFile := filepath.Join(t.TempDir(), "output-schema.json")
 		require.NoError(t, os.WriteFile(schemaFile, []byte(`{"type":"object"}`), 0o644))
 		h.Slug = envManifestAgentName + "-slug"

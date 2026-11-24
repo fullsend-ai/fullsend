@@ -42,13 +42,51 @@ call. The one other supported route is the
 to `--model` and `--fallback-model`, and the alias has no built-in fallback chain. A repo that
 pinned the 5.5 ids here before they became the default can drop the pin to get the fallback. Syntax, rules
 and what the plan block shows are on the [pi page](pi.md#per-repo-alias-overrides) — it is the
-same block. It covers the run's own model only.
+same block. It covers the run's own model, and persona models when an `agents[].subagents` block
+is set (see [Per-persona models](#per-persona-models)).
 
-**Sub-agents.** Sub-agent `model:` frontmatter is resolved by Claude Code itself, with its own
-alias table for the pinned version. fullsend's defaults and fallback chain do not apply there, and
-fullsend does not set `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`: a pinned 5.5 id there would
-fail every sub-agent on a project that does not serve it. A sub-agent that needs a specific
-generation names the id.
+**Sub-agents.** Without an `agents[].subagents` block, sub-agent `model:` frontmatter is resolved
+by Claude Code itself, with its own alias table for the pinned version. fullsend's defaults and
+fallback chain do not apply there, and fullsend does not set
+`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`: a pinned 5.5 id there would fail every sub-agent on
+a project that does not serve it. A sub-agent that needs a specific generation names the id.
+
+### Per-persona models
+
+When the agent's `agents:` entry sets a `subagents:` block with at least
+one entry that is not `~`, the runner resolves skill personas itself ([ADR 0104](../ADRs/0104-per-persona-model-resolution.md)):
+
+- Each `sub-agents/*.md` persona in the agent's skills is registered as a Claude Code agent,
+  `$CLAUDE_CONFIG_DIR/agents/<persona>.md`, with `model:` set to the id the runner resolved. The
+  order is the one pi uses: `subagents.<persona>`, then the persona's frontmatter `model:`, then
+  `subagents.default`, then the parent's model (`model: inherit`). Aliases resolve as `--model`
+  does, so `models.aliases` and the built-in default ids apply.
+- A resolved model must be one this run can resolve to: an alias's id, a built-in fallback id, a
+  `models.aliases` target, or the parent's own model. On the
+  [inference gateway route](#inference-gateway-route) only the parent's gateway model (or
+  `inherit`) is accepted. A config key that names no persona, or a model outside that set, fails
+  Bootstrap. A persona the config does not name is warned about and left out instead.
+- When the agent declares `tools:`, a persona's tools are limited to the agent's: a persona that
+  declares none gets the agent's tools without `Agent`, and tools the agent does not have are
+  dropped. Tools are matched by exact name. The agent's `disallowedTools:` carry over to every
+  persona, whether or not the agent declares `tools:`, and are combined with the persona's own.
+  When the agent restricts `Agent(...)` (or `Task(...)`)
+  to named sub-agent types, a persona outside that list is not registered, since Claude Code would
+  refuse to dispatch it: Bootstrap fails if the config names it, and warns and leaves it out
+  otherwise.
+- A runtime note at the end of the agent definition lists the registered personas and tells the
+  orchestrator to dispatch by `subagent_type` and omit `model`. Claude Code's `Agent` tool still
+  lets a `model` argument override the persona's model.
+- `subagents.default` covers only personas that name no model. Children that name no persona
+  (`Explore`, `general-purpose`) keep Claude Code's own model resolution. When no persona is
+  registered for `default` to apply to (as on an agent such as `retro`), Bootstrap fails rather
+  than accept a setting that would do nothing.
+- An agent whose `tools:` leave out `Agent` and `Task` dispatches no sub-agents, so its whole
+  `subagents` block is ignored with a warning, as on pi: its keys and models are not validated.
+  `Agent()` or `Task()` with an empty list allows no sub-agent type, so no persona is registered
+  for it.
+
+Without the block, nothing changes: no persona files, no runtime note.
 
 ### When your project does not serve the model
 

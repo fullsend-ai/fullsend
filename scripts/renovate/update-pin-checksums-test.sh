@@ -180,6 +180,25 @@ publish_release_notes() {
 
 WRONG_SHA="5555555555555555555555555555555555555555555555555555555555555555"
 
+# publish_nuget_hash <id> <version> <override> — NuGet registration leaf
+# pointing at a catalog entry that records the package's base64 SHA512. Any
+# override publishes the SHA512 of other bytes, to provoke a mismatch.
+publish_nuget_hash() {
+  local id="$1" version="$2" override="$3" reg catalog hash catalog_url
+  catalog_url="https://api.nuget.org/v3/catalog0/data/fixture/${id}.${version}.json"
+  if [[ -n "${override}" ]]; then
+    hash=$(printf '%s' "${override}" | openssl dgst -sha512 -binary | base64 | tr -d '\n')
+  else
+    hash=$(openssl dgst -sha512 -binary "$(awk -F '\t' -v u="${URLS[0]}" '$1 == u { print $2; exit }' "${URLMAP}")" | base64 | tr -d '\n')
+  fi
+  reg="${FIXTURES}/nuget-reg-$RANDOM.json"
+  catalog="${FIXTURES}/nuget-cat-$RANDOM.json"
+  jq -n --arg c "${catalog_url}" '{catalogEntry: $c}' > "${reg}"
+  jq -n --arg h "${hash}" '{packageHashAlgorithm: "SHA512", packageHash: $h}' > "${catalog}"
+  serve "https://api.nuget.org/v3/registration5-semver1/${id}/${version}.json" "${reg}"
+  serve "${catalog_url}" "${catalog}"
+}
+
 # --- Case table -------------------------------------------------------------
 # script | PIN | mode | files (space-separated) | version | amd64/single URL |
 # arm64 URL | published source
@@ -189,6 +208,7 @@ WRONG_SHA="5555555555555555555555555555555555555555555555555555555555555555"
 #   sha256                  <artifact-url>.sha256 per arch
 #   digest:<repo>:<tag>     GitHub release asset digests
 #   notes:<repo>:<tag>      SHA256 row in GitHub release notes
+#   nuget:<id>:<version>    SHA512 in the NuGet catalog entry
 #   none                    upstream publishes nothing; computed hash used
 CASES=(
   "update-pi-anthropic-vertex-checksum.sh|PI_ANTHROPIC_VERTEX|single|images/sandbox/Containerfile|9.8.7|https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v9.8.7.tar.gz||notes:fullsend-ai/pi-anthropic-vertex:v9.8.7"
@@ -202,7 +222,7 @@ CASES=(
   "update-gitsign-checksums.sh|GITSIGN|multi|images/code/Containerfile|9.1.0|https://github.com/sigstore/gitsign/releases/download/v9.1.0/gitsign_9.1.0_linux_amd64|https://github.com/sigstore/gitsign/releases/download/v9.1.0/gitsign_9.1.0_linux_arm64|checksums:https://github.com/sigstore/gitsign/releases/download/v9.1.0/checksums.txt"
   "update-lychee-checksums.sh|LYCHEE|multi|images/code/Containerfile|9.1.0|https://github.com/lycheeverse/lychee/releases/download/lychee-v9.1.0/lychee-x86_64-unknown-linux-gnu.tar.gz|https://github.com/lycheeverse/lychee/releases/download/lychee-v9.1.0/lychee-aarch64-unknown-linux-gnu.tar.gz|sha256"
   "update-opencode-checksums.sh|OPENCODE|multi|images/sandbox/Containerfile|9.1.0|https://github.com/anomalyco/opencode/releases/download/v9.1.0/opencode-linux-x64.tar.gz|https://github.com/anomalyco/opencode/releases/download/v9.1.0/opencode-linux-arm64.tar.gz|digest:anomalyco/opencode:v9.1.0"
-  "update-ort-checksums.sh|ORT|multi|images/runner/Containerfile|9.1.0|https://github.com/microsoft/onnxruntime/releases/download/v9.1.0/onnxruntime-linux-x64-9.1.0.tgz|https://github.com/microsoft/onnxruntime/releases/download/v9.1.0/onnxruntime-linux-aarch64-9.1.0.tgz|digest:microsoft/onnxruntime:v9.1.0"
+  "update-ort-checksums.sh|ORT|single|images/runner/Containerfile|9.1.0|https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/9.1.0/microsoft.ml.onnxruntime.9.1.0.nupkg||nuget:microsoft.ml.onnxruntime:9.1.0"
 )
 
 # publish <source> <override> — serve the published checksums for URLS/SHAS.
@@ -218,6 +238,10 @@ publish() {
     notes:*)
       IFS=: read -r _ repo tag <<< "${src}"
       publish_release_notes "${repo}" "${tag}" "${override}"
+      ;;
+    nuget:*)
+      IFS=: read -r _ repo tag <<< "${src}"
+      publish_nuget_hash "${repo}" "${tag}" "${override}"
       ;;
     none) ;;
     *) echo "unknown published source: ${src}" >&2; exit 1 ;;
@@ -310,6 +334,25 @@ done
 WD=$(setup_workdir GITLEAKS 9.1.0 images/sandbox/Containerfile)
 sed -i "s/^ARG GITLEAKS_VERSION=.*/ARG GITLEAKS_VERSION=9.0.0/" "${WD}/images/runner/Containerfile"
 expect_failure "gitleaks: version mismatch between images" "${WD}" update-gitleaks-checksums.sh "GITLEAKS_VERSION mismatch"
+
+# NuGet catalog entries that cannot be trusted fail before anything is written.
+ORT_NUPKG="https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/9.1.0/microsoft.ml.onnxruntime.9.1.0.nupkg"
+ORT_REG="https://api.nuget.org/v3/registration5-semver1/microsoft.ml.onnxruntime/9.1.0.json"
+ORT_CAT="https://api.nuget.org/v3/catalog0/data/fixture/microsoft.ml.onnxruntime.9.1.0.json"
+for nuget_case in \
+  'no catalogEntry|{}|{"packageHashAlgorithm":"SHA512","packageHash":"x"}|no catalogEntry in the NuGet registration' \
+  'wrong algorithm|{"catalogEntry":"'"${ORT_CAT}"'"}|{"packageHashAlgorithm":"SHA256","packageHash":"x"}|uses SHA256, expected SHA512' \
+  'no packageHash|{"catalogEntry":"'"${ORT_CAT}"'"}|{"packageHashAlgorithm":"SHA512"}|no packageHash in the NuGet catalog entry'; do
+  IFS='|' read -r label reg_json cat_json want <<< "${nuget_case}"
+  reset_urls
+  serve "${ORT_NUPKG}" "$(make_artifact "${ORT_NUPKG}")"
+  printf '%s\n' "${reg_json}" > "${FIXTURES}/nuget-reg-case.json"
+  printf '%s\n' "${cat_json}" > "${FIXTURES}/nuget-cat-case.json"
+  serve "${ORT_REG}" "${FIXTURES}/nuget-reg-case.json"
+  serve "${ORT_CAT}" "${FIXTURES}/nuget-cat-case.json"
+  WD=$(setup_workdir ORT 9.1.0 images/runner/Containerfile)
+  expect_failure "ort: ${label}" "${WD}" update-ort-checksums.sh "${want}"
+done
 
 # A missing SHA ARG line fails before anything is written.
 WD=$(setup_workdir RIPGREP 99.1.0 images/sandbox/Containerfile)

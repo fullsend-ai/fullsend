@@ -503,10 +503,7 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 	if effort != "" {
 		parts = append(parts, "-c "+shellQuote("model_reasoning_effort="+effort))
 	}
-	parts = append(parts,
-		"-o "+shellQuote(r.ConfigDir()+"/"+codexLastMessageFile),
-		"-",
-	)
+	parts = append(parts, "-")
 	if params.Debug != "" {
 		parts = append(parts, "2>>"+shellQuote(sandbox.SandboxWorkspace+"/"+codexDebugLogFile))
 	}
@@ -761,11 +758,10 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 // per-iteration.
 func (r CodexRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr, "the previous iteration")
-	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s %s",
+	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s",
 		shellQuote(r.WorkspaceDir()),
 		shellQuote(r.codexSessionsDir()),
-		shellQuote(r.WorkspaceDir()+"/"+codexDebugLogFile),
-		shellQuote(r.ConfigDir()+"/"+codexLastMessageFile))
+		shellQuote(r.WorkspaceDir()+"/"+codexDebugLogFile))
 	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
 	return err
 }

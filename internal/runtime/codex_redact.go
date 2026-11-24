@@ -194,7 +194,7 @@ func codexReadBounded(path string) ([]byte, error) {
 
 // codexRolloutEnvelopes are the top-level `type` values a codex rollout line
 // carries: every variant of RolloutItemWire in
-// codex-rs/history/src/rollout_payload.rs, 0.152.1 through 0.166.0
+// codex-rs/history/src/rollout_payload.rs, 0.152.1 through 0.170.0
 // (dynamic_tools_updated arrived in 0.166.0; the set was unchanged from
 // 0.157.0 to 0.159.3). Update it on a CODEX_VERSION bump, since one unknown
 // line discards the whole file. They are

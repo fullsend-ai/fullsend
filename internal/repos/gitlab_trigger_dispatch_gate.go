@@ -82,7 +82,7 @@ type GitLabTriggerPushGrant struct {
 //     dispatched pipeline rewrite the code later protected pipelines run.
 //     An enabled, unreadable, or unreported setting defers.
 //  4. The committed CI files run no unrelated job in a trigger or agent
-//     child (source=pipeline) pipeline (gitlabDispatchExtraWorkProblem).
+//     child (source=pipeline) pipeline (GitLabDispatchExtraWorkProblems).
 //  5. The trigger account (DiagnoseGitLabTriggerAccount) is ready on branch,
 //     verified against live project state.
 //  6. The committed poll, identity, agent and dispatcher scripts and the
@@ -139,13 +139,14 @@ func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, ap
 		// Schedule ownership only: a trigger account without merge access
 		// can still start webhook pipelines through its deploy-key grant.
 		scheduleOwnerDeferred = gitlabTriggerScheduleMergeAccessProblem(ctx, client, owner, repo, branch)
-		// Unrelated user jobs must not run in the trigger or agent child
-		// (source=pipeline) pipelines: they would receive the protected
-		// credentials those pipelines carry.
-		if problem, err := gitlabDispatchExtraWorkProblem(ctx, client, owner, repo, branch); err != nil {
+		// Unrelated user jobs must not run in the trigger, agent child
+		// (source=pipeline) or scheduled pipelines: they would receive the
+		// protected credentials those pipelines carry. Every source's
+		// finding is listed (#9708).
+		if problems, err := GitLabDispatchExtraWorkProblems(ctx, client, owner, repo, branch); err != nil {
 			deferred = append(deferred, "could not verify that unrelated jobs are excluded from trigger and agent child pipelines: "+err.Error())
-		} else if problem != "" {
-			deferred = append(deferred, problem)
+		} else {
+			deferred = append(deferred, problems...)
 		}
 	}
 	if reason := gitlabDispatchRouteScaffoldProblem(ctx, client, owner, repo, manifest); reason != "" {
@@ -317,7 +318,7 @@ func GitLabScheduleReactivationDeferral(ctx context.Context, client forge.Client
 		return "compatible agent and poll templates have not landed on the default branch"
 	}
 	if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
-		return "the pipeline-variable override restriction is not verified as no_one_allowed"
+		return "the pipeline-variable override restriction is not verified as no_one_allowed, and the manifest does not set allow_insecure_pipeline_variables"
 	}
 	project, err := client.GetRepo(ctx, owner, repo)
 	if err != nil || project == nil || project.DefaultBranch == "" {
@@ -929,7 +930,8 @@ func isManagedPipelineSchedule(description string) bool {
 }
 
 // gitlabTriggerDispatchOverrideRoleProblem returns a deferral reason unless
-// the live override role is exactly no_one_allowed.
+// the live override role is no_one_allowed, or a reported weaker role the
+// manifest opted in to (allow_insecure_pipeline_variables).
 func gitlabTriggerDispatchOverrideRoleProblem(ctx context.Context, client forge.Client, owner, repo string) string {
 	role, err := client.GetPipelineVariablesMinimumOverrideRole(ctx, owner, repo)
 	switch {
@@ -937,7 +939,7 @@ func gitlabTriggerDispatchOverrideRoleProblem(ctx context.Context, client forge.
 		return "ci_pipeline_variables_minimum_override_role is not supported on this GitLab instance, so pipeline variable overrides cannot be shown to be disabled"
 	case err != nil:
 		return "could not read ci_pipeline_variables_minimum_override_role: " + safeAPIError("reading the pipeline-variable override role", err).Error()
-	case role != forge.PipelineVarOverrideNoOneAllowed:
+	case !gitlabPipelineVarRoleAccepted(ctx, owner, repo, role):
 		return fmt.Sprintf("ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; to apply the restriction, %s", displayPipelineVarRole(role), gitlabPipelineVarRestrictionHint)
 	}
 	return ""

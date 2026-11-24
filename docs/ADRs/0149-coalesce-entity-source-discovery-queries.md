@@ -25,6 +25,13 @@ candidate and to let a harness act on it.
 poll and bound-run lifecycles. This ADR adds a local source check before each
 sandbox cycle for an entity-driven harness.
 
+[ADR 0079](0079-bind-entity-execution-through-named-sources.md) partially
+supersedes the local-reproduction and actor-filtered source-query requirements:
+membership follows native provider semantics, with exact local checks where
+possible and batched provider checks otherwise. Combined enumeration, current
+membership, coverage, and retry remain required; actor-filtered harness CEL
+and model-context admission are independent gates.
+
 ## Context
 
 ADR 0098 lets harnesses declare entity sources, but allows sharing only when

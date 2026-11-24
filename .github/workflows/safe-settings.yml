@@ -1,0 +1,217 @@
+# Environment configuration via safe-settings full-sync, scoped to this
+# repository only (config under .github/safe-settings/). Everything else --
+# rulesets, repository settings -- stays managed by the org repo's
+# safe-settings run.
+#
+# No pull_request trigger: full-sync needs the governance App private key,
+# and a PR must never be able to run code that holds it. Validation happens
+# through a workflow_dispatch dry run (dry_run defaults to true) before the
+# first real apply; the daily schedule then reconciles drift.
+name: safe-settings
+
+on:
+  schedule:
+    - cron: '0 8 * * *' # daily reconcile against drift; offset from the org run
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log what would change without applying (FULL_SYNC_NOP)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Pinned to the commit the 3.0.0 tag pointed at; tags are mutable.
+  SAFE_SETTINGS_VERSION: a9a1f366ad6a738b55682d346d94f8d6c4893b09 # 3.0.0
+  SAFE_SETTINGS_CODE_DIR: ${{ github.workspace }}/.safe-settings-code
+  # Points safe-settings at our deployment config so the sync is restricted
+  # to this repository (restrictedRepos.include).
+  DEPLOYMENT_CONFIG_FILE: ${{ github.workspace }}/.github/safe-settings/deployment-settings.yml
+
+jobs:
+  apply:
+    # Main only: a dispatch from another branch would apply main's config
+    # with that branch's repo scoping.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: github-community-projects/safe-settings
+          ref: ${{ env.SAFE_SETTINGS_VERSION }}
+          path: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: ${{ env.SAFE_SETTINGS_CODE_DIR }}/.nvmrc
+      - run: npm ci --ignore-scripts
+        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+      # Fail closed: if the deployment config is missing or no longer scoped
+      # to exactly this repo, safe-settings falls back to a denylist and the
+      # total-state sync would reach every org repo.
+      - name: Verify repo scoping
+        run: |
+          python3 - <<'EOF'
+          import os, sys, yaml
+          path = os.environ["DEPLOYMENT_CONFIG_FILE"]
+          with open(path) as f:
+              cfg = yaml.safe_load(f) or {}
+          include = (cfg.get("restrictedRepos") or {}).get("include")
+          if include != ["fullsend"]:
+              sys.exit(f"restrictedRepos.include is {include!r}, expected ['fullsend']")
+          EOF
+      # Fail closed: if settings.yml lost its environments key (e.g. a YAML
+      # indentation slip), the total-state sync would delete every environment.
+      - name: Verify environments config
+        run: |
+          python3 - <<'EOF'
+          import sys, yaml
+          with open(".github/safe-settings/settings.yml") as f:
+              cfg = yaml.safe_load(f)
+          if not isinstance(cfg, dict) or not isinstance(cfg.get("environments"), list):
+              sys.exit("settings.yml must be a mapping with an 'environments' list")
+          EOF
+      # safe-settings 3.0.0's environments plugin discards its NopCommands,
+      # so FULL_SYNC_NOP cannot report environment drift. Compute the diff
+      # here, read-only, so dry runs have something trustworthy to review.
+      # Compares every attribute the environments plugin reconciles, with
+      # omitted config fields treated as the plugin's defaults.
+      - name: Report environment drift
+        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+        env:
+          APP_ID: ${{ vars.GOVERNANCE_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.GOVERNANCE_PRIVATE_KEY }}
+          SETTINGS_PATH: ${{ github.workspace }}/.github/safe-settings/settings.yml
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+          const yaml = require("js-yaml");
+          const { App } = require("octokit");
+
+          const ORG = "fullsend-ai";
+          const REPO = "fullsend";
+
+          // Canonical view of one environment, covering every attribute the
+          // safe-settings environments plugin reconciles. Omitted config
+          // fields use the same defaults the plugin applies (getChanged).
+          // Config reviewers are {id, type}; the live API nests the ID under
+          // protection_rules[].reviewers[].reviewer. Normalize both to {id, type}.
+          function canonicalReviewers(list) {
+            return (list || [])
+              .map(r => ({ id: r.reviewer ? r.reviewer.id : r.id, type: r.type }))
+              .filter(r => r.id !== undefined)
+              .sort((a, b) => a.id - b.id);
+          }
+          function canonical(env) {
+            const rule = (env.protection_rules || []).find(r => r.type === "wait_timer");
+            const reviewers = (env.protection_rules || []).find(r => r.type === "required_reviewers");
+            const pol = env.deployment_branch_policy;
+            // Config policies are either plain strings or {type, names: [...]};
+            // expand both forms into one {name, type} per policy.
+            const policies = (pol && pol.custom_branch_policies || []).flatMap(p =>
+              typeof p === "string"
+                ? [{ name: p, type: "branch" }]
+                : (p.names || [p.name]).map(n => ({ name: n, type: p.type }))
+            );
+            return JSON.stringify({
+              wait_timer: (env.wait_timer !== undefined ? env.wait_timer : (rule || {}).wait_timer) || 0,
+              prevent_self_review: !!(env.prevent_self_review !== undefined ? env.prevent_self_review : (reviewers || {}).prevent_self_review),
+              reviewers: canonicalReviewers(env.reviewers || (reviewers || {}).reviewers),
+              variables: (env.variables || []).map(v => ({ name: v.name.toLowerCase(), value: v.value })).sort((a, b) => a.name.localeCompare(b.name)),
+              deployment_protection_rules: (env.deployment_protection_rules || []).map(r => ({ app_id: r.app_id })).sort((a, b) => a.app_id - b.app_id),
+              deployment_branch_policy: pol === null || pol === undefined
+                ? null
+                : {
+                    protected_branches: !!pol.protected_branches,
+                    custom_branch_policies: policies
+                      .filter(p => p.name !== undefined)
+                      .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+                  }
+            });
+          }
+
+          async function main() {
+            const desired = yaml.load(fs.readFileSync(process.env.SETTINGS_PATH, "utf8")).environments;
+            const app = new App({ appId: process.env.APP_ID, privateKey: process.env.PRIVATE_KEY });
+            const installations = await app.octokit.request("GET /app/installations");
+            const inst = installations.data.find(i => i.account.login === ORG);
+            if (!inst) throw new Error(`no app installation for ${ORG}`);
+            const octokit = await app.getInstallationOctokit(inst.id);
+
+            const live = await octokit.paginate(
+              "GET /repos/{owner}/{repo}/environments",
+              { owner: ORG, repo: REPO },
+              r => r.data
+            );
+            for (const env of live) {
+              if (env.deployment_branch_policy && env.deployment_branch_policy.custom_branch_policies) {
+                const pols = await octokit.paginate(
+                  "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment-branch-policies",
+                  { owner: ORG, repo: REPO, environment_name: env.name }
+                );
+                env.deployment_branch_policy.custom_branch_policies = pols.map(p => ({ name: p.name, type: p.type }));
+              }
+              env.variables = await octokit.paginate(
+                "GET /repos/{owner}/{repo}/environments/{environment_name}/variables",
+                { owner: ORG, repo: REPO, environment_name: env.name, per_page: 100 },
+                r => Array.isArray(r.data) ? r.data : (r.data.variables || [])
+              );
+              const dpr = await octokit.request(
+                "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment_protection_rules",
+                { owner: ORG, repo: REPO, environment_name: env.name }
+              );
+              env.deployment_protection_rules = dpr.data.custom_deployment_protection_rules.map(r => ({ app_id: r.app.id }));
+            }
+
+            const lines = [];
+            const extra = live.map(e => e.name).filter(n => !desired.some(d => d.name === n));
+            const missing = desired.map(d => d.name).filter(n => !live.some(e => e.name === n));
+            if (extra.length) lines.push(`  delete (live only, removed on apply): ${extra.join(", ")}`);
+            if (missing.length) lines.push(`  create (config only): ${missing.join(", ")}`);
+            for (const d of desired) {
+              const l = live.find(e => e.name === d.name);
+              if (!l) continue;
+              const want = canonical(d);
+              const have = canonical(l);
+              if (want !== have) {
+                lines.push(`  update ${d.name}: differs`);
+                // Log only variable names that changed; values may not be
+                // meant for public Actions logs.
+                const wantVars = new Map(JSON.parse(want).variables.map(v => [v.name, v.value]));
+                const haveVars = new Map(JSON.parse(have).variables.map(v => [v.name, v.value]));
+                const varChanges = [];
+                for (const n of new Set([...wantVars.keys(), ...haveVars.keys()])) {
+                  if (!haveVars.has(n)) varChanges.push(`+${n}`);
+                  else if (!wantVars.has(n)) varChanges.push(`-${n}`);
+                  else if (wantVars.get(n) !== haveVars.get(n)) varChanges.push(`~${n}`);
+                }
+                if (varChanges.length) lines.push(`    variables: ${varChanges.join(", ")}`);
+              }
+            }
+            if (lines.length === 0) {
+              console.log("Environment drift: none");
+            } else {
+              console.log("Environment drift:");
+              for (const line of lines) console.log(line);
+            }
+          }
+          main().catch(e => { console.error(e); process.exit(1); });
+          EOF
+      - run: npm run full-sync
+        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+        env:
+          GH_ORG: fullsend-ai
+          APP_ID: ${{ vars.GOVERNANCE_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.GOVERNANCE_PRIVATE_KEY }}
+          ADMIN_REPO: fullsend
+          CONFIG_PATH: .github/safe-settings
+          FULL_SYNC_NOP: ${{ inputs.dry_run && 'true' || 'false' }}

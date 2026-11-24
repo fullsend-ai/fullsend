@@ -93,7 +93,7 @@ the proposed overlay on the proposed (declared) preset rather than the
 installed base; an absent base is an empty layer, so adding a preset is
 compared too. A pristine first install (no installation, no overlay and no
 base) has nothing to compare against and inherits the preset. See
-[Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration).
+[fullsend repos — Managed configuration](../../cli/repos.md#managed-configuration).
 
 ### Marshal behavior
 
@@ -156,6 +156,8 @@ the overlay → base → code defaults chain.
 | `inference.gateway.messages_auth_header` | `string` (nested) | Scalar override | `""` (empty; means `authorization`) |
 | `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
+| `connections` | `map[string]SecretConnection` | Per-name merge; a layer replaces a whole entry ([details](../../reference/config-reference.md#connections)) | `nil` (none) |
+| `secrets` | `map[string]SecretSource` | Per-name merge; a layer replaces a whole entry, including `vault_secrets` ([details](../../reference/config-reference.md#connections)) | `nil` (native sources) |
 | `artifacts.content` | `string` (nested) | Scalar override | `"all"` |
 | `artifacts.by_source` | `map[string]string` (nested) | Per-key merge | `nil` (no per-source levels) |
 | `progress.verbosity` | `string` (nested) | Scalar override | `"full"` |

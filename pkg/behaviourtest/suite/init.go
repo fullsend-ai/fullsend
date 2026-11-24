@@ -79,10 +79,12 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 // step error: ..."), which reads accurately.
 //
 // Every non-skip failure the hook sees — the scenario's own error, or a
-// deallocation error that fails an otherwise passing scenario — is first
+// deallocation error that fails an otherwise passing scenario — is
 // recorded on the run's shared failure recorder with its classification
 // and a redacted message, and logs one labelled line, via
-// recordScenarioFailure.
+// recordScenarioFailure. The scenario's own error is recorded as
+// CollectFailureLogs returns it, which marks a first event on a freshly
+// installed repo that started no run as infrastructure (#9779).
 //
 // Order: for a failed scenario, CollectFailureLogs first saves the logs
 // of the repository's workflow runs that in-scenario collection did not
@@ -153,8 +155,10 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 		}()
 	}
 	if scenarioErr != nil && !errors.Is(scenarioErr, godog.ErrSkip) {
-		recordScenarioFailure(w, scenarioErr)
-		steps.CollectFailureLogs(ctx, w, scenarioErr)
+		// Collect first: the dispatch diagnostics can find that the first
+		// event on a freshly installed repo started no run, and the
+		// returned error then carries the infrastructure mark (#9779).
+		recordScenarioFailure(w, steps.CollectFailureLogs(ctx, w, scenarioErr))
 	}
 	steps.CleanupScenario(w)
 	return ctx, nil
@@ -254,6 +258,7 @@ func resetScenarioWorld(w *world.World) {
 	w.CreatedIssueNumbers = nil
 	w.LeasedRepoName = ""
 	w.LeasedRepoOrg = ""
+	w.RepoFreshlyInstalled = false
 	w.LeaseOwned = nil
 	w.MintURL = ""
 	w.MintStatusGroup = ""
@@ -269,6 +274,10 @@ func resetScenarioWorld(w *world.World) {
 	w.GatewayConfigOriginal = nil
 	w.GatewayAPIKeySecretSet = false
 	w.RunnerSecretsSecretSet = false
+	w.VaultServer = nil
+	w.VaultScenarioID = ""
+	w.VaultSecrets = nil
+	w.VaultOverrideValues = nil
 	w.OwnersAuthActivated = false
 	w.JiraMockServer = nil
 	w.JiraMockState = nil

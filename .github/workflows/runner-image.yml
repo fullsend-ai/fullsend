@@ -14,6 +14,8 @@ on:
       - ".dockerignore"
       - ".github/workflows/runner-image.yml"
       - ".github/scripts/openshell-version.sh"
+      - "internal/security/mlscan*.go"
+      - "internal/security/onnxguard*.go"
       - go.mod
       - go.sum
   pull_request:
@@ -22,6 +24,8 @@ on:
       - ".dockerignore"
       - ".github/workflows/runner-image.yml"
       - ".github/scripts/openshell-version.sh"
+      - "internal/security/mlscan*.go"
+      - "internal/security/onnxguard*.go"
       - go.mod
       - go.sum
   workflow_dispatch:
@@ -165,10 +169,19 @@ jobs:
 
             # Regression guard: a SAFE verdict returns no INJECTION label,
             # which the scanner once treated as a fail-closed error.
-            benign=$(EVENT_PAYLOAD="{\"issue\":{\"body\":\"The CLI panics when the config file is missing.\"}}" \
+            # Runs without the image ENV to test the ORT telemetry opt-out
+            # in the binary itself (#9777).
+            benign=$(env -u ORT_DISABLE_TELEMETRY EVENT_PAYLOAD="{\"issue\":{\"body\":\"The CLI panics when the config file is missing.\"}}" \
               fullsend scan input 2>&1 || true)
             echo "${benign}" | grep -q "no findings" \
               || fail "ML scan flagged benign input: ${benign}"
+            ! echo "${benign}" | grep -q "ML scanner unavailable" \
+              || fail "ML scanner did not start: ${benign}"
+
+            # ORT writes a device ID and event store here when its
+            # telemetry uploader starts.
+            test ! -e "${HOME}/.cache/Microsoft" \
+              || fail "ONNX Runtime telemetry started: ${HOME}/.cache/Microsoft exists"
           '
 
       # Push this platform's image by digest, gated on the smoke test

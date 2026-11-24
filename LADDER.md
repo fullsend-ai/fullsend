@@ -67,11 +67,15 @@ repository.
 - Ability to label, close, and reopen issues. A triage user can apply
   labels such as `ready-to-code`, but that label only dispatches the code
   agent when applied by a user with `write` access or by an agent bot.
-  A `/ok-to-test <sha>` comment from a triage user does not authorize e2e
-  runs in this repository. Ask someone with the Write role to comment
-  it.
-- Triage contributors do not receive automatic e2e CI runs. Your PRs
-  need a `/ok-to-test <sha>` comment from someone with the Write role.
+  A `/ok-to-test <sha>` comment from a triage user does not authorize the
+  optional Forgejo behaviour suite in this repository. Ask someone with
+  the Write role to comment it.
+- Pull requests from any author, forks included, run the behaviour and
+  playback scenarios on the GitHub emulator automatically (the required
+  `behaviour-github-emulator` check).
+  `/ok-to-test <sha>`, from someone with the Write role, authorizes the
+  optional Forgejo behaviour suite on your PRs; `/ok-to-test <sha> live`
+  also runs the live behaviour and playback suites.
 
 **Criteria:**
 
@@ -112,11 +116,17 @@ repository.
 - `/fs-retro` and `/fs-prioritize` slash commands (analysis agents
   that require write-level trust)
 - Push access to non-protected branches
-- Authorizing e2e CI on fork PRs, and on PRs from authors without
-  write access, by commenting `/ok-to-test <sha>` after reviewing the
-  latest push, where `<sha>` is the PR's latest commit (Commits tab, or
+- Authorizing the optional Forgejo behaviour suite on fork PRs, and on
+  PRs from authors without write access, by commenting
+  `/ok-to-test <sha>` after reviewing the latest push, where `<sha>` is
+  the PR's latest commit (Commits tab, or
   `gh pr view N --json headRefOid`). Your own PRs from a fork also need
-  a `/ok-to-test <sha>` comment, which you may post yourself
+  a `/ok-to-test <sha>` comment for it, which you may post yourself.
+  The required `behaviour-github-emulator` check needs no
+  authorization: every PR, forks included, runs it
+- Running the live behaviour and playback suites on a PR, by commenting
+  `/ok-to-test <sha> live` (reported as `behaviour-live` and
+  `playback-live`)
 
 **Criteria:**
 

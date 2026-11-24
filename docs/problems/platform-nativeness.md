@@ -20,7 +20,7 @@ Fullsend used a centralized `.fullsend` config repo as the hub for agent pipelin
 
 - `workflow_dispatch` as the cross-repo trigger mechanism, because `workflow_call` would require the caller to have the App PEM ([ADR 0008](../ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md))
 - A fine-grained PAT (`FULLSEND_DISPATCH_TOKEN`) stored as an org secret with selected-repo visibility, so enrolled repos can trigger `.fullsend` workflows
-- `pull_request_target` in the shim workflow, so PR authors cannot rewrite the dispatch code to steal the token ([ADR 0009](../ADRs/0009-pull-request-target-in-shim-workflows.md))
+- `pull_request_target` in the shim workflow, so PR authors cannot rewrite the dispatch code to steal the token ([ADR 0009](../ADRs/0009-pull-request-target-in-shim-workflows.md); superseded by [ADR 0164](../ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md), which runs the shim on `pull_request` for same-repo PRs)
 - Verification logic — the CLI dispatches `agent.yaml` with `event_type=verify` to confirm the token works
 
 gh-aw workflows are defined **in the repo itself** as markdown files. Events trigger Actions workflows directly. There is no cross-repo dispatch to set up, no dispatch token to manage, no shim to secure.
@@ -43,7 +43,7 @@ That weakens retriggering as its own justification for per-role Apps: it's solva
 
 ### Repository enrollment
 
-Fullsend must inject a shim workflow into each target repo. The CLI creates a branch (`fullsend/onboard`), writes `.github/workflows/fullsend.yaml` with the `pull_request_target` trigger, and opens a PR. A human must merge this PR to complete enrollment ([ADR 0013, proposed](../ADRs/0013-admin-install-repo-enrollment-v1.md)).
+Fullsend must inject a shim workflow into each target repo. The CLI creates a branch (`fullsend/onboard`), writes `.github/workflows/fullsend.yaml` with the `pull_request` trigger, and opens a PR. A human must merge this PR to complete enrollment ([ADR 0013, proposed](../ADRs/0013-admin-install-repo-enrollment-v1.md)).
 
 gh-aw enrollment is adding a markdown file to your repo. `gh aw compile` generates the corresponding `.lock.yml`; `gh aw run` is a separate command that executes a workflow immediately in Actions.
 
