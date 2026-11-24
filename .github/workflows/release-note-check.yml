@@ -9,7 +9,6 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  issues: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -75,15 +74,20 @@ jobs:
           ACTION_REQUIRED: ${{ steps.check.outputs.action-required }}
         run: |
           set -euo pipefail
-          # Best-effort: fork PRs run with a read-only token and cannot
-          # create or add labels. The check itself already passed; do not
-          # fail valid fork PRs here.
+          # Fork PRs run with a read-only token and cannot create or add
+          # labels. For an action-required note that must not be silent:
+          # without the label the gatherer publishes the note as an
+          # ordinary bullet and strips the "action required:" prefix,
+          # losing the Urgent Upgrade Notes entry. Fail instead, so a
+          # maintainer must add the label before merge.
           if [[ "${ACTION_REQUIRED:-}" == "1" ]]; then
             gh label create release-note-action-required --color b60205 \
               --description "Release-note block starts with 'action required'" --force \
-              || echo "::warning::could not create label (fork PR?)"
-            gh pr edit "${PR_NUMBER}" --add-label release-note-action-required \
-              || echo "::warning::could not add label (fork PR?)"
+              || echo "::warning::could not create label (it may already exist)"
+            if ! gh pr edit "${PR_NUMBER}" --add-label release-note-action-required; then
+              echo "::error::This PR needs the release-note-action-required label (its release-note block starts with 'action required'), but the label could not be added (fork PR with a read-only token). A maintainer must add it before merge."
+              exit 1
+            fi
           else
             # Fails if the label is absent; that is the common case.
             gh pr edit "${PR_NUMBER}" --remove-label release-note-action-required || true

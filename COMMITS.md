@@ -99,6 +99,8 @@ The release-note block is what users see. When the block starts with
 `release-note-action-required`, and the release pipeline lists the note
 under **Urgent Upgrade Notes** in the published release notes (the
 gatherer strips the `action required:` prefix from the note text itself).
+Fork PRs run with a read-only token, so CI cannot label them; the check
+fails instead until a maintainer adds the label.
 The `!` marker stays required for reviewers and tooling. CI rejects a
 `NONE` release-note block — and any block that does not start with
 `action required` — when the PR title or any commit subject carries the

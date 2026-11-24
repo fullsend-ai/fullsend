@@ -27,19 +27,25 @@ run_case() {
   fi
 }
 
-# Like run_case, but also asserts on the script's stdout: whether the
-# "release-note: action-required" marker is present. That marker drives
-# the release-note-action-required label, which is the only way a note
+# Like run_case, but also asserts on the script's GITHUB_OUTPUT: whether
+# the action-required=1 output is present. That output drives the
+# release-note-action-required label, which is the only way a note
 # lands under Urgent Upgrade Notes.
 run_marker_case() {
   local desc="$1" expected_exit="$2" expected_marker="$3"
   shift 3
   local actual_exit actual_marker="absent"
   local out
-  out=$("$@" bash "${SCRIPT}" 2>/dev/null) && actual_exit="pass" || actual_exit="fail"
-  if grep -qx 'release-note: action-required' <<<"${out}"; then
+  out=$(mktemp)
+  if GITHUB_OUTPUT="${out}" "$@" bash "${SCRIPT}" >/dev/null 2>&1; then
+    actual_exit="pass"
+  else
+    actual_exit="fail"
+  fi
+  if grep -qx 'action-required=1' "${out}"; then
     actual_marker="present"
   fi
+  rm -f "${out}"
   if [[ "${actual_exit}" == "${expected_exit}" && "${actual_marker}" == "${expected_marker}" ]]; then
     echo "ok   — ${desc}"
   else
@@ -114,6 +120,68 @@ BODY_QUOTED_NONE="## Summary
 \`\`\`release-note
 \"NONE\"
 \`\`\`
+"
+
+BODY_QUOTED_NA="## Summary
+
+\`\`\`release-note
+\"n/a\"
+\`\`\`
+"
+
+BODY_QUOTED_NA_LOWER="## Summary
+
+\`\`\`release-note
+'na'
+\`\`\`
+"
+
+BODY_QUOTED_NONE_UPPER="## Summary
+
+\`\`\`release-note
+'NONE'
+\`\`\`
+"
+
+BODY_NONE_THEN_ACTION_REQUIRED="## Summary
+
+\`\`\`release-note
+NONE
+action required: the widget flag is now required.
+\`\`\`
+"
+
+BODY_NOTE_WITH_NA_LINE_PLUS_NONE="## Summary
+
+\`\`\`release-note
+Fixed foo.
+na
+\`\`\`
+
+\`\`\`release-note
+NONE
+\`\`\`
+"
+
+# A fence line with real trailing spaces (web editors add them), built at
+# runtime so the file itself carries no trailing whitespace for
+# pre-commit to strip.
+BODY_FENCE_TRAILING_SPACES=$(sed 's/^```release-note$/```release-note  /' <<<"${BODY_WITH_NOTE}")
+
+BODY_FENCE_VARIANT="## Summary
+
+\`\`\`release-note-foo
+Fixed foo.
+\`\`\`
+"
+
+BODY_INDENTED_CLOSING_FENCE="## Summary
+
+\`\`\`release-note
+Fixed foo.
+  \`\`\`
+
+## Later section
 "
 
 BODY_ACTION_REQUIRED_MIXED_CASE="## Summary
@@ -201,6 +269,19 @@ run_case "NONE plus extra lines passes (published as a note)" pass \
 # Quoted sentinels are rejected: the gatherer publishes quoted text
 # literally instead of treating it as "no note".
 run_case "quoted NONE fails (write NONE without quotes)" fail env PR_BODY="$BODY_QUOTED_NONE"
+run_case "quoted n/a fails" fail env PR_BODY="$BODY_QUOTED_NA"
+run_case "quoted na fails" fail env PR_BODY="$BODY_QUOTED_NA_LOWER"
+run_case "quoted 'NONE' (mixed case) fails" fail env PR_BODY="$BODY_QUOTED_NONE_UPPER"
+
+# Malformed fences are rejected: the gatherer would silently skip them,
+# so the note would never be published.
+run_case "fence with trailing spaces fails" fail env PR_BODY="$BODY_FENCE_TRAILING_SPACES"
+run_case "release-note-foo fence fails" fail env PR_BODY="$BODY_FENCE_VARIANT"
+
+# An indented closing fence must close the block, not swallow the rest
+# of the PR body.
+run_case "indented closing fence passes and stops at the fence" pass \
+  env PR_BODY="$BODY_INDENTED_CLOSING_FENCE"
 
 # Missing or empty blocks fail.
 run_case "no block fails" fail env PR_BODY="$BODY_NO_BLOCK"
@@ -231,6 +312,13 @@ run_case "/release-note-none tag with breaking title fails" fail \
 run_case "CRLF NONE with breaking title fails" fail \
   env PR_BODY="$BODY_CRLF_NONE" PR_TITLE="$BREAKING_TITLE"
 
+# is_none_block must match the whole block, not any single line: a
+# NONE line followed by more content is a real note, not a sentinel.
+run_case "NONE then action-required line with breaking title fails (not a NONE block)" fail \
+  env PR_BODY="$BODY_NONE_THEN_ACTION_REQUIRED" PR_TITLE="$BREAKING_TITLE"
+run_case "note with an na line plus leftover NONE block fails" fail \
+  env PR_BODY="$BODY_NOTE_WITH_NA_LINE_PLUS_NONE" PR_TITLE="feat(harness): add thing"
+
 # A real note plus a leftover NONE block fails even without a breaking
 # marker: the gatherer would drop the whole PR and the note would never
 # be published.
@@ -255,7 +343,7 @@ run_case "breaking commit subject with action required note passes" pass \
 run_case "action required in mixed case with breaking title passes" pass \
   env PR_BODY="$BODY_ACTION_REQUIRED_MIXED_CASE" PR_TITLE="$BREAKING_TITLE"
 
-# The action-required stdout marker drives the Urgent label. It must be
+# The action-required GITHUB_OUTPUT drives the Urgent label. It must be
 # present for a valid breaking PR and for any accepted note that starts
 # with "action required", and absent otherwise.
 run_marker_case "breaking PR emits action-required marker" pass present \

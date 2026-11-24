@@ -53,7 +53,9 @@ contribution.
   `release-note-action-required` so the note is listed under **Urgent
   Upgrade Notes** in the release, and CI rejects a `NONE` block (or any
   block without the prefix) on a PR that carries the `!` marker, so a
-  breaking change cannot ship without a warning. See
+  breaking change cannot ship without a warning. Fork PRs cannot be
+  labeled by CI (read-only token); a maintainer must add the label
+  before merge. See
   [COMMITS.md](COMMITS.md#breaking-changes) for how to identify breaking
   changes and what to include in the commit body.
 - Wrap prose in Markdown files at about 80 columns, so diffs show only the
