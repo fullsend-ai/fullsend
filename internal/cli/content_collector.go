@@ -190,8 +190,9 @@ func attachContent(span trace.Span, res contentResult) {
 // values, once more after the fold, which can spell out a value that pass
 // saw in compatibility forms. The mask that first scan leaves for a
 // connection-string password of ten or more bytes ("abcd...") matches its
-// own pattern again, so such a prompt counts a finding here; a shorter
-// password is masked "***", which does not.
+// own pattern again, so such a prompt counts a finding here and the
+// placeholder is masked "***"; a shorter password is masked "***", which
+// does not match.
 // The pipeline also folds compatibility characters the agent received
 // unfolded. Findings join the iteration's and surface through Result.
 //

@@ -227,14 +227,18 @@ func (s *SecretRedactor) scan(text string, wholeValueOnly bool) ScanResult {
 			if len(secret) == 0 {
 				continue
 			}
-			// A captured value that is already a mask placeholder is the
-			// product of an earlier redaction pass, not a new leak. Re-masking
-			// it would discard the informative prefix for no security gain,
-			// and it lets the serialized-JSON backstop run on every document
-			// without degrading prior redactions.
-			if isAlreadyMasked(secret) {
-				continue
-			}
+			// A captured value is always masked, even when it already looks
+			// like a mask. The shape of a placeholder (4 characters and "...",
+			// or "***") is also the shape of a real short secret:
+			// db_connection_password accepts a value of 4 characters or more,
+			// so skipping every 7-byte capture that ends in "..." left a real
+			// password such as postgres://u:abcd...@host in the output. Callers
+			// that rescan bytes an earlier pass already redacted use
+			// ScanWholeValueSecrets, which runs no value pattern, so they never
+			// reach this loop; a full Scan over redacted text can therefore
+			// only be re-masking a placeholder into "***", never a secret into
+			// itself.
+			//
 			// Only json_field needs the length gate here: its value pattern
 			// matches any length, while env_assignment, auth_header and
 			// db_connection_password enforce their own minimum in the pattern.
@@ -286,6 +290,9 @@ func Mask(value string) string {
 // a JSON string can be followed by escape characters once the string is
 // re-encoded, and that tail must not turn the placeholder into a new secret
 // (#5705).
+//
+// Only callers that know the value came from Mask may use this. The shape alone
+// cannot tell a placeholder from a real short secret, so Scan does not apply it.
 func isAlreadyMasked(value string) bool {
 	value = strings.TrimRight(value, `\`)
 	return value == "***" || len(value) == 7 && strings.HasSuffix(value, "...")

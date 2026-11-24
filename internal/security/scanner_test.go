@@ -262,6 +262,40 @@ func TestSecretRedactor(t *testing.T) {
 		assert.True(t, result.Safe || !hasFinding(result, "db_connection_password"))
 	})
 
+	// A real password can look like a mask placeholder: the placeholder shape
+	// (4 characters and "...") is 7 bytes, and db_connection_password accepts a
+	// value of 4 or more, so a shape test in the redactor skipped it and left
+	// the password in the output (#5705).
+	t.Run("db password shaped like a mask placeholder redacted", func(t *testing.T) {
+		result := r.Scan("postgres://user:abcd...@host:5432/db")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "db_connection_password"))
+		assert.Equal(t, "postgres://user:***@host:5432/db", result.Sanitized)
+	})
+
+	// Rescanning redacted text with a full Scan re-masks the placeholder: a
+	// seven-byte placeholder is shorter than ten, so Mask returns "***". The
+	// text stays redacted; only the informative prefix is lost. Callers that
+	// rescan bytes an earlier pass redacted use ScanWholeValueSecrets, which
+	// runs no value pattern and leaves the placeholder alone.
+	t.Run("db password placeholder remasked on a full rescan", func(t *testing.T) {
+		first := r.Scan("postgres://user:hunter2secret@host:5432/db")
+		require.False(t, first.Safe)
+		require.Equal(t, "postgres://user:hunt...@host:5432/db", first.Sanitized)
+
+		second := r.Scan(first.Sanitized)
+		assert.Equal(t, "postgres://user:***@host:5432/db", second.Sanitized,
+			"a placeholder is still redacted, never left as itself")
+		assert.False(t, second.Safe)
+	})
+
+	t.Run("whole-value rescan leaves a placeholder intact", func(t *testing.T) {
+		const redacted = "postgres://user:hunt...@host:5432/db"
+		result := r.ScanWholeValueSecrets(redacted)
+		assert.True(t, result.Safe)
+		assert.Empty(t, result.Sanitized, "the earlier redaction must survive a whole-value rescan")
+	})
+
 	t.Run("db password with multiple @ redacted", func(t *testing.T) {
 		result := r.Scan("postgres://user:P@ss@w0rd@host:5432/db")
 		assert.False(t, result.Safe)
