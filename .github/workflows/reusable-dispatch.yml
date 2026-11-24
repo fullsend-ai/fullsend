@@ -138,6 +138,9 @@ jobs:
     if: ${{ inputs.matrix == '' }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
+      # actions: read lists the fork pull request stub's runs (see "Resolve
+      # fork pull request for workflow_run").
+      actions: read
       contents: read
       id-token: write
       issues: read
@@ -189,27 +192,34 @@ jobs:
       # completed run of the no-permission fullsend-fork-pr.yaml stub. It
       # runs from the default branch with secrets and OIDC, which is why it
       # can review a fork PR that its own pull_request run could not.
-      # github/gh-aw does not dispatch PR events through workflow_run; this
-      # path is safe only with these guards, all checked here before any
-      # token mint or agent step, with the read-only GITHUB_TOKEN:
-      #   - the fork controls the stub copy that ran, so nothing that run
-      #     produced (artifacts, run name, logs) is read, and PR code is
-      #     never checked out; only GitHub's own run fields are used;
-      #   - the run must be a successful pull_request run of the stub's
-      #     path from another repository (a fork can add workflows that
-      #     reuse the stub's name; each would otherwise start a run here);
-      #   - the PR is looked up by the run's head repository, branch and
-      #     SHA; a run whose SHA is no longer an open PR's head is skipped
-      #     (the newer push has its own run);
-      #   - "Determine stage" authorizes the PR author, labeler or closer
-      #     exactly as it does for a same-repo pull_request event.
+      # github/gh-aw does not dispatch PR events through workflow_run, and
+      # its CTR-021 check flags a workflow_run trigger without a branches:
+      # filter. A branches: filter cannot help here: for a fork PR the
+      # stub run's head_branch is a branch name the fork chose.
+      #
+      # The fork controls the stub copy that ran, so nothing that run
+      # produced (artifacts, run name, logs) is read, and PR code is never
+      # checked out. Its head_repository, head_branch, head_sha, path and
+      # created_at are lookup metadata a fork can influence, not
+      # provenance: they only say which PR to look up. What authorizes a
+      # run, all checked here before any token mint or agent step with the
+      # read-only GITHUB_TOKEN, is:
+      #   - the PR as the API returns it for this repository, whose
+      #     head.repo.id and head.sha must match the run (a run whose SHA is
+      #     no longer an open PR's head is skipped; the newer push has its
+      #     own run);
+      #   - "Determine stage" checking the PR author, labeler or closer the
+      #     API reports, as for a same-repo pull_request event.
       # The action the run stands for is rebuilt from API data: closed for a
-      # closed PR, labeled when ready-for-review was added within
-      # FORK_PR_WINDOW seconds before the stub run was created, otherwise
-      # opened, ready_for_review or synchronize. The window bounds how long
-      # one label can start reviews: GitHub creates the stub run seconds
-      # after the event, and five minutes absorbs Actions event backlog.
-      # A closed PR counts only if it closed within the same window.
+      # closed PR; labeled when ready-for-review is on the PR, was added
+      # within FORK_PR_WINDOW seconds before the stub run was created, and
+      # the head commit already had a stub run when it was added (so a later
+      # push never runs under someone else's label); otherwise opened,
+      # ready_for_review or synchronize. The window bounds how long one
+      # label or close can start a run: GitHub creates the stub run seconds
+      # after the event, and five minutes absorbs Actions event backlog. A
+      # closed PR counts only if it closed within the same window. The
+      # issue events API documents no order, so events are sorted by time.
       - name: Resolve fork pull request for workflow_run
         id: fork-pr
         if: github.event_name == 'workflow_run'
@@ -231,6 +241,12 @@ jobs:
           echo "resolved=false" >> "${GITHUB_OUTPUT}"
           skip() {
             echo "::notice::Fork pull request run not routed: $1"
+            exit 0
+          }
+          # A close or label that should have started a run but fell
+          # outside its checks is a warning, so a lost retro or review shows.
+          skip_warn() {
+            echo "::warning::Fork pull request run not routed: $1"
             exit 0
           }
           [[ "${WR_EVENT}" == "pull_request" ]] || skip "the stub run was not started by a pull_request event"
@@ -278,7 +294,11 @@ jobs:
             '.head.sha == $sha and (.head.repo.id // -1) == $hid' "${PR_FILE}" >/dev/null; then
             skip "the run's head SHA is no longer the pull request head (a newer push has its own run)"
           fi
-          EVENTS=$(api --paginate "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/events?per_page=100" | jq -s 'add // []')
+          EVENTS=$(api --paginate "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/events?per_page=100" | jq -s 'add // [] | sort_by(.created_at)')
+          # last_event <filter>: the newest issue event matching filter.
+          last_event() {
+            jq -c "[.[] | select($1)] | last // {}" <<<"${EVENTS}"
+          }
 
           # within <iso-time>: is it in [run created - window, run created + 60 s]?
           # The 60 s allows for clock differences between GitHub services.
@@ -296,20 +316,40 @@ jobs:
             closed)
               CLOSED_AT=$(jq -r '.closed_at // ""' "${PR_FILE}")
               if [[ -z "${CLOSED_AT}" ]] || ! within "${CLOSED_AT}"; then
-                skip "the pull request did not close just before the run"
+                skip_warn "the pull request did not close within ${FORK_PR_WINDOW} s before the run"
               fi
               ACTION="closed"
               CLOSER=$(jq -r 'if .merged == true then (.merged_by.login // "") else "" end' "${PR_FILE}")
               if [[ -z "${CLOSER}" ]]; then
-                CLOSER=$(jq -r '[.[] | select(.event == "closed")] | last | .actor.login // ""' <<<"${EVENTS}")
+                CLOSE_EVENT=$(last_event '.event == "closed"')
+                CLOSE_EVENT_AT=$(jq -r '.created_at // ""' <<<"${CLOSE_EVENT}")
+                if [[ -z "${CLOSE_EVENT_AT}" ]] || ! within "${CLOSE_EVENT_AT}"; then
+                  skip_warn "no close event within ${FORK_PR_WINDOW} s before the run names the closer"
+                fi
+                CLOSER=$(jq -r '.actor.login // ""' <<<"${CLOSE_EVENT}")
               fi
               ;;
             open)
-              LABELED_AT=$(jq -r '[.[] | select(.event == "labeled" and .label.name == "ready-for-review")] | last | .created_at // ""' <<<"${EVENTS}")
+              LABEL_EVENT=$(last_event '.event == "labeled" and .label.name == "ready-for-review"')
+              LABELED_AT=$(jq -r '.created_at // ""' <<<"${LABEL_EVENT}")
               if [[ -n "${LABELED_AT}" ]] && within "${LABELED_AT}"; then
-                LABELER=$(jq -r '[.[] | select(.event == "labeled" and .label.name == "ready-for-review")] | last | .actor.login // ""' <<<"${EVENTS}")
+                # The label counts only while it is on the PR, and only for a
+                # head commit that already had a stub run when it was added:
+                # a push after the label is checked as the author's.
+                ON_PR=$(jq -r 'any(.labels[]?; .name == "ready-for-review")' "${PR_FILE}")
+                FIRST_RUN_AT=$(api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/${STUB_PATH##*/}/runs" \
+                  -f "head_sha=${WR_HEAD_SHA}" -f event=pull_request -f per_page=100 \
+                  --jq '[.workflow_runs[].created_at] | sort | first // ""')
+                if [[ "${ON_PR}" != "true" ]]; then
+                  echo "::warning::Fork pull request #${NUMBER}: ready-for-review was removed; checking the author instead"
+                elif [[ -z "${FIRST_RUN_AT}" ]] || ! jq -en --arg first "${FIRST_RUN_AT}" --arg label "${LABELED_AT}" '
+                    ($first | sub("\\.[0-9]+"; "") | fromdateiso8601) <= ($label | sub("\\.[0-9]+"; "") | fromdateiso8601) + 5' >/dev/null 2>&1; then
+                  echo "::warning::Fork pull request #${NUMBER}: the head commit was pushed after ready-for-review was added; checking the author instead"
+                else
+                  LABELER=$(jq -r '.actor.login // ""' <<<"${LABEL_EVENT}")
+                fi
               fi
-              READY_AT=$(jq -r '[.[] | select(.event == "ready_for_review")] | last | .created_at // ""' <<<"${EVENTS}")
+              READY_AT=$(jq -r '.created_at // ""' <<<"$(last_event '.event == "ready_for_review"')")
               CREATED_AT=$(jq -r '.created_at // ""' "${PR_FILE}")
               if [[ -n "${CREATED_AT}" ]] && within "${CREATED_AT}"; then
                 ACTION="opened"
@@ -638,7 +678,9 @@ jobs:
               # fork pull request for workflow_run". The same rules as the
               # pull_request case above: a closed PR needs a write closer,
               # the ready-for-review label needs only the label permission,
-              # and any other event needs a triage+ (or bot) PR author.
+              # and any other event needs a triage+ PR author. Unlike a
+              # same-repo PR, a [bot] author is not trusted on its own: any
+              # registered GitHub App can open a PR from a fork.
               # event_action and event_sender name the equivalent
               # pull_request event for the CEL route steps.
               if [[ "${FORK_PR_RESOLVED:-}" == "true" ]]; then
@@ -657,7 +699,7 @@ jobs:
                 else
                   ROUTED_ACTION="${FORK_PR_ACTION}"
                   ROUTED_SENDER="${FORK_PR_AUTHOR}"
-                  if [[ "${FORK_PR_AUTHOR}" =~ \[bot\]$ ]] || is_event_actor_authorized "${FORK_PR_AUTHOR}" triage; then
+                  if is_event_actor_authorized "${FORK_PR_AUTHOR}" triage; then
                     STAGE="review"
                   fi
                 fi
@@ -712,7 +754,7 @@ jobs:
       # still enforce the same policy for the final routed stage.
       - name: Check review deduplication guards
         id: review-dedup-guard
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]'))
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize'))
         shell: bash
         run: |
           set -euo pipefail
@@ -764,7 +806,7 @@ jobs:
       # the binary; default callers install the trusted workflow build.
       - name: Detect review dedup CLI
         id: review-cli-mode
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.review-dedup-guard.outputs.allowed == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -871,15 +913,17 @@ jobs:
           key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       # A synchronize event can be caused by merging the base branch into a
-      # PR without changing its effective diff. Missing or incomplete
+      # PR without changing its effective diff. A fork PR push comes in as
+      # the shim's workflow_run with event_action synchronize (see "Resolve
+      # fork pull request for workflow_run") and gets the same check. Missing or incomplete
       # metadata deliberately fails open in the CLI.
       - name: Check unchanged review diff
         id: review-diff
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.review-dedup-guard.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || steps.fork-pr.outputs.number }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
         shell: bash
@@ -1345,7 +1389,7 @@ jobs:
       # Only obtain a write-capable review token after final routing has
       # authorized the review stage. The diff check above remains read-only.
       - name: Checkout upstream defaults for review skip note
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1360,7 +1404,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Prepare workspace for review skip note
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
         id: review-token-workspace
         continue-on-error: true
         timeout-minutes: 2
@@ -1372,12 +1416,12 @@ jobs:
       # .defaults path internally. Provide that compatibility path while
       # the action's defaults_root input is adopted by existing callers.
       - name: Stage nested defaults compatibility path
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
         shell: bash
         run: ln -s .fullsend/.defaults .defaults
 
       - name: Prepare workspace for review skip note (nested vendor)
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
         id: review-token-workspace-nested
         continue-on-error: true
         timeout-minutes: 2
@@ -1387,7 +1431,7 @@ jobs:
           source_repo: ${{ github.repository }}
 
       - name: Mint review token for review skip note
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
         id: review-token
         continue-on-error: true
         timeout-minutes: 2
@@ -1399,7 +1443,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Mint review token for review skip note (nested vendor)
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
         id: review-token-nested
         continue-on-error: true
         timeout-minutes: 2
@@ -1412,13 +1456,13 @@ jobs:
 
       - name: Publish review skip note
         id: review-skip-publish
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
           REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
           SOURCE_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || steps.fork-pr.outputs.number }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
         shell: bash

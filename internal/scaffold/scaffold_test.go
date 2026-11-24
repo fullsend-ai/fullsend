@@ -54,6 +54,7 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"scripts/fullsend-check-output",
 		"scripts/prepare-sandbox-credentials.sh",
 		"templates/shim-per-repo.yaml",
+		"templates/fork-pr-per-repo.yaml",
 		".github/workflows/prioritize.yml",
 	}
 

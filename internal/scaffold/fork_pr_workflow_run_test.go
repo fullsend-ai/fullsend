@@ -181,6 +181,7 @@ type forkPR struct {
 	merged   bool
 	mergedBy string
 	draft    bool
+	labels   []string
 }
 
 func (p forkPR) json() map[string]any {
@@ -195,10 +196,19 @@ func (p forkPR) json() map[string]any {
 		"merged_by":  nil,
 		"user":       map[string]any{"login": "contributor"},
 		"labels":     []any{},
+	}
+	labels := make([]any, 0, len(p.labels))
+	for _, l := range p.labels {
+		labels = append(labels, map[string]any{"name": l})
+	}
+	pr["labels"] = labels
+	for k, v := range map[string]any{
 		"head": map[string]any{"ref": "fix-typo", "sha": p.sha,
 			"repo": map[string]any{"id": 222, "full_name": "contributor/widgets"}},
 		"base": map[string]any{"ref": "main", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			"repo": map[string]any{"id": 111, "full_name": "acme/widgets"}},
+	} {
+		pr[k] = v
 	}
 	if p.closedAt != "" {
 		pr["closed_at"] = p.closedAt
@@ -216,11 +226,20 @@ func mustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-// forkPRGHStub answers the step's three API calls from files and logs each
-// call's arguments to gh.log; a missing file fails the call.
+// forkPRGHStub answers the step's API calls from files, applying a --jq
+// filter as gh does, and logs each call's arguments to gh.log; a missing
+// file fails the call.
 const forkPRGHStub = `#!/usr/bin/env bash
-printf '%s\n' "$*" >> gh.log
+printf '%s\n' "$*" >> "${GH_LOG:-gh.log}"
+filter=""
+args=("$@")
+for i in "${!args[@]}"; do
+  [[ "${args[$i]}" == "--jq" ]] && filter="${args[$((i+1))]}"
+done
 case "$*" in
+  *"/actions/workflows/"*"/runs"*)
+    [[ -f runs.json ]] || exit 1
+    if [[ -n "$filter" ]]; then jq -r "$filter" runs.json; else cat runs.json; fi ;;
   *"/issues/"*"/events"*) cat events.json ;;
   *"/pulls/"[0-9]*) cat pr.json ;;
   *"/pulls"*) cat pulls.json ;;
@@ -241,6 +260,9 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 	closedLongAgo.closedAt = oldTime
 	moved := open
 	moved.sha = "cccccccccccccccccccccccccccccccccccccccc"
+	labeledPR := open
+	labeledPR.labels = []string{"ready-for-review"}
+	const labelTime = "2026-11-24T09:57:00Z" // 3 min before the run
 
 	labeled := func(at, by string) map[string]any {
 		return map[string]any{"event": "labeled", "created_at": at, "label": map[string]any{"name": "ready-for-review"}, "actor": map[string]any{"login": by}}
@@ -255,8 +277,10 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 		list     []forkPR
 		pr       *forkPR
 		events   []map[string]any
+		runs     []string // stub run creation times for the head SHA
 		want     map[string]string
 		wantSkip string
+		wantWarn string
 	}{
 		{name: "stub run that failed", env: map[string]string{"WR_CONCLUSION": "failure"}, wantSkip: "did not succeed"},
 		{name: "stub run held for approval", env: map[string]string{"WR_CONCLUSION": "action_required"}, wantSkip: "did not succeed"},
@@ -286,19 +310,41 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			want: map[string]string{"resolved": "true", "state": "open", "action": "synchronize"},
 		},
 		{
-			name: "ready-for-review label within the window", list: []forkPR{open}, pr: &open,
-			events: []map[string]any{labeled(oldTime, "old-labeler"), labeled(recentTime, "triager")},
+			name: "ready-for-review label within the window", list: []forkPR{labeledPR}, pr: &labeledPR,
+			events: []map[string]any{labeled(oldTime, "old-labeler"), labeled(labelTime, "triager")},
 			want:   map[string]string{"resolved": "true", "labeler": "triager"},
 		},
 		{
-			name: "ready-for-review label outside the window", list: []forkPR{open}, pr: &open,
+			// The events API documents no order: the newest event wins.
+			name: "label events in reverse order", list: []forkPR{labeledPR}, pr: &labeledPR,
+			events: []map[string]any{labeled(labelTime, "triager"), labeled(oldTime, "old-labeler")},
+			want:   map[string]string{"resolved": "true", "labeler": "triager"},
+		},
+		{
+			name: "ready-for-review label outside the window", list: []forkPR{labeledPR}, pr: &labeledPR,
 			events: []map[string]any{labeled(oldTime, "triager")},
 			want:   map[string]string{"resolved": "true", "labeler": "", "action": "synchronize"},
 		},
 		{
-			name: "label after the run", list: []forkPR{open}, pr: &open,
+			name: "label after the run", list: []forkPR{labeledPR}, pr: &labeledPR,
 			events: []map[string]any{labeled("2026-11-24T10:05:00Z", "triager")},
 			want:   map[string]string{"resolved": "true", "labeler": ""},
+		},
+		{
+			// The outside author pushes 2 minutes after a maintainer's label:
+			// the new head had no stub run when the label was added, so the
+			// push is checked as the author's, not under the label.
+			name: "push after the label", list: []forkPR{labeledPR}, pr: &labeledPR,
+			events:   []map[string]any{labeled(labelTime, "triager")},
+			runs:     []string{"2026-11-24T09:59:00Z", "2026-11-24T10:00:00Z"},
+			want:     map[string]string{"resolved": "true", "labeler": "", "action": "synchronize"},
+			wantWarn: "pushed after ready-for-review was added",
+		},
+		{
+			name: "label added then removed", list: []forkPR{open}, pr: &open,
+			events:   []map[string]any{labeled(labelTime, "triager"), {"event": "unlabeled", "created_at": recentTime, "label": map[string]any{"name": "ready-for-review"}, "actor": map[string]any{"login": "triager"}}},
+			want:     map[string]string{"resolved": "true", "labeler": ""},
+			wantWarn: "ready-for-review was removed",
 		},
 		{
 			name: "merged PR", list: []forkPR{closedMerged}, pr: &closedMerged,
@@ -310,7 +356,19 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			events: []map[string]any{event("closed", oldTime, "first"), event("reopened", oldTime, "first"), event("closed", recentTime, "closer")},
 			want:   map[string]string{"resolved": "true", "state": "closed", "action": "closed", "closer": "closer"},
 		},
-		{name: "closed long before the run", list: []forkPR{closedLongAgo}, pr: &closedLongAgo, wantSkip: "did not close just before the run"},
+		{
+			name: "close events in reverse order", list: []forkPR{closedUnmerged}, pr: &closedUnmerged,
+			events: []map[string]any{event("closed", recentTime, "closer"), event("reopened", oldTime, "first"), event("closed", oldTime, "first")},
+			want:   map[string]string{"resolved": "true", "closer": "closer"},
+		},
+		{
+			// The PR's closed_at is recent but the only close event is old:
+			// the closer cannot be named for this close.
+			name: "close event outside the window", list: []forkPR{closedUnmerged}, pr: &closedUnmerged,
+			events:   []map[string]any{event("closed", oldTime, "first")},
+			wantSkip: "no close event within 300 s before the run names the closer", wantWarn: "::warning::",
+		},
+		{name: "closed long before the run", list: []forkPR{closedLongAgo}, pr: &closedLongAgo, wantSkip: "did not close within 300 s before the run", wantWarn: "::warning::"},
 		{
 			// An open PR wins over a closed one on the same head SHA.
 			name: "reopened as a new PR", list: []forkPR{{number: 3, state: "closed", sha: forkHeadSHA}, open}, pr: &open,
@@ -332,10 +390,20 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			if events == nil {
 				events = []map[string]any{}
 			}
+			runs := tc.runs
+			if runs == nil {
+				// The head commit's first stub run predates any label.
+				runs = []string{oldTime}
+			}
+			runList := make([]any, 0, len(runs))
+			for _, r := range runs {
+				runList = append(runList, map[string]any{"created_at": r})
+			}
 			files := map[string]string{
 				"bin/gh":      forkPRGHStub,
 				"pulls.json":  mustJSON(t, list),
 				"events.json": mustJSON(t, events),
+				"runs.json":   mustJSON(t, map[string]any{"workflow_runs": runList}),
 			}
 			if tc.pr != nil {
 				files["pr.json"] = mustJSON(t, tc.pr.json())
@@ -343,10 +411,19 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			got := runRouteStep(t, "Resolve fork pull request for workflow_run", env, files)
 			if tc.wantSkip != "" {
 				assert.Equal(t, "false", got.outputs["resolved"])
-				assert.Contains(t, got.stdout, "::notice::Fork pull request run not routed: ")
+				assert.Contains(t, got.stdout, "Fork pull request run not routed: ")
 				assert.Contains(t, got.stdout, tc.wantSkip)
+				if tc.wantWarn != "" {
+					assert.Contains(t, got.stdout, tc.wantWarn)
+				}
 				assert.Empty(t, got.outputs["number"])
 				return
+			}
+			if tc.wantWarn != "" {
+				assert.Contains(t, got.stdout, "::warning::")
+				assert.Contains(t, got.stdout, tc.wantWarn)
+			} else {
+				assert.NotContains(t, got.stdout, "::warning::")
 			}
 			for k, v := range tc.want {
 				assert.Equal(t, v, got.outputs[k], "output %s", k)
@@ -360,6 +437,32 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 
 // The PR lookup filters on the fork owner and branch, and the step uses the
 // read-only GITHUB_TOKEN it is given: it never mints a token.
+// A fork branch name with a slash reaches the head= filter unchanged (gh
+// encodes the query), and a label in the window lists the stub's runs for
+// the head SHA with the pull_request event.
+func TestResolveForkPullRequestStepSlashedBranchAndRunLookup(t *testing.T) {
+	requireBash4(t)
+	pr := forkPR{number: 7, state: "open", sha: forkHeadSHA, created: oldTime, labels: []string{"ready-for-review"}}
+	env := forkPRStepEnv(t.TempDir())
+	env["WR_HEAD_BRANCH"] = "feature/x"
+	files := map[string]string{
+		"bin/gh":     forkPRGHStub,
+		"pulls.json": mustJSON(t, []any{pr.json()}),
+		"pr.json":    mustJSON(t, pr.json()),
+		"events.json": mustJSON(t, []any{map[string]any{"event": "labeled", "created_at": "2026-11-24T09:57:00Z",
+			"label": map[string]any{"name": "ready-for-review"}, "actor": map[string]any{"login": "triager"}}}),
+		"runs.json": mustJSON(t, map[string]any{"workflow_runs": []any{map[string]any{"created_at": oldTime}}}),
+	}
+	ghLog := filepath.Join(t.TempDir(), "gh.log")
+	env["GH_LOG"] = ghLog
+	got := runRouteStep(t, "Resolve fork pull request for workflow_run", env, files)
+	assert.Equal(t, "triager", got.outputs["labeler"])
+	log, err := os.ReadFile(ghLog)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "-f head=contributor:feature/x")
+	assert.Contains(t, string(log), "--method GET repos/acme/widgets/actions/workflows/fullsend-fork-pr.yaml/runs -f head_sha="+forkHeadSHA+" -f event=pull_request -f per_page=100")
+}
+
 func TestResolveForkPullRequestStepLookup(t *testing.T) {
 	requireBash4(t)
 	open := forkPR{number: 7, state: "open", sha: forkHeadSHA, created: oldTime}
@@ -437,7 +540,9 @@ func TestDetermineStageWorkflowRun(t *testing.T) {
 		{"push by a triage author", forkRouteEnv("open", "synchronize", "triager", "", ""), "review", "synchronize", "triager"},
 		{"opened by a write author", forkRouteEnv("open", "opened", "writer", "", ""), "review", "opened", "writer"},
 		{"push by a read-only author", forkRouteEnv("open", "synchronize", "outsider", "", ""), "", "synchronize", "outsider"},
-		{"push by a bot author", forkRouteEnv("open", "synchronize", "helper[bot]", "", ""), "review", "synchronize", "helper[bot]"},
+		// Any registered GitHub App can open a fork PR: a bot author is
+		// checked like anyone else (the stub answers read for it).
+		{"push by a bot author", forkRouteEnv("open", "synchronize", "helper[bot]", "", ""), "", "synchronize", "helper[bot]"},
 		// The label needs only the permission to add it, as on pull_request.
 		{"ready-for-review label on an outsider's PR", forkRouteEnv("open", "synchronize", "outsider", "", "triager"), "review", "labeled", "triager"},
 		{"closed by a write user", forkRouteEnv("closed", "closed", "outsider", "writer", ""), "retro", "closed", "writer"},
@@ -658,6 +763,7 @@ func TestForkPRWorkflowRunWiring(t *testing.T) {
 	var wf struct {
 		Jobs map[string]struct {
 			If          string            `yaml:"if"`
+			Permissions map[string]string `yaml:"permissions"`
 			Outputs     map[string]string `yaml:"outputs"`
 			Concurrency struct {
 				Group string `yaml:"group"`
@@ -688,6 +794,24 @@ func TestForkPRWorkflowRunWiring(t *testing.T) {
 		}
 	}
 	assert.Less(t, order["fork-pr"], order["bash-route"])
+	assert.Equal(t, "read", route.Permissions["actions"], "the label check lists the stub's runs")
+
+	// A fork push gets the same review dedup and skip note as a same-repo
+	// synchronize, after "Determine stage" rebuilt its action.
+	forkSync := "(github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')"
+	var dedupSteps int
+	for i, st := range route.Steps {
+		if !strings.Contains(st.If, "inputs.event_action == 'synchronize'") {
+			continue
+		}
+		dedupSteps++
+		assert.Contains(t, st.If, forkSync, "step %q", st.Name)
+		assert.Less(t, order["bash-route"], i, "step %q needs the routed action", st.Name)
+		if pr, ok := st.Env["PR_NUMBER"]; ok {
+			assert.Equal(t, "${{ github.event.pull_request.number || steps.fork-pr.outputs.number }}", pr, "step %q", st.Name)
+		}
+	}
+	assert.Equal(t, 10, dedupSteps)
 	for _, s := range route.Steps {
 		if strings.Contains(s.Name, "mint") || strings.Contains(s.Name, "Mint") {
 			assert.Less(t, order["fork-pr"], order[s.ID], "the PR is resolved before any token mint")

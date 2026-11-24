@@ -14,6 +14,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -240,10 +241,11 @@ func artifactRunSource(absFullsendDir, eventFile string) (source, how string, er
 // workflow_dispatch, repository_dispatch, schedule and workflow_call stay
 // unknown.
 //
-// workflow_run is native only when the completed run it follows was itself
-// started by a pull_request event: that is how the shim receives fork pull
-// requests (see the fork pull request stub). Any other workflow_run stays
-// unknown.
+// workflow_run is native only when the completed run it follows is the
+// fork pull request stub (scaffold.ForkPRStubPath) started by a
+// pull_request event: that is how the shim receives fork pull requests.
+// A workflow_run from any other workflow, including a custom caller's,
+// stays unknown.
 var nativeGitHubEvents = map[string]bool{
 	"issues":                      true,
 	"issue_comment":               true,
@@ -297,7 +299,9 @@ func nativeGitHubEvent(absFullsendDir string) (string, bool) {
 	}
 	if name == "workflow_run" {
 		run, _ := ev["workflow_run"].(map[string]any)
-		if event, _ := run["event"].(string); event != "pull_request" {
+		event, _ := run["event"].(string)
+		path, _ := run["path"].(string)
+		if event != "pull_request" || path != scaffold.ForkPRStubPath {
 			return "", false
 		}
 	}
