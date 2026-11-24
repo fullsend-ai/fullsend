@@ -829,6 +829,7 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 		{name: "no loop non-zero exit", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, ExitCode: 2}, wantSync: false, wantReason: "agent exited with code 2"},
 		{name: "no loop behavioral subtype still syncs", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, ExitCode: 1, ExitReason: "error_max_turns"}, wantSync: true},
 		{name: "loop passed non-zero exit still syncs", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: true, ExitCode: 1, ValidatedIter: 1, RunCount: 1}, wantSync: true},
+		{name: "loop passed after timeout still syncs", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: true, TimedOut: true, ExitCode: 124, ValidatedIter: 1, RunCount: 1}, wantSync: true},
 		{name: "extraction failed", gate: syncGateInputs{Enabled: true, RepoExtractedOK: false}, wantSync: false, wantReason: "repository extraction failed"},
 		{name: "loop success on last iter", gate: syncGateInputs{Enabled: true, RepoExtractedOK: true, HasValidationLoop: true, ValidationPassed: true, InlineValidationPassed: true, ValidatedIter: 2, RunCount: 2}, wantSync: true},
 	}
