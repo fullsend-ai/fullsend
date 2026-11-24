@@ -71,11 +71,28 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    install writes the scheduled workflow; on GitLab, it creates the pipeline
    schedule. See [Scheduled workflow](#scheduled-workflow) and
    [GitLab runtime](#gitlab-runtime).
-6. **Check which agents handle Jira events.** The poller dispatches an agent
-   only when its harness `trigger:` CEL expression matches the Jira event, and
-   produces zero dispatches for a harness with no trigger, its own or
-   inherited. The built-in triage and code harnesses ship triggers that match
-   Jira events, so they need no extra configuration:
+6. **Register the agents that handle Jira events.** The poller considers only
+   agents listed under `agents:` in `.fullsend/config.yaml` with a `source:`
+   harness. Unlike GitHub dispatch, it does not fall back to the built-in
+   agents, and `fullsend github setup` writes `roles:` but no `agents:`
+   entries, so a fresh install dispatches nothing from Jira — not even
+   triage. Register each agent Jira should dispatch, pinned to a commit of
+   the agents release:
+
+   ```sh
+   fullsend agent add https://raw.githubusercontent.com/fullsend-ai/agents/<commit-sha>/harness/triage.yaml
+   fullsend agent add https://raw.githubusercontent.com/fullsend-ai/agents/<commit-sha>/harness/code.yaml
+   ```
+
+   See [`agent add`](../../cli/agent.md#agent-add). When no registered agent
+   has a trigger, each poll run logs a `jira-poll: no registered agent has a
+   harness trigger` warning.
+
+   The poller dispatches a registered agent only when its harness `trigger:`
+   CEL expression matches the Jira event, and produces zero dispatches for a
+   harness with no trigger, its own or inherited. The built-in triage and
+   code harnesses ship triggers that match Jira events, so once registered
+   they need no trigger of your own:
 
    | Built-in agent | Jira events its trigger matches | From |
    |---|---|---|
@@ -1527,6 +1544,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | `jira: OAuth token request to "https://auth.atlassian.com/oauth/token" with FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET: unexpected status 401 (invalid_client)` | The service account's OAuth 2.0 client ID or secret is wrong, expired, or revoked | Create a new OAuth 2.0 credential for the service account and update `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` with `repos install --jira-client-id --jira-client-secret` |
 | `jira: set either FULLSEND_JIRA_TOKEN or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both` | Both credential types are set | Keep one. `repos install` removes the other set when you supply new credentials |
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
+| `::warning::jira-poll: no registered agent has a harness trigger` and no dispatches | No agent is registered under `agents:` in `.fullsend/config.yaml` with a `source:` harness that has a trigger. `fullsend github setup` registers none, and the poller does not fall back to the built-in agents | Register each agent Jira should dispatch with `fullsend agent add`, pinned to a commit. See [Register the agents that handle Jira events](#setup-overview) |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. The built-in agents post with the poller's own `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`. Confirm that a custom agent which posts comments or labels uses the same credential, not another account's token. Human follow-up, including `/fs-triage`, still dispatches |
 | Your own comments or label changes never dispatch | The poller's `FULLSEND_JIRA_TOKEN` belongs to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -203,6 +204,7 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 	if err != nil {
 		return fmt.Errorf("build CEL matcher: %w", err)
 	}
+	warnNoJiraDispatchCandidates(cmd.ErrOrStderr(), matcher)
 
 	poller := jirapoll.New(jiraClient, matcher, jiraPollOptions(args, matcher))
 	return poller.Run(cmd.Context())
@@ -511,6 +513,9 @@ type celMatcher struct {
 	// nil when none is listed. It configures the poller's actor role
 	// resolution and the gate's Jira label rule.
 	jiraAuth *config.AuthorizationProvider
+	// killSwitch records that the matcher has no candidates because the
+	// kill switch is active, rather than because no agent is dispatchable.
+	killSwitch bool
 }
 
 // Match applies the dispatch gate policy the configured jira
@@ -540,13 +545,31 @@ func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error)
 	if cfg.IsKillSwitchActive() {
 		// Kill switch active: return a matcher with no candidates so all
 		// events are silently dropped (no dispatches).
-		return &celMatcher{Matcher: &jiradispatch.Matcher{Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth}, nil
+		return &celMatcher{Matcher: &jiradispatch.Matcher{Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth, killSwitch: true}, nil
 	}
 	candidates, err := harnessdispatch.ListTriggeredHarnesses(ctx, fullsendDir, cfg, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list triggered harnesses: %w", err)
 	}
 	return &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: candidates, Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth}, nil
+}
+
+// warnNoJiraDispatchCandidates writes a warning annotation when the
+// matcher has no agent to dispatch, so a poll cycle that selects issues
+// but can never dispatch them is not a silent no-op (#9503). The Jira
+// poller considers only agents registered under agents: in config.yaml
+// with a source: harness that has a trigger; a fresh install registers
+// none, unlike the GitHub route table, which falls back to the built-in
+// agents. An active kill switch empties the matcher on purpose and is
+// not warned about.
+func warnNoJiraDispatchCandidates(w io.Writer, m *celMatcher) {
+	if m == nil || m.killSwitch || (m.Matcher != nil && len(m.Candidates) > 0) {
+		return
+	}
+	fmt.Fprintln(w, "::warning::jira-poll: no registered agent has a harness trigger, so Jira events will dispatch nothing. "+
+		"The poller dispatches only agents listed under agents: in .fullsend/config.yaml with a source: harness, "+
+		"including the built-in triage and code agents. Register each agent Jira should dispatch with "+
+		"`fullsend agent add <harness URL pinned to a commit>`.")
 }
 
 // jiraAuthOptions returns the dispatch gate policy for the configured
