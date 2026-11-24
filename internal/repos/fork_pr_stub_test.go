@@ -3,6 +3,7 @@ package repos
 import (
 	"bytes"
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -206,5 +207,19 @@ func TestConverge_GitHub_UpgradeDeliversForkPRStubInOnePass(t *testing.T) {
 	}
 	if len(status.Repos[0].Drifts) != 0 {
 		t.Errorf("status after converge reports drift: %+v", status.Repos[0].Drifts)
+	}
+}
+
+func TestProbeComponents_ForkPRStubReadError(t *testing.T) {
+	shim, err := scaffold.PerRepoShimTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = shim
+	fc.GetFileContentErrors = map[string]error{"acme/api/" + scaffold.ForkPRStubPath: errors.New("boom")}
+	_, err = ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
+	if err == nil || !strings.Contains(err.Error(), "checking fork pull request stub") {
+		t.Fatalf("ProbeComponents() error = %v, want the stub read error", err)
 	}
 }
