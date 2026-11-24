@@ -568,6 +568,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   at random among them, and reads the per-cycle caps (N, default 5, and M,
   default 50) from `tracker.jira.poll` within fixed bounds
   ([ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
+- On Jira, agents are started by labels only (target state): typed commands
+  do not start agents there for now, and fullsend removes the label when it
+  starts the run or refuses the request
+  ([ADR 0096](ADRs/0096-start-jira-agents-from-labels-only.md)).
 - Jira poll actor authorization does not require the poller to administer the
   Jira project once a repository adds a `jira` provider under
   `authorization:`. With no `jira` entry, every Jira event resolves through the
