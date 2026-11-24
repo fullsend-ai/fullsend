@@ -4882,6 +4882,82 @@ func TestListInheritedRepoVariables_Error(t *testing.T) {
 	assert.True(t, forge.IsForbidden(err))
 }
 
+func TestListInheritedRepoVariables_PersonalRepository(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		ownerBody  string
+		ownerError int
+		wantEmpty  bool
+	}{
+		{name: "personal owner", status: 422, ownerBody: `{"owner":{"login":"alice","type":"User"}}`, wantEmpty: true},
+		{name: "organization owner", status: 422, ownerBody: `{"owner":{"login":"alice","type":"Organization"}}`},
+		{name: "unknown owner", status: 422, ownerBody: `{"owner":{"login":"alice"}}`},
+		{name: "different owner", status: 422, ownerBody: `{"owner":{"login":"other","type":"User"}}`},
+		{name: "malformed metadata", status: 422, ownerBody: `{`},
+		{name: "metadata unavailable", status: 422, ownerError: http.StatusForbidden},
+		{name: "forbidden is not empty", status: http.StatusForbidden},
+		{name: "not found is not empty", status: http.StatusNotFound},
+		{name: "server error is not empty", status: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var variableCalls, ownerCalls int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/alice/repo/actions/organization-variables":
+					variableCalls++
+					w.WriteHeader(tc.status)
+				case "/repos/alice/repo":
+					ownerCalls++
+					if tc.ownerError != 0 {
+						w.WriteHeader(tc.ownerError)
+						return
+					}
+					fmt.Fprint(w, tc.ownerBody)
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			vars, err := newTestClient(t, srv).ListInheritedRepoVariables(context.Background(), "alice", "repo")
+			assert.Positive(t, variableCalls)
+			if tc.status == http.StatusUnprocessableEntity {
+				assert.Equal(t, 1, ownerCalls)
+			} else {
+				assert.Zero(t, ownerCalls)
+			}
+			if tc.wantEmpty {
+				require.NoError(t, err)
+				assert.Empty(t, vars)
+			} else {
+				require.Error(t, err)
+				assert.Nil(t, vars)
+			}
+		})
+	}
+}
+
+func TestListInheritedRepoVariables_LaterPage422(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Equal(t, "/repos/org/repo/actions/organization-variables", r.URL.Path)
+		if r.URL.Query().Get("page") == "1" {
+			fmt.Fprint(w, `{"total_count":2,"variables":[{"name":"A","value":"1"}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	vars, err := newTestClient(t, srv).ListInheritedRepoVariables(context.Background(), "org", "repo")
+	require.Error(t, err)
+	assert.Nil(t, vars)
+	assert.Equal(t, 2, calls)
+}
+
 func TestGetIssue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/issues/7", r.URL.Path)

@@ -5690,6 +5690,27 @@ func (c *LiveClient) ListInheritedRepoVariables(ctx context.Context, owner, repo
 		resp, err := c.get(ctx, path)
 		if err != nil {
 			var apiErr *APIError
+			if page == 1 && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+				// GitHub returns 422 for personal repositories, which cannot
+				// inherit organization variables. Verify ownership before
+				// treating this as empty: an organization error must not hide
+				// inherited credentials from the caller's safety checks.
+				var metadata struct {
+					Owner struct {
+						Login string `json:"login"`
+						Type  string `json:"type"`
+					} `json:"owner"`
+				}
+				ownerResp, ownerErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
+				if ownerErr == nil {
+					ownerErr = decodeJSON(ownerResp, &metadata)
+				}
+				if ownerErr != nil {
+					err = errors.Join(err, fmt.Errorf("verify repository owner: %w", ownerErr))
+				} else if metadata.Owner.Type == "User" && strings.EqualFold(metadata.Owner.Login, owner) {
+					return nil, nil
+				}
+			}
 			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden && !IsRateLimitError(err) {
 				return nil, fmt.Errorf("list inherited repo variables page %d: %w: %w", page, forge.ErrForbidden, err)
 			}
