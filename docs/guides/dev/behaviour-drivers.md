@@ -20,7 +20,7 @@ v1 reference implementations:
 - `pkg/behaviourtest/drivers/scm/gitlab/`
 - `pkg/behaviourtest/drivers/ci/githubactions/`
 - `pkg/behaviourtest/drivers/ci/gitlabci/`
-- `pkg/behaviourtest/drivers/scm/forgejo/` and `pkg/behaviourtest/drivers/ci/forgejoactions/` (minimal stubs; see [Forgejo drivers](#forgejo-drivers))
+- `pkg/behaviourtest/drivers/scm/forgejo/` (minimal stub) and `pkg/behaviourtest/drivers/ci/forgejoactions/` (Forgejo Actions); see [Forgejo drivers](#forgejo-drivers)
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_previews.go` (RepoPoolCFMintPreviews)
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_stage.go` (RepoPoolCFMintStage)
 - `pkg/behaviourtest/drivers/install/repopool_external_mint.go` (RepoPoolExternalMint)
@@ -80,14 +80,25 @@ When the [job-scoped trace collector](behaviour-testing.md#job-scoped-trace-coll
 
 `ENVIRONMENT=forgejo-dev` selects the Forgejo drivers. When `BEHAVIOUR_SCM` and `BEHAVIOUR_CI` are unset, they default to `forgejo` and `forgejoactions`. The Forgejo drivers only run together and only in `forgejo-dev`. If you mix them, for example `forgejo-dev` with `BEHAVIOUR_SCM=github`, or `BEHAVIOUR_SCM=forgejo` with `ENVIRONMENT=dev`, the suite fails at startup with an error that names the conflicting variables. It does not fall back to the GitHub or GitLab drivers.
 
-The SCM and CI drivers are still minimal stubs, and the install driver only manages the Forgejo stack:
+The SCM driver is still a minimal stub, and the install driver only manages the Forgejo stack. Forgejo scenarios therefore cannot run end to end yet, so no scenario is tagged `@forgejo` for the CI driver alone:
 
-- `scm/forgejo` and `ci/forgejoactions` implement `scm.Driver` and `ci.Driver`. Every method returns an error. The CI stub implements none of the optional CI extensions.
+- `scm/forgejo` implements `scm.Driver`. Every method returns an error.
+- `ci/forgejoactions` implements `ci.Driver` and the optional `ci.RunLister`, `ci.EmptyMatrixWaiter`, and `ci.AgentArtifactDownloader` extensions. Every API call goes through the Forgejo adapter's read-only Actions operations in `internal/forge/forgejo` (run list and get, jobs, per-run artifacts, artifact download, and job logs), which take the base URL with any path prefix. The driver only observes runs; it never dispatches, cancels, or reruns one. See [Forgejo Actions CI driver](#forgejo-actions-ci-driver).
 - `install.NewForgejoDev` starts the [managed forgejo-dev stack](#managed-forgejo-dev-stack) and returns an `install.Driver` whose `Finalize` tears it down. `AllocateRepo` and `DeallocateRepo` return an error, and `Capacity` is `install.ForgejoDevCapacity` (2, the runner's capacity). It is not an `install.LeaseDriver`.
 - In `forgejo-dev`, the runner's `PoolConfig` has no layout, `TokenFor` or `NewClient`. The driver does not implement `install.SuiteBootstrap`, so the runner's concurrency defaults to `Capacity` and the template `World` has no default org. The run never enumerates the GitHub pool, mints GitHub tokens or builds GitHub clients.
 - The GitHub token check lives in the install drivers that need GitHub access (`NewRepoPoolCFMintPreviews`, `NewRepoPoolCFMintStage`, `NewRepoPoolExternalMint`), not in the runner's general env loading (`e2etest.LoadEnvConfig`). They fail with `e2etest.ErrNoLocalGitHubToken` when a local run has no token, and the suite runner skips the run on that error. `NewForgejoDev` does not need a GitHub token.
 
 Each stub error is a `*drivers.NotImplementedError` (package `pkg/behaviourtest/drivers`) that names the driver and the operation, for example `forgejo SCM driver: CreateIssue: not implemented`. It satisfies `errors.Is(err, drivers.ErrNotImplemented)`. Use the same sentinel for any other driver operation that is not supported yet.
+
+#### Forgejo Actions CI driver
+
+`ci/forgejoactions` keeps the `ci.Driver` contract of the GitHub Actions driver, with these Forgejo specifics:
+
+- **Run matching:** a run matches by workflow file name, event, and creation time, truncated to whole seconds. Forgejo identifies a workflow by its file name only, so the directory of the workflow path does not matter. The event is the run's `trigger_event` (the workflow's `on` key, for example `pull_request_target`) when Forgejo reports it, and the webhook event otherwise. When no matching run appears, `WaitForWorkflow` returns a `*ci.NotDispatchedError`, so steps retry once with the clock-skew buffer and the failure diagnostics list the repository's runs. `ListRecentRuns` sets `forge.WorkflowRun.Path` to the workflow file name.
+- **Status:** Forgejo's `success`, `failure`, `cancelled`, and `skipped` become a `completed` run with that conclusion, `running` becomes `in_progress`, `waiting` becomes `queued`, and `blocked` becomes `waiting`.
+- **Artifacts:** every artifact comes from the run that uploaded it, by the existing names (`fullsend-<agent>`, optionally with `.matrix-<n>`). The `...After` downloads scan the runs created since the trigger, newest first, and download from the newest run whose own listing has a match. Agent downloads only use completed runs. The driver never uses a repository-wide artifact listing. An instance that serves artifacts directly from object storage answers the download with a redirect, which the adapter refuses like every redirect of an authenticated request.
+- **Agent jobs:** harness agents are recognised by the GitHub Actions job names (`Harness run (<agent>)`, or the stage name such as `Triage` for a built-in stage), matched by suffix, or by the agent's artifact in a completed run.
+- **Empty matrix:** a harness run settles as an empty matrix when it completed, its `Harness dispatch` job succeeded, and no `Harness run (<agent>)` job was scheduled. The unexpanded matrix job may be skipped or absent: Forgejo replaces a matrix job with its expanded jobs once the matrix is known.
 
 #### Managed forgejo-dev stack
 
