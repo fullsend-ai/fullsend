@@ -49,19 +49,19 @@ Resolution must be:
 
 A standalone resolution skill that any agent can call. It takes a Jira
 component, the issue description, and the configured sources
-(component mapping and other configured sources such as architecture
-context). It returns a resolved
-repository or an unresolved result. The resolver knows nothing about
-work items, epics, PR grouping, or any consumer's pipeline.
+(architecture context, and optionally a component mapping). It returns
+a resolved repository or an unresolved result. The resolver knows
+nothing about work items, epics, PR grouping, or any consumer's
+pipeline.
 
 **Input**: a Jira component, the issue description, and configured
-sources (component mapping, architecture context, and other configured
-sources).
+sources (architecture context required; component mapping optional).
 
 **Output**: one of:
 - Resolved: the repository (org and name) with cited evidence from the
   architecture context
-- Unresolved: a reason and the candidate repositories from the mapping
+- Unresolved: a reason, and the candidate repositories from the
+  mapping if one is configured
 
 ### Two-phase resolution
 
@@ -92,10 +92,11 @@ What the consumer does with an unresolved result — leave the field
 empty, add a warning comment, block publication — is up to the
 consumer.
 
-### Component mapping
+### Component mapping (optional)
 
-One data structure per workload: Jira component → candidate
-repositories.
+Workloads may provide a mapping of Jira component → candidate
+repositories. The mapping is optional — workloads without one skip
+Phase 1 and go straight to Phase 2.
 
 The mapping records:
 - Which repositories are associated with each Jira component
@@ -119,8 +120,9 @@ given Jira component. These candidates are hints for Phase 2, not
 final answers.
 
 The mapping is workload data — RHAI owns its mapping, another workload
-owns its own. It is a declared source fetched through the same mechanism
-as architecture context.
+may own its own. It is a declared source fetched through the same
+mechanism as architecture context. Workloads that do not maintain a
+mapping still get full resolution through Phase 2.
 
 ### Architecture context
 
@@ -177,14 +179,15 @@ could provide skills that work differently.
 
 ### Verification
 
-Phase 1 is deterministic — it produces hints from the mapping, not
-final answers.
+Phase 1 is deterministic — when a mapping is configured, it produces
+hints, not final answers. When no mapping is configured, Phase 1 is
+skipped entirely.
 
 Phase 2 is LLM-based with evidence — the cited evidence must exist in
-the pinned source at the recorded commit SHA, and the selected
-repository must be in the candidate set from the mapping (when one
-exists). This applies whether Phase 2 confirms a Phase 1 hint or
-resolves from scratch.
+the pinned source at the recorded commit SHA. When a mapping is
+configured, the selected repository must also be in the candidate set
+from that mapping. This applies whether Phase 2 confirms a Phase 1
+hint, overrides it, or resolves without hints.
 
 ### The resolution skill
 
@@ -195,7 +198,8 @@ and verification logic.
 
 The skill owns:
 - The two-phase resolution procedure (hints → resolution)
-- The verification logic (evidence citation check, mapping membership)
+- The verification logic (evidence citation check, mapping membership
+  when a mapping is configured)
 - The output contract: resolved repo + cited evidence,
   or unresolved + reason + candidates
 
@@ -472,8 +476,8 @@ execution order and separation, not rewriting the logic.
   as hints. The system resolves with evidence or says it cannot.
 - Epic boundaries shift from Jira component to repository — each epic
   corresponds to exactly one PR in one repo
-- Workloads declare their own sources and mapping; RHAI is
-  configuration, not code
+- Workloads declare their own sources and optionally a mapping; RHAI
+  is configuration, not code
 - Changed inputs invalidate prior results
 - The skill stays in epic-creator for now; moving it is future work
 - PR #56's core machinery (source loading, validation, finalization)
@@ -483,7 +487,7 @@ execution order and separation, not rewriting the logic.
 
 - Whether the approved repository inventory (PR #56's
   `repository-inventory.yaml`) is a separate source from the mapping,
-  and how it relates to Layer 1
+  and how it relates to Phase 1
 - Where workload mappings live long-term (the architecture-context
   repository is a candidate)
 - Configuration experience: epic-creator uses files while other
