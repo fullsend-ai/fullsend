@@ -50,11 +50,9 @@ jobs:
           repository: github-community-projects/safe-settings
           ref: ${{ env.SAFE_SETTINGS_VERSION }}
           path: ${{ env.SAFE_SETTINGS_CODE_DIR }}
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          # Relative on purpose: setup-node resolves node-version-file
-          # against the workspace, so an absolute path gets doubled.
-          node-version-file: .safe-settings-code/.nvmrc
+          node-version-file: ${{ env.SAFE_SETTINGS_CODE_DIR }}/.nvmrc
       - run: npm ci --ignore-scripts
         working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
       # Fail closed: if the deployment config is missing or no longer scoped
