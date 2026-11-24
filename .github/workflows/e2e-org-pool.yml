@@ -89,6 +89,9 @@ jobs:
             e2e/org-pool
             .github/workflows/e2e-org-pool.yml
             pkg/behaviourtest/drivers/install/slotpool.go
+          # Non-cone mode: the list above names individual files, which
+          # cone mode would round up to their whole parent directories.
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Run org pool setup tests

@@ -36,8 +36,9 @@ org-admin `gh` session. The script walks through them, pausing for each:
    workflow manually (`workflow_dispatch`), which accepts them using the
    repository secrets `TEST_ACTOR_WRITE_PAT` and `TEST_ACTOR_TRIAGE_PAT`.
    Note that the workflow's push trigger is
-   path-filtered to `e2e/org-pool/**`, so it does not run on every push
-   to `main`.
+   path-filtered to `e2e/org-pool/**`, the workflow file, and
+   `pkg/behaviourtest/drivers/install/slotpool.go`, so it does not run on
+   every push to `main`.
 4. **Install the GitHub Apps.** The script opens the install page for each
    missing app: the six `fullsend-test-*` role apps and `fullsend-ai-e2e`.
    Grant access to "All repositories" and click Install.
@@ -76,7 +77,8 @@ Once the manual steps are done, `setup-org.sh` completes the configuration.
 It never pauses and never opens a browser, so it can run unattended. The
 *E2E Org Pool* workflow (`.github/workflows/e2e-org-pool.yml`) runs it
 for the STAGE org and every pool org: pushes to `main` (path-filtered to
-this directory and the workflow file), manual dispatches, and a weekly
+this directory, the workflow file, and
+`pkg/behaviourtest/drivers/install/slotpool.go`), manual dispatches, and a weekly
 schedule check out this directory from `main` — never from the PR head —
 and run with the org-admin `TEST_BOTSEND_PAT` secret plus the actor PAT
 secrets, correcting drift. Pull requests run the stub-based

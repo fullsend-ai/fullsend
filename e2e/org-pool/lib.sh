@@ -19,6 +19,16 @@ STATUS_TEAM_SLUG="mint-status"
 # DRY_RUN=1 (set by setup-org.sh --dry-run) replaces every mutation with a
 # "DRY-RUN: would ..." message. Default 0 so sourced tests see a value.
 DRY_RUN="${DRY_RUN:-0}"
+# Counts planned changes so setup-org.sh can tell a ready org from one
+# that only has planned changes. Default 0 so sourced tests see a value.
+DRY_RUN_PLANNED="${DRY_RUN_PLANNED:-0}"
+
+# dry_run_plan prints a "DRY-RUN: would ..." message and records the
+# planned change. Every dry-run mutation branch must go through it.
+dry_run_plan() {
+  echo "    DRY-RUN: $1"
+  DRY_RUN_PLANNED=$((DRY_RUN_PLANNED + 1))
+}
 
 # require_gh exits when the gh CLI is missing or not authenticated.
 require_gh() {
@@ -151,7 +161,7 @@ assign_all_repo_role() {
   fi
 
   if [[ "${DRY_RUN}" == "1" ]]; then
-    echo "    DRY-RUN: would assign all-repository ${perm} to ${username}"
+    dry_run_plan "would assign all-repository ${perm} to ${username}"
     return 0
   fi
   echo "    Assigning all-repository ${perm} (role ${role_id}) to ${username}..."
@@ -222,7 +232,7 @@ ensure_status_team() {
     echo "    OK: team ${org}/${slug} exists"
   elif echo "${body}" | grep -q "HTTP 404"; then
     if [[ "${DRY_RUN}" == "1" ]]; then
-      echo "    DRY-RUN: would create team ${org}/${slug}"
+      dry_run_plan "would create team ${org}/${slug}"
       # A real run would also remove the team creator (GitHub adds the
       # creating user as a maintainer) and add ${member} as its only
       # member. The team does not exist yet, so there is nothing to
@@ -266,7 +276,7 @@ ensure_status_team() {
     state=$(team_membership "${org}" "${slug}" "${creator}") || return 1
     if [[ "${state}" != "none" ]]; then
       if [[ "${DRY_RUN}" == "1" ]]; then
-        echo "    DRY-RUN: would remove ${creator} from ${org}/${slug}"
+        dry_run_plan "would remove ${creator} from ${org}/${slug}"
         # The removal is only planned, so remember the creator: the
         # member check below must not fail on them in dry-run.
         planned_removal="${creator}"
@@ -285,7 +295,7 @@ ensure_status_team() {
   state=$(team_membership "${org}" "${slug}" "${member}") || return 1
   if [[ "${state}" != "active member" ]]; then
     if [[ "${DRY_RUN}" == "1" ]]; then
-      echo "    DRY-RUN: would set ${member} on ${org}/${slug} as member (current: ${state})"
+      dry_run_plan "would set ${member} on ${org}/${slug} as member (current: ${state})"
       # The membership is only planned, so do not claim it is active.
     else
       echo "    Setting ${member} on ${org}/${slug} as member (current: ${state})..."
@@ -373,7 +383,7 @@ ensure_foreign_e2e_repos() {
 
   echo "    MISSING: ${var} does not authorize ${caller}"
   if [[ "${DRY_RUN}" == "1" ]]; then
-    echo "    DRY-RUN: would add ${caller} to ${var} on ${org}"
+    dry_run_plan "would add ${caller} to ${var} on ${org}"
     return 0
   fi
   local new_value="${caller}"

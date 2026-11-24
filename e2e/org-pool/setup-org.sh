@@ -10,7 +10,8 @@
 #   ORG — full org name, e.g. halfsend (STAGE)
 #
 # --dry-run verifies everything read-only and prints "DRY-RUN: would ..."
-# for each missing item instead of creating or changing it. The
+# for each missing item instead of creating or changing it, then reports
+# the org as NOT ready when any change was planned. The
 # e2e-org-pool.yml workflow can run it this way via a manual dispatch
 # (dry_run input); its regular runs on main execute without the flag and
 # correct drift. Pull requests run the stub-based tests instead.
@@ -80,7 +81,7 @@ if test_repo_body=$(gh api "/repos/${ORG}/test-repo" --silent 2>&1); then
   echo "    OK: test-repo exists"
 elif echo "${test_repo_body}" | grep -q "HTTP 404"; then
   if [[ "${DRY_RUN}" == "1" ]]; then
-    echo "    DRY-RUN: would create test-repo"
+    dry_run_plan "would create test-repo"
   else
     echo "    Creating test-repo..."
     gh api "/orgs/${ORG}/repos" \
@@ -124,7 +125,7 @@ for actor_info in "${TEST_WRITE_USER}:TEST_ACTOR_WRITE_PAT" "${TEST_TRIAGE_USER}
   fi
 
   if [[ "${DRY_RUN}" == "1" ]]; then
-    echo "    DRY-RUN: would accept ${actor}'s invitation using ${pat_var}"
+    dry_run_plan "would accept ${actor}'s invitation using ${pat_var}"
     continue
   fi
 
@@ -226,6 +227,15 @@ fi
 echo "    Verify with: fullsend admin foreign list --org ${ORG}"
 
 echo
+if [[ "${DRY_RUN}" == "1" && "${DRY_RUN_PLANNED}" -gt 0 ]]; then
+  # Fail closed like the rest of the script: a dry-run that only planned
+  # changes must not report the org as ready.
+  echo "==> DRY-RUN: ${DRY_RUN_PLANNED} change(s) planned; ${ORG} is NOT ready for e2e testing."
+  if [[ -n "${CI:-}" ]]; then
+    echo "::warning::${ORG} has ${DRY_RUN_PLANNED} planned change(s); run without --dry-run to apply them"
+  fi
+  exit 0
+fi
 echo "==> ${ORG} is ready for e2e testing."
 echo
 if [[ -z "${CI:-}" ]]; then

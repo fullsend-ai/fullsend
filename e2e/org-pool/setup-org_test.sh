@@ -677,13 +677,14 @@ run_setup() {
 }
 
 # 17a. --dry-run: parses, verifies read-only, plans test-repo, mutates
-# nothing.
+# nothing, and reports the org as NOT ready because a change was planned.
 provisioned_state
 run_setup --dry-run "${ORG}"
 if [[ "${RC}" -eq 0 && -z "$(mutations)" && ! -e "${STATE}/test-repo" ]] \
     && grep -q "DRY-RUN: would create test-repo" <<< "${OUT}" \
-    && grep -q "is ready for e2e testing" <<< "${OUT}" ; then
-  pass "setup dry-run: plans changes, mutates nothing"
+    && grep -q "is NOT ready for e2e testing" <<< "${OUT}" \
+    && ! grep -q "^==> .* is ready for e2e testing" <<< "${OUT}" ; then
+  pass "setup dry-run: plans changes, mutates nothing, reports NOT ready"
 else
   fail "setup dry-run: rc=${RC}, changes: $(mutations): ${OUT}"
 fi
@@ -718,6 +719,17 @@ if [[ "${RC}" -eq 0 && -z "$(mutations)" ]]; then
   pass "setup re-run: idempotent"
 else
   fail "setup re-run: rc=${RC}, changes: $(mutations): ${OUT}"
+fi
+
+# 17b-bis. --dry-run on a fully configured org: nothing planned, so the
+# org is reported as ready.
+run_setup --dry-run "${ORG}"
+if [[ "${RC}" -eq 0 && -z "$(mutations)" ]] \
+    && grep -q "is ready for e2e testing" <<< "${OUT}" \
+    && ! grep -q "is NOT ready" <<< "${OUT}" ; then
+  pass "setup dry-run clean: reports ready"
+else
+  fail "setup dry-run clean: rc=${RC}, changes: $(mutations): ${OUT}"
 fi
 
 # 17c. --dry-run without an org argument is a usage error.

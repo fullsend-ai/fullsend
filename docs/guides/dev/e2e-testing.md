@@ -235,8 +235,9 @@ tests locally can assume the pool orgs are already provisioned.
 
 The dedicated *E2E Org Pool* workflow (`.github/workflows/e2e-org-pool.yml`)
 keeps the STAGE org and every pool org configured. Runs that touch
-GitHub — pushes to `main` (path-filtered to `e2e/org-pool/**` and the
-workflow file), manual dispatches, and a weekly schedule — check out
+GitHub — pushes to `main` (path-filtered to `e2e/org-pool/**`, the
+workflow file, and `pkg/behaviourtest/drivers/install/slotpool.go`), manual
+dispatches, and a weekly schedule — check out
 `e2e/org-pool` from `main` — never from the PR head — and run
 `setup-org.sh` for real with the org-admin `TEST_BOTSEND_PAT` secret plus
 the actor PAT secrets, correcting drift. Pull requests never touch
@@ -321,12 +322,14 @@ model idempotently on `halfsend-NN` and on the STAGE org `halfsend`.
 when the actor PATs are exported. `setup-org.sh` accepts pending
 invitations with the actor PATs; the *E2E Org Pool* workflow provides
 them from the repository secrets `TEST_ACTOR_WRITE_PAT` and
-`TEST_ACTOR_TRIAGE_PAT` on pushes to `main`, so a pending invitation is
-accepted on the next main run (pull-request runs never execute
-`setup-org.sh`; they run the stub-based `setup-org_test.sh` instead, so
-invitations stay pending until a main run or a local run accepts them). Run locally with the PATs exported as
-shown above, within 7 days of the invitation — GitHub expires pending
-org invitations after 7 days. It fails when an actor has no membership
+`TEST_ACTOR_TRIAGE_PAT` on its runs (a path-matching push to `main`, a
+manual dispatch, or the weekly schedule), so a pending invitation is
+accepted by the next such run — or by a local run with the PATs exported
+(pull-request runs never execute `setup-org.sh`; they run the stub-based
+`setup-org_test.sh` instead, so invitations stay pending until one of
+those runs accepts them). Whichever it is, it must happen within 7 days
+of the invitation — GitHub expires pending org invitations after 7
+days. It fails when an actor has no membership
 at all.
 
 Accounts and PATs are managed under
