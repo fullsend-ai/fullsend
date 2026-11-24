@@ -7,28 +7,28 @@
 # protection rules -- anything added later through the GitHub UI is removed
 # by the next run. Edit this file, not the UI.
 environments:
-- name: dev
-- name: e2e-org-pool
-  # safe-settings cannot manage environment secrets; these three live only on
-  # GitHub (write-only via the API): TEST_ACTOR_TRIAGE_PAT,
-  # TEST_ACTOR_WRITE_PAT, TEST_BOTSEND_PAT.
-  deployment_branch_policy:
-    protected_branches: false
-    custom_branch_policies:
-    - main
-- name: evals
-- name: forgejo-dev
-- name: forgejo-stage
-- name: functional-tests
-- name: github-pages
-  deployment_branch_policy:
-    protected_branches: false
-    custom_branch_policies:
-    - main
-- name: site-preview
-- name: site-production
-- name: stage
-  deployment_branch_policy:
-    protected_branches: false
-    custom_branch_policies:
-    - main
+  - name: dev
+  - name: e2e-org-pool
+    # safe-settings cannot manage environment secrets; these three live only on
+    # GitHub (write-only via the API): TEST_ACTOR_TRIAGE_PAT,
+    # TEST_ACTOR_WRITE_PAT, TEST_BOTSEND_PAT.
+    deployment_branch_policy:
+      protected_branches: false
+      custom_branch_policies:
+        - main
+  - name: evals
+  - name: forgejo-dev
+  - name: forgejo-stage
+  - name: functional-tests
+  - name: github-pages
+    deployment_branch_policy:
+      protected_branches: false
+      custom_branch_policies:
+        - main
+  - name: site-preview
+  - name: site-production
+  - name: stage
+    deployment_branch_policy:
+      protected_branches: false
+      custom_branch_policies:
+        - main

@@ -80,6 +80,81 @@ jobs:
           if not isinstance(cfg, dict) or not isinstance(cfg.get("environments"), list):
               sys.exit("settings.yml must be a mapping with an 'environments' list")
           EOF
+      # safe-settings 3.0.0's environments plugin discards its NopCommands,
+      # so FULL_SYNC_NOP cannot report environment drift. Compute the diff
+      # here, read-only, so dry runs have something trustworthy to review.
+      # Compares environment names and deployment branch policies (the only
+      # attributes settings.yml manages).
+      - name: Report environment drift
+        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+        env:
+          APP_ID: ${{ vars.GOVERNANCE_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.GOVERNANCE_PRIVATE_KEY }}
+          SETTINGS_PATH: ${{ github.workspace }}/.github/safe-settings/settings.yml
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+          const yaml = require("js-yaml");
+          const { App } = require("octokit");
+
+          const ORG = "fullsend-ai";
+          const REPO = "fullsend";
+
+          function policyOf(names, protectedBranches) {
+            return JSON.stringify({
+              protected_branches: !!protectedBranches,
+              custom: names.slice().sort()
+            });
+          }
+
+          async function main() {
+            const desired = yaml.load(fs.readFileSync(process.env.SETTINGS_PATH, "utf8")).environments;
+            const app = new App({ appId: process.env.APP_ID, privateKey: process.env.PRIVATE_KEY });
+            const installations = await app.octokit.request("GET /app/installations");
+            const inst = installations.data.find(i => i.account.login === ORG);
+            if (!inst) throw new Error(`no app installation for ${ORG}`);
+            const octokit = await app.getInstallationOctokit(inst.id);
+
+            const live = await octokit.paginate(
+              "GET /repos/{owner}/{repo}/environments",
+              { owner: ORG, repo: REPO },
+              r => r.data
+            );
+            for (const env of live) {
+              if (env.deployment_branch_policy && env.deployment_branch_policy.custom_branch_policies) {
+                const pols = await octokit.paginate(
+                  "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment-branch-policies",
+                  { owner: ORG, repo: REPO, environment_name: env.name }
+                );
+                env._custom = pols.map(p => p.name);
+              }
+            }
+
+            const lines = [];
+            const extra = live.map(e => e.name).filter(n => !desired.some(d => d.name === n));
+            const missing = desired.map(d => d.name).filter(n => !live.some(e => e.name === n));
+            if (extra.length) lines.push(`  delete (live only, removed on apply): ${extra.join(", ")}`);
+            if (missing.length) lines.push(`  create (config only): ${missing.join(", ")}`);
+            for (const d of desired) {
+              const l = live.find(e => e.name === d.name);
+              if (!l) continue;
+              const want = d.deployment_branch_policy
+                ? policyOf((d.deployment_branch_policy.custom_branch_policies || []).map(p => typeof p === "string" ? p : p.name), d.deployment_branch_policy.protected_branches)
+                : null;
+              const have = l.deployment_branch_policy
+                ? policyOf(l._custom || [], l.deployment_branch_policy.protected_branches)
+                : null;
+              if (want !== have) lines.push(`  update ${d.name}: branch policy differs (live ${have}, config ${want})`);
+            }
+            if (lines.length === 0) {
+              console.log("Environment drift: none");
+            } else {
+              console.log("Environment drift:");
+              for (const line of lines) console.log(line);
+            }
+          }
+          main().catch(e => { console.error(e); process.exit(1); });
+          EOF
       - run: npm run full-sync
         working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
         env:
