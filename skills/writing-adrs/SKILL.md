@@ -75,9 +75,8 @@ needs an ADR.
   abstraction in [ADR 0005](../../docs/ADRs/0005-forge-abstraction-layer.md) or
   the credential boundary in
   [ADR 0017](../../docs/ADRs/0017-credential-isolation-for-sandboxed-agents.md).
-- Credible alternatives would leave future contributors with materially
-  different security boundaries, cross-component contracts, compatibility
-  obligations, or operating models. Record the choice and why it should hold.
+- The choice establishes materially different security boundaries,
+  cross-component contracts, compatibility obligations, or operating models.
 - The choice changes or supersedes an invariant in an Accepted ADR. Preserve
   the old record and write a new one for the changed decision.
 
