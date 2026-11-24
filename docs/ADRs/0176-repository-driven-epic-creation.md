@@ -72,18 +72,12 @@ agents (downstream validation scripts) and humans (the reviewer sees
 the evidence in the epic comment).
 
 **Layer 1 — Component mapping (deterministic).** Look up the Jira
-component in a maintained mapping. The mapping resolves deterministically
-in two cases:
-- The component maps to exactly one repository — return it.
-- The component maps to multiple repositories but one is marked as the
-  default (e.g., the primary repo for that component) — return the
-  default.
-
-No LLM needed in either case. If the component maps to multiple
-repositories and no default is set, pass the narrowed candidate set to
-layer 2. If the component is not in the mapping, the resolver returns
-unresolved — the mapping is the source of truth for which components
-have approved repositories.
+component in a maintained mapping. If the component maps to exactly one
+repository, return it. No LLM needed. If the component maps to multiple
+repositories, pass the narrowed candidate set to layer 2. If the
+component is not in the mapping, the resolver returns unresolved — the
+mapping is the source of truth for which components have approved
+repositories.
 
 **Layer 2 — Architecture context with LLM (evidence-based).** The LLM
 reads the architecture docs and the candidate repositories from
@@ -120,9 +114,6 @@ The mapping records:
 - Which repositories are associated with each Jira component
 - Repository details (organization, name) — the caller builds the
   SSH or HTTP URL from these as needed
-- Optionally, which repository is the default for a component — when
-  a component maps to multiple repos, the default is returned without
-  invoking an LLM
 
 For RHAI, this data already exists. The Component Mapping Results
 document maps every Jira component to its repos.
@@ -295,6 +286,20 @@ The repo URL is written to the configured Jira URL field. If sources
 have changed since resolution, the system forces re-resolution before
 publication.
 
+### Jira field for resolved repository
+
+The resolved repository is written to a configurable Jira field on the
+epic. The field is a URL type — the caller builds the URL from the
+repo details (org and name) returned by the resolver.
+
+Which field to use is workload configuration. For RHAI, the field
+already exists in the Jira project. Other workloads configure their
+own field. The field ID is not hardcoded in the resolver or the epic
+creator — it is read from the workload definition.
+
+Agents polling for work (e.g., code agents in specific repos) can
+use JQL to query this field and find epics assigned to their repo.
+
 ### Epic boundary shift: component → repo
 
 Current main splits epics by Jira component and team boundary. This
@@ -356,8 +361,7 @@ mappings current is a significant ongoing effort.
 The three-layer design is a middle ground:
 
 - Layer 1 handles the easy cases cheaply — a maintained mapping that
-  covers the common path, including a default repo when multiple
-  candidates exist. For RHAI, this data already exists.
+  covers the common path. For RHAI, this data already exists.
 - Layer 2 handles the ambiguous cases — LLM reads the architecture
   docs and selects a repo with cited evidence.
 - Layer 3 handles the hard cases honestly — the LLM guesses from the
@@ -370,7 +374,7 @@ guesses wrong.
 
 The operational cost scales with how much of the resolution a workload
 wants to be deterministic. A workload that invests in its mapping —
-including setting defaults for multi-repo components — gets more
+covering more components with unambiguous mappings — gets more
 Layer 1 hits. A workload that cannot afford that investment still
 gets Layer 2 and 3 coverage. The architecture context skill (see
 above) allows workloads to provide their own implementation of how
@@ -430,7 +434,7 @@ execution order and separation, not rewriting the logic.
 
 | Aspect | PR #56 | This ADR |
 | --- | --- | --- |
-| Layer 1 | LLM reads mapping doc | Deterministic code lookup — no LLM for unambiguous components or components with a default repo |
+| Layer 1 | LLM reads mapping doc | Deterministic code lookup — no LLM for unambiguous components |
 | Layer separation | All layers in one LLM pass | Three distinct steps: deterministic mapping → LLM with evidence → LLM guess |
 | Resolver scope | Embedded in epic-creator's wave prompt | Standalone skill, any agent can call |
 | Input | Strategy + all sources | Jira component + issue context |
@@ -488,7 +492,7 @@ execution order and separation, not rewriting the logic.
 - The resolution order is visible and explainable: deterministic
   mapping → LLM with evidence → LLM guess as hint
 - Layer 1 is deterministic — no LLM needed when the mapping resolves
-  (single repo or default repo)
+  (single repo match)
 - Layer 3 (LLM guess) is only used as a last resort and its output
   is a hint, never a published answer
 - Epic boundaries shift from Jira component to repository — each epic
