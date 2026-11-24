@@ -73,8 +73,11 @@ contribution.
   The "Request changes" review status signals that the PR should not merge
   until the reviewer clears it by submitting an approving review. If the
   reviewer is unavailable, only a maintainer may dismiss the review, with a
-  reason in the dismissal comment. Keep the reviewer's threads open; do not
-  resolve them to bypass the block.
+  reason in the dismissal comment. Keep the reviewer's threads open while the
+  review blocks the PR; do not resolve them to bypass the block. Once the
+  reviewer clears the block by approving, or a maintainer dismisses the review
+  because the reviewer is unavailable, the PR author resolves those threads as
+  usual.
 - **Be constructive.** Disagreement is expected and valuable. Critique ideas, not people. When you push back on a proposal, suggest an alternative or explain what concern drives your objection.
 
 ### Reworking a PR
