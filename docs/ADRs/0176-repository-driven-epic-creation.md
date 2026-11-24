@@ -38,7 +38,8 @@ Resolution must be:
 - Correct — the right repository for this work, not just any related
   one
 - Verified — even a deterministic match is confirmed against
-  architecture context, because human-assigned components can be wrong
+  architecture context, because both the component assigned to the Jira
+  issue and the component mappings are human-maintained and can be wrong
 - Explicit — resolved with cited evidence, or unresolved with a reason
   and candidates; never silently guessed
 - Generic — not hardcoded to any single workload's sources or rules
@@ -70,8 +71,9 @@ Resolution has two phases: collect hints, then resolve with evidence.
 **Phase 1 — Hints (optional).** Look up the Jira component in the
 maintained mapping. If the component is in the mapping, its candidate
 repositories are passed to Phase 2 as hints — even a single-repo match.
-Component assignments are made by humans and can be wrong or stale, so
-a mapping hit is a strong signal but not a trusted final answer. If the
+Both the component assigned to the Jira issue and the mappings
+themselves are human-maintained and can be wrong or stale, so a mapping
+hit is a strong signal but not a trusted final answer. If the
 component is not in the mapping, Phase 2 runs without hints.
 
 **Phase 2 — Resolution (always runs).** The LLM reads the architecture
@@ -339,10 +341,11 @@ with candidates. They do not see the phases. The experience is seamless
 when the data supports it, and explicit when it doesn't — the system
 never silently guesses wrong.
 
-Component mappings are maintained by humans and can be wrong or stale.
-Phase 2 always verifies — a mapping hint that contradicts the
-architecture context is overridden, not blindly trusted. This addresses
-the tech review feedback that component assignments are error-prone.
+Both the component assigned to the Jira issue and the mappings
+themselves are human-maintained and can be wrong or stale. Phase 2
+always verifies — a mapping hint that contradicts the architecture
+context is overridden, not blindly trusted. This addresses the tech
+review feedback that component assignments are error-prone.
 
 The operational cost scales with how much of the resolution a workload
 wants to accelerate. A workload that invests in its mapping — covering
@@ -364,10 +367,11 @@ model is not one-size-fits-all.
   assignment would require merging and splitting already-drafted epics.
   Resolution must happen before epic creation.
 
-- **Trust deterministic mapping without verification** — rejected: Jira
-  component assignments are human-maintained and can be wrong or stale.
-  Even a single-repo match needs verification against architecture
-  context. The tech review confirmed this risk.
+- **Trust deterministic mapping without verification** — rejected: both
+  the component assigned to the Jira issue and the mappings themselves
+  are human-maintained and can be wrong or stale. Even a single-repo
+  match needs verification against architecture context. The tech review
+  confirmed this risk.
 
 - **Deterministic-only resolution** — not viable: some components map to
   multiple repositories and even structured metadata cannot always
