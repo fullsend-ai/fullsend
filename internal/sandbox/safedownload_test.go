@@ -2735,6 +2735,27 @@ func TestSafeDownload_SameFileCaseVariantTrustedStore(t *testing.T) {
 	assert.DirExists(t, filepath.Join(localDir, ".git", "modules", "dep"))
 }
 
+// TestSanitizeDownload_RejectsDownloadedPartialClone proves a partial clone
+// the agent created with remote-form promisor keys — no extension marker —
+// is rejected during the config rebuild, not stripped and published with
+// missing objects.
+func TestSanitizeDownload_RejectsDownloadedPartialClone(t *testing.T) {
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "x")
+	store := filepath.Join(r.dir, ".git", "modules", "dep")
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "objects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "refs"), 0o755))
+	writeFile(t, r.dir, ".git/modules/dep/config",
+		"[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://example.invalid/dep.git\n\tpromisor = true\n\tpartialclonefilter = blob:none\n")
+	writeFile(t, r.dir, ".git/modules/dep/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, r.dir, "dep/.git", "gitdir: ../.git/modules/dep\n")
+
+	err := sanitizeDownload(r.dir, RepositorySnapshot{})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	assert.Contains(t, err.Error(), "partial clone")
+}
+
 // TestSanitizeDownload_RejectsUnrecognizedModuleStore proves a directory
 // under modules/ that this walk does not recognize as a store cannot keep
 // its metadata: git adopts a store with HEAD, objects, and refs alone (config

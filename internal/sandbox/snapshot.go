@@ -194,6 +194,12 @@ func captureGitConfigFormat(cwd, configPath string) (gitConfigFormat, error) {
 	format := gitConfigFormat{}
 	for _, record := range records {
 		key := strings.ToLower(record.key)
+		// A remote-form partial clone in a downloaded config would be
+		// stripped by the rewrite, leaving missing objects the host cannot
+		// retrieve; reject it the same way host capture does.
+		if partialCloneRemoteKey(key) {
+			return gitConfigFormat{}, rejectRepository(fmt.Errorf("git config declares a partial clone, which is not supported"))
+		}
 		if rest, ok := strings.CutPrefix(key, "extensions."); ok {
 			switch rest {
 			case "objectformat":
