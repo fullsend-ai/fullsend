@@ -310,7 +310,8 @@ run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 
 `execute_tool` spans are named `execute_tool <tool name>`. One starts when
 the runtime reports a tool call (on Claude Code, when its arguments are
-complete; on pi, when `tool_execution_start` was read) and ends when it
+complete; on pi, when `tool_execution_start` was read; on codex, when
+`item.started` was read) and ends when it
 reports the result — both are runner-side times, which trail the
 sandbox by the pipe latency and the parser's decode of the line, stamped after the
 console renderer's output for the call (it prints nothing for a result) and
@@ -321,7 +322,9 @@ execution rather than measuring it: both times trail the sandbox, and when
 the start trails by more than the end (an earlier event was still being
 processed when the call arrived) the span is shorter than the execution it
 covers. A call with no result
-by the end of the iteration is closed with `error.type=unanswered`; a
+by the end of the iteration is closed with `error.type=unanswered` (on codex,
+a call that never got an `item.completed`, such as one cut off by a kill, has
+no span); a
 result whose stream line exceeded the parser's 1 MiB bound ends its span on
 receipt, marked `fullsend.tool.result_oversized` with no status and no
 `error.type` — the tool answered, and whether it failed was never decoded; a
