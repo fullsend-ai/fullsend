@@ -133,9 +133,11 @@ remove the row limit, the random pick, and the lock.
    yet, so a cycle can exceed the configured limit by that one issue. One
    issue contributes at most 250 records and, on the GitHub target, 768 KB:
    the driver keeps the oldest records, drops the rest with a warning, and
-   advances the checkpoint.
-   Today's cap of 100 events per issue, which also drops its overflow and
-   advances the checkpoint, is unchanged. At any of these limits the driver
+   advances the checkpoint. The drop is deliberate and follows today's cap:
+   one issue does not honestly produce that many records in a cycle, so the
+   limit bounds the runs that a rewound checkpoint or a bulk change can
+   start. The warning names the issue. Today's cap of 100 events per issue,
+   which also drops its overflow and advances the checkpoint, is unchanged. At any of these limits the driver
    stops reading, leaves an issue it has not finished for the next cycle,
    dispatches what it has completed, commits those checkpoints, and exits
    normally. A cycle in which every issue the driver tried failed or timed
