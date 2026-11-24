@@ -4344,8 +4344,9 @@ type postScriptDecision struct {
 
 // postScriptGate decides whether the post-script runs once the agent is done.
 // With a validation_loop it needs a validated result (ADR 0022). Without one
-// it runs after a successful agent, and after a failed agent only when the
-// agent left a result file that parses (#8305), so the result is still
+// it runs after a successful agent, after a failed agent only when the agent
+// left a result file that parses (#8305), and after a failed output scan only
+// when that scan left a result file that parses, so the result is still
 // reported while the run fails. --no-post-script is checked by the caller.
 func postScriptGate(h *harness.Harness, validationPassed, transcriptErrorOverride bool, runErr error, outputDir string) postScriptDecision {
 	if h.ValidationLoop != nil && !validationPassed {
@@ -4361,6 +4362,22 @@ func postScriptGate(h *harness.Harness, validationPassed, transcriptErrorOverrid
 			run:           true,
 			message:       fmt.Sprintf("Agent failed with exit code %d but left %s: running the post-script; the run still fails", agentErr.exitCode, filepath.Base(resultFile)),
 			agentExitCode: agentErr.exitCode,
+		}
+	}
+	// A scan failure fails the run, but one unreadable, unwritable or
+	// unsanitizable file anywhere under the run directory must not turn a
+	// completed report into silence: when the agent's own result file survived
+	// the scan and still parses, the post-script runs and the run still fails
+	// (#5705).
+	var scanErr *outputScanError
+	if errors.As(runErr, &scanErr) {
+		resultFile, ok := agentResultFile(h, outputDir)
+		if !ok {
+			return postScriptDecision{message: "Skipping post-script: the output scan failed and left no result file that parses"}
+		}
+		return postScriptDecision{
+			run:     true,
+			message: fmt.Sprintf("The output scan failed but left %s: running the post-script; the run still fails", filepath.Base(resultFile)),
 		}
 	}
 	if runErr != nil {
@@ -4399,6 +4416,15 @@ func agentResultFile(h *harness.Harness, outputDir string) (string, bool) {
 	}
 	var obj map[string]any
 	if json.Unmarshal(data, &obj) != nil || obj == nil {
+		return "", false
+	}
+	// A file the output scan replaced with a fail-closed marker is valid JSON
+	// but not the agent's result: posting it would report a marker as the
+	// review (#5705).
+	if _, removed := security.OutputRemoval(data); removed {
+		return "", false
+	}
+	if bytes.Equal(bytes.TrimSpace(data), []byte(unwritableOutputMarker)) {
 		return "", false
 	}
 	return path, true

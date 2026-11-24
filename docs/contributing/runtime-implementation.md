@@ -736,6 +736,16 @@ instead of naming one. The scan failure is the only run error the comment
 rewrites today; applying the level to the rest is tracked in
 [#9627](https://github.com/fullsend-ai/fullsend/issues/9627).
 
+A failed scan fails the run but does not silence the agent's own result. The
+post-script runs after the scan, so when the run failed with a scan error the
+gate skips it — unless the result file the harness names (`agent-result.json`
+by default) survived the scan and still holds a JSON object. Then the
+post-script runs, posts the result, and the run still fails, so one unreadable
+or unwritable file somewhere else under the run directory cannot turn a
+completed report into silence. A result file the scan replaced with a
+fail-closed marker does not count: the marker is valid JSON, but it is not the
+agent's result, and posting it would report a removal as the review.
+
 ## Agent rule layering
 
 When `fullsend run` executes an agent, Claude Code loads instructions from
