@@ -773,6 +773,34 @@ func TestScanOutputFiles_QuietReadFailureKeepsPathInErrorOnly(t *testing.T) {
 		"the printed log must not name an agent-chosen file at quiet")
 }
 
+// TestScanOutputFiles_QuietScanFailureStatusDetailOmitsAgentName pins the
+// completion-comment channel at quiet: the run error keeps the agent-chosen
+// output file name for telemetry, while the detail the comment posts carries
+// the count alone. Actions log masking does not apply to a comment, and the
+// name is the agent's to choose (#5705, ADR 0163).
+func TestScanOutputFiles_QuietScanFailureStatusDetailOmitsAgentName(t *testing.T) {
+	dir := t.TempDir()
+	const name = "@org/team-secret.json"
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`{"token":"ghp_FAKEtesttoken000000000000000000000000"}`), 0o644))
+	writeErr := errors.New("no space left on device")
+
+	err := scanOutputFilesWithWriter(dir, "trace-id", "quiet", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
+		return writeErr
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), name, "the run error keeps the path for telemetry")
+	assert.ErrorIs(t, err, writeErr, "the run error keeps the wrapped cause for telemetry")
+
+	detail := failureStatusDetail(err, "quiet")
+	assert.NotContains(t, detail, name, "the completion comment must not post an agent-chosen name")
+	assert.NotContains(t, detail, "no space left on device")
+	assert.Equal(t, "post-agent output scan failed: 1 file(s) could not be scanned", detail)
+
+	assert.Contains(t, failureStatusDetail(err, ""), name, "full posts the error as before")
+}
+
 // TestScanOutputFiles_SanitizesBOMPrefixedJSONStructurally pins that a JSON
 // document that starts with a UTF-8 BOM still takes the structural path. The BOM
 // is not JSON whitespace, so before this it fell through to the plain-text scan,

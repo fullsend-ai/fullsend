@@ -1633,7 +1633,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					status = "cancelled"
 				} else if runErr != nil {
 					status = "failure"
-					detail = runErr.Error()
+					// Actions log masking does not apply to this comment, so an
+					// error that can quote text the agent chose supplies fixed
+					// wording at quiet (failureStatusDetail). Telemetry and the
+					// root span keep the full error.
+					detail = failureStatusDetail(runErr, progressVerbosity)
 				} else if runSkipped {
 					status = "skipped"
 					detail = runSkipReason
@@ -5169,6 +5173,30 @@ func auditChainFailure(brokenMsg, progressVerbosity string) (string, error) {
 // the quiet progress level.
 const quietRunErrorMessage = "agent run failed (error details are not printed at progress level quiet; see telemetry or the run artifact)"
 
+// quietStatusDetailer lets an error state the fixed text the completion comment
+// may carry for it at the quiet progress level, such as a count of affected
+// files in place of their agent-chosen names.
+type quietStatusDetailer interface {
+	QuietStatusDetail() string
+}
+
+// failureStatusDetail returns the failure detail the completion comment posts
+// for err. Actions log masking does not apply to that comment, so at quiet an
+// error whose text can carry something the agent chose supplies a fixed wording
+// through quietStatusDetailer. Every other error posts its message as before:
+// ADR 0163 covers the job log only, and applying the level to the whole comment
+// is tracked in #9627. The run error keeps the full text for telemetry and the
+// root span at every level.
+func failureStatusDetail(err error, progressVerbosity string) string {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		var detailer quietStatusDetailer
+		if errors.As(err, &detailer) {
+			return detailer.QuietStatusDetail()
+		}
+	}
+	return err.Error()
+}
+
 // quietRunErr is the run's final error at quiet: it prints as
 // quietRunErrorMessage and keeps the original for errors.Is, errors.As and
 // the exit code.
@@ -7091,7 +7119,8 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 	findingCount := 0
 	// At quiet, unreadable, unwritable and unsanitizable files are counted, not
 	// named, in the printed log. The collected failures still name each file and
-	// wrap its cause, so telemetry keeps the full text (ADR 0163).
+	// wrap its cause, so telemetry keeps the full text, and the returned error's
+	// QuietStatusDetail gives the completion comment the count (ADR 0163).
 	unreadable, unwritable, unsanitizable := 0, 0, 0
 	// Write and sanitizer failures are collected rather than returned from the
 	// walk callback so every remaining file is still scanned and redacted. The
@@ -7252,9 +7281,33 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 		printer.StepDone("Output files clean — no issues found")
 	}
 	if err := errors.Join(writeErrs...); err != nil {
-		return err
+		return &outputScanError{err: err, files: unreadable + unwritable + unsanitizable}
 	}
 	return nil
+}
+
+// postAgentScanFailurePrefix labels a failed post-agent output scan in the run
+// error and in the fixed text the completion comment carries at quiet.
+const postAgentScanFailurePrefix = "post-agent output scan failed"
+
+// outputScanError is the run error for a post-agent output scan that could not
+// handle some output files. Its message names each file and wraps the cause, so
+// telemetry and the root span keep the detail (ADR 0163). At the quiet progress
+// level the completion comment gets QuietStatusDetail instead: an output file
+// name is the agent's to choose, and the comment is posted where anyone who can
+// see the issue or pull request reads it (#5705).
+type outputScanError struct {
+	err   error
+	files int
+}
+
+func (e *outputScanError) Error() string { return e.err.Error() }
+func (e *outputScanError) Unwrap() error { return e.err }
+
+// QuietStatusDetail is the fixed text the completion comment carries at quiet:
+// how many output files the scan could not handle, never a name or a cause.
+func (e *outputScanError) QuietStatusDetail() string {
+	return fmt.Sprintf("%s: %d file(s) could not be scanned", postAgentScanFailurePrefix, e.files)
 }
 
 // alertOnOutputRemoval emits a ::error:: workflow command when an output file
@@ -7292,8 +7345,9 @@ func alertOnRecordRemoval(printer *ui.Printer, sanitized []byte) {
 // writeFailure records a sanitized-output write error. The returned error always
 // names the file and wraps the cause, whatever the progress level: only printed
 // lines are trimmed at quiet (the count warnings below, failureLine and
-// quietRunError), while the run error recorded by telemetry keeps the full text
-// (ADR 0163).
+// quietRunError), while the run error recorded by telemetry keeps the full text.
+// The completion comment posts a count instead of the agent-chosen name at quiet
+// (failureStatusDetail, ADR 0163).
 func writeFailure(path, relPath string, writeErr error, unwritable *int) error {
 	*unwritable++
 	quarantineErr := quarantineOutput(path)
@@ -7304,7 +7358,8 @@ func writeFailure(path, relPath string, writeErr error, unwritable *int) error {
 // scanned, so it is contained like a write failure: the file is replaced with a
 // marker, or removed, when the filesystem allows it, and the run fails closed
 // afterwards (#5705). Like every failure here, the error names the file at every
-// progress level; only the printed line is trimmed at quiet (ADR 0163).
+// progress level; only the printed line is trimmed at quiet, and the completion
+// comment gets a count (failureStatusDetail, ADR 0163).
 func readFailure(path, relPath string, readErr error, unreadable *int) error {
 	*unreadable++
 	quarantineErr := quarantineOutput(path)
@@ -7315,7 +7370,8 @@ func readFailure(path, relPath string, readErr error, unreadable *int) error {
 // scanned, so the run fails closed instead of shipping those bytes as an
 // artifact (#5705). The entry is not quarantined: it may be a directory, and the
 // files it holds were never opened. The path stays in the error at every
-// progress level; only the printed line is trimmed at quiet (ADR 0163).
+// progress level; only the printed line is trimmed at quiet, and the completion
+// comment gets a count (failureStatusDetail, ADR 0163).
 func walkFailure(outputDir, path string, walkErr error, unreadable *int) error {
 	*unreadable++
 	relPath, err := filepath.Rel(outputDir, path)
@@ -7329,7 +7385,8 @@ func walkFailure(outputDir, path string, walkErr error, unreadable *int) error {
 // not sanitize, so the walk continues to the remaining files instead of leaving
 // them unredacted. The unredacted bytes are replaced with the marker when the
 // filesystem allows it, as on a write failure (#5705). The error names the file
-// and wraps the cause at every progress level (ADR 0163).
+// and wraps the cause at every progress level; the completion comment gets a
+// count at quiet (failureStatusDetail, ADR 0163).
 func sanitizeFailure(path, relPath string, scanErr error, unsanitizable *int) error {
 	*unsanitizable++
 	quarantineErr := quarantineOutput(path)
@@ -7392,7 +7449,10 @@ func collectPostScanSecurityArtifacts(runDir, sandboxName string, printer *ui.Pr
 		}
 	}
 	if scanErr != nil {
-		scanErr = fmt.Errorf("post-agent output scan failed: %w", scanErr)
+		// The wrap keeps a scan error's own fixed quiet wording reachable
+		// through errors.As, so the completion comment can post a count instead
+		// of the agent-chosen file names (outputScanError, ADR 0163).
+		scanErr = fmt.Errorf("%s: %w", postAgentScanFailurePrefix, scanErr)
 	}
 	return errors.Join(scanErr, chainErr)
 }

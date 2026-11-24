@@ -1410,7 +1410,9 @@ At `quiet`:
   A setup error before that, such as a config or provider error, prints in
   full. The level covers the job log only: the status comment on the issue or
   pull request still carries the full run error
-  ([#9627](https://github.com/fullsend-ai/fullsend/issues/9627)).
+  ([#9627](https://github.com/fullsend-ai/fullsend/issues/9627)), except that a
+  failed output scan posts how many files it could not handle rather than a
+  name the agent chose.
 
 **Agent CLI stderr at `quiet`.** The agent CLI (Claude Code, pi, Codex or
 OpenCode) writes its own diagnostics to stderr, and they can quote what the

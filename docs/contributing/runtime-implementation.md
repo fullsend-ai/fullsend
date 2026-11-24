@@ -728,7 +728,13 @@ marker write and the fallback removal both fail, that failure is added to the
 joined error rather than left unreported, so the run says the unredacted file is
 still on disk. In `quiet` mode the printed log counts the affected paths
 instead of naming them (ADR 0163); the run error and telemetry keep the path
-and the wrapped cause at every level, and only the printed line is trimmed.
+and the wrapped cause at every level, and only the printed line is trimmed. The
+completion comment on the issue or pull request counts them too: an output file
+name is the agent's to choose, and Actions log masking does not apply to a
+comment, so at `quiet` a failed scan posts how many files it could not handle
+instead of naming one. The scan failure is the only run error the comment
+rewrites today; applying the level to the rest is tracked in
+[#9627](https://github.com/fullsend-ai/fullsend/issues/9627).
 
 ## Agent rule layering
 
