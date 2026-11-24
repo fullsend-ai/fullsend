@@ -455,6 +455,8 @@ func applyAgentSettings(h *harness.Harness, o *runOverrides, entry config.AgentE
 	}
 }
 
+var runAgentFunc = runAgent
+
 func newRunCmd() *cobra.Command {
 	var fullsendDir string
 	var outputBase string
@@ -478,7 +480,8 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
+			oFlags.syncTargetRepoSet = cmd.Flags().Changed("sync-target-repo")
+			return runAgentFunc(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
 
@@ -489,6 +492,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&envFiles, "env-file", nil, "load environment variables from a dotenv file (repeatable)")
 	cmd.Flags().BoolVar(&noPostScript, "no-post-script", false, "skip post-script execution (agent still runs full inference)")
 	cmd.Flags().BoolVar(&keepSandbox, "keep-sandbox", false, "skip sandbox and download directory deletion after the run (useful for post-failure inspection)")
+	cmd.Flags().BoolVar(&oFlags.syncTargetRepo, "sync-target-repo", false, "synchronize sanitized modified files from the sandbox back to the target repository directory upon completion (also $FULLSEND_SYNC_TARGET_REPO)")
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable agent runtime debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
@@ -1545,6 +1549,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 	printer.KeyValue("Runtime", fmt.Sprintf("%s (from %s)", runtimeBackend.Runtime.Name(), runtimeConfigSource))
+	if overrides.syncTargetRepoSource != "" {
+		printer.KeyValue("Target repo sync", withSource(strconv.FormatBool(overrides.syncTargetRepo), overrides.syncTargetRepoSource))
+	}
 	if h.Image != "" {
 		printer.KeyValue("Image", h.Image)
 	}
@@ -2238,6 +2245,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// post-script defer must only run when validation has passed — running it
 	// on unvalidated output would violate ADR 0022's zero-trust model.
 	var validationPassed bool
+	var inlineValidationPassed bool
 
 	defer func() {
 		exitCode := telemetryExitCode(lastExitCode, runErr)
@@ -2443,6 +2451,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	//     different iteration's checkout than what was validated).
 	// Callers (validation, post-script) must not use the dir when false.
 	var repoExtractedOK bool
+	var lastDownloadStrippedSymlinks []string
 
 	// validatedIterNum records which iteration passed validation (1-based),
 	// or 0 if none. Set by inline validation (step 9e break) or the
@@ -2460,8 +2469,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
 	hostRepositoryDownloadDir := filepath.Join(os.TempDir(), sandboxName)
+	preserveDownloadDir := false
 	defer func() {
-		if keepSandbox {
+		if keepSandbox || preserveDownloadDir {
 			return
 		}
 		if err := forceRemoveAll(hostRepositoryDownloadDir); err != nil {
@@ -2771,6 +2781,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// top-level directory from the tarball and git exclude so host telemetry
 	// is not uploaded or committed. GHA keeps output as a sibling, so Rel
 	// fails IsLocal and nothing is excluded.
+	var preRunSyncManifest map[string]string
+	var preRunSyncManifestErr error
+	if overrides.syncTargetRepo {
+		manifestStart := time.Now()
+		var manifestExcludes []string
+		if rel, ok := syncOutputExcludeRel(hostRepositoryDir, outputBase); ok {
+			manifestExcludes = append(manifestExcludes, rel)
+		}
+		preRunSyncManifest, preRunSyncManifestErr = recordTargetRepoManifest(hostRepositoryDir, manifestExcludes...)
+		if preRunSyncManifestErr != nil {
+			printer.StepWarn("Could not snapshot target repo manifest before upload (disabling target repo sync): " + preRunSyncManifestErr.Error())
+		} else {
+			printer.StepDone(fmt.Sprintf("Target repo manifest captured (%d entries, %.1fs)", len(preRunSyncManifest), time.Since(manifestStart).Seconds()))
+		}
+	}
+
 	copyStart := time.Now()
 	printer.StepStart("Copying project code into sandbox")
 	var uploadExcludes []string
@@ -2799,6 +2825,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// guidelines. Skills already instruct agents to read AGENTS.md from
 	// the project root — this ensures there is something to read even
 	// when the target repo has not authored its own.
+	var runnerInjectedSyncExcludes []string
 	agentsMDAvailable := hasAgentsMD(hostRepositoryDir)
 	if !agentsMDAvailable {
 		orgAgentsMD := filepath.Join(absFullsendDir, "AGENTS.md")
@@ -2807,6 +2834,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepWarn("Could not inject org AGENTS.md: " + err.Error())
 			} else {
 				agentsMDAvailable = true
+				runnerInjectedSyncExcludes = append(runnerInjectedSyncExcludes, "AGENTS.md")
 				// Hide the injected file from git status so agents don't stage it.
 				excludeCmd := fmt.Sprintf("echo 'AGENTS.md' >> %s/.git/info/exclude", remoteRepositoryDir)
 				if _, _, _, err := sandbox.Exec(sandboxName, excludeCmd, 5*time.Second); err != nil {
@@ -2823,7 +2851,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Without this bridge file, agents are effectively context-blind in
 	// repos that only have AGENTS.md. Runtimes opt in via ContextBridger.
 	if agentruntime.WantsClaudeMDBridge(rt) && agentsMDAvailable && !hasClaudeMD(hostRepositoryDir) {
-		injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer)
+		if injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer) {
+			runnerInjectedSyncExcludes = append(runnerInjectedSyncExcludes, "CLAUDE.md")
+		}
 	}
 
 	// 8a.2. Copy AGENTS.md to where a runtime that does not read it from
@@ -2836,6 +2866,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Agents may create working directories (e.g. .agentready/) during
 	// execution. These must never appear in commits. Adding them to
 	// .git/info/exclude ensures git status/add ignores them entirely.
+	for _, pattern := range agentWorkingDirExcludes {
+		clean := strings.TrimSuffix(pattern, "/")
+		if _, err := os.Stat(filepath.Join(hostRepositoryDir, clean)); os.IsNotExist(err) {
+			runnerInjectedSyncExcludes = append(runnerInjectedSyncExcludes, clean)
+		}
+	}
 	if err := excludeAgentWorkingDirs(sandboxName, remoteRepositoryDir, gitExtraExcludes, printer); err != nil {
 		printer.StepWarn("Could not exclude agent working dirs: " + err.Error())
 	}
@@ -2879,17 +2915,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 8d. Host-side scan (Path A): scan the target repo's context files
 	// (CLAUDE.md, AGENTS.md, SKILL.md, etc.) before the agent processes them.
 	// The target branch may contain attacker-controlled files from a PR.
+	var preRunContextFindings []security.Finding
 	if h.SecurityEnabled() {
 		printer.StepStart("Scanning target repo context files")
-		findings := scanRepoContextFiles(hostRepositoryDir)
-		if security.HasCriticalFindings(findings) {
+		preRunContextFindings = scanRepoContextFiles(hostRepositoryDir)
+		if security.HasCriticalFindings(preRunContextFindings) {
 			if h.FailModeClosed() {
 				printer.StepFail("BLOCKED: critical injection findings in target repo context files")
 				return fmt.Errorf("target repo context scan blocked: critical injection findings")
 			}
 			printer.StepWarn("Target repo has critical injection findings (fail_mode: open)")
-		} else if len(findings) > 0 {
-			printer.StepWarn(fmt.Sprintf("Target repo context scan: %d finding(s)", len(findings)))
+		} else if len(preRunContextFindings) > 0 {
+			printer.StepWarn(fmt.Sprintf("Target repo context scan: %d finding(s)", len(preRunContextFindings)))
 		} else {
 			printer.StepDone("Target repo context files clean")
 		}
@@ -3342,6 +3379,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if h.ValidationLoop != nil {
 				printer.StepWarn(failureLine(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration)", hostRepositoryDownloadDir), clearErr, progressVerbosity))
 				repoExtractedOK = false
+				lastDownloadStrippedSymlinks = nil
 				if lastIterTimedOut {
 					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
 					break
@@ -3353,7 +3391,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
-		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot); err != nil {
+		strippedSymlinks, dlErr := sandbox.SafeDownloadWithReport(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot)
+		if dlErr != nil {
+			lastDownloadStrippedSymlinks = nil
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				emitTranscriptErrorsAt(tx, os.Stderr, es, progressVerbosity)
 			}
@@ -3364,13 +3404,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Clean up to prevent unsanitized content from reaching
 				// validation or the post-script. Output files (extracted in
 				// 9b) are unaffected.
-				printer.StepWarn(failureLine("Failed to extract target repo (cleaning up)", err, progressVerbosity))
+				printer.StepWarn(failureLine("Failed to extract target repo (cleaning up)", dlErr, progressVerbosity))
 				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
 					printer.StepWarn(failureLine("Failed to clean up repo dir after extraction failure", rmErr, progressVerbosity))
 				}
 				repoExtractedOK = false
-				validationFailed := errors.Is(err, sandbox.ErrRepositoryValidation)
-				rejected := errors.Is(err, sandbox.ErrRepositoryRejected)
+				validationFailed := errors.Is(dlErr, sandbox.ErrRepositoryValidation)
+				rejected := errors.Is(dlErr, sandbox.ErrRepositoryRejected)
 				if validationFailed && !lastIterTimedOut {
 					if feedbackEnabled && iteration < maxIterations {
 						feedback := repoValidationUncertainFeedback
@@ -3398,9 +3438,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				}
 				continue
 			}
-			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
+			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, dlErr)
 		}
 		repoExtractedOK = true
+		lastDownloadStrippedSymlinks = strippedSymlinks
 		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDownloadDir, time.Since(repoExtractStart).Seconds()))
 
 		// 9e. Run validation.
@@ -3425,6 +3466,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if valErr == nil {
 			printer.StepDone(validationPassedLine("Validation passed", valOut, h.RunnerEnv, time.Since(valStart), progressVerbosity))
 			validationPassed = true
+			inlineValidationPassed = true
 			validatedIterNum = iteration
 			break
 		}
@@ -3525,12 +3567,46 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// 9g. Synchronize sandbox changes to target repository if requested.
+	syncResult := runTargetRepoSync(targetRepoSyncInput{
+		Gate: syncGateInputs{
+			Enabled:                overrides.syncTargetRepo,
+			RepoExtractedOK:        repoExtractedOK,
+			HasValidationLoop:      h.ValidationLoop != nil,
+			ValidationPassed:       validationPassed,
+			InlineValidationPassed: inlineValidationPassed,
+			TimedOut:               lastIterTimedOut,
+			TranscriptErr:          transcriptErrorOverride,
+			ExitCode:               lastExitCode,
+			ExitReason:             agentExitReason,
+			ValidatedIter:          validatedIterNum,
+			RunCount:               runCount,
+		},
+		DownloadDir:            hostRepositoryDownloadDir,
+		TargetDir:              hostRepositoryDir,
+		OutputBase:             outputBase,
+		RunDir:                 runDir,
+		RunnerInjectedExcludes: runnerInjectedSyncExcludes,
+		PreRunManifest:         preRunSyncManifest,
+		StrippedSymlinks:       lastDownloadStrippedSymlinks,
+		SecurityEnabled:        h.SecurityEnabled(),
+		FailModeClosed:         h.FailModeClosed(),
+		PreRunContextFindings:  preRunContextFindings,
+		Printer:                printer,
+		SyncFn:                 syncTargetRepoDirFn,
+	})
+	if syncResult.preserveDownloadDir {
+		preserveDownloadDir = true
+	}
+
 	// 10. Print results.
 	printer.Blank()
 	printer.Header("Results")
 	printer.KeyValue("Run directory", runDir)
 	if keepSandbox {
 		printer.KeyValue("Download directory", hostRepositoryDownloadDir)
+	} else if preserveDownloadDir {
+		printer.KeyValue("Download directory", hostRepositoryDownloadDir+" (retained because target repo sync did not complete)")
 	} else {
 		printer.KeyValue("Download directory", hostRepositoryDownloadDir+" (removed after run; use --keep-sandbox to retain)")
 	}
@@ -3544,9 +3620,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.KeyValue("Validation", "failed")
 		}
 	}
+	if syncResult.status != "" {
+		printer.KeyValue("Target repo sync", syncResult.status)
+	}
+	if syncResult.changesPath != "" {
+		printer.KeyValue("Synced files", syncResult.changesPath)
+	}
 	printer.Blank()
 
-	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, lastExitCode, agentExitReason, runCount, lastIterElapsed, timeout)
+	if termErr := runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, lastExitCode, agentExitReason, runCount, lastIterElapsed, timeout); termErr != nil {
+		return termErr
+	}
+	return syncResult.err
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
@@ -4377,6 +4462,13 @@ func postScriptGate(h *harness.Harness, validationPassed, transcriptErrorOverrid
 			message:       fmt.Sprintf("Agent failed with exit code %d but left %s: running the post-script; the run still fails", agentErr.exitCode, filepath.Base(resultFile)),
 			agentExitCode: agentErr.exitCode,
 		}
+	}
+	var syncErr *targetRepoSyncError
+	if errors.As(runErr, &syncErr) {
+		if transcriptErrorOverride {
+			return postScriptDecision{message: "Skipping post-script: agent reported error via transcript"}
+		}
+		return postScriptDecision{run: true}
 	}
 	if runErr != nil {
 		return postScriptDecision{message: "Skipping post-script: agent run failed"}
@@ -6924,23 +7016,25 @@ const claudeMDPointerContent = "Project rules and instructions live in [AGENTS.m
 type sandboxExecFunc func(sandboxName, command string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
 
 // injectClaudeMDPointer writes a minimal CLAUDE.md bridge file directly
-// inside the sandbox and excludes it from git tracking.
-func injectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer) {
-	doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer, sandbox.Exec)
+// inside the sandbox and excludes it from git tracking. It reports whether the
+// file was written so callers only exclude it from sync when injection succeeded.
+func injectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer) bool {
+	return doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer, sandbox.Exec)
 }
 
 // doInjectClaudeMDPointer is the testable core of injectClaudeMDPointer.
-func doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer, execFn sandboxExecFunc) {
+func doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer, execFn sandboxExecFunc) bool {
 	writeCmd := fmt.Sprintf("printf '%%s' %q > %s/CLAUDE.md", claudeMDPointerContent, remoteRepositoryDir)
 	if _, _, _, err := execFn(sandboxName, writeCmd, 5*time.Second); err != nil {
 		printer.StepWarn("Could not inject CLAUDE.md: " + err.Error())
-		return
+		return false
 	}
 	excludeCmd := fmt.Sprintf("echo 'CLAUDE.md' >> %s/.git/info/exclude", remoteRepositoryDir)
 	if _, _, _, err := execFn(sandboxName, excludeCmd, 5*time.Second); err != nil {
 		printer.StepWarn("Could not add CLAUDE.md to git exclude: " + err.Error())
 	}
 	printer.StepDone("Injected CLAUDE.md pointer to AGENTS.md (target repo has none)")
+	return true
 }
 
 // agentsMDHomeMaxBytes matches codex's default project_doc_max_bytes, so
@@ -6971,12 +7065,50 @@ func doBridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest string, print
 	}
 }
 
+// scanSingleContextFile checks file size, reads path, and runs pipeline.Scan,
+// returning structured findings tagged with relPath.
+func scanSingleContextFile(path, relPath string, info os.FileInfo, pipeline *security.Pipeline) []repoContextFinding {
+	if info.Size() > maxContextFileSize {
+		return []repoContextFinding{{
+			relPath: relPath,
+			finding: security.Finding{
+				Scanner:  "context_injection",
+				Name:     "file_too_large",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("%s: skipped, exceeds %d byte limit (%d bytes)", relPath, maxContextFileSize, info.Size()),
+				Position: -1,
+			},
+		}}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return []repoContextFinding{{
+			relPath: relPath,
+			finding: security.Finding{
+				Scanner:  "context_injection",
+				Name:     "scan_error",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("%s: could not read file: %v", relPath, err),
+				Position: -1,
+			},
+		}}
+	}
+	result := pipeline.Scan(string(content))
+	out := make([]repoContextFinding, 0, len(result.Findings))
+	for _, f := range result.Findings {
+		f.Detail = fmt.Sprintf("%s: %s", relPath, f.Detail)
+		out = append(out, repoContextFinding{
+			relPath: relPath,
+			finding: f,
+		})
+	}
+	return out
+}
+
 // scanRepoContextFiles walks the target repo directory for known context
 // files (CLAUDE.md, AGENTS.md, SKILL.md, etc.) and runs the InputPipeline
 // on each. Returns all findings across scanned files.
 func scanRepoContextFiles(repoDir string) []security.Finding {
-	const maxContextFileSize int64 = 1 << 20 // 1 MB
-
 	skipDirs := map[string]bool{
 		".git": true, "node_modules": true, "vendor": true,
 		"__pycache__": true, ".venv": true,
@@ -7029,32 +7161,9 @@ func scanRepoContextFiles(repoDir string) []security.Finding {
 			})
 			return nil
 		}
-		if info.Size() > maxContextFileSize {
-			allFindings = append(allFindings, security.Finding{
-				Scanner:  "context_injection",
-				Name:     "file_too_large",
-				Severity: "medium",
-				Detail:   fmt.Sprintf("%s: skipped, exceeds %d byte limit (%d bytes)", relPath, maxContextFileSize, info.Size()),
-				Position: -1,
-			})
-			return nil
+		for _, cf := range scanSingleContextFile(path, relPath, info, pipeline) {
+			allFindings = append(allFindings, cf.finding)
 		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			allFindings = append(allFindings, security.Finding{
-				Scanner:  "context_injection",
-				Name:     "scan_error",
-				Severity: "medium",
-				Detail:   fmt.Sprintf("%s: could not read file: %v", relPath, err),
-				Position: -1,
-			})
-			return nil
-		}
-		result := pipeline.Scan(string(content))
-		for i := range result.Findings {
-			result.Findings[i].Detail = fmt.Sprintf("%s: %s", relPath, result.Findings[i].Detail)
-		}
-		allFindings = append(allFindings, result.Findings...)
 		return nil
 	})
 	if err != nil {

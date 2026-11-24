@@ -1618,6 +1618,43 @@ func TestSafeDownload_CleansTrailingSeparator(t *testing.T) {
 	assert.Equal(t, "repo", entries[0].Name())
 }
 
+func TestSafeDownloadWithReport_ReturnsStrippedSymlinks(t *testing.T) {
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+set -e
+if [ "$2" = "download" ]; then
+  /bin/mkdir -p "$5/sub"
+  printf 'ok\n' > "$5/safe.txt"
+  /bin/ln -s safe.txt "$5/safe-link"
+  /bin/ln -s /etc/passwd "$5/abs-link"
+  /bin/ln -s ../../outside "$5/sub/esc-link"
+  /bin/ln -s does-not-exist "$5/dangling-link"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir)
+
+	parent := t.TempDir()
+	localDir := filepath.Join(parent, "repo")
+	stripped, err := SafeDownloadWithReport("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
+	require.NoError(t, err)
+
+	assert.ElementsMatch(t, []string{
+		"abs-link",
+		"dangling-link",
+		filepath.Join("sub", "esc-link"),
+	}, stripped)
+
+	_, err = os.Lstat(filepath.Join(localDir, "safe-link"))
+	assert.NoError(t, err, "in-repo safe symlink must remain")
+	for _, removed := range []string{"abs-link", "dangling-link", filepath.Join("sub", "esc-link")} {
+		_, err = os.Lstat(filepath.Join(localDir, removed))
+		assert.True(t, os.IsNotExist(err), "%s must be stripped", removed)
+	}
+}
+
 func TestSafeDownload_ExhaustsRetries(t *testing.T) {
 	binDir := t.TempDir()
 	script := `#!/bin/sh
