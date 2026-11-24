@@ -113,6 +113,13 @@ type World struct {
 	// slot with it. Empty when the driver leases by repo name only.
 	LeasedRepoOrg string
 
+	// RepoFreshlyInstalled is true when fullsend was installed into the
+	// leased repository for this scenario (install.RepoLease.FreshInstall),
+	// so the scenario sends the repository's first events. A
+	// not-dispatched failure whose workflow never ran there is classified
+	// infrastructure (#9779).
+	RepoFreshlyInstalled bool
+
 	// LeaseOwned reports whether the repository under the leased slot's
 	// name is still this scenario's lease (install.LeaseVerifier). The
 	// After hook sets it before scenario cleanup, which consults it before
@@ -248,6 +255,20 @@ type World struct {
 	// repo's FULLSEND_GITHUB_RUNNER_SECRETS secret (ADR 0136).
 	// CleanupScenario deletes it before the leased repo is deallocated.
 	RunnerSecretsSecretSet bool
+
+	// VaultServer is the feature-scoped OpenBao server the scenario's
+	// Vault steps use (ADR 0155). It is shared by the feature's
+	// scenarios and stopped at job cleanup, not by CleanupScenario.
+	VaultServer install.VaultServer
+	// VaultScenarioID prefixes the scenario's synthetic secret paths on
+	// the shared server, so scenarios never read each other's secrets.
+	VaultScenarioID string
+	// VaultSecrets maps a secret name to the synthetic value and KV v2
+	// read path the scenario stored, and VaultOverrideValues to the
+	// value an untrusted override pointed at. The values are registered
+	// with the redactor; steps compare their fingerprints only.
+	VaultSecrets        map[string]VaultSecret
+	VaultOverrideValues map[string]string
 
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
@@ -593,4 +614,11 @@ const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"
 // BT is per-repo only; config always lives under .fullsend/.
 func (w *World) BehaviourScriptPath() string {
 	return filepath.Join(".fullsend", BehaviourScriptRepoPath)
+}
+
+// VaultSecret is one synthetic secret a Vault scenario stored: the value
+// a consumer should receive and the KV v2 path it was written to.
+type VaultSecret struct {
+	Value string
+	Path  string
 }

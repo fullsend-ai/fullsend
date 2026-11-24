@@ -48,7 +48,7 @@ agents:                              # Registered agent sources and per-agent tu
     runtime: claude                  # Per-agent runtime override
     model: opus                      # Per-agent model override (model id or provider/id)
     effort: high                     # Per-agent reasoning effort: low, medium, high, xhigh, max
-    subagents:                       # Per-agent sub-agent model map (pi and codex)
+    subagents:                       # Per-agent sub-agent model map (pi, codex and Claude Code)
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
     # trigger: <CEL expression>      # When the built-in review agent runs (review entry only)
@@ -260,7 +260,10 @@ effort, sub-agent models, the trigger and harness settings.
   segments joined by hyphens (max 64 chars). On codex, for an agent that
   delegates, the values must be OpenAI ids and a key must name a registered
   persona or `default`; see
-  [Codex › Child models](../runtimes/codex.md#child-models).
+  [Codex › Child models](../runtimes/codex.md#child-models). On Claude Code,
+  a block with a live entry registers each persona as a Claude Code agent
+  with the runner-resolved model; see
+  [Claude Code › Models](../runtimes/claude.md#models).
 - **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
   (a boolean over the normalized `event`). It decides routing for the
   built-in review, retro, triage and prioritize agents only: on one of those
@@ -429,6 +432,20 @@ The rendered effective config (`EffectiveYAML`) shows the accessor-level
 list, which may omit the ensured defaults.
 
 ### `tracker`
+
+The target replacement is specified in
+[ADR 0079](../ADRs/0079-bind-entity-execution-through-named-sources.md) and the
+[entity-source configuration contract](../normative/entity-source-configuration/v1/):
+named `connections`, `entity_sources`, and `agents[].entities` slot bindings,
+with connection-scoped creation policy, in-memory legacy translation, and
+deprecation warnings.
+The configuration clone selects the native entity provider independently of the
+execution platform. Provider-default connections (`github`, `gitlab`, `forgejo`)
+can override its instance, including GitHub.com to GitHub Enterprise. Reserved
+provider source names select queries and repository scopes and can be explicitly
+bound; defining a source named `native` is forbidden.
+These fields and the translation are not implemented yet; the current supported
+configuration remains the `tracker` mapping documented below.
 
 The issue tracker, as a single provider-discriminated mapping. `tracker` holds
 at most one provider block — `github`, `gitlab`, or `jira` — and the block that
@@ -788,6 +805,43 @@ In `enabled` mode, a hard crash or cancellation that happens before the agent
 could post anything at all is also surfaced after the fact: a post-job cleanup
 step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
 
+If workflow setup fails before the agent process starts, the dispatch workflow
+posts a separate "Fullsend agent did not run" comment with the failure category
+and workflow-run link. This startup-failure comment is emitted only for
+GitHub-originated events. Pre-agent failures from Jira- and GitLab-originated
+events are currently not reported by this fallback; tracker-specific
+startup-failure reporting is tracked in [#9256](https://github.com/fullsend-ai/fullsend/issues/9256).
+Retries of the same workflow run update the existing startup-failure comment
+instead of creating duplicates. A later workflow run normally posts a new
+comment so the historical failure and its workflow-run link are preserved; a
+later successful run does not remove that historical comment. Harness-dispatch
+failures are the exception: because they can recur on every forwarded event
+before any agent is selected, they update one stable comment per issue or PR
+with neutral wording that agents may not have run.
+
+The standalone prioritize workflow also supplies the status target and, for
+GitHub-originated calls targeting a different repository, mints a
+prioritize-scoped GitHub token only for the startup-failure reporter.
+Same-repository calls use the workflow token and non-GitHub calls do not mint this
+reporting token. The normal `github_token` input remains the workflow token for
+installation, cloning, provider credentials, and `fullsend run`. This enables
+the same startup-failure reporting for cross-repository prioritize calls; if
+minting fails and the target is a different repository, the workflow emits an
+explicit warning because the caller's `GITHUB_TOKEN` cannot write to that
+repository.
+
+Because this fallback runs specifically when the Fullsend CLI may not have been
+installed, it uses the workflow's GitHub comment API directly and does not read
+`status_notifications`. Therefore, a startup-failure comment can still be
+posted when status comments are disabled; this is intentional because the
+comment reports that the requested agent did not run at all.
+
+When the startup-failure fallback has successfully posted, the action skips
+orphaned-status reconciliation. No Fullsend run was started in that case, so
+there is no start comment to reconcile; skipping it also prevents a second,
+misleading "Interrupted" comment. Other status side effects are consequently
+not run for that pre-agent failure.
+
 **Reactions.** Emoji reactions don't generate a GitHub notification, so they
 are a lower-noise way to show that an agent is working and how the run turned
 out. Unlike comments, they default to `disabled`. When `reaction.start` is
@@ -829,6 +883,10 @@ credentials to agents based on their role. Default:
 set this to their own URL. See
 [Standalone Mint](../guides/infrastructure/standalone-mint.md) and
 [Mint Administration](../guides/infrastructure/mint-administration.md).
+
+The URL must use `https`. Plain `http` is accepted only for `localhost` or
+`127.0.0.1`, for a mint that runs on the same machine as the CLI or runner,
+such as in a test. A URL with userinfo (`user:pass@`) is rejected.
 
 For GitHub repositories managed with `fullsend repos install`, a `mint_url`
 declared in the managed configuration (`config.mint_url` in `repos.yaml`) or
@@ -1155,10 +1213,24 @@ the CLI before adding them. Configs that use neither key are unaffected.
 **Forge support.** On GitHub Actions, Fullsend requests the job's OIDC token
 for `vault_audience`, so the job needs `id-token: write`. On GitLab CI, the
 agent job must declare an ID token named `FULLSEND_VAULT_ID_TOKEN` whose `aud`
-is the connection's `vault_audience`. Fullsend cannot change the audience of a
-token GitLab has already issued. Forgejo and local runs have no supported job
-OIDC integration, so an explicit Vault selection fails there. Secrets that omit
+is the connection's `vault_audience`. The scaffolded agent job
+(`.gitlab/ci/fullsend-agent.yml`) declares it with the default audience
+`https://fullsend.sh/vault`, so GitLab connections must keep the default
+`vault_audience`. A hand-edited `aud` differs from the shipped job, so
+`repos status` reports it as drift and `repos install` restores the default.
+Fullsend cannot change the audience of a token GitLab has already issued.
+Forgejo and local runs have no supported job OIDC integration, so an explicit
+Vault selection fails there. Secrets that omit
 `connection` or select `native` keep working on every forge.
+
+**Trace correlation.** Every Vault request (login, read, and token revocation)
+carries the run's inbound W3C trace context as `traceparent` and `tracestate`
+headers, taken from `TRACEPARENT` and `TRACESTATE`. Nothing is sent when no
+valid trace context is set. Vault resolution runs before the run's own tracer
+starts, because the OTLP headers it resolves configure that tracer. To match
+Vault requests to the run's trace, configure your Vault audit device to record
+these headers, for example with
+`vault write sys/config/auditing/request-headers/traceparent hmac=false`.
 
 **Consumers.** Resolved OTLP header values are handed to the same consumer as
 their native values: Fullsend's trace exporter. A resolved `JIRA_TOKEN` reaches

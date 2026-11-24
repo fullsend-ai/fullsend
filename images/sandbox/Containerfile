@@ -109,7 +109,7 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # rejecting malformed edit arguments (earendil-works/pi#8521, #8962); once
 # the test's without-extension control stops failing, this pi repairs both
 # shapes itself — delete the extension and internal/runtime/pi_edit_repair.go.
-ARG PI_VERSION=1.5.0
+ARG PI_VERSION=1.6.0
 RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
         || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
     && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
@@ -265,14 +265,14 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # The native binary is a *version* of the same package —
 # `@openai/codex@${CODEX_VERSION}-linux-<arch>`, aliased as the
 # optionalDependency `@openai/codex-linux-<arch>` — and the launcher
-# bin/codex.js spawns that musl-static executable directly. So it is
+# bin/codex.js execs that musl-static executable in place of node. So it is
 # `codex`, not `node`, that makes the model calls, and an egress profile
 # serving codex must name `**/codex` in its `binaries:` rules. That wiring
 # lands with the OpenAI credential work, not here.
 #
 # To update: bump CODEX_VERSION; renovate tracks this ARG via a
 # customManagers regex entry in renovate.json.
-ARG CODEX_VERSION=0.166.0
+ARG CODEX_VERSION=0.170.0
 RUN npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION} \
     && npm cache clean --force
 

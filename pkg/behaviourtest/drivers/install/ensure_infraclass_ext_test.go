@@ -50,6 +50,29 @@ func TestInfraClassWorkflowNeverSettled(t *testing.T) {
 	assert.Contains(t, err.Error(), "workflow not active", "the terminal message survives wrapping for diagnosis")
 }
 
+// TestInfraClassWorkflowReadinessGate pins the readiness gate's two
+// outcomes (#9779): GetWorkflow can report "active" before Actions reacts
+// to events, so the gate needs two active polls in a row. A workflow that
+// stays active is ready; one whose active polls are never confirmed
+// before the settle timeout is infrastructure and still wraps
+// errWorkflowNotReady, so AllocateLease claims a fresh repo.
+func TestInfraClassWorkflowReadinessGate(t *testing.T) {
+	t.Run("ready", func(t *testing.T) {
+		calls, err := install.AwaitWorkflowConfirmedReadyForTest(t)
+		require.NoError(t, err)
+		assert.Equal(t, int32(2), calls, "the first active poll is confirmed by a second one")
+	})
+	t.Run("never ready", func(t *testing.T) {
+		err := install.AwaitWorkflowActiveNeverConfirmedForTest(t)
+		require.Error(t, err, "a workflow never confirmed active must fail the ensure")
+		assert.True(t, install.IsWorkflowNotReadyForTest(err), "AllocateLease must claim a fresh repo")
+		assert.Equal(t, behaviourfail.Infrastructure, failclass.Classify(err))
+		var infra *behaviourfail.InfraError
+		require.ErrorAs(t, err, &infra)
+		assert.Equal(t, "setup: workflow never settled", infra.Reason)
+	})
+}
+
 // TestInfraClassProvisionQuotaErrorThroughEnsurePath covers task 2.2's
 // ensure-path gap: provisionUnderGate calls common.RunInferenceProvision
 // directly, bypassing ResolveInferenceWIFProvider, so the mark must

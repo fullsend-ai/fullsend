@@ -118,6 +118,7 @@ func TestIsVendoredDefaultsInfra(t *testing.T) {
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-openshell.sh"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/retry-with-backoff.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/retry-with-backoff-test.sh"))
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/report-agent-startup-failure.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/run.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility-test.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits-test.sh"))

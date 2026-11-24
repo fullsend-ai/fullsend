@@ -10,6 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestUpstreamRepoURL_FollowsServerURL(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
+	assert.Equal(t, "https://github.com/fullsend-ai/fullsend", upstreamRepoURL())
+
+	t.Setenv("GITHUB_SERVER_URL", "https://ghemu.localhost/")
+	assert.Equal(t, "https://ghemu.localhost/fullsend-ai/fullsend", upstreamRepoURL(), "an emulator root, trailing slash dropped")
+}
+
 func TestCLIBuildArgs_StampsFullSHAOnly(t *testing.T) {
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	assert.Equal(t,

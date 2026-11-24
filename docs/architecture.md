@@ -55,7 +55,7 @@ sole supported installation model
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
 - Installation model: the CLI installs per repository only (`fullsend github setup <owner/repo>`, `fullsend admin install <owner/repo>` (deprecated), `fullsend repos install`); per-org CLI installation was removed ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)). The concrete layers of the ordered layer stack (vendor-binary, secrets, inference, and the per-org workflows layer) were removed along with per-org mode; `internal/layers` keeps only the `Layer` interface and shared helpers, and the CLI no longer orchestrates a layer stack ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
 - Dispatch: each repository's `.github/workflows/fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` via `workflow_call`; that workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function or Cloudflare Worker) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager (GCF mint), Worker secrets (CF mint), or the local filesystem (standalone mint), not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
-- Shim workflow security (target state): the shim's PR events run on `pull_request`, only for same-repo PRs (head repository id equals the base repository id); fork PRs are reviewed when someone authorized for `/fs-review` (triage access or higher, or an OWNERS approver or reviewer) comments it. Same-repo authors already have write access and are trusted with the secrets the PR-branch shim receives; fork runs get no secrets; the dispatch workflow takes the base side for every checkout and runs no PR code. The mint accepts only OIDC tokens whose `job_workflow_ref` names an allowed workflow host repository ([ADR 0164](ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md), superseding the `pull_request_target` shim of [ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
+- Shim workflow security: the shim's PR events run on `pull_request`, so the shim runs from the PR's own copy and forwards the repository's secrets. Its dispatch job therefore runs only for same-repo PRs (head repository id equals the base repository id), whose authors already have write access; fork and Dependabot PRs get no automatic run and are reviewed when someone authorized for `/fs-review` (triage access or higher, or an OWNERS approver or reviewer) comments it. `reusable-dispatch.yml` refuses those PRs again (a fork cannot edit the upstream copy; a vendored copy runs from the PR, so vendored installs rely on GitHub not sending secrets to fork PR runs), takes the base side for every checkout (base SHA, or the default branch where a checkout used the event default), runs no PR code, and still accepts `pull_request_target` from shims that have not upgraded, with a warning. The mint accepts only OIDC tokens whose `job_workflow_ref` names an allowed workflow host repository ([ADR 0164](ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md), superseding the `pull_request_target` shim of [ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
 - Installer scaffold: per-repo installs deploy content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants. The per-org dispatch, repo-maintenance, and enrollment-reconciliation scaffolds were removed with the rest of per-org mode ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
 - Reusable workflows: each repository's `fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` (`fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml`), which runs every agent stage as an inline job; the only standalone stage workflow is `reusable-prioritize.yml`, called by the explicit prioritize thin caller. The per-org thin stage callers and `reusable-{code,fix,review,retro,triage}.yml` were removed with per-org mode (the per-org architecture described in the linked ADRs is historical and deprecated). Infrastructure patches ship once upstream and propagate to all repositories without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)). **Vendoring** (`vendor: true` in `repos.yaml` for `repos install`, `--vendor` for `github setup`; [ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)) commits workflows and agent content at install time; layered installs (default) fetch upstream at runtime.
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from the (now removed per-org) `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
@@ -94,7 +94,11 @@ sole supported installation model
   role who can run a default-branch pipeline can read the Poller and role
   credentials ([ADR
   0175](ADRs/0175-allow-insecure-gitlab-pipeline-variable-restriction-opt-in.md),
-  amending ADR 0131; CLI shape tracked in #9597). Managed schedules carry no
+  amending ADR 0131). The opt-in is `allow_insecure_pipeline_variables` on a
+  concrete GitLab manifest entry, and it also lets the webhook fast path and
+  trigger account provision ([Opting in to a relaxed
+  setting](guides/getting-started/configuring-gitlab.md#opting-in-to-a-relaxed-setting)).
+  Managed schedules carry no
   pipeline variables; job rules select poll mode from the schedule description,
   and typed activation only reads managed schedules and fails while any still
   sets a pipeline variable (including an obsolete `FULLSEND_POLL_MODE` override,
@@ -506,6 +510,17 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 
 **Decided:**
 
+- Shared GitHub reads: optional ghproxy routing through the usual layered
+  configuration will let agents and processes reuse HTTP responses, backed
+  by a mint cache of tokens whose granted permissions are exclusively
+  read-only. Cache keys use the effective permission set within an exact host,
+  target organization, repository scope, and mint trust domain; equivalent
+  roles may share a token
+  after independent authorization, with the actual issuer recorded separately
+  from the requesting role. Write tokens stay unshared
+  ([ADR 0071](ADRs/0071-share-github-api-cache-with-read-only-mint-tokens.md)).
+  Decided, not yet implemented.
+
 - Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for operations providers cannot handle — long-running operations, sandbox capability gaps, credentials in request bodies, response transformation, and multi-step atomic operations (see [ADR 0046](ADRs/0046-host-side-api-server-design.md)), (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)). OpenAI inference on the pi runtime is the first tier-2 use: the runner exchanges the job's GitHub OIDC token for a short-lived OpenAI access token and hands it to a run-scoped OpenShell provider, so no OpenAI credential enters the sandbox ([ADR 0092](ADRs/0092-openai-wif-credential-delivery.md)); the codex runtime reuses that provider and follows its refreshes by re-reading a runner-seeded token file through codex's `auth.command`, since its process environment cannot carry a placeholder that survives a refresh ([ADR 0099](ADRs/0099-codex-agent-runtime.md)).
 - Inference gateway route: a committed `inference.gateway` block in `.fullsend/config.yaml` names an LLM gateway (`url` and `audience`) that trusts the forge's OIDC issuer directly. The route is runtime-neutral: the credential is re-seeded through a route-aware seeder (the OpenAI seeder generalised, with independent handoffs when a run uses both routes), and each runtime keeps the gateway URL runner-owned. pi, codex and Claude Code use it, and on each the `gateway/` model prefix opts a model in: pi through the pi-inference-gateway extension, codex through a runner-owned `fullsend-gateway` provider in its digest-guarded `config.toml`, on the Responses API only, and Claude Code through a runner-owned `ANTHROPIC_BASE_URL`, cleared and re-exported after `.env`, with its credential from an `apiKeyHelper` that re-reads the re-seeded token file. The runner seeds the job's OIDC token, fetched with the gateway's audience, into a run-scoped OpenShell provider as an endpoint-bound placeholder and re-seeds it before `exp`, scheduled from each token's own `exp` and `iat`. The gateway holds the upstream provider key, so the forge stores no reusable provider key. The route is selected per model by provider prefix, with no precedence order against WIF or the static key: `openai/` and other providers keep their routes, one run can mix them, and a gateway that fails never falls back. The runner owns the route only when a complete block applies; without one, the plugin-carried setup for local runs is unchanged. On pi the route is a separate `gateway` provider served by pi-inference-gateway, with a runner-rendered, digest-guarded model list taken from inline `models` or a validated `models_file` ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)). The block's `auth` field selects the credential: `oidc` (the default, as above) or `api-key`, a supported mode for gateways that cannot trust forge OIDC. In `api-key` mode the runner reads a gateway key from `FULLSEND_INFERENCE_GATEWAY_API_KEY` and puts it behind the same placeholder, egress profile and guards, with no re-seed loop. The block then applies on local runs too. There is no fallback between modes, and because the mode relies on a long-lived secret, setup and status warn about it ([ADR 0138](ADRs/0138-inference-gateway-api-key-credential-mode.md)). An opt-in setting on the block, `messages_auth_header: x-api-key`, sends the gateway credential as `x-api-key` instead of `Authorization: Bearer` for Messages-dialect models (pi `anthropic-messages` models and Claude Code), for gateways that read the key where Anthropic documents it for that API. It is valid only with `auth: api-key`; an `oidc` block that sets it is a config error. The default stays `authorization`, the other dialects and codex keep Bearer, and an `x-api-key` gateway must replace the caller's key with its own on the upstream hop ([ADR 0142](ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md); implementation in [#8370](https://github.com/fullsend-ai/fullsend/issues/8370)).
 - GitHub Packages for sandboxed installs: the job's Actions workflow token is preserved as `GH_WORKFLOW_TOKEN`, refused at every harness `${}` site and in child environments and read by provider credential expansion, and a repo-level provider binds it to `npm.pkg.github.com` (read-only, enforced) and the tarball CDN (which serves pre-signed URLs); forge identity stays the minted App token, which cannot read public packages owned by another org ([ADR 0114](ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md)). On GitHub Actions the runner also reads the token itself to pull a private `ghcr.io` sandbox image before sandbox creation ([#9019](https://github.com/fullsend-ai/fullsend/issues/9019)).
@@ -630,6 +645,39 @@ The existing design principle is that [the repo is the coordinator](problems/age
   or explicit receipts to decide whether work has already been handled
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md), partially
   superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
+- Entity binding and CI integration (target state): harness `entity_kinds` maps
+  named slots to kinds, with source defaulting to work item and target to the
+  source kind. Repository `agents[].entities` maps those slots to lists of
+  scopes. Source defaults to `[native]`; omitted target copies the effective
+  source list, while additional slots require explicit bindings.
+  The configuration clone selects the native provider independently of the
+  runtime or CI platform. Its host and repository path supply defaults;
+  provider-default connections (`github`, `gitlab`, `forgejo`) can override the
+  instance, including GitHub.com to GitHub Enterprise. Reserved source names
+  default to those connections and can override queries and repository scopes.
+  The matching provider source and `native` resolve identically. Other provider names
+  require explicit external connections and scopes when bound. A source named
+  `native` is forbidden. Only source schedules work.
+  Harness `entity_filters` narrows each slot's source queries
+  by provider; primary selections combine for discovery and are checked before
+  full CEL admission. Other slot filters apply to explicit searches only.
+  GitHub source queries and harness filters share a bounded subset of native
+  UI metadata filters and Boolean combinations; unsupported syntax is rejected.
+  GitHub prefers GraphQL discovery with selective projections derived from
+  compiled CEL dependencies, progressively acquiring further decision and actor
+  evidence under ADR 0147.
+  The same resolved plan drives event
+  dispatch, broad polling, and bound-run checks, with CI providing trusted
+  invocation and execution rather than separate agent-routing decisions.
+  Installation verifies recurring discovery coverage for the effective plan
+  before resident eventless cycles can run. Target and additional slots make
+  typed scopes available to the run without implicit joins or broadcast writes.
+  Creation policy stays on connections independently of discovery; standalone
+  commands without context require explicit scope selection. Deprecated
+  `tracker` mappings translate in memory with warnings and preserved legacy
+  command defaults
+  ([ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md),
+  [configuration contract](normative/entity-source-configuration/v1/)).
 - GitLab dispatch uses a native webhook fast-path for low-latency candidates and the cron-poller as the authoritative reconciliation backstop ([ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)). Native `merge_request_event` dispatch stays removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)). No external webhook bridge (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) for the poller, credentials, and in-job gate).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
   dispatch as resolved entities with `entity.kind: conversation`; when a
@@ -735,14 +783,30 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md),
   [Authorization Contract v2](normative/authorization/v2/)).
 
-- Entity-source discovery (target state): `fullsend poll` combines admissible
-  harness queries into one logical candidate search per source scope and routes
-  possible matches locally. A bound `run` rechecks source-query membership
-  before event-backed or eventless sandbox cycles
-  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)).
+- Entity-source discovery (target state): `fullsend poll` combines source
+  queries into one logical candidate search per source scope. Source membership
+  follows native provider semantics, with exact checks over already-fetched
+  data or batched provider checks; Jira accepts native JQL, GitHub accepts a
+  bounded subset of UI metadata filters and Boolean combinations, and GitLab
+  starts with open/closed/all state selections. A bound `run` rechecks current
+  membership before event-backed or eventless sandbox cycles. Provider-native
+  selection can reflect changes excluded from the actor-filtered CEL view; it
+  grants no authority and does not admit content to the model
+  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md), partially
+  superseded by [ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md)).
   Implementation and the normative query protocol are tracked in
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
+
+- Decided, not yet implemented: a saga journal stores versioned JSON in the
+  control repository, initially on GitLab, independently of the source forge
+  and tracker. Workflow-supplied trusted host adapters claim work and reconcile
+  it on subsequent invocations. They retain separate dispatch, execution and
+  publication receipts for each target.
+  Conditional updates and ownership generations support cross-host recovery;
+  CI finalization provides only a best-effort checkpoint. Domain adapters
+  retain operation, completion and compensation semantics
+  ([ADR 0165](ADRs/0165-recover-work-through-repository-owned-operation-journals.md)).
 
 **Open questions:**
 
@@ -752,18 +816,28 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
   for selective acquisition and its authorization rules, and
   [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
-  for query combination and local routing. The normative discovery protocol,
-  including query syntax, adapter mappings, and discovery coverage evidence,
-  remains open.
+  for query combination and local routing. Named source bindings and provider
+  query configuration are decided in
+  [ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md) and the
+  [Entity-source configuration v1 contract](normative/entity-source-configuration/v1/README.md).
+  Provider-adapter mappings, pagination and consistency proofs, and coverage
+  evidence needed to establish complete discovery remain open for the discovery
+  protocol.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
-  lock refresh; ADR 0098 does not resolve this question.)
+  lock refresh; ADR 0165 chooses an operation journal for recoverable effects,
+  while adapter implementation and external-system guarantees remain open.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - How should explicit cancellation, retry, and reassignment interact with the
   automatic event-coalescing policy in
   [ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)?
-- Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
+- Does the coordinator need state (a queue, a lock, a claim system), or can it
+  be stateless and event-driven? (ADR 0165 requires durable claims for workflows
+  that opt in. Adapter implementation and packaging remain open in
+  [#9253](https://github.com/fullsend-ai/fullsend/issues/9253) and the
+  tracker-first integration in
+  [#9260](https://github.com/fullsend-ai/fullsend/issues/9260).)
 - When should a conversation or thread be linked to a work item (e.g. Discussion
   → issue) so a conversation-native agent can hand off to `/fs-code` without
   violating entity-context separation ([ADR 0076](ADRs/0076-slash-command-entity-context-separation.md),
@@ -928,7 +1002,7 @@ ADR 0002: [Building block 7](ADRs/0002-initial-fullsend-design.md#7-test-artifac
 
 ### 8. code agent runtime
 
-Implements changes, runs local/CI-equivalent tests, handles check failures, and opens or updates a PR. Review dispatch is triggered automatically by `pull_request_target` events today; the decided target state is same-repo `pull_request` events ([ADR 0164](ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md)).
+Implements changes, runs local/CI-equivalent tests, handles check failures, and opens or updates a PR. Review dispatch is triggered automatically by `pull_request` events on same-repo PRs ([ADR 0164](ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md)).
 ADR 0002: [Building block 8](ADRs/0002-initial-fullsend-design.md#8-implementation-agent-runtime).
 
 ### 9. PR sandbox / CI mirror
@@ -971,7 +1045,7 @@ ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observabil
 
 Retrospective analyst — examines completed or in-progress agent workflows,
 identifies improvement opportunities, and files proposals as GitHub issues.
-Runs automatically on PR close (merged or rejected) when the event actor has
+Runs automatically on same-repo PR close (merged or rejected) when the event actor has
 write access, including for merge-queue events. GitLab MR close and merge use
 the same threshold, expressed as Developer access. Users with write access can
 also start it with `/fs-retro`; a custom retro harness role cannot lower this

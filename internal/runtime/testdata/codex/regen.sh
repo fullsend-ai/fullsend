@@ -50,7 +50,7 @@ RAW="${WORKDIR}/raw.ndjson"
 # is a -c override. model_reasoning_summary=detailed is what makes the run emit
 # `reasoning` items, which the fixture needs to cover. stdin is closed because
 # codex exec reads additional prompt input from a non-terminal stdin and
-# waits on it forever when the caller leaves stdin open (0.159.3; at 0.166.0
+# waits on it forever when the caller leaves stdin open (0.159.3; at 0.170.0
 # it still blocks, before the first model request).
 npx -y --ignore-scripts "${PKG}" exec --json \
 	--skip-git-repo-check \

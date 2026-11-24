@@ -35,8 +35,8 @@ func TestPreflightGitHubTimeout(t *testing.T) {
 }
 
 func TestPreflightGitHubRetryDelays(t *testing.T) {
-	require.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second}, preflightGitHubRetryDelays,
-		"three attempts total: initial plus one retry after each delay")
+	require.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}, preflightGitHubRetryDelays,
+		"four attempts total: initial plus one retry after each delay")
 }
 
 type fakeExecResult struct {
@@ -131,8 +131,8 @@ func TestCheckSandboxGitHubConnectivity_RetriesOnTransient403(t *testing.T) {
 	assert.False(t, result.Skipped)
 	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second}, *slept)
 	logs := buf.String()
-	assert.Contains(t, logs, "attempt 1/3")
-	assert.Contains(t, logs, "attempt 2/3")
+	assert.Contains(t, logs, "attempt 1/4")
+	assert.Contains(t, logs, "attempt 2/4")
 	assert.Contains(t, logs, "HTTP 403")
 	assert.Contains(t, logs, "retrying in 2s")
 	assert.Contains(t, logs, "retrying in 5s")
@@ -144,14 +144,15 @@ func TestCheckSandboxGitHubConnectivity_FailsAfterMaxRetriesOnPersistent403(t *t
 		{stderr: "HTTP 403", exitCode: 1},
 		{stderr: "HTTP 403", exitCode: 1},
 		{stderr: "HTTP 403", exitCode: 1},
+		{stderr: "HTTP 403", exitCode: 1},
 	}))
 	result, err := checkSandboxGitHubConnectivity("sb", nil)
 
 	require.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "failed after 3 attempts")
+	assert.Contains(t, err.Error(), "failed after 4 attempts")
 	assert.Contains(t, err.Error(), "HTTP 403")
-	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second}, *slept)
+	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}, *slept)
 }
 
 func TestCheckSandboxGitHubConnectivity_DoesNotRetryOn401(t *testing.T) {
@@ -225,14 +226,52 @@ func TestCheckSandboxGitHubConnectivity_FailsAfterMaxRetriesOnPersistentEOF(t *t
 		{stderr: eof, exitCode: 1},
 		{stderr: eof, exitCode: 1},
 		{stderr: eof, exitCode: 1},
+		{stderr: eof, exitCode: 1},
 	}))
 	result, err := checkSandboxGitHubConnectivity("sb", nil)
 
 	require.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "failed after 3 attempts")
+	assert.Contains(t, err.Error(), "failed after 4 attempts")
 	assert.Contains(t, err.Error(), "connection closed before a response")
-	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second}, *slept)
+	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}, *slept)
+}
+
+// Before OpenShell publishes the policy DNS mapping for the GitHub host, the
+// sandbox network refuses the connect with EACCES. The mapping can arrive
+// 15 s after the sandbox starts, so the check waits through the third retry.
+const preflightConnectDenied = `Get "https://api.github.com/rate_limit": dial tcp 198.18.0.2:443: connect: permission denied`
+
+func TestCheckSandboxGitHubConnectivity_RetriesUntilPolicyDNSIsPublished(t *testing.T) {
+	slept := useNoSleepPreflightGitHub(t)
+	var buf bytes.Buffer
+	usePreflightGitHubExec(t, connectivityExec(t, []fakeExecResult{
+		{stdout: preflightConnectDenied, exitCode: 1},
+		{stdout: preflightConnectDenied, exitCode: 1},
+		{stdout: preflightConnectDenied, exitCode: 1},
+		{},
+	}))
+	result, err := checkSandboxGitHubConnectivity("sb", ui.New(&buf))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}, *slept)
+	assert.Contains(t, buf.String(), "connect permission denied")
+}
+
+func TestCheckSandboxGitHubConnectivity_FailsAfterMaxRetriesOnPersistentConnectDenied(t *testing.T) {
+	slept := useNoSleepPreflightGitHub(t)
+	usePreflightGitHubExec(t, connectivityExec(t, []fakeExecResult{
+		{stdout: preflightConnectDenied, exitCode: 1},
+		{stdout: preflightConnectDenied, exitCode: 1},
+		{stdout: preflightConnectDenied, exitCode: 1},
+		{stdout: preflightConnectDenied, exitCode: 1},
+	}))
+	result, err := checkSandboxGitHubConnectivity("sb", nil)
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "failed after 4 attempts")
+	assert.Contains(t, err.Error(), "connection not permitted")
+	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}, *slept)
 }
 
 func TestCheckSandboxGitHubConnectivity_RetriesOnConnectionReset(t *testing.T) {
@@ -338,6 +377,9 @@ func TestIsRetryablePreflightGitHubFailure(t *testing.T) {
 		{name: "connection refused", output: "Connection refused", want: true},
 		{name: "lowercase connection refused", output: "connection refused", want: true},
 		{name: "connection timed out", output: "Connection timed out", want: true},
+		{name: "connect permission denied before policy DNS", output: preflightConnectDenied, want: true},
+		{name: "file permission denied is not a connect error", exitCode: 1, output: "open /sandbox/workspace/.env: permission denied", want: false},
+		{name: "401 wins over connect permission denied", output: "HTTP 401 Unauthorized; connect: permission denied", want: false},
 		{name: "exec timeout", exitCode: 124, err: timeoutErr, want: true},
 		{name: "401", output: "HTTP 401 Unauthorized", want: false},
 		{name: "404", output: "HTTP 404", want: false},
@@ -377,6 +419,10 @@ func TestDiagnosePreflightGitHubFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "connection failed")
 
+	err = diagnosePreflightGitHubFailure(1, nil, preflightConnectDenied)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection not permitted")
+
 	err = diagnosePreflightGitHubFailure(1, nil, "Connection timed out")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "connection failed")
@@ -403,6 +449,7 @@ func TestPreflightGitHubRetryReason(t *testing.T) {
 	assert.Equal(t, "HTTP 403", preflightGitHubRetryReason(1, nil, "HTTP 403"))
 	assert.Equal(t, "HTTP 403", preflightGitHubRetryReason(1, nil, "Forbidden"))
 	assert.Equal(t, "connection refused", preflightGitHubRetryReason(1, nil, "Connection refused"))
+	assert.Equal(t, "connect permission denied", preflightGitHubRetryReason(1, nil, preflightConnectDenied))
 	assert.Equal(t, "timeout", preflightGitHubRetryReason(124, errors.New("command timed out after 30s"), ""))
 	assert.Equal(t, "timeout", preflightGitHubRetryReason(1, nil, "Connection timed out"))
 	assert.Equal(t, "EOF", preflightGitHubRetryReason(1, nil, `Get "https://api.github.com/rate_limit": EOF`))

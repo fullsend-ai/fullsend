@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/vaultsecrets"
 )
 
 const testExistingProviderAudience = "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/shared-pool/providers/gitlab-instance"
@@ -20,6 +22,13 @@ const testExistingProviderAudience = "//iam.googleapis.com/projects/123456789/lo
 // agentIDTokenAudience returns the FULLSEND_ID_TOKEN audience of the agent
 // job in the rendered agent template.
 func agentIDTokenAudience(t *testing.T, content []byte) string {
+	t.Helper()
+	return agentJobIDTokenAudience(t, content, "FULLSEND_ID_TOKEN")
+}
+
+// agentJobIDTokenAudience returns the audience of the named id_tokens entry
+// of the agent job in the rendered agent template.
+func agentJobIDTokenAudience(t *testing.T, content []byte, tokenName string) string {
 	t.Helper()
 	// The template's first document is the spec header; jobs live in the last.
 	var doc map[string]any
@@ -40,8 +49,8 @@ func agentIDTokenAudience(t *testing.T, content []byte) string {
 		require.True(t, ok)
 		tokens, ok := job["id_tokens"].(map[string]any)
 		require.True(t, ok)
-		token, ok := tokens["FULLSEND_ID_TOKEN"].(map[string]any)
-		require.True(t, ok)
+		token, ok := tokens[tokenName].(map[string]any)
+		require.True(t, ok, "agent job id_tokens has no %s", tokenName)
 		aud, ok := token["aud"].(string)
 		require.True(t, ok)
 		return aud
@@ -72,6 +81,18 @@ func TestRenderGitLabAgentAudience_Custom(t *testing.T) {
 	// Only the audience line changes.
 	assert.Equal(t, strings.Count(string(shipped), "\n"), strings.Count(string(rendered), "\n"))
 	assert.Equal(t, string(shipped), strings.Replace(string(rendered), testExistingProviderAudience, DefaultGitLabIDTokenAudience, 1))
+}
+
+// TestGitLabAgentTemplate_VaultIDToken pins the Vault ID token the agent job
+// declares for ADR 0155 Vault connections: the name fullsend run reads and
+// the default vault_audience, independent of the WIF audience rendering.
+func TestGitLabAgentTemplate_VaultIDToken(t *testing.T) {
+	shipped := []byte(gitlabPerRepoText(t, GitLabAgentTemplatePath))
+	assert.Equal(t, vaultsecrets.DefaultAudience, agentJobIDTokenAudience(t, shipped, "FULLSEND_VAULT_ID_TOKEN"))
+
+	rendered, err := RenderGitLabAgentAudience(shipped, testExistingProviderAudience)
+	require.NoError(t, err)
+	assert.Equal(t, vaultsecrets.DefaultAudience, agentJobIDTokenAudience(t, rendered, "FULLSEND_VAULT_ID_TOKEN"))
 }
 
 func TestRenderGitLabAgentAudience_RequiresShippedLine(t *testing.T) {

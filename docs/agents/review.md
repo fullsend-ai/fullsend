@@ -35,9 +35,10 @@ Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-fix` still require
 write or higher.
 
-The `/fs-review` command does not accept arguments and always forces a review. The review agent also runs automatically when a PR is opened,
+The `/fs-review` command does not accept arguments and always forces a review. The review agent also runs automatically on a same-repository PR when it is opened,
 when its effective diff changes on a synchronize event, or when it is moved out of draft by a user with triage-level repository permission or higher.
-For GitHub `pull_request_target` synchronize events, the review is skipped when the complete effective diff matches the previous app-verified approved review. The guard posts or updates one PR-visible `fullsend:review-skip` status comment linking the previous approved review. GitLab diff metadata uses the same normalized model, but the GitLab poller does not consume this marker yet and continues to review synchronized merge requests.
+Fork and Dependabot PRs are not reviewed automatically; someone with triage access or higher (or an OWNERS approver or reviewer) can comment `/fs-review` on them.
+For GitHub `pull_request` synchronize events (and `pull_request_target` from shims that have not been upgraded), the review is skipped when the complete effective diff matches the previous app-verified approved review. The guard posts or updates one PR-visible `fullsend:review-skip` status comment linking the previous approved review. GitLab diff metadata uses the same normalized model, but the GitLab poller does not consume this marker yet and continues to review synchronized merge requests.
 The deduplication check runs before final Bash/CEL stage selection, so CEL-selected review routes participate as well. File modes are part of the compared effective diff identity, so executable-bit changes cannot be hidden by an otherwise identical textual patch.
 The guard fails open and runs the review when there is no prior diff hash, the prior review cannot be verified, a required hash/head or base/head tree-mode API call fails,
 the file listing is incomplete or truncated, or any file has no representable patch (for example, a binary or rename-only change).

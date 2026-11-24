@@ -879,6 +879,7 @@ type botRoleScriptRun struct {
 	repo        string
 	claimedRole string
 	mintURL     string
+	serverURL   string // GITHUB_SERVER_URL; "" is github.com
 	mintStatus  string
 	mintBody    string
 }
@@ -940,6 +941,7 @@ func runBotRoleProbeScript(t *testing.T, tc botRoleScriptRun) botRoleScriptOutpu
 	cmd.Env = append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"MINT_URL="+def(tc.mintURL, "https://mint.test/"),
+		"GITHUB_SERVER_URL="+def(tc.serverURL, "https://github.com"),
 		"ACTOR_LOGIN="+def(tc.login, "app-review[bot]"),
 		"REPO="+def(tc.repo, "o/r"),
 		"MODE="+def(tc.mode, botRoleModeLookup),
@@ -995,6 +997,28 @@ func TestBotRoleProbeScript_Lookup(t *testing.T) {
 
 	out = runBotRoleProbeScript(t, botRoleScriptRun{mintStatus: "200", mintBody: `{"outcome":"no_match"}`})
 	assert.Equal(t, botRoleOutcomeNoMatch, classifyBotRoleResult(out.res, botRoleModeLookup).outcome)
+}
+
+// A mint on this runner's loopback may be plain http, as fullsend's
+// mint client allows; the request is then restricted to http.
+func TestBotRoleProbeScript_LoopbackMint(t *testing.T) {
+	out := runBotRoleProbeScript(t, botRoleScriptRun{mintURL: "http://127.0.0.1:18502/", mintStatus: "200", mintBody: `{"outcome":"recognized","role":"review"}`})
+	assert.Equal(t, "http://127.0.0.1:18502/v1/bot-role", out.url)
+	assert.Contains(t, strings.Split(out.args, "\n"), "=http")
+	assert.True(t, out.res.OIDCVerified)
+	assert.Empty(t, out.res.Error)
+}
+
+// On a GitHub server other than github.com the tokens come from that
+// server's own issuer, and only from it.
+func TestBotRoleProbeScript_ServerIssuer(t *testing.T) {
+	emu := probeOIDC{claims: map[string]any{"iss": "https://ghemu.test"}}
+	out := runBotRoleProbeScript(t, botRoleScriptRun{oidc: emu, serverURL: "https://ghemu.test/", mintStatus: "200", mintBody: `{"outcome":"recognized","role":"review"}`})
+	assert.True(t, out.res.OIDCVerified)
+	assert.Empty(t, out.res.Error)
+
+	out = runBotRoleProbeScript(t, botRoleScriptRun{serverURL: "https://ghemu.test", mintStatus: "200", mintBody: `{"outcome":"recognized","role":"review"}`})
+	assert.Equal(t, "oidc", out.res.Error, "a github.com token is refused on another server")
 }
 
 func TestBotRoleProbeScript_ClaimedRole(t *testing.T) {
@@ -1075,17 +1099,19 @@ func TestBotRoleProbeScript_ProbeFailures(t *testing.T) {
 		run   botRoleScriptRun
 		error string
 	}{
-		"bad mode":            {run: botRoleScriptRun{mode: "guess"}, error: "config"},
-		"bad login":           {run: botRoleScriptRun{login: "octocat"}, error: "config"},
-		"bad repo":            {run: botRoleScriptRun{repo: "o"}, error: "config"},
-		"bad claimed role":    {run: botRoleScriptRun{claimedRole: "Review"}, error: "config"},
-		"non-url mint url":    {run: botRoleScriptRun{mintURL: "-"}, error: "config"},
-		"plaintext mint url":  {run: botRoleScriptRun{mintURL: "http://mint.test"}, error: "config"},
-		"host-less mint url":  {run: botRoleScriptRun{mintURL: "https://"}, error: "config"},
-		"unusable oidc token": {run: botRoleScriptRun{oidcToken: "abc%0Adef"}, error: "oidc"},
-		"bad signature":       {run: botRoleScriptRun{oidc: probeOIDC{wrongKey: true}}, error: "oidc"},
-		"wrong audience":      {run: botRoleScriptRun{oidc: probeOIDC{claims: map[string]any{"aud": "other"}}}, error: "oidc"},
-		"transport":           {run: botRoleScriptRun{mintStatus: "transport"}, error: "transport"},
+		"bad mode":                    {run: botRoleScriptRun{mode: "guess"}, error: "config"},
+		"bad login":                   {run: botRoleScriptRun{login: "octocat"}, error: "config"},
+		"bad repo":                    {run: botRoleScriptRun{repo: "o"}, error: "config"},
+		"bad claimed role":            {run: botRoleScriptRun{claimedRole: "Review"}, error: "config"},
+		"non-url mint url":            {run: botRoleScriptRun{mintURL: "-"}, error: "config"},
+		"plaintext mint url":          {run: botRoleScriptRun{mintURL: "http://mint.test"}, error: "config"},
+		"loopback-like host":          {run: botRoleScriptRun{mintURL: "http://127.0.0.1.mint.test/"}, error: "config"},
+		"server issuer on github.com": {run: botRoleScriptRun{oidc: probeOIDC{claims: map[string]any{"iss": "https://github.com"}}}, error: "oidc"},
+		"host-less mint url":          {run: botRoleScriptRun{mintURL: "https://"}, error: "config"},
+		"unusable oidc token":         {run: botRoleScriptRun{oidcToken: "abc%0Adef"}, error: "oidc"},
+		"bad signature":               {run: botRoleScriptRun{oidc: probeOIDC{wrongKey: true}}, error: "oidc"},
+		"wrong audience":              {run: botRoleScriptRun{oidc: probeOIDC{claims: map[string]any{"aud": "other"}}}, error: "oidc"},
+		"transport":                   {run: botRoleScriptRun{mintStatus: "transport"}, error: "transport"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if tc.run.mintStatus == "" {

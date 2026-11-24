@@ -54,6 +54,48 @@ func AwaitWorkflowNeverSettledForTest(t *testing.T) error {
 	return awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
 }
 
+// flappingWorkflowClient's GetWorkflow alternates between reporting the
+// workflow active and not found, so no active poll is ever confirmed.
+type flappingWorkflowClient struct {
+	forge.Client
+	calls int
+}
+
+func (c *flappingWorkflowClient) GetWorkflow(context.Context, string, string, string) (*forge.Workflow, error) {
+	c.calls++
+	if c.calls%2 == 1 {
+		return &forge.Workflow{State: settleWorkflowActive}, nil
+	}
+	return nil, forge.ErrNotFound
+}
+
+// AwaitWorkflowConfirmedReadyForTest runs the real awaitWorkflowReady poll
+// against a client whose GetWorkflow always reports the workflow active,
+// and returns the poll's result with the number of GetWorkflow calls:
+// the ready outcome of the readiness gate (#9779).
+func AwaitWorkflowConfirmedReadyForTest(t *testing.T) (int32, error) {
+	t.Helper()
+	speedUpSettlePoll(t)
+	sc := &stubClient{installed: true}
+	err := awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
+	return sc.getWorkflowCalled.Load(), err
+}
+
+// AwaitWorkflowActiveNeverConfirmedForTest runs the real
+// awaitWorkflowReady poll against a client whose GetWorkflow reports the
+// workflow active on every other poll and missing in between, and
+// returns the error the ensurer produces when no active poll is ever
+// confirmed: the never-ready outcome of the readiness gate (#9779).
+func AwaitWorkflowActiveNeverConfirmedForTest(t *testing.T) error {
+	t.Helper()
+	speedUpSettlePoll(t)
+	return awaitWorkflowReady(context.Background(), &flappingWorkflowClient{}, "org", "repo", "fullsend.yaml", t.Logf)
+}
+
+// IsWorkflowNotReadyForTest reports whether err wraps errWorkflowNotReady,
+// the error on which AllocateLease claims a fresh repo.
+func IsWorkflowNotReadyForTest(err error) bool { return errors.Is(err, errWorkflowNotReady) }
+
 // ProvisionWIFQuotaRejectedForTest runs the real ensure-path WIF
 // resolution (resolveWIFProvider, the entry installFullsend's resolver
 // invokes) against a runCLI stub whose status read reports the repo

@@ -675,6 +675,12 @@ func ensureEmbeddedProfile(ctx context.Context, profileID string, printer *ui.Pr
 	if err != nil {
 		return fmt.Errorf("provider profile %q is not shipped by this fullsend build: %w", profileID, err)
 	}
+	// On a GitHub server other than github.com, the GitHub profiles also
+	// name that server (bindGitHubForgeHost); others are unchanged.
+	data, err = bindGitHubForgeHostBytes(data, os.Getenv)
+	if err != nil {
+		return fmt.Errorf("adding the GitHub server to provider profile %q: %w", profileID, err)
+	}
 	return importProfileBytes(ctx, profileID, data, printer)
 }
 
