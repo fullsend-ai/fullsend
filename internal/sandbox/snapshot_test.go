@@ -490,6 +490,58 @@ func TestCaptureRepositorySnapshot_RejectsInRepoCAPaths(t *testing.T) {
 			},
 			want: "inside the target repository",
 		},
+		{
+			name: "external dangling file symlink into the repository",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				link := filepath.Join(t.TempDir(), "host-ca.pem")
+				require.NoError(t, os.Symlink(filepath.Join(r.dir, "certs", "ca.pem"), link))
+				return link
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "external dangling directory symlink into the repository",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				link := filepath.Join(t.TempDir(), "host-certs")
+				require.NoError(t, os.Symlink(filepath.Join(r.dir, "certs"), link))
+				return filepath.Join(link, "ca.pem")
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "relative dangling symlink into the repository",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				dir := t.TempDir()
+				rel, err := filepath.Rel(dir, filepath.Join(r.dir, "certs", "ca.pem"))
+				require.NoError(t, err)
+				link := filepath.Join(dir, "host-ca.pem")
+				require.NoError(t, os.Symlink(rel, link))
+				return link
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "path that enters the repository and leaves through dotdot",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				return filepath.Join(r.dir, "link") + "/../../ca.pem"
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "symlink loop",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				dir := t.TempDir()
+				require.NoError(t, os.Symlink(filepath.Join(dir, "b"), filepath.Join(dir, "a")))
+				require.NoError(t, os.Symlink(filepath.Join(dir, "a"), filepath.Join(dir, "b")))
+				return filepath.Join(dir, "a")
+			},
+			want: "cannot be established",
+		},
 	}
 	for _, tc := range rejected {
 		t.Run(tc.name, func(t *testing.T) {
@@ -512,6 +564,22 @@ func TestCaptureRepositorySnapshot_RejectsInRepoCAPaths(t *testing.T) {
 		_, err := CaptureRepositorySnapshot(super.dir)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "relative CA path")
+	})
+
+	t.Run("differently-cased alias of the repository", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		alias := filepath.Join(filepath.Dir(r.dir), strings.ToUpper(filepath.Base(r.dir)))
+		if alias == r.dir {
+			alias = filepath.Join(filepath.Dir(r.dir), strings.ToLower(filepath.Base(r.dir)))
+		}
+		if _, err := os.Stat(alias); err != nil {
+			t.Skip("filesystem is case-sensitive; no alias spelling of the repository exists")
+		}
+		r.git("config", caInfo, filepath.Join(alias, "certs", "ca.pem"))
+		_, err := CaptureRepositorySnapshot(r.dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "inside the target repository")
 	})
 
 	t.Run("outside the repository and empty are kept", func(t *testing.T) {

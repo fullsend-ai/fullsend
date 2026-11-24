@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // This file holds the trusted-state round trip of the download sanitizer: the
@@ -449,7 +450,7 @@ func httpCAKey(key string) bool {
 // choose the certificate authority the host trusts. An empty value names no
 // file and is left alone.
 func checkTrustedCAPaths(repoRoot string, entries []configEntry) error {
-	var resolvedRoot string
+	var root *caRepoRoot
 	for _, entry := range entries {
 		if !httpCAKey(strings.ToLower(entry.Key)) || entry.Value == "" {
 			continue
@@ -457,37 +458,118 @@ func checkTrustedCAPaths(repoRoot string, entries []configEntry) error {
 		if !filepath.IsAbs(entry.Value) {
 			return fmt.Errorf("trusted git config %q is a relative CA path %q, which Git resolves against the working tree; use an absolute path outside the repository", entry.Key, entry.Value)
 		}
-		if resolvedRoot == "" {
+		if root == nil {
 			var err error
-			if resolvedRoot, err = filepath.EvalSymlinks(repoRoot); err != nil {
-				return fmt.Errorf("resolving target repository %s: %w", repoRoot, err)
+			if root, err = newCARepoRoot(repoRoot); err != nil {
+				return err
 			}
 		}
-		existing := deepestExistingPath(entry.Value)
-		if inDir(filepath.Clean(entry.Value), filepath.Clean(repoRoot)) || inDir(existing, resolvedRoot) {
+		enters, err := root.pathEnters(entry.Value)
+		if err != nil {
+			return fmt.Errorf("trusted git config %q names CA path %q whose destination cannot be established outside the target repository: %w", entry.Key, entry.Value, err)
+		}
+		if enters {
 			return fmt.Errorf("trusted git config %q names CA path %q inside the target repository; use an absolute path outside the repository", entry.Key, entry.Value)
 		}
 	}
 	return nil
 }
 
-// deepestExistingPath resolves the longest prefix of an absolute path that
-// resolves through symlinks. A component the host cannot resolve outside the
-// target repository cannot be supplied by the download, so the resolvable
-// prefix decides where Git would look; a missing file inside the repository
-// still resolves to a repository directory. The raw path is resolved, not a
-// cleaned one, so ".." after a symlink follows the kernel's resolution.
-func deepestExistingPath(path string) string {
-	for {
-		if resolved, err := filepath.EvalSymlinks(path); err == nil {
-			return resolved
-		}
-		i := strings.LastIndex(path, string(filepath.Separator))
-		if i <= len(filepath.VolumeName(path)) {
-			return filepath.VolumeName(path) + string(filepath.Separator)
-		}
-		path = path[:i]
+// maxCASymlinkHops bounds the symlinks followed while resolving a CA path,
+// like the kernel's own limit, so a loop fails closed.
+const maxCASymlinkHops = 40
+
+// caRepoRoot identifies the target repository by its spelled, resolved, and
+// on-disk identity, so containment survives symlinks and case-insensitive
+// filesystems.
+type caRepoRoot struct {
+	clean    string
+	resolved string
+	info     os.FileInfo
+}
+
+func newCARepoRoot(repoRoot string) (*caRepoRoot, error) {
+	resolved, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolving target repository %s: %w", repoRoot, err)
 	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("inspecting target repository %s: %w", repoRoot, err)
+	}
+	return &caRepoRoot{clean: filepath.Clean(repoRoot), resolved: resolved, info: info}, nil
+}
+
+// at reports whether a location is the repository or inside it. The textual
+// checks cover paths that do not exist yet; the filesystem identity check
+// recognizes an existing alias of the repository, such as a differently-cased
+// spelling on a case-insensitive host.
+func (r *caRepoRoot) at(path string) bool {
+	if inDir(path, r.clean) || inDir(path, r.resolved) {
+		return true
+	}
+	info, err := os.Stat(path)
+	return err == nil && os.SameFile(info, r.info)
+}
+
+// pathEnters resolves an absolute path one component at a time and reports
+// whether any location it visits is inside the target repository. Every
+// intermediate location counts, not just the endpoint: the agent can replace
+// a repository component with a symlink, so a path that enters the repository
+// and leaves again (through "..") is not stable. Symlinks, including dangling
+// ones, are followed to their destinations; components that do not exist are
+// kept lexically, since the download could create them. A path whose
+// resolution fails for any other reason, or loops, returns an error.
+func (r *caRepoRoot) pathEnters(path string) (bool, error) {
+	volume := filepath.VolumeName(path)
+	top := volume + string(filepath.Separator)
+	pending := splitCAPath(strings.TrimPrefix(path, volume))
+	cur := top
+	hops := 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+		default:
+			next := filepath.Join(cur, name)
+			info, err := os.Lstat(next)
+			switch {
+			case err == nil && info.Mode()&os.ModeSymlink != 0:
+				if hops++; hops > maxCASymlinkHops {
+					return false, errors.New("too many symbolic links")
+				}
+				target, err := os.Readlink(next)
+				if err != nil {
+					return false, err
+				}
+				if r.at(next) {
+					return true, nil
+				}
+				if filepath.IsAbs(target) {
+					cur = filepath.VolumeName(target) + string(filepath.Separator)
+					target = strings.TrimPrefix(target, filepath.VolumeName(target))
+				}
+				pending = append(splitCAPath(target), pending...)
+				continue
+			case err == nil, errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+				cur = next
+			default:
+				return false, err
+			}
+		}
+		if r.at(cur) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func splitCAPath(path string) []string {
+	return strings.Split(path, string(filepath.Separator))
 }
 
 // urlResetKey matches the multi-valued destination lists whose empty entries

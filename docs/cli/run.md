@@ -66,8 +66,10 @@ valid checkout, while a checkout must come back as a checkout. Fullsend
 discards downloaded Git configuration and restores selected settings from the
 host checkout, including identity, remote destinations, submodule activation,
 sparse-checkout settings, and the `http.<url>.sslCAInfo` and `.sslCAPath`
-certificate authority paths CI runners write for private-CA instances.
-Settings outside the restored list, including `filter.lfs.*` and
+certificate authority paths CI runners write for private-CA instances. These
+two CA settings must be absolute paths outside the target repository; capture
+fails before the run when a value is relative (including `~/`) or resolves
+inside the repository. Settings outside the restored list, including `filter.lfs.*` and
 `core.sshCommand`, are discarded; an LFS checkout therefore comes back with
 its filters unset. Partial clones are rejected in both their forms, as is a
 relative local submodule destination in the target checkout that does not
