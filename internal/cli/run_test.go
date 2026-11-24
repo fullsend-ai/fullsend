@@ -9487,6 +9487,14 @@ func (w runStatusEventWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// agentStartDeadline bounds how long the cancelled-review tests wait for the
+// dummy agent's first behavior operation. Reaching it includes bootstrapping
+// the sandbox, which cross-compiles fullsend for linux: about 10 s of the ~13 s
+// on an Apple silicon laptop under -race, so 15 s missed it there. The wait
+// polls and returns as soon as the marker appears, so a fast host loses
+// nothing to the wider bound.
+const agentStartDeadline = 60 * time.Second
+
 func TestRunAgent_CancelledReviewFinalizesBeforeSandboxTeardown(t *testing.T) {
 	useFakeOpenshellProviders(t)
 	dir := t.TempDir()
@@ -9551,7 +9559,7 @@ func TestRunAgent_CancelledReviewFinalizesBeforeSandboxTeardown(t *testing.T) {
 			trackerSource: "github",
 		}, printer, false, runOverrideFlags{})
 	}()
-	deadline := time.After(15 * time.Second)
+	deadline := time.After(agentStartDeadline)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -9624,7 +9632,7 @@ func TestRunAgent_CancelledReviewLeavesCommentPendingWhenHeadLookupFails(t *test
 			trackerSource: "github",
 		}, ui.New(io.Discard), false, runOverrideFlags{})
 	}()
-	deadline := time.After(15 * time.Second)
+	deadline := time.After(agentStartDeadline)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
