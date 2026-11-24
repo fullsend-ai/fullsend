@@ -554,13 +554,15 @@ The existing design principle is that [the repo is the coordinator](problems/age
   scope is per-repo mode only. In the target state the `jira-poll` driver no
   longer uses those locks (see the next item).
 - Jira poll candidate selection (target state): one poller per repository
-  reads every issue that changed within the 24-hour backfill window, oldest
-  change first, skips issues whose Jira `updated` is not newer than their
+  reads every issue that changed within the backfill window
+  (`tracker.jira.poll.backfill_window_hours`, default 24), oldest change
+  first unless the configured query sets its own order, skips issues whose
+  Jira `updated` is not newer than their
   per-repository checkpoint, and dispatches up to
   `tracker.jira.poll.max_dispatches_per_cycle` records per cycle (default 100,
   at most 250) within a five-minute cycle limit, with no row limit on the
   candidate pool, no random pick, and no per-issue lock
-  ([ADR 0085](ADRs/0085-serve-changed-jira-issues-oldest-first.md), partially
+  ([ADR 0085](ADRs/0085-serve-every-changed-jira-issue.md), partially
   superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md) and
   [ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
 - Jira poll actor authorization does not require the poller to administer the

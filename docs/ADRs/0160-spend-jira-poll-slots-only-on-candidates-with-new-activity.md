@@ -32,10 +32,10 @@ change detection, and authorization path of ADR 0063 and
 are unchanged; the checkpoint rule gains one clause, so that the checkpoint
 also advances to at least the issue's `updated` value.
 
-[ADR 0085](0085-serve-changed-jira-issues-oldest-first.md) partially
+[ADR 0085](0085-serve-every-changed-jira-issue.md) partially
 supersedes this decision: one poller runs per repository and serves every
-issue that changed within the driver's 24-hour backfill window, oldest change
-first, up to a per-cycle dispatch limit. The row limit on the candidate pool,
+issue that changed within the driver's backfill window, oldest change first
+by default, up to a per-cycle dispatch limit. The row limit on the candidate pool,
 the random pick, the use of the per-issue lock, and both configuration keys
 are replaced. The activity filter and the checkpoint clause remain.
 

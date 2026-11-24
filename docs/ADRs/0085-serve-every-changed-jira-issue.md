@@ -1,5 +1,5 @@
 ---
-title: "85. Serve changed Jira issues oldest first with one poller per repository"
+title: "85. Serve every changed Jira issue with one poller per repository"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -13,7 +13,7 @@ topics:
   - configuration
 ---
 
-# 85. Serve changed Jira issues oldest first with one poller per repository
+# 85. Serve every changed Jira issue with one poller per repository
 
 Date: 2026-11-19
 
