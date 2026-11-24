@@ -398,13 +398,10 @@ model is not one-size-fits-all.
 ## Open questions
 
 - Whether the approved repository inventory (PR #56's
-  `repository-inventory.yaml`) is a separate source from the mapping,
-  and how it relates to Phase 1
+  `repository-inventory.yaml`) is a separate source from the component
+  mapping, or part of it
 - Where workload mappings live long-term (the architecture-context
   repository is a candidate)
-- Configuration experience: epic-creator uses files while other
-  fullsend agents read environment variables; the two models need
-  reconciling
 
 ## References
 
