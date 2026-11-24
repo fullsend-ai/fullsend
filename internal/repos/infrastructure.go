@@ -217,9 +217,19 @@ func reconcileVertexInput(repo, flag, flagValue, key, declared string) (string, 
 // usesVertexCredentials reports whether auth provisions the Vertex
 // credentials (FULLSEND_GCP_PROJECT_ID, FULLSEND_GCP_WIF_PROVIDER and
 // FULLSEND_GCP_REGION): vertex-wif, and openai-wif for Vertex sub-agents of
-// an OpenAI parent. openai-api-key does not, nor does a gateway-only
-// repository (empty inference.auth past RequireInferenceAuth), whose
-// inference.gateway route authenticates on its own.
+// an OpenAI parent, alone or in a mix. openai-api-key alone does not, nor
+// does a gateway-only repository (empty inference.auth past
+// RequireInferenceAuth), whose inference.gateway route authenticates on
+// its own.
 func usesVertexCredentials(auth string) bool {
-	return auth == InferenceAuthVertexWIF || auth == InferenceAuthOpenAIWIF
+	return inferenceAuthHas(auth, InferenceAuthVertexWIF) || inferenceAuthHas(auth, InferenceAuthOpenAIWIF)
+}
+
+// usesOpenAIKeyRoute reports whether auth makes FULLSEND_OPENAI_API_KEY the
+// OpenAI credential: the selection includes openai-api-key but not
+// openai-wif. With openai-wif also selected the runtime prefers the WIF
+// identifiers and the key is a fallback, so identifiers are expected
+// there rather than residual.
+func usesOpenAIKeyRoute(auth string) bool {
+	return inferenceAuthHas(auth, InferenceAuthOpenAIAPIKey) && !inferenceAuthHas(auth, InferenceAuthOpenAIWIF)
 }

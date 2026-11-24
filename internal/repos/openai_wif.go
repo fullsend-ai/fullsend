@@ -890,7 +890,7 @@ func probeOpenAIWIFWorkflows(ctx context.Context, client forge.Client, owner, re
 // and verifies it before writes. The returned flag controls delivery preflight.
 func checkOpenAIWIFContract(ctx context.Context, d convergeDiscovery, cfg ConvergeConfig, refResolver *RefResolver) (bool, error) {
 	resolved := d.resolved
-	if resolved.InferenceAuth != InferenceAuthOpenAIWIF || resolved.Forge == ForgeGitLab {
+	if !inferenceAuthHas(resolved.InferenceAuth, InferenceAuthOpenAIWIF) || resolved.Forge == ForgeGitLab {
 		return false, nil
 	}
 	gcp := plannedGCPSecrets(d.components, cfg)

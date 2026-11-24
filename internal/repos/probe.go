@@ -86,7 +86,9 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 // openai-wif probes the GCP pair the same optional way and adds an
 // openai-wif:identifiers component that matches only when a complete set
 // of OpenAI WIF identifiers is live on the default branch. Installed repos
-// also report openai-wif:workflows for their live workflow contract.
+// also report openai-wif:workflows for their live workflow contract. A
+// mix probes the secrets of every selected method; the GCP pair is
+// required only when vertex-wif is among them.
 func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
 	return probeComponents(ctx, client, owner, repo, forgeName, auth, auth == "", false, fc, expectedVarValues)
 }
@@ -294,7 +296,7 @@ func probeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		}
 	}
 	for _, secretName := range probedSecrets {
-		if (auth == InferenceAuthOpenAIAPIKey && secretName == forge.SecretOpenAIAPIKey) ||
+		if (inferenceAuthHas(auth, InferenceAuthOpenAIAPIKey) && secretName == forge.SecretOpenAIAPIKey) ||
 			(gatewayOnly && secretName == forge.SecretInferenceGatewayAPIKey) {
 			// Existence alone is not readiness: jobs only get a masked,
 			// protected, wildcard-scoped environment variable. Present
@@ -326,10 +328,11 @@ func probeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 			Match:   exists,
 		})
 	}
-	if auth == InferenceAuthOpenAIWIF {
+	if inferenceAuthHas(auth, InferenceAuthOpenAIWIF) {
 		// Readiness is a complete identifier set on the default branch,
-		// not a secret. The probed GCP pair stays optional below so
-		// Vertex sub-agents of an OpenAI parent keep working.
+		// not a secret. The probed GCP pair stays optional below (unless
+		// vertex-wif is also selected) so Vertex sub-agents of an OpenAI
+		// parent keep working.
 		ids, err := probeOpenAIWIFIdentifiers(ctx, client, owner, repo)
 		if err != nil {
 			return nil, err
@@ -342,7 +345,7 @@ func probeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 			}
 			results = append(results, contract)
 		}
-	} else if auth == InferenceAuthOpenAIAPIKey && anyComponentPresent(results) {
+	} else if usesOpenAIKeyRoute(auth) && anyComponentPresent(results) {
 		// Check inherited identifiers and unread scopes on both forges.
 		// Layered configuration overrides the key only on GitHub; the
 		// residual probe ignores that source on GitLab.
@@ -352,14 +355,16 @@ func probeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		}
 		results = append(results, conflict...)
 		return results, nil
-	} else if auth != "" || gatewayOnly {
-		// The selected method's credentials are required; a gateway-only
+	}
+	if gatewayOnly || (auth != "" && (!inferenceAuthHas(auth, InferenceAuthOpenAIWIF) || inferenceAuthHas(auth, InferenceAuthVertexWIF))) {
+		// The selected methods' credentials are required; a gateway-only
 		// repository has none to probe.
 		return results, nil
 	}
-	// Without a selected inference.auth (or with openai-wif), Vertex is
-	// optional. Keep both GCP components visible so a partial pair remains
-	// detectable and convergence can repair it when values are supplied.
+	// Without a selected inference.auth (or with openai-wif and no
+	// vertex-wif), Vertex is optional. Keep both GCP components visible so
+	// a partial pair remains detectable and convergence can repair it when
+	// values are supplied.
 	var projectIndex, wifIndex = -1, -1
 	for i := range results {
 		switch results[i].Name {

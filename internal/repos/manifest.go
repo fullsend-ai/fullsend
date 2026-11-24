@@ -72,15 +72,88 @@ func ValidInferenceAuths() []string {
 	return []string{InferenceAuthVertexWIF, InferenceAuthOpenAIAPIKey, InferenceAuthOpenAIWIF}
 }
 
-// ValidateInferenceAuth accepts an empty value (inherit) or one of
-// ValidInferenceAuths. The key names the offending field or flag in the
+// ValidateInferenceAuth accepts an empty value (inherit), one of
+// ValidInferenceAuths, or a mix of them (see InferenceAuthSelection),
+// each listed once. The key names the offending field or flag in the
 // error message.
 func ValidateInferenceAuth(key, value string) error {
-	if value == "" || slices.Contains(ValidInferenceAuths(), value) {
+	if value == "" {
 		return nil
 	}
-	return fmt.Errorf("%s %q is not a valid inference authentication method; valid values: %s",
-		key, value, strings.Join(ValidInferenceAuths(), ", "))
+	seen := make(map[string]bool)
+	for _, method := range strings.Split(value, ",") {
+		method = strings.TrimSpace(method)
+		if !slices.Contains(ValidInferenceAuths(), method) {
+			return fmt.Errorf("%s %q is not a valid inference authentication method; valid values: %s",
+				key, method, strings.Join(ValidInferenceAuths(), ", "))
+		}
+		if seen[method] {
+			return fmt.Errorf("%s lists inference authentication method %q more than once", key, method)
+		}
+		seen[method] = true
+	}
+	return nil
+}
+
+// inferenceAuthMethods returns the methods an effective inference.auth
+// selects, in the order they are listed. Empty entries are skipped; an
+// empty selection (gateway-only past RequireInferenceAuth) returns nil.
+func inferenceAuthMethods(auth string) []string {
+	var methods []string
+	for _, method := range strings.Split(auth, ",") {
+		if method = strings.TrimSpace(method); method != "" {
+			methods = append(methods, method)
+		}
+	}
+	return methods
+}
+
+// inferenceAuthHas reports whether the effective inference.auth selects
+// method, alone or as part of a mix.
+func inferenceAuthHas(auth, method string) bool {
+	return slices.Contains(inferenceAuthMethods(auth), method)
+}
+
+// InferenceAuthSelection is the inference.auth value in repos.yaml. It
+// selects one method (a scalar, for example "vertex-wif") or a mix of
+// methods (a list, for example [openai-api-key, vertex-wif]), so a
+// repository can keep the fullsend-managed credentials of more than one
+// method. A mix is held as the methods joined by commas, and a scalar may
+// spell a mix the same way ("openai-api-key,vertex-wif"), which is what
+// `fullsend repos set` writes.
+type InferenceAuthSelection string
+
+// UnmarshalYAML accepts a scalar or a list of scalars.
+func (s *InferenceAuthSelection) UnmarshalYAML(n *yaml.Node) error {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		var v string
+		if err := n.Decode(&v); err != nil {
+			return err
+		}
+		*s = InferenceAuthSelection(v)
+		return nil
+	case yaml.SequenceNode:
+		var vs []string
+		if err := n.Decode(&vs); err != nil {
+			return err
+		}
+		*s = InferenceAuthSelection(strings.Join(vs, ","))
+		return nil
+	}
+	return fmt.Errorf("line %d: inference.auth must be an inference authentication method or a list of methods", n.Line)
+}
+
+// MarshalYAML writes a single method as a scalar and a mix as a list.
+func (s InferenceAuthSelection) MarshalYAML() (any, error) {
+	if !strings.Contains(string(s), ",") {
+		return string(s), nil
+	}
+	methods := strings.Split(string(s), ",")
+	for i := range methods {
+		methods[i] = strings.TrimSpace(methods[i])
+	}
+	return methods, nil
 }
 
 // InferenceSettings is the nested inference block in repos.yaml. It may
@@ -89,9 +162,11 @@ func ValidateInferenceAuth(key, value string) error {
 // values are supplied on the command line and never stored here.
 type InferenceSettings struct {
 	// Auth selects which managed inference credentials the repository
-	// needs: "vertex-wif", "openai-api-key" or "openai-wif". Empty
-	// inherits from the next level (entry → forge section → defaults).
-	Auth string `yaml:"auth,omitempty"`
+	// needs: "vertex-wif", "openai-api-key" or "openai-wif", or a list
+	// mixing them. Empty inherits from the next level (entry → forge
+	// section → defaults); a narrower level replaces the inherited
+	// selection rather than adding to it.
+	Auth InferenceAuthSelection `yaml:"auth,omitempty"`
 }
 
 // validForges is the set of accepted forge values.
@@ -781,7 +856,7 @@ func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) er
 		return fmt.Errorf("unsupported manifest version %d (expected 1)", m.Version)
 	}
 
-	if err := checkInferenceAuth("defaults.inference.auth", m.Defaults.Inference.Auth); err != nil {
+	if err := checkInferenceAuth("defaults.inference.auth", string(m.Defaults.Inference.Auth)); err != nil {
 		return err
 	}
 	var err error
@@ -806,12 +881,12 @@ func (m *Manifest) validate(checkInferenceAuth func(key, value string) error) er
 		if p.cfg == nil {
 			continue
 		}
-		if err := checkInferenceAuth(p.name+".inference.auth", p.cfg.Inference.Auth); err != nil {
+		if err := checkInferenceAuth(p.name+".inference.auth", string(p.cfg.Inference.Auth)); err != nil {
 			return err
 		}
 		for i := range p.cfg.Repos {
 			e := &p.cfg.Repos[i]
-			if err := checkInferenceAuth(fmt.Sprintf("%s.repos[%s].inference.auth", p.name, e.Name), e.Inference.Auth); err != nil {
+			if err := checkInferenceAuth(fmt.Sprintf("%s.repos[%s].inference.auth", p.name, e.Name), string(e.Inference.Auth)); err != nil {
 				return err
 			}
 			if e.ConfigBase.resolvedSource, err = m.validateConfigSource(fmt.Sprintf("%s.repos[%d].config_base.source", p.name, i), e.ConfigBase.Source); err != nil {
@@ -1330,7 +1405,7 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 	cfg.Runtime = firstNonEmpty(entry.Config.ExplicitRuntime(), platform.Config.ExplicitRuntime(), m.Defaults.Config.ExplicitRuntime())
 	// InferenceAuth: entry, then forge section, then defaults. There is
 	// deliberately no built-in fallback (see RequireInferenceAuth).
-	cfg.InferenceAuth = firstNonEmpty(entry.Inference.Auth, platform.Inference.Auth, m.Defaults.Inference.Auth)
+	cfg.InferenceAuth = firstNonEmpty(string(entry.Inference.Auth), string(platform.Inference.Auth), string(m.Defaults.Inference.Auth))
 	// Vendor: per-repo *bool overrides defaults *bool; default is false.
 	cfg.Vendor = resolveBoolField(entry.Vendor, m.Defaults.Vendor, false)
 	// Signoff: entry, then forge section, then defaults; default false.
@@ -1460,10 +1535,10 @@ func (c ResolvedConfig) effectiveInferenceGateway() config.InferenceGatewayConfi
 
 // ValidateInferenceAuthForForge rejects an inference.auth selection the
 // forge cannot satisfy. OpenAI Workload Identity Federation exchanges a
-// GitHub Actions OIDC token, so it is GitHub only; a GitLab repository
-// must use openai-api-key (or vertex-wif) instead.
+// GitHub Actions OIDC token, so it is GitHub only, alone or in a mix; a
+// GitLab repository must use openai-api-key (or vertex-wif) instead.
 func ValidateInferenceAuthForForge(forgeName, auth string) error {
-	if auth == InferenceAuthOpenAIWIF && forgeName == ForgeGitLab {
+	if inferenceAuthHas(auth, InferenceAuthOpenAIWIF) && forgeName == ForgeGitLab {
 		return fmt.Errorf("inference.auth %s is supported on GitHub only (the exchange needs a GitHub Actions OIDC token); use %s or %s for GitLab repositories",
 			InferenceAuthOpenAIWIF, InferenceAuthOpenAIAPIKey, InferenceAuthVertexWIF)
 	}
