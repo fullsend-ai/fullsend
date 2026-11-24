@@ -1,5 +1,5 @@
 ---
-title: "176. Repository resolution"
+title: "176. Repository-driven epic creation"
 status: Proposed
 relates_to:
   - agent-architecture
@@ -11,7 +11,7 @@ topics:
   - skills
 ---
 
-# 176. Repository resolution
+# 176. Repository-driven epic creation
 
 Date: 2026-11-23
 Ticket: [AISDLC-547](https://redhat.atlassian.net/browse/AISDLC-547)
