@@ -9,9 +9,15 @@ name: E2E ok-to-test
 #
 # Called jobs report as "run / behaviour" on the default-branch commit, which
 # the main ruleset does not read. So `authorize` creates check runs named
-# behaviour and playback on the authorized head sha, and `report` completes
-# them from the suite results. Only these two jobs hold write scopes; the
-# suite jobs that run PR code never do (gh-aw's safe-outputs split).
+# behaviour, playback, and forgejo-behaviour on the authorized head sha, and
+# `report` completes them from the suite results. Only these two jobs hold
+# write scopes; the suite jobs that run PR code never do (gh-aw's safe-outputs
+# split).
+#
+# `/ok-to-test <sha> live` also runs the live behaviour and playback jobs for
+# that sha, as the merge queue does, and reports them as behaviour-live and
+# playback-live. Those names are not required checks, so a live run on a PR
+# never stands in for, or blocks on, the required behaviour and playback.
 #
 # No caller-level concurrency: e2e.yml queues /ok-to-test runs in its own
 # e2e-ok-to-test-{n} group, and sharing a group with the callee deadlocks.
@@ -38,8 +44,10 @@ jobs:
     outputs:
       authorized: ${{ steps.auth.outputs.authorized }}
       head_sha: ${{ steps.auth.outputs.head_sha }}
-      behaviour_check_id: ${{ steps.checks.outputs.behaviour }}
-      playback_check_id: ${{ steps.checks.outputs.playback }}
+      live: ${{ steps.auth.outputs.live }}
+      behaviour_live_check_id: ${{ steps.checks.outputs.behaviour_live }}
+      playback_live_check_id: ${{ steps.checks.outputs.playback_live }}
+      forgejo_behaviour_check_id: ${{ steps.checks.outputs.forgejo_behaviour }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,24 +73,36 @@ jobs:
         run: |
           [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha '${HEAD_SHA}'"; exit 1; }
 
-      - name: Create behaviour and playback check runs on the PR head
+      - name: Create the E2E checks on the PR head
         id: checks
         if: steps.auth.outputs.authorized == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+          LIVE: ${{ steps.auth.outputs.live }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          for name in behaviour playback; do
+          # Behaviour and playback run on a GitHub emulator for every pull
+          # request (behaviour-github-emulator.yml), so /ok-to-test runs only
+          # Forgejo, plus the live suites when the comment asked for them.
+          names=(forgejo-behaviour)
+          [[ "${LIVE}" == "true" ]] && names+=(behaviour-live playback-live)
+          for name in "${names[@]}"; do
             id=$(gh api -X POST "repos/${REPO}/check-runs" \
               -f name="${name}" -f head_sha="${HEAD_SHA}" -f status=in_progress \
               -f details_url="${RUN_URL}" \
               -f 'output[title]=Running after /ok-to-test' \
               -f "output[summary]=E2E ok-to-test run: ${RUN_URL}" \
               --jq .id)
-            echo "${name}=${id}" >> "$GITHUB_OUTPUT"
+            case "${name}" in
+              forgejo-behaviour) key=forgejo_behaviour ;;
+              behaviour-live) key=behaviour_live ;;
+              playback-live) key=playback_live ;;
+              *) key=${name} ;;
+            esac
+            echo "${key}=${id}" >> "$GITHUB_OUTPUT"
           done
 
       - name: Reply on the PR
@@ -92,17 +112,20 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
           HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+          LIVE: ${{ steps.auth.outputs.live }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          body="E2E authorized for \`${HEAD_SHA}\` ([run](${RUN_URL})). A new push needs a new \`/ok-to-test <sha>\`."
+          suites=""
+          [[ "${LIVE}" == "true" ]] && suites=", with the live behaviour and playback suites"
+          body="E2E authorized for \`${HEAD_SHA}\`${suites} ([run](${RUN_URL})). A new push needs a new \`/ok-to-test <sha>\`."
           gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" -f body="${body}" --silent
 
   run:
     needs: authorize
     if: needs.authorize.outputs.authorized == 'true'
     # Caller permissions are a ceiling for the reusable workflow — must grant
-    # the union of job perms in e2e.yml (gate / behaviour / playback), even
-    # for the gate job that skips on issue_comment.
+    # the union of job perms in e2e.yml (gate / behaviour / playback /
+    # forgejo-behaviour), even for the gate job that skips on issue_comment.
     permissions:
       contents: read
       pull-requests: write
@@ -111,6 +134,7 @@ jobs:
     with:
       pr_number: ${{ github.event.issue.number }}
       head_sha: ${{ needs.authorize.outputs.head_sha }}
+      live: ${{ needs.authorize.outputs.live == 'true' }}
     secrets: inherit
 
   report:
@@ -121,15 +145,18 @@ jobs:
     permissions:
       checks: write
     steps:
-      - name: Complete behaviour and playback check runs
+      - name: Complete the E2E checks
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_RESULT: ${{ needs.run.result }}
-          BEHAVIOUR_ID: ${{ needs.authorize.outputs.behaviour_check_id }}
-          BEHAVIOUR_RESULT: ${{ needs.run.outputs.behaviour_result }}
-          PLAYBACK_ID: ${{ needs.authorize.outputs.playback_check_id }}
-          PLAYBACK_RESULT: ${{ needs.run.outputs.playback_result }}
+          FORGEJO_BEHAVIOUR_ID: ${{ needs.authorize.outputs.forgejo_behaviour_check_id }}
+          FORGEJO_BEHAVIOUR_RESULT: ${{ needs.run.outputs.forgejo_behaviour_result }}
+          LIVE: ${{ needs.authorize.outputs.live }}
+          BEHAVIOUR_LIVE_ID: ${{ needs.authorize.outputs.behaviour_live_check_id }}
+          BEHAVIOUR_LIVE_RESULT: ${{ needs.run.outputs.behaviour_result }}
+          PLAYBACK_LIVE_ID: ${{ needs.authorize.outputs.playback_live_check_id }}
+          PLAYBACK_LIVE_RESULT: ${{ needs.run.outputs.playback_result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -142,14 +169,23 @@ jobs:
             esac
           }
           status=0
-          for pair in "behaviour:${BEHAVIOUR_ID}:${BEHAVIOUR_RESULT}" "playback:${PLAYBACK_ID}:${PLAYBACK_RESULT}"; do
+          pairs=("forgejo-behaviour:${FORGEJO_BEHAVIOUR_ID}:${FORGEJO_BEHAVIOUR_RESULT}")
+          if [[ "${LIVE}" == "true" ]]; then
+            pairs+=("behaviour-live:${BEHAVIOUR_LIVE_ID}:${BEHAVIOUR_LIVE_RESULT}")
+            pairs+=("playback-live:${PLAYBACK_LIVE_ID}:${PLAYBACK_LIVE_RESULT}")
+          fi
+          for pair in "${pairs[@]}"; do
             IFS=: read -r name id result <<<"${pair}"
             [[ -n "${id}" ]] || { echo "::error::no ${name} check run id"; status=1; continue; }
             c=$(conclusion "${result}")
-            gh api -X PATCH "repos/${REPO}/check-runs/${id}" \
+            if ! gh api -X PATCH "repos/${REPO}/check-runs/${id}" \
               -f status=completed -f conclusion="${c}" \
               -f "output[title]=${name}: ${c}" \
-              -f "output[summary]=E2E ok-to-test run: ${RUN_URL}" --silent
+              -f "output[summary]=E2E ok-to-test run: ${RUN_URL}" --silent; then
+              echo "::error::failed to complete ${name} check run ${id}"
+              status=1
+              continue
+            fi
             echo "${name}: ${c}"
           done
           exit "${status}"

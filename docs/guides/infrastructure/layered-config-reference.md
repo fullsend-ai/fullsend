@@ -93,7 +93,7 @@ the proposed overlay on the proposed (declared) preset rather than the
 installed base; an absent base is an empty layer, so adding a preset is
 compared too. A pristine first install (no installation, no overlay and no
 base) has nothing to compare against and inherits the preset. See
-[Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration).
+[fullsend repos — Managed configuration](../../cli/repos.md#managed-configuration).
 
 ### Marshal behavior
 
@@ -156,6 +156,8 @@ the overlay → base → code defaults chain.
 | `inference.gateway.messages_auth_header` | `string` (nested) | Scalar override | `""` (empty; means `authorization`) |
 | `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
+| `connections` | `map[string]SecretConnection` | Per-name merge; a layer replaces a whole entry ([details](../../reference/config-reference.md#connections)) | `nil` (none) |
+| `secrets` | `map[string]SecretSource` | Per-name merge; a layer replaces a whole entry, including `vault_secrets` ([details](../../reference/config-reference.md#connections)) | `nil` (native sources) |
 | `artifacts.content` | `string` (nested) | Scalar override | `"all"` |
 | `artifacts.by_source` | `map[string]string` (nested) | Per-key merge | `nil` (no per-source levels) |
 | `progress.verbosity` | `string` (nested) | Scalar override | `"full"` |
@@ -173,13 +175,13 @@ repository's concrete `repos.yaml` entry is the only managed layer that may
 declare it, and install renders the whole block into the managed overlay. See
 [Config Reference — `trace_context`](../../reference/config-reference.md#trace_context).
 
-### Per-agent `runtime`, `model`, `effort`, `subagents`, `trigger` on `agents:` entries
+### Per-agent `runtime`, `model`, `effort`, `subagents`, `trigger`, `harness` on `agents:` entries
 
-An `agents:` entry may set `runtime`, `model`, `effort`, `subagents` and
-`trigger` for that agent. The `ref` field records the branch or tag that was resolved when
-the agent was adopted via `agent add`; `agent update` re-resolves against
-this ref instead of the default branch when it is present (empty for
-SHA-pinned or legacy entries).
+An `agents:` entry may set `runtime`, `model`, `effort`, `subagents`,
+`trigger` and a `harness:` block for that agent. The `ref` field records the
+branch or tag that was resolved when the agent was adopted via `agent add`;
+`agent update` re-resolves against this ref instead of the default branch
+when it is present (empty for SHA-pinned or legacy entries).
 
 An enabled entry without `source:` is an *override-only* entry that tunes a
 built-in agent by name (or, in an overlay, a custom agent registered in the
@@ -190,6 +192,17 @@ parent's. `subagents` uses
 per-key merge: overlay entries override or tombstone (`~`) individual
 persona keys while unstated keys inherit from the parent. There is no way to
 unset a parent's scalar value from the overlay short of restating the entry.
+
+The `harness:` block does not merge field by field like the other settings.
+Each layer's block stays a layer of the harness chain. The chain is the
+agent's harness, then the `config.base.yaml` block, then the `config.yaml`
+block, composed by the `base:` rules. The overlay can replace a base value
+but not remove it. An overlay entry with no block, an empty one
+(`harness: {}`) or a null one keeps the base block
+([ADR 0162](../../ADRs/0162-agent-entries-may-carry-harness-overrides.md);
+see the [`harness` field](../../reference/config-reference.md#agents)).
+`repos.yaml` managed blocks render into one `config.yaml`, so only one of the
+`defaults`, forge and repository `config` layers may set an agent's block.
 
 ```yaml
 # config.base.yaml (preset)

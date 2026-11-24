@@ -511,7 +511,7 @@ func TestConverge_DeclaredRegionMissingVariableIsDriftWithoutCredentials(t *test
 // as a managed mint_url before it becomes FULLSEND_MINT_URL.
 func TestApplyEffectiveInfrastructure_PresetMintURLValidated(t *testing.T) {
 	for _, bad := range []string{
-		"http://localhost:8080",
+		"http://mint.example.com:8080",
 		"https://user:pass@mint.example.com",
 		"not-a-url",
 	} {
@@ -524,7 +524,7 @@ func TestApplyEffectiveInfrastructure_PresetMintURLValidated(t *testing.T) {
 }
 
 func TestConverge_InvalidPresetMintURLFailsBeforeWrites(t *testing.T) {
-	presetPath := writePresetFile(t, "version: \"1\"\nmint_url: http://localhost:8080\n")
+	presetPath := writePresetFile(t, "version: \"1\"\nmint_url: http://mint.example.com:8080\n")
 	fc := newFakeClientForBatch("acme/api")
 	m := newConvergeManifest("acme/api")
 	m.GitHub.MintURL = ""

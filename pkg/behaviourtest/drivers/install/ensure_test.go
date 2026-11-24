@@ -1408,10 +1408,11 @@ func noopSettle(_ context.Context, _ forge.Client, _, _, _ string, _ func(string
 }
 
 func TestAwaitWorkflowReady_ImmediateSuccess(t *testing.T) {
+	speedUpSettle(t, time.Minute)
 	sc := &stubClient{installed: true}
 	err := awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.getWorkflowCalled.Load(), "should succeed on first poll")
+	assert.Equal(t, int32(2), sc.getWorkflowCalled.Load(), "should succeed on the poll that confirms the first active poll")
 }
 
 func TestAwaitWorkflowReady_ReportsLastPollError(t *testing.T) {
@@ -1442,11 +1443,15 @@ func TestAwaitWorkflowReady_ContextCancelled(t *testing.T) {
 func speedUpSettle(t *testing.T, timeout time.Duration) {
 	t.Helper()
 	origTimeout, origInitial, origMax := settleTimeout, settlePollInitial, settlePollMax
+	origConfirm, origQuiet := settleConfirmDelay, settleQuiet
 	settleTimeout = timeout
 	settlePollInitial = time.Millisecond
 	settlePollMax = 2 * time.Millisecond
+	settleConfirmDelay = time.Millisecond
+	settleQuiet = time.Millisecond
 	t.Cleanup(func() {
 		settleTimeout, settlePollInitial, settlePollMax = origTimeout, origInitial, origMax
+		settleConfirmDelay, settleQuiet = origConfirm, origQuiet
 	})
 }
 
@@ -1487,7 +1492,7 @@ func TestAwaitWorkflowReady_NotFoundThenActive(t *testing.T) {
 
 	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
 	require.NoError(t, err)
-	assert.Equal(t, int32(4), c.calls.Load(), "should succeed on the poll after the last 404")
+	assert.Equal(t, int32(5), c.calls.Load(), "should succeed on the poll confirming the first active poll after the last 404")
 }
 
 func TestAwaitWorkflowReady_WaitsForActiveState(t *testing.T) {
@@ -1501,7 +1506,7 @@ func TestAwaitWorkflowReady_WaitsForActiveState(t *testing.T) {
 
 	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
 	require.NoError(t, err)
-	assert.Equal(t, int32(4), c.calls.Load(), "a visible but inactive workflow is not ready")
+	assert.Equal(t, int32(5), c.calls.Load(), "a visible but inactive workflow is not ready")
 }
 
 func TestAwaitWorkflowReady_TimeoutIsRetryable(t *testing.T) {
@@ -1534,6 +1539,82 @@ func TestAwaitWorkflowReady_APIErrorIsNotRetryable(t *testing.T) {
 	assert.Greater(t, c.calls.Load(), int32(1), "should keep polling until the settle window ends")
 }
 
+// An active poll that the next poll does not confirm is not ready
+// (#9779): polling resumes until two polls in a row see it active.
+func TestAwaitWorkflowReady_UnconfirmedActiveKeepsPolling(t *testing.T) {
+	speedUpSettle(t, time.Minute)
+	active := &forge.Workflow{State: "active"}
+	c := &seqWorkflowClient{results: []workflowResult{
+		{wf: active},
+		{err: forge.ErrNotFound},
+		{wf: active},
+		{wf: active},
+	}}
+
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, int32(4), c.calls.Load(), "the 404 after the first active poll restarts confirmation")
+}
+
+// The confirmed workflow gets settleQuiet before the repo is handed on.
+func TestAwaitWorkflowReady_WaitsQuietPeriodAfterConfirmation(t *testing.T) {
+	speedUpSettle(t, time.Minute)
+	settleQuiet = 50 * time.Millisecond
+	c := &seqWorkflowClient{results: []workflowResult{{wf: &forge.Workflow{State: "active"}}}}
+
+	start := time.Now()
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, time.Since(start), settleQuiet, "should wait the quiet period after confirmation")
+	assert.Equal(t, int32(2), c.calls.Load())
+}
+
+// An active poll at the deadline is still confirmed instead of being
+// reported as never settled.
+func TestAwaitWorkflowReady_ConfirmsActiveAtDeadline(t *testing.T) {
+	speedUpSettle(t, time.Minute)
+	settleTimeout = 0
+	c := &seqWorkflowClient{results: []workflowResult{{wf: &forge.Workflow{State: "active"}}}}
+
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), c.calls.Load())
+}
+
+func TestAwaitWorkflowReady_CancelledDuringConfirmOrQuietWait(t *testing.T) {
+	for name, slow := range map[string]*time.Duration{
+		"confirm wait": &settleConfirmDelay,
+		"quiet wait":   &settleQuiet,
+	} {
+		t.Run(name, func(t *testing.T) {
+			speedUpSettle(t, time.Minute)
+			*slow = time.Minute
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			active := &forge.Workflow{State: "active"}
+			c := &seqWorkflowClient{results: []workflowResult{{wf: active}}}
+			// Cancel once the poll before the slow wait has run.
+			cancelAt := int32(1)
+			if slow == &settleQuiet {
+				cancelAt = 2
+			}
+			c.onCall = func(n int32) {
+				if n == cancelAt {
+					cancel()
+				}
+			}
+
+			start := time.Now()
+			err := awaitWorkflowReady(ctx, c, "org", "repo", "fullsend.yaml", t.Logf)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, context.Canceled)
+			assert.NotErrorIs(t, err, errWorkflowNotReady, "cancellation must not trigger a repo recreate")
+			assert.Less(t, time.Since(start), 10*time.Second, "should return promptly instead of waiting out the delay")
+			assert.Equal(t, cancelAt, c.calls.Load())
+		})
+	}
+}
+
 func TestAwaitWorkflowReady_APIErrorThenActive(t *testing.T) {
 	speedUpSettle(t, time.Minute)
 	c := &seqWorkflowClient{results: []workflowResult{
@@ -1543,7 +1624,7 @@ func TestAwaitWorkflowReady_APIErrorThenActive(t *testing.T) {
 
 	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
 	require.NoError(t, err)
-	assert.Equal(t, int32(2), c.calls.Load(), "a transient API error should not stop polling")
+	assert.Equal(t, int32(3), c.calls.Load(), "a transient API error should not stop polling")
 }
 
 func TestAwaitWorkflowReady_CancelledMidWait(t *testing.T) {

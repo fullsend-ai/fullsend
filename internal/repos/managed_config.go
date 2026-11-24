@@ -477,12 +477,11 @@ func validateDeclaredMintURL(mintURL string) error {
 	if mintURL == "" {
 		return nil
 	}
-	mu, err := url.Parse(mintURL)
-	if err != nil || mu.Scheme != "https" || mu.Host == "" {
-		return fmt.Errorf("mint_url must be a valid HTTPS URL, got %q", mintURL)
-	}
-	if mu.User != nil {
+	if mu, err := url.Parse(mintURL); err == nil && mu.User != nil {
 		return fmt.Errorf("mint_url must not contain userinfo, got %q", mintURL)
+	}
+	if !urlutil.IsMintURL(mintURL) {
+		return fmt.Errorf("mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1, got %q", mintURL)
 	}
 	return nil
 }

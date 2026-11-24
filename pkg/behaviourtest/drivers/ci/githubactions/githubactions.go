@@ -15,10 +15,15 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 )
 
+// pollInterval is how often a harness-run wait polls the run once it has
+// been detected. BEHAVIOUR_RUN_POLL_INTERVAL overrides it (a Go duration),
+// for a local forge where runs finish in seconds.
+var pollInterval = env.MustDuration("BEHAVIOUR_RUN_POLL_INTERVAL", 15*time.Second)
+
 const (
-	pollInterval = 15 * time.Second
 	// dispatchWait bounds how long WaitForHarnessAgent and friends wait
 	// for a harness run to settle. Raised from 12 to 20 minutes to give
 	// longer-running playback scenarios (which replay a full dummy-agent
@@ -1785,6 +1790,15 @@ const (
 	jobsFatal
 )
 
+// runRanNoJob reports whether a completed run ran no job: skipped (every
+// job's if: was false, e.g. the shim's run for a fork pull request) or
+// action_required (held for a maintainer's approval, e.g. a first-time
+// contributor's fork pull request on pull_request, #9221). Such a run holds
+// no agent work and no dispatch decision, and its job listing can 404.
+func runRanNoJob(r forge.WorkflowRun) bool {
+	return r.Status == "completed" && (r.Conclusion == "skipped" || r.Conclusion == "action_required")
+}
+
 // classifyJobsError is the only place that maps a run's status and a
 // jobs-listing error to a tolerance rule. The dispatch-count and
 // negative-assertion paths both route their listing errors through it
@@ -1834,7 +1848,7 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 		return 0, 0, err
 	}
 	for _, r := range allRuns {
-		if r.Status == "completed" && r.Conclusion == "skipped" {
+		if runRanNoJob(r) {
 			continue
 		}
 		if runUnstarted(r.Status) {
@@ -1956,9 +1970,9 @@ func (d *Driver) emptyMatrixPollOnce(ctx context.Context, remaining time.Duratio
 	pending := 0
 	for i := range runs {
 		r := runs[i]
-		// A skipped run ran no job, e.g. the shim's run for a bot comment,
-		// so it holds no dispatch decision.
-		if r.Status == "completed" && (r.Conclusion == "cancelled" || r.Conclusion == "skipped") {
+		// A skipped or approval-held run ran no job, e.g. the shim's run
+		// for a bot comment, so it holds no dispatch decision.
+		if (r.Status == "completed" && r.Conclusion == "cancelled") || runRanNoJob(r) {
 			continue
 		}
 		if r.Status != "completed" {
@@ -2039,7 +2053,7 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 		return err
 	}
 	for _, r := range allRuns {
-		if r.Status == "completed" && r.Conclusion == "skipped" {
+		if runRanNoJob(r) {
 			continue
 		}
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)

@@ -17,6 +17,10 @@
 #   set, protects one additional ref for that invocation only (gateway.sh's
 #   prune_unused_podman_storage uses this to protect the job's own image
 #   during prepare.sh's pre-pull prune).
+# - Images named only by digest (pulled as repo@sha256:..., so neither
+#   tagged nor dangling) are removed too (issue #9681). A keep-file or
+#   extra-keep entry pinned to the same digest (repo@sha256:... or
+#   repo:tag@sha256:...) protects them.
 # - Serializes against prepare.sh's own reclaim-then-pull-then-create window
 #   via a well-known flock (see acquire_podman_prune_lock in gateway.sh):
 #   this timer-driven run skips entirely, the same as the in-flight skip
@@ -32,18 +36,27 @@ LOCK_FILE="${FULLSEND_PODMAN_PRUNE_LOCK_FILE:-${HOME}/.local/state/fullsend-gitl
 # window is milliseconds; 30m is well above that and still reclaims images
 # held by killed-job containers that cleanup.sh never saw.
 CONTAINER_UNTIL="${FULLSEND_PODMAN_PRUNE_UNTIL:-30m}"
+# When free space on / falls below this threshold, bypass the CONTAINER_UNTIL
+# grace window to reclaim stopped containers and unreferenced images immediately.
+LOW_DISK_THRESHOLD_KIB="${FULLSEND_PODMAN_LOW_DISK_KIB-10485760}" # 10 GiB
 
 log() { echo "==> $*"; }
 
-# True when a runner-* / openshell-* container is not already stopped.
+# True when a runner-* / openshell-* / fs-* container is not already stopped.
 # Created-but-not-started counts as in-flight: prepare.sh writes the
 # container then starts it, and container prune would delete it in between.
 job_in_flight() {
-  local name state
-  while IFS='|' read -r name state; do
+  local name state labels
+  while IFS='|' read -r name state labels; do
     [ -n "${name}" ] || continue
     case "${name}" in
       runner-*|openshell-*) ;;
+      fs-*)
+        case "${labels:-}" in
+          *openshell.managed=true*|*openshell.managed:true*) ;;
+          *) continue ;;
+        esac
+        ;;
       *) continue ;;
     esac
     state=$(printf '%s' "${state}" | tr '[:upper:]' '[:lower:]')
@@ -54,7 +67,7 @@ job_in_flight() {
         return 0
         ;;
     esac
-  done < <(podman ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null || true)
+  done < <(podman ps -a --format '{{.Names}}|{{.State}}|{{.Labels}}' 2>/dev/null || true)
   return 1
 }
 
@@ -101,6 +114,66 @@ prune_unused_tagged_images() {
   done < <(podman images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)
 }
 
+# True when a keep-file or extra-keep entry is pinned to the digest of ref
+# (repo@sha256:...). The digest identifies the image content, so an entry
+# such as repo@sha256:... or repo:tag@sha256:... protects the image whatever
+# repository name it was pulled under.
+is_keep_digest_ref() {
+  local ref="$1" digest line
+  digest="${ref##*@}"
+  [ -n "${digest}" ] && [ "${digest}" != "${ref}" ] || return 1
+  case "${FULLSEND_PODMAN_PRUNE_EXTRA_KEEP:-}" in
+    *"@${digest}") return 0 ;;
+  esac
+  [ -f "${KEEP_FILE}" ] || return 1
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in
+      ''|\#*) continue ;;
+      *"@${digest}") return 0 ;;
+    esac
+  done < "${KEEP_FILE}"
+  return 1
+}
+
+# Remove unused images that have no tag but are still named by digest
+# (e.g. pulled as repo@sha256:...). They are not dangling, so `podman image
+# prune` keeps them, and the tagged pass skips their <none> tag (issue
+# #9681). `podman images` shows a <none> tag only when an image has no
+# tagged name, and a dangling image has no RepoDigests, so a <none> row
+# with digests is exactly a digest-only image. Each repo@digest name is
+# removed without -f: the image goes with its last name, and an image in
+# use by a container fails rmi and stays.
+prune_unused_digest_only_images() {
+  local tag digests ref kept
+  local -a refs
+  if [ ! -f "${KEEP_FILE}" ]; then
+    log "keep-file ${KEEP_FILE} missing — skipping digest-only image removal"
+    return 0
+  fi
+  while IFS='|' read -r tag digests; do
+    [ "${tag}" = '<none>' ] || continue
+    [ -n "${digests}" ] || continue
+    IFS=',' read -r -a refs <<< "${digests}"
+    kept=""
+    for ref in "${refs[@]}"; do
+      [ -n "${ref}" ] || continue
+      if is_keep_digest_ref "${ref}"; then
+        kept="${ref}"
+        break
+      fi
+    done
+    if [ -n "${kept}" ]; then
+      log "keeping ${kept}"
+      continue
+    fi
+    for ref in "${refs[@]}"; do
+      [ -n "${ref}" ] || continue
+      log "removing unused digest-only image ${ref}"
+      podman rmi -- "${ref}" 2>/dev/null || true
+    done
+  done < <(podman images --format '{{.Tag}}|{{range .RepoDigests}}{{.}},{{end}}' 2>/dev/null || true)
+}
+
 if ! command -v podman >/dev/null 2>&1; then
   echo "ERROR: podman not found in PATH" >&2
   exit 1
@@ -127,6 +200,14 @@ if job_in_flight; then
   exit 0
 fi
 
+if [ -n "${LOW_DISK_THRESHOLD_KIB}" ] && [ "${LOW_DISK_THRESHOLD_KIB}" -gt 0 ] 2>/dev/null; then
+  free_kib=$(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}' || true)
+  if [ -n "${free_kib}" ] && [ "${free_kib}" -lt "${LOW_DISK_THRESHOLD_KIB}" ] 2>/dev/null; then
+    log "low disk space on / (${free_kib} KiB < ${LOW_DISK_THRESHOLD_KIB} KiB) — bypassing ${CONTAINER_UNTIL} grace window for aggressive reclamation"
+    CONTAINER_UNTIL="0s"
+  fi
+fi
+
 log "pruning stopped containers older than ${CONTAINER_UNTIL}"
 podman container prune -f --filter "until=${CONTAINER_UNTIL}" || true
 
@@ -135,5 +216,8 @@ podman image prune -f || true
 
 log "pruning unused tagged images (preserving keep-file)"
 prune_unused_tagged_images
+
+log "pruning unused digest-only images (preserving keep-file)"
+prune_unused_digest_only_images
 
 log "podman prune complete"

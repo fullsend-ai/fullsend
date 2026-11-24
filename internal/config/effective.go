@@ -43,7 +43,11 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 		out["tracker"] = t
 	}
 	if agents := r.AgentEntries(); len(agents) > 0 {
-		out["agents"] = agents
+		rendered, err := effectiveAgents(agents)
+		if err != nil {
+			return nil, err
+		}
+		out["agents"] = rendered
 	}
 	if n := r.StatusNotifications(); n != nil {
 		out["status_notifications"] = n
@@ -72,6 +76,14 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 			progress["by_source"] = progressBySource
 		}
 		out["progress"] = progress
+	}
+	// Vault addresses, selected connections and ordered secret paths decide
+	// where runner secrets come from, so a change must show in the view.
+	if conns := r.ConfigConnections(); len(conns) > 0 {
+		out["connections"] = conns
+	}
+	if secrets := r.ConfigSecrets(); len(secrets) > 0 {
+		out["secrets"] = secrets
 	}
 	if tc := r.TraceContext(); tc != nil {
 		out["trace_context"] = tc
@@ -114,4 +126,33 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 		out["inference"] = inference
 	}
 	return yaml.Marshal(out)
+}
+
+// effectiveAgents returns agents as the effective view renders them. An
+// entry that inherits a harness: block lists every block under harness,
+// outermost layer first: the blocks compose as separate layers (ADR 0162),
+// so showing only the entry's own would hide a parent's.
+func effectiveAgents(agents []AgentEntry) ([]any, error) {
+	out := make([]any, len(agents))
+	for i, a := range agents {
+		out[i] = a
+		if len(a.inheritedHarness) == 0 {
+			continue
+		}
+		var entry yaml.Node
+		if err := entry.Encode(a); err != nil {
+			return nil, err
+		}
+		layers := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		for _, h := range a.HarnessBlocks() {
+			layers.Content = append(layers.Content, cloneYAMLNode(h.node))
+		}
+		for j := 0; j+1 < len(entry.Content); j += 2 {
+			if entry.Content[j].Value == "harness" {
+				entry.Content[j+1] = layers
+			}
+		}
+		out[i] = &entry
+	}
+	return out, nil
 }

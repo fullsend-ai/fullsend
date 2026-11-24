@@ -126,6 +126,7 @@ func StagePoolLayout(slotsPerOrg int) PoolLayout {
 }
 
 // PoolLayoutForEnvironment returns StagePoolLayout for "stage" and
+// "github-emulator" (one org, which the github-emulator factory creates), and
 // DevPoolLayout otherwise, matching the install factory selection. The
 // slot count honours BEHAVIOUR_POOL_SIZE through envPoolSize, the same
 // source as the mint and WIF repo lists, so the allocator never claims a
@@ -136,7 +137,7 @@ func PoolLayoutForEnvironment(environment string, logf func(string, ...any)) Poo
 		logf = func(string, ...any) {}
 	}
 	slotsPerOrg := envPoolSize(logf)
-	if environment == "stage" {
+	if environment == "stage" || environment == "github-emulator" {
 		return StagePoolLayout(slotsPerOrg)
 	}
 	return DevPoolLayout(slotsPerOrg)

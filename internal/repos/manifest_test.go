@@ -177,6 +177,31 @@ func TestValidate_InvalidMintURL_GitHubRepos(t *testing.T) {
 	assert.ErrorContains(t, err, "github.mint_url must be a valid HTTPS URL")
 }
 
+func TestValidate_LoopbackHTTPMintURL_GitHubRepos(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		GitHub:  &PlatformConfig{MintURL: "http://127.0.0.1:18502", Repos: []RepoEntry{{Name: "acme/repo"}}},
+	}
+	require.NoError(t, m.Validate())
+
+	m.GitHub.MintURL = "http://10.0.0.1:18502"
+	assert.ErrorContains(t, m.Validate(), "github.mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1")
+}
+
+func TestValidate_PerRepoLoopbackHTTPMintURL(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/api", MintURL: "http://localhost:18502"}},
+		},
+	}
+	require.NoError(t, m.Validate())
+
+	m.GitHub.Repos[0].MintURL = "http://example.com:18502"
+	assert.ErrorContains(t, m.Validate(), "per-repo mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1")
+}
+
 func TestValidate_GitLabOnly_NoMintRequired(t *testing.T) {
 	m := Manifest{
 		Version: 1,
@@ -2523,7 +2548,12 @@ func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *t
 	// WriteManifest) round-trips it unchanged; only the internal
 	// fetch-time source is resolved to an absolute, manifest-relative path.
 	assert.Equal(t, "presets/base.yaml", m.Defaults.ConfigBase.Source)
-	assert.Equal(t, filepath.Join(base, "presets/base.yaml"), m.Defaults.ConfigBase.configSource())
+	// Validate resolves against the symlink-canonicalized manifest directory
+	// (on macOS t.TempDir() lives under /var -> /private/var), so compare
+	// against the canonical form of base.
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(canonicalBase, "presets/base.yaml"), m.Defaults.ConfigBase.configSource())
 
 	escaping := &Manifest{
 		Version:   1,
@@ -2531,7 +2561,7 @@ func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *t
 		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "../outside.yaml"}},
 		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
-	err := escaping.Validate()
+	err = escaping.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "escapes manifest directory")
 

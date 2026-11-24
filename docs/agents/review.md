@@ -35,9 +35,10 @@ Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-fix` still require
 write or higher.
 
-The `/fs-review` command does not accept arguments and always forces a review. The review agent also runs automatically when a PR is opened,
+The `/fs-review` command does not accept arguments and always forces a review. The review agent also runs automatically on a same-repository PR when it is opened,
 when its effective diff changes on a synchronize event, or when it is moved out of draft by a user with triage-level repository permission or higher.
-For GitHub `pull_request_target` synchronize events, the review is skipped when the complete effective diff matches the previous app-verified approved review. The guard posts or updates one PR-visible `fullsend:review-skip` status comment linking the previous approved review. GitLab diff metadata uses the same normalized model, but the GitLab poller does not consume this marker yet and continues to review synchronized merge requests.
+Fork and Dependabot PRs are not reviewed automatically; someone with triage access or higher (or an OWNERS approver or reviewer) can comment `/fs-review` on them.
+For GitHub `pull_request` synchronize events (and `pull_request_target` from shims that have not been upgraded), the review is skipped when the complete effective diff matches the previous app-verified approved review. The guard posts or updates one PR-visible `fullsend:review-skip` status comment linking the previous approved review. GitLab diff metadata uses the same normalized model, but the GitLab poller does not consume this marker yet and continues to review synchronized merge requests.
 The deduplication check runs before final Bash/CEL stage selection, so CEL-selected review routes participate as well. File modes are part of the compared effective diff identity, so executable-bit changes cannot be hidden by an otherwise identical textual patch.
 The guard fails open and runs the review when there is no prior diff hash, the prior review cannot be verified, a required hash/head or base/head tree-mode API call fails,
 the file listing is incomplete or truncated, or any file has no representable patch (for example, a binary or rename-only change).
@@ -76,7 +77,8 @@ the fast path is not provisioned, review fires once the poller sees an MR whose
 Native `merge_request_event` pipeline dispatch was removed.
 A push to an open MR (GitHub `synchronize`) also triggers automatic review,
 through the poller only, so expect up to one poll interval of delay. The
-webhook dispatcher rejects merge request updates. GitLab records a new diff
+webhook dispatcher ignores merge request updates as non-routable events: the
+job succeeds and nothing is dispatched. GitLab records a new diff
 version on each push. When the newest version moves the MR head and was created
 after the watermark, the poller dispatches review for that head. This includes
 fix-agent pushes to bot-authored MRs, and the fix stage's iteration cap bounds
@@ -145,11 +147,25 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md).
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
 
-Set this in the harness's `env.sandbox` (the upstream default lives in
-`harness/review.yaml`). To override per repo or org, use `base:`
-composition rather than the CI workflow `env:` block — workflow `env:`
-is reserved for infrastructure plumbing (see [Architecture](../architecture.md#agent-harness)
-for details on harness composition and workflow-env conventions).
+The upstream default lives in `harness/review.yaml`, in both `env.runner`
+and `env.sandbox`. To override it per repo or org, set it in the review
+entry's `harness:` block in `config.yaml` (or `config.base.yaml`), which
+keeps the agent on upstream updates
+([ADR 0162](../ADRs/0162-agent-entries-may-carry-harness-overrides.md)):
+
+```yaml
+agents:
+  - name: review
+    harness:
+      env:
+        runner: { REVIEW_FINDING_SEVERITY_THRESHOLD: medium }
+        sandbox: { REVIEW_FINDING_SEVERITY_THRESHOLD: medium }
+```
+
+`base:` composition also works. Do not use the CI workflow `env:` block —
+workflow `env:` is reserved for infrastructure plumbing (see
+[Architecture](../architecture.md#agent-harness) for details on harness
+composition and workflow-env conventions).
 The post-script reads the value from the runner environment directly —
 no separate configuration is needed.
 

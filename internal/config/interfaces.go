@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -61,6 +62,7 @@ type ConfigReader interface {
 // the struct field names (Roles and Runtime).
 type PerRepoConfigReader interface {
 	ConfigReader
+	SecretSourcesReader
 	ConfigRoles() []string
 	ConfigRuntime() string
 	ConfigForge() string
@@ -260,6 +262,16 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 					cloned[k] = v
 				}
 				merged.Subagents = cloned
+			}
+			// harness: blocks layer like harness inheritance (ADR 0162):
+			// the parent's block stays a layer of its own beneath the
+			// overlay's, and the harness package composes them in order. An
+			// empty block sets nothing, like no block, in either layer.
+			if !oi.entry.Harness.IsEmpty() {
+				if !merged.Harness.IsEmpty() {
+					merged.inheritedHarness = append(slices.Clone(merged.inheritedHarness), merged.Harness)
+				}
+				merged.Harness = oi.entry.Harness
 			}
 		}
 		result = append(result, merged)

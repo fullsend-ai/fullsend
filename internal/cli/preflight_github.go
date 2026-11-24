@@ -31,10 +31,14 @@ const (
 
 // preflightGitHubRetryDelays is the wait after each retryable failure of
 // the sandbox GitHub API connectivity check, before the next attempt.
-// Three attempts total: the initial try plus one retry after each delay.
+// Four attempts total: the initial try plus one retry after each delay.
+// The waits add up to 17 s, which covers OpenShell publishing the policy DNS
+// mapping for the GitHub host up to about 15 s after the sandbox starts on
+// a loaded runner.
 var preflightGitHubRetryDelays = []time.Duration{
 	2 * time.Second,
 	5 * time.Second,
+	10 * time.Second,
 }
 
 // preflightGitHubSleep is the wait between retryable connectivity-check
@@ -63,10 +67,10 @@ type preflightGitHubResult struct {
 // (the HTTPS CONNECT tunnel through the proxy) and token validity in a
 // single low-cost API call.
 //
-// Transient proxy 403s, connection-refused, timeout, connection-level EOF,
-// and connection-reset failures are retried with backoff (see
-// preflightGitHubRetryDelays). Auth and config failures (HTTP 401/404) fail
-// immediately. printer, when non-nil, logs each retry so self-resolving
+// Transient proxy 403s, connection-refused, connect permission-denied,
+// timeout, connection-level EOF, and connection-reset failures are retried
+// with backoff (see preflightGitHubRetryDelays). Auth and config failures
+// (HTTP 401/404) fail immediately. printer, when non-nil, logs each retry so self-resolving
 // transients remain visible in the run log.
 //
 // Returns a non-nil error when the API is unreachable (proxy 403, connection
@@ -152,6 +156,13 @@ func diagnosePreflightGitHubFailure(exitCode int, err error, output string) erro
 				"Check DNS configuration and network policies",
 			output)
 	}
+	if isPreflightConnectDenied(output) {
+		return fmt.Errorf(
+			"GitHub API unreachable from sandbox (connection not permitted):\n%s\n\n"+
+				"The sandbox network refused the connection on every attempt. "+
+				"Check that the OpenShell gateway network policy allows the GitHub API host",
+			output)
+	}
 	if strings.Contains(output, "Connection refused") || strings.Contains(output, "Connection timed out") {
 		return fmt.Errorf(
 			"GitHub API unreachable from sandbox (connection failed):\n%s\n\n"+
@@ -174,7 +185,8 @@ func diagnosePreflightGitHubFailure(exitCode int, err error, output string) erro
 
 // isRetryablePreflightGitHubFailure reports whether a failed connectivity
 // check should be retried. HTTP 403 and network-level errors (connection
-// refused, timeout, connection-level EOF, connection reset) are transient
+// refused, timeout, connection-level EOF, connection reset, and a connect
+// denied before OpenShell publishes the policy DNS mapping) are transient
 // proxy/gateway issues. HTTP 401/404 indicate real auth or config problems
 // and must not be retried. See #6855, #7862.
 func isRetryablePreflightGitHubFailure(exitCode int, err error, output string) bool {
@@ -197,6 +209,12 @@ func isRetryablePreflightGitHubFailure(exitCode int, err error, output string) b
 		return true
 	}
 	if strings.Contains(combined, "Connection timed out") || strings.Contains(combined, "connection timed out") {
+		return true
+	}
+	// Before OpenShell publishes the policy DNS mapping for the GitHub host,
+	// the sandbox network refuses a connect to the mapped address with
+	// EACCES. The mapping arrives seconds after the sandbox starts.
+	if isPreflightConnectDenied(combined) {
 		return true
 	}
 	if exitCode == 124 || strings.Contains(combined, "timed out") {
@@ -224,6 +242,14 @@ func isPreflightConnClosed(output string) bool {
 		strings.Contains(strings.ToLower(output), "connection reset by peer")
 }
 
+// isPreflightConnectDenied reports whether output shows the socket connect
+// itself being refused with EACCES, as the HTTP client reports it
+// (`dial tcp 198.18.0.2:443: connect: permission denied`), not an unrelated
+// file permission error.
+func isPreflightConnectDenied(output string) bool {
+	return strings.Contains(strings.ToLower(output), "connect: permission denied")
+}
+
 // preflightGitHubRetryReason is a short label for the retry log line.
 func preflightGitHubRetryReason(exitCode int, err error, output string) string {
 	combined := output
@@ -235,6 +261,8 @@ func preflightGitHubRetryReason(exitCode int, err error, output string) string {
 		return "HTTP 403"
 	case strings.Contains(combined, "Connection refused") || strings.Contains(combined, "connection refused"):
 		return "connection refused"
+	case isPreflightConnectDenied(combined):
+		return "connect permission denied"
 	case exitCode == 124 || strings.Contains(combined, "timed out") || strings.Contains(combined, "Connection timed out"):
 		return "timeout"
 	case preflightConnEOFPattern.MatchString(combined):

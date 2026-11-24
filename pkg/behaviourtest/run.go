@@ -12,6 +12,8 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/suite"
 )
 
@@ -64,9 +66,13 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 	// orgs; there is no exclusive org lock and no broad startup cleanup.
 	// Abandoned slot repos are reclaimed by the allocator's GC.
 	pool := poolConfigFor(cfg.Environment, e2eCfg, binary, t.Logf)
-	driver, err := installFactoryFor(cfg.Environment)(pool)
+	factory, err := installFactoryFor(cfg.Environment)
 	if err != nil {
-		failRun(t, nil, behaviourSuiteName, fmt.Errorf("creating install driver (env=%s): %w", cfg.Environment, err))
+		failRun(t, nil, behaviourSuiteName, err)
+	}
+	driver, err := factory(pool)
+	if err != nil {
+		failInstallDriver(t, behaviourSuiteName, cfg.Environment, err)
 	}
 
 	// Register Finalize as cleanup so mint resources are torn down
@@ -78,16 +84,31 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		}
 	})
 
-	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), pool.Layout.SlotsPerOrg, driver.Capacity())
+	// The driver supplies its own default concurrency and description,
+	// so the runner never reads a pool layout (a non-pool driver such as
+	// forgejo-dev has none).
+	bootstrap := install.BootstrapFor(driver)
+	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), bootstrap.DefaultConcurrency(), driver.Capacity())
 	if err != nil {
 		failRun(t, nil, behaviourSuiteName, err)
 	}
 	if overCapacity {
 		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block while allocating", concurrency, driver.Capacity())
 	}
-	t.Logf("leasing repo slots across %d org(s) %v (%d slot(s)), godog concurrency %d", pool.Layout.OrgCount, pool.Layout.Orgs(), driver.Capacity(), concurrency)
+	t.Logf("%s, godog concurrency %d", bootstrap.Describe(), concurrency)
 
-	template := newTemplateWorld(t, behaviourSuiteName, ctx, cfg, pool, driver, opts)
+	template := newTemplateWorld(t, behaviourSuiteName, ctx, cfg, binary, driver, opts)
+
+	// Job cleanup for the feature-scoped OpenBao servers of the Vault
+	// scenarios (ADR 0155): stops them and saves their logs and
+	// measurements under BEHAVIOUR_ARTIFACT_DIR. Registered after
+	// Finalize, so it runs first (t.Cleanup is LIFO); it does nothing when
+	// no Vault feature ran.
+	t.Cleanup(func() {
+		if err := steps.StopVaultServers(context.Background()); err != nil {
+			t.Logf("stopping Vault test servers: %v", err)
+		}
+	})
 
 	if outsiderPAT := os.Getenv("TEST_ACTOR_OUTSIDER_PAT"); outsiderPAT != "" {
 		outsiderClient := e2etest.NewLiveClient(outsiderPAT)

@@ -58,7 +58,7 @@ sequenceDiagram
 | Sub-agents | Native (`Agent` tool) | `Agent`/`Task` via a fullsend extension | Native Codex children under a runner-owned policy, for an agent whose tools include `Agent` (or that declares no `tools:`), with harness security on, on a parent model Codex resolves to collaboration V1 or V2 on the direct route ([Sub-agents](runtimes/codex.md#sub-agents)) |
 | Default alias models | `opus`/`sonnet`/`haiku` → `claude-*-5-5`, passed as the id; `fable` by Claude Code's own table; sub-agent frontmatter resolved by Claude Code | `opus`/`sonnet`/`haiku` → `claude-*-5-5`, `fable` → `claude-fable-5-1`, children included | Not applicable — OpenAI models only |
 | Fallback model chain | Alias requests retried by the runner when Vertex does not serve the model (Claude Code's own "model not available" result naming the model, or Vertex's [two 404/403 messages](runtimes/claude.md#models)): `FULLSEND_FALLBACK_MODELS`, else the alias's built-in chain (`opus` → `claude-opus-4-6`, `sonnet` → `claude-sonnet-4-6`, `haiku` → `claude-haiku-4-5`); only an explicit `FULLSEND_FALLBACK_MODELS` is also passed as `--fallback-model`, never the built-in chain; pinned ids, retargets and sub-agents fail loudly | The same chain, same provider only; sub-agent children asking for an alias use its built-in chain; pinned ids and retargets fail loudly | Ignored with a warning |
-| Roles | All | All; `review`/`retro` at `--thinking medium` by default | Same recommendation as before until a fleet-shaped run completes ([Sub-agents](runtimes/codex.md#sub-agents)) |
+| Roles | All | All; `review`/`retro` at `--thinking medium` by default | All; some `review` runs have dropped a sub-agent the skill selects without saying so, or findings its challenger kept ([#9073](https://github.com/fullsend-ai/fullsend/issues/9073), [#9657](https://github.com/fullsend-ai/fullsend/issues/9657)) |
 | Effort | `--effort low..max` | `--thinking`, same levels (`high` when unset) | `model_reasoning_effort`, same levels |
 | Tools | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | Shell + `apply_patch` only; `tools:` is recorded, not enforced (the allowlist hook is opt-in) |
 | Security controls | Full matrix | Full matrix; stricter on failed-call sanitizing | Full matrix; post-tool hooks detect and block but cannot rewrite output |
@@ -108,7 +108,8 @@ the agent's `agents:` entry in `.fullsend/config.yaml` instead. Harness `env.run
 ### Per-agent runtime, model and effort
 
 The `agents:` list is the per-agent place in `config.yaml`: an entry names an
-agent and can set its `runtime`, `model`, `effort`, `subagents` and `trigger`
+agent and can set its `runtime`, `model`, `effort`, `subagents`, a `harness:`
+block of harness settings and `trigger`
 (on `review`, `retro`, `triage` and `prioritize`, decides routing for that
 agent; see
 [Choosing when review runs](guides/user/customizing-agents.md#choosing-when-review-runs),
@@ -161,10 +162,12 @@ agent gets its settings on its own entry.
 
 Precedence: flag > env var > the agent's `agents:` entry > repo-wide `runtime:` / harness
 `model:` `effort:` > default. Entries merge per field across the layered config (`config.yaml`
-over `config.base.yaml`), so a preset base can tune agents too. `fullsend run` validates the
-whole `agents:` list in every layer (names, runtime, model syntax, effort) and fails the run with
-an error naming the file and entry rather than silently skipping a mistyped entry or handing a
-bad value to the runtime.
+over `config.base.yaml`), so a preset base can tune agents too. The `harness:` block is the
+exception: each file's block stays a layer of its own (see the
+[layered config reference](guides/infrastructure/layered-config-reference.md)).
+`fullsend run` validates the whole `agents:` list in every layer (names, runtime, model
+syntax, effort) and fails the run with an error naming the file and entry rather than
+silently skipping a mistyped entry or handing a bad value to the runtime.
 
 A value that came from here shows up as `<config path> agents.<name>` wherever the selection is
 surfaced (plan block, stderr, `metrics.json` — see below); the path is the effective config file.
@@ -212,10 +215,13 @@ Harness `model:` and `agents:` entry `model:` values accept provider-qualified `
 Point an alias at a different model for one repo with `models.aliases` in `.fullsend/config.yaml`
 — `sonnet: claude-sonnet-5` changes `sonnet` and leaves the other aliases alone. Works on both
 runtimes; the override applies to the parent run and to sub-agent dispatch on pi (children
-resolve aliases through the same merged table). See [Pi › Per-repo alias
-overrides](runtimes/pi.md#per-repo-alias-overrides) for the syntax and what the plan block shows,
-and [Claude Code › Models](runtimes/claude.md#models) for the one limit there (sub-agent `model:`
-frontmatter is not remapped).
+resolve aliases through the same merged table). On Claude Code it reaches sub-agents only when the
+agent's `agents[].subagents` block has a live entry: the runner then resolves persona models
+through `models.aliases`. Without that block, sub-agent `model:` frontmatter is not remapped. See
+[Pi › Per-repo alias overrides](runtimes/pi.md#per-repo-alias-overrides) for the syntax and what
+the plan block shows, and [Claude Code › Models](runtimes/claude.md#models) and
+[Claude Code › Per-persona models](runtimes/claude.md#per-persona-models) for the Claude Code
+limit.
 
 ## Where the selection appears
 

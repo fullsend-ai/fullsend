@@ -68,7 +68,7 @@ if [ "$2" = "exec" ]; then
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
     "codex --version") echo "` + versionOutput + `"; exit 0 ;;
-    "codex debug models --bundled") cat "${FULLSEND_TEST_CATALOG:-testdata/codex/models-bundled-0.166.0.json}"; exit 0 ;;
+    "codex debug models --bundled") cat "${FULLSEND_TEST_CATALOG:-testdata/codex/models-bundled-0.170.0.json}"; exit 0 ;;
     *"` + hookInterpreterSep + `"*) printf '%s` + hookInterpreterSep + `%s\n' /usr/bin/python3 /usr/local/bin:/usr/bin:/bin; exit 0 ;;
     # What a plain PATH lookup finds in the fleet image; Bootstrap must not use it.
     "command -v python3") echo "/sandbox/.venv/bin/python3"; exit 0 ;;
@@ -1264,6 +1264,7 @@ func TestCodexSubagentNote_V1IsUnchanged(t *testing.T) {
 		"A denied spawn is final for that role: do not retry it, execute that sub-agent " +
 		"definition yourself with the same context package, and treat the output as that " +
 		"sub-agent's result.\n\n" +
+		codexDispatchFidelityNote +
 		codexChunkedReadNote
 	assert.Equal(t, want, codexSubagentNote(roles, "v1"))
 	assert.NotContains(t, want, codexV2DispatchMarker)
@@ -1318,6 +1319,49 @@ func TestCodexSubagentNote_V2CarriesTheDispatchContract(t *testing.T) {
 	assert.True(t, strings.HasSuffix(got, codexChunkedReadNote), "the chunked-read paragraph, byte-equal")
 	assert.Equal(t, 1, strings.Count(got, "contiguous ranges of at most 200 lines"), "the chunked-read rule appears once")
 	assert.NotContains(t, got, "You are a sub-agent", "the child contract is the role file's, not the parent's")
+}
+
+// TestCodexSubagentNote_CarriesTheDispatchFidelityRules pins the rules
+// added after Codex parents departed from their skills (#9657): both
+// dispatch notes carry them once, right before the chunked-read paragraph,
+// quote the wait cap the V2 config renders, open by deferring to the
+// dispatch steps the parent's instructions give for its runtime (on V2 those
+// replace the pr-review skill's V1-shaped Codex lines, so the note must not
+// say the skill's steps stand as written), and the chunked-read paragraph
+// every note and role file shares says to read through the last line.
+func TestCodexSubagentNote_CarriesTheDispatchFidelityRules(t *testing.T) {
+	t.Parallel()
+
+	roles := []codexRole{{Name: "challenger"}, {Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
+	for _, version := range []string{"v1", "v2"} {
+		t.Run(version, func(t *testing.T) {
+			t.Parallel()
+			got := codexSubagentNote(roles, version)
+			assert.True(t, strings.HasSuffix(got, codexDispatchFidelityNote+codexChunkedReadNote),
+				"the fidelity paragraph comes right before the chunked-read paragraph")
+			assert.Equal(t, 1, strings.Count(got, codexDispatchFidelityNote), "the fidelity paragraph appears once")
+			for _, want := range []string{
+				"Follow the dispatch steps your instructions give for this runtime; this paragraph adds to them.",
+				"Run every check your instructions place before a spawn or a `wait_agent`, time-budget checks included",
+				"Pass a `timeout_ms` of at most " + strconv.Itoa(codexWaitTimeoutMaxMS) + " on every `wait_agent`",
+				"Spawn every sub-agent your instructions' selection rules pick; for each one that does not run, record it where your instructions say to record a sub-agent that did not run",
+				"add no body to a time-budget failure result",
+				"every part your instructions list for that sub-agent's prompt, flags included",
+				"where they say to pass no `agent_type`, omit it, even for a search or read-only task",
+				"do not overrule a result they tell you to keep with your own check",
+				"Read every range through the last line before acting on the file",
+			} {
+				assert.Contains(t, got, want)
+			}
+			// Neither version's note says the skill's steps stand as written:
+			// on V2 the V2 note replaces the skill's V1-shaped Codex lines.
+			for _, unwanted := range []string{"replaces none", "dispatch steps as written", "the skill's dispatch steps", "a rule near the end binds"} {
+				assert.NotContains(t, got, unwanted)
+			}
+		})
+	}
+	assert.NotContains(t, codexNoSubagentNote, codexDispatchFidelityNote, "a parent with no roster dispatches nothing")
+	assert.Contains(t, codexNoSubagentNote, "Read every range through the last line before acting on the file")
 }
 
 func TestCodexDeveloperInstructions_DelegatingAgentGetsTheDispatchNote(t *testing.T) {

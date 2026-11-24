@@ -64,6 +64,9 @@ func NewRepoPoolCFMintPreviews(pool PoolConfig) (Driver, error) {
 	if err := pool.validate(); err != nil {
 		return nil, fmt.Errorf("cfmint factory: %w", err)
 	}
+	if err := requireGitHubAccess(); err != nil {
+		return nil, fmt.Errorf("cfmint factory: %w", err)
+	}
 	plan, err := planCFMints(pool.Layout)
 	if err != nil {
 		return nil, fmt.Errorf("cfmint factory: %w", err)

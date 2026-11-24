@@ -1756,6 +1756,84 @@ func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branc
 	return c.commitFilesWithRetry(ctx, owner, repo, branch, message, files)
 }
 
+// treeEntryInfo is the blob SHA and file mode of one tree entry.
+type treeEntryInfo struct {
+	sha  string
+	mode string
+}
+
+// resolveTreePaths looks up each of paths in the tree rootSHA by listing
+// one directory level at a time along the path, for use when the
+// recursive listing of the whole tree is truncated. Each directory is
+// listed at most once. A path absent from the tree is omitted from the
+// result. When a directory listing along a path is itself truncated, it
+// returns an error rather than treat the path as absent.
+func (c *LiveClient) resolveTreePaths(ctx context.Context, owner, repo, rootSHA string, paths []string) (map[string]treeEntryInfo, error) {
+	type dirEntry struct {
+		typ  string
+		sha  string
+		mode string
+	}
+	listings := make(map[string]map[string]dirEntry) // directory path -> entry name -> entry
+	list := func(dir, sha string) (map[string]dirEntry, error) {
+		if entries, ok := listings[dir]; ok {
+			return entries, nil
+		}
+		var tree struct {
+			Tree []struct {
+				Path string `json:"path"`
+				Mode string `json:"mode"`
+				Type string `json:"type"`
+				SHA  string `json:"sha"`
+			} `json:"tree"`
+			Truncated bool `json:"truncated"`
+		}
+		if err := c.getRepoObjectWithRetry(ctx, "get tree", "decode tree",
+			fmt.Sprintf("/repos/%s/%s/git/trees/%s", owner, repo, sha), &tree); err != nil {
+			return nil, err
+		}
+		if tree.Truncated {
+			return nil, fmt.Errorf("tree listing for %q too large (truncated); cannot diff", "/"+dir)
+		}
+		entries := make(map[string]dirEntry, len(tree.Tree))
+		for _, e := range tree.Tree {
+			entries[e.Path] = dirEntry{typ: e.Type, sha: e.SHA, mode: e.Mode}
+		}
+		listings[dir] = entries
+		return entries, nil
+	}
+
+	resolved := make(map[string]treeEntryInfo, len(paths))
+	for _, p := range paths {
+		parts := strings.Split(p, "/")
+		dir, sha := "", rootSHA
+		found := true
+		for i, name := range parts[:len(parts)-1] {
+			entries, err := list(dir, sha)
+			if err != nil {
+				return nil, err
+			}
+			e, ok := entries[name]
+			if !ok || e.typ != "tree" {
+				found = false
+				break
+			}
+			dir, sha = strings.Join(parts[:i+1], "/"), e.sha
+		}
+		if !found {
+			continue
+		}
+		entries, err := list(dir, sha)
+		if err != nil {
+			return nil, err
+		}
+		if e, ok := entries[parts[len(parts)-1]]; ok {
+			resolved[p] = treeEntryInfo{sha: e.sha, mode: e.mode}
+		}
+	}
+	return resolved, nil
+}
+
 // commitFilesTo is the shared implementation for CommitFiles and
 // CommitFilesToBranch. It commits files to the specified branch using
 // the Git Trees/Blobs/Commits API.
@@ -1804,17 +1882,23 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA), &existingTree); err != nil {
 		return false, err
 	}
+	var existing map[string]treeEntryInfo
 	if existingTree.Truncated {
-		return false, fmt.Errorf("tree too large (truncated); cannot diff")
-	}
-
-	type blobInfo struct {
-		sha  string
-		mode string
-	}
-	existing := make(map[string]blobInfo, len(existingTree.Tree))
-	for _, entry := range existingTree.Tree {
-		existing[entry.Path] = blobInfo{sha: entry.SHA, mode: entry.Mode}
+		// The recursive listing is incomplete, so absence from it proves
+		// nothing. Resolve only the requested paths instead (#9672).
+		paths := make([]string, 0, len(files))
+		for _, f := range files {
+			paths = append(paths, f.Path)
+		}
+		existing, err = c.resolveTreePaths(ctx, owner, repo, baseTreeSHA, paths)
+		if err != nil {
+			return false, err
+		}
+	} else {
+		existing = make(map[string]treeEntryInfo, len(existingTree.Tree))
+		for _, entry := range existingTree.Tree {
+			existing[entry.Path] = treeEntryInfo{sha: entry.SHA, mode: entry.Mode}
+		}
 	}
 
 	// 4. Diff the requested files against the tree.
@@ -3904,6 +3988,9 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 			User    struct {
 				Login string `json:"login"`
 			} `json:"user"`
+			PerformedViaGitHubApp *struct {
+				ClientID string `json:"client_id"`
+			} `json:"performed_via_github_app"`
 			CreatedAt string `json:"created_at"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
@@ -3911,21 +3998,26 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 		}
 
 		for _, r := range raw {
+			appClientID := ""
+			if r.PerformedViaGitHubApp != nil {
+				appClientID = r.PerformedViaGitHubApp.ClientID
+			}
 			result = append(result, forge.IssueComment{
-				ID:        r.ID,
-				NodeID:    r.NodeID,
-				HTMLURL:   r.HTMLURL,
-				Body:      r.Body,
-				Author:    r.User.Login,
-				CreatedAt: r.CreatedAt,
+				ID:          r.ID,
+				NodeID:      r.NodeID,
+				HTMLURL:     r.HTMLURL,
+				Body:        r.Body,
+				Author:      r.User.Login,
+				AppClientID: appClientID,
+				CreatedAt:   r.CreatedAt,
 			})
 		}
 
 		if len(raw) < 100 {
-			break
+			return result, nil
 		}
 	}
-	return result, nil
+	return nil, fmt.Errorf("list issue comments: %w", forge.ErrPaginationLimit)
 }
 
 // GetIssueComment fetches a single comment by its numeric ID. GitHub
@@ -4160,10 +4252,12 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		} `json:"head"`
 		Base struct {
 			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
 			Repo struct {
 				FullName string `json:"full_name"`
 			} `json:"repo"`
 		} `json:"base"`
+		ChangedFiles int `json:"changed_files"`
 	}
 	if err := decodeJSON(resp, &pr); err != nil {
 		return nil, fmt.Errorf("decode pull request #%d: %w", number, err)
@@ -4172,15 +4266,17 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 	baseRepo := pr.Base.Repo.FullName
 	isFork := headRepo == "" || baseRepo == "" || !strings.EqualFold(headRepo, baseRepo)
 	return &forge.PullRequestInfo{
-		Number:   pr.Number,
-		HTMLURL:  pr.HTMLURL,
-		HeadRepo: headRepo,
-		BaseRepo: baseRepo,
-		HeadRef:  pr.Head.Ref,
-		BaseRef:  pr.Base.Ref,
-		HeadSHA:  pr.Head.SHA,
-		AuthorID: pr.User.Login,
-		IsFork:   isFork,
+		Number:       pr.Number,
+		HTMLURL:      pr.HTMLURL,
+		HeadRepo:     headRepo,
+		BaseRepo:     baseRepo,
+		HeadRef:      pr.Head.Ref,
+		BaseRef:      pr.Base.Ref,
+		HeadSHA:      pr.Head.SHA,
+		BaseSHA:      pr.Base.SHA,
+		ChangedFiles: pr.ChangedFiles,
+		AuthorID:     pr.User.Login,
+		IsFork:       isFork,
 	}, nil
 }
 
@@ -4497,6 +4593,7 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 			State       string `json:"state"`
 			Body        string `json:"body"`
 			SubmittedAt string `json:"submitted_at"`
+			CommitID    string `json:"commit_id"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding pull request reviews page %d: %w", page, err)
@@ -4510,14 +4607,15 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 				State:       r.State,
 				Body:        r.Body,
 				SubmittedAt: r.SubmittedAt,
+				CommitID:    r.CommitID,
 			})
 		}
 
 		if len(raw) < 100 {
-			break
+			return result, nil
 		}
 	}
-	return result, nil
+	return nil, fmt.Errorf("list pull request reviews: %w", forge.ErrPaginationLimit)
 }
 
 // ListPullRequestReviewThreads returns the pull request's review threads and

@@ -264,6 +264,24 @@ See [How fullsend authenticates](guides/user/how-fullsend-authenticates.md).
 
 ## E
 
+### Entity
+
+The source-neutral term for the thing an agent works on, whatever the forge or
+tracker calls it. An entity has one of three kinds:
+
+- **`work_item`** — an issue: a GitHub or GitLab issue, or a Jira issue.
+- **`change_proposal`** — a GitHub pull request or a GitLab merge request.
+- **`conversation`** — a discussion thread, such as a GitHub Discussion.
+
+Today, harness [trigger](#trigger) expressions see the entity as the
+`event.entity` field of the normalized event: the item that the event
+happened to. [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md) plans a
+separate top-level `entity` variable, so that a harness can be evaluated
+against an entity even when no event started the run. No dispatch or poll path
+binds that variable yet.
+See [NormalizedEvent v1 § Contract](normative/normalized-event/v1/README.md#contract)
+and [Normalized entity v1](normative/normalized-entity/v1/README.md).
+
 ### Entry Point
 
 The deterministic, non-AI layer that receives forge events and decides which

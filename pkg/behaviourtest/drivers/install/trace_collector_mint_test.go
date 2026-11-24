@@ -185,6 +185,10 @@ func (r *tearDownRecorder) Teardown(ctx context.Context) error {
 // and fake clients.
 func testPoolConfig(t *testing.T, layout PoolLayout) PoolConfig {
 	t.Helper()
+	// The GitHub pool factories require a GitHub token (see
+	// requireGitHubAccess); give them one so factory tests do not depend
+	// on the developer's gh login.
+	t.Setenv("GH_TOKEN", "test-token")
 	return PoolConfig{
 		Layout:    layout,
 		TokenFor:  func(_ context.Context, org string) (string, error) { return "tok-" + org, nil },

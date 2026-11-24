@@ -84,8 +84,8 @@ const codexAuthTimeoutMS = 5000
 //
 // `[projects."<repo>"] trust_level = "untrusted"` pins the target repo's trust
 // decision, so its own `.codex/` layer (settings, hooks, instructions) never
-// loads. It has to be stated: codex records a trust level for a git checkout
-// it starts in when none is set, and "none" is not the same as untrusted.
+// loads. It has to be stated: "none" is not the same as untrusted, and codex
+// skips a project's own AGENTS.md only for an explicit untrusted entry.
 // This is the codex equivalent of pi's defaultProjectTrust "never".
 //
 // Deliberately absent:
@@ -119,24 +119,27 @@ const codexAuthTimeoutMS = 5000
 // children and the run-level child model. `[features] multi_agent = false`
 // is not enough to turn the tools off: the model's catalog entry overrides
 // it (verified on 0.157.0, 0.158.0 and 0.159.3; the resolution order is
-// unchanged at 0.166.0).
+// unchanged through 0.170.0).
 //
 // The `[features.multi_agent_v2]` table decides the collaboration protocol
 // of the run and of every child, whatever its model: codex checks this
 // feature before `[agents] enabled`. When it is on, the root gets the V2
-// tools whatever its model (verified on 0.159.3, unchanged at 0.166.0) and
+// tools whatever its model (verified on 0.159.3, unchanged through 0.170.0) and
 // a child gets them only when its own model selects V2 in the catalog
-// (collab_tools_enabled, 0.166.0). `enabled = false` is codex's default,
+// (collab_tools_enabled, 0.170.0). `enabled = false` is codex's default,
 // the same as the scalar `[features] multi_agent_v2 = false`, stated so
 // that the `[agents]` table decides. `enabled = true`, for an admitted V2
 // parent with a roster (ADR 0159 decision 1), brings
 // `disable_direct_message = true` (no send_message or followup_task) and
 // `expose_spawn_agent_model_overrides = false` (no model or
-// reasoning_effort in the spawn schema) with it, and only then: the table
-// is `deny_unknown_fields` (MultiAgentV2ConfigToml), so a bump that drops
-// either key would otherwise refuse every run's config, V1 and
-// single-context ones included. `max_concurrent_threads_per_session` is
-// never rendered here: codex derives the V2 cap from the `[agents]` key
+// reasoning_effort in the spawn schema) with it, and `max_wait_timeout_ms`
+// (codexWaitTimeoutMaxMS, #9657), which sets the max in the V2 wait's schema
+// and makes the V2 wait refuse a longer `timeout_ms`, and only then: the
+// table is `deny_unknown_fields` (MultiAgentV2ConfigToml), so a bump that
+// drops any of the keys would otherwise refuse every run's config, V1 and
+// single-context ones included. V1 has no such setting (its wait limits are
+// constants in codex), so on V1 the dispatch note's rule is the only one.
+// `max_concurrent_threads_per_session` is never rendered here: codex derives the V2 cap from the `[agents]` key
 // plus one for the root, so `[agents]` at 4 already yields four children.
 //
 // `[model_providers.fullsend-gateway]` is rendered only when an
@@ -178,6 +181,7 @@ plugins = false
 [features.multi_agent_v2]
 enabled = {{ .MultiAgentV2 }}{{ if .MultiAgentV2 }}
 disable_direct_message = true
+max_wait_timeout_ms = {{ .WaitTimeoutMaxMS }}
 expose_spawn_agent_model_overrides = false{{ end }}
 
 {{ .AgentsBlock }}
@@ -222,9 +226,12 @@ type codexConfigData struct {
 	ProjectKey            string
 	// AgentsBlock arrives rendered by codexAgentsBlock, its strings quoted.
 	AgentsBlock string
-	// MultiAgentV2 turns the collaboration V2 table on, with its two
+	// MultiAgentV2 turns the collaboration V2 table on, with its
 	// restriction keys; false renders the table at codex's default.
-	MultiAgentV2      bool
+	MultiAgentV2 bool
+	// WaitTimeoutMaxMS is the V2 wait's `max_wait_timeout_ms`, rendered only
+	// when MultiAgentV2 is on (codexWaitTimeoutMaxMS).
+	WaitTimeoutMaxMS  int
 	RefreshIntervalMS int
 	TimeoutMS         int
 	// GatewayProviderID, GatewayBaseURL and GatewayAuthCommand render the
@@ -262,6 +269,7 @@ func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL
 		ProjectKey:            codexTOMLKey(repoDir),
 		AgentsBlock:           codexAgentsBlock(configDir, roles, defaultSubagentModel, childEffort),
 		MultiAgentV2:          multiAgentV2,
+		WaitTimeoutMaxMS:      codexWaitTimeoutMaxMS,
 		RefreshIntervalMS:     codexAuthRefreshIntervalMS,
 		TimeoutMS:             codexAuthTimeoutMS,
 	}
@@ -503,7 +511,7 @@ const codexSpawnGuardMode = "SpawnGuard"
 // result, before the parent is notified; a block (exit 2 with a reason)
 // makes the child continue with the reason as its prompt instead of
 // finishing (codex-rs/hooks/src/events/stop.rs, core/src/session/turn.rs,
-// rust-v0.166.0).
+// rust-v0.170.0).
 const codexSubagentStopEvent = "SubagentStop"
 
 // codexWithheldNotice is the adapter's WITHHELD_NOTICE: a SubagentStop block

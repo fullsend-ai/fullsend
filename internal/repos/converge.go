@@ -407,12 +407,13 @@ var gitlabMaskableRe = regexp.MustCompile(`^[A-Za-z0-9_+=/@:.~-]{8,}$`)
 // inference.project the effective configuration declares; cfg carries the
 // repository's effective inputs, see withVertexInputs), --openai-api-key
 // for openai-api-key. For openai-wif, the GCP project supplies the
-// optional GCP pair used by Vertex sub-agents.
+// optional GCP pair used by Vertex sub-agents. A gateway-only repository
+// (empty auth) consumes no credential inputs.
 func inferenceInputsSupplied(cfg ConvergeConfig, auth string) bool {
 	if auth == InferenceAuthOpenAIAPIKey {
 		return cfg.OpenAIAPIKey != ""
 	}
-	return cfg.InferenceProject != ""
+	return usesVertexCredentials(auth) && cfg.InferenceProject != ""
 }
 
 // inferenceInputFlags names the inputs that supply the credentials for
@@ -782,6 +783,9 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	if err := validateConcurrency(cfg.MaxConcurrency); err != nil {
 		return nil, err
 	}
+	// ADR 0175: the GitLab restriction checks read the saved
+	// allow_insecure_pipeline_variables opt-in from the context.
+	ctx = WithGitLabPipelineVarOptIns(ctx, cfg.Manifest)
 
 	if progress == nil {
 		progress = func(_, _, _ string) {}
@@ -956,18 +960,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			defer func() { <-sem }()
 
 			resolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
-			// A missing inference.auth selection is a configuration error
-			// for this repository only; report it before any forge call so
-			// nothing is probed or written for it.
-			if authErr := resolved.RequireInferenceAuth(); authErr != nil {
-				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: authErr}
-				return
-			}
 			// Load the declared preset before any forge call so a hash
 			// mismatch or invalid source fails the repo without applying
 			// changes, and so the effective infrastructure values (mint
-			// URL, region, Vertex inputs) come from the same layers that
-			// are committed (#8220).
+			// URL, region, Vertex inputs) and any inference.gateway route
+			// come from the same layers that are committed (#8220).
 			var presetData []byte
 			if resolved.Config != "" {
 				data, loadErr := store.Load(ctx, resolved.Config, resolved.ConfigHash)
@@ -977,6 +974,14 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				}
 				presetData = data
 				resolved.ProposedBase = data
+			}
+			// A missing inference.auth selection (without an
+			// inference.gateway route) is a configuration error for this
+			// repository only; report it before any forge call so nothing
+			// is probed or written for it.
+			if authErr := resolved.RequireInferenceAuth(); authErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: authErr}
+				return
 			}
 			if infraErr := resolved.applyEffectiveInfrastructure(); infraErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: infraErr}
@@ -1040,7 +1045,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
 				return
 			}
-			probed, probeErr := ProbeComponentsForAuth(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, resolved.InferenceAuth, fc, expectedVars)
+			probed, probeErr := ProbeComponentsForConfig(ctx, fc.Client, resolved, fc, expectedVars)
 			if probeErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: probeErr}
 				return
@@ -1335,6 +1340,42 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 					d.repo.Owner, d.repo.Repo, auth,
 					strings.Join(missingSecretNames(d.components, auth), ", "),
 					inferenceInputFlags(auth)),
+			}
+			continue
+		}
+
+		// A gateway-only repository in the api-key mode authenticates with
+		// FULLSEND_INFERENCE_GATEWAY_API_KEY, which no flag supplies and
+		// setup never writes: the repository admin sets it. Runs fail
+		// without it, so report it before any writes.
+		if d.resolved.requiresGatewayAPIKey() && !hasComponent(d.components, "secret:"+forge.SecretInferenceGatewayAPIKey) {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("%s/%s routes inference through inference.gateway with auth %s: missing %s; install does not write it, so set it as a repository secret (a masked CI/CD variable on GitLab)",
+					d.repo.Owner, d.repo.Repo, config.GatewayAuthAPIKey, forge.SecretInferenceGatewayAPIKey),
+			}
+			continue
+		}
+
+		// The admin-set gateway key must also be usable by jobs; an
+		// existing but unusable variable (file-type, unmasked, unprotected)
+		// is rejected before any writes, without naming the value.
+		gatewayKeyDefect := ""
+		if d.resolved.requiresGatewayAPIKey() {
+			for _, c := range d.components {
+				if c.Name == "secret:"+forge.SecretInferenceGatewayAPIKey && c.Present && !c.Match {
+					gatewayKeyDefect = c.Actual
+					break
+				}
+			}
+		}
+		if gatewayKeyDefect != "" {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("%s/%s: the existing %s variable is not a masked, protected environment variable available to all environments (%s); fix it before installing",
+					d.repo.Owner, d.repo.Repo, forge.SecretInferenceGatewayAPIKey, gatewayKeyDefect),
 			}
 			continue
 		}
@@ -3479,6 +3520,12 @@ func convergeScaffoldFiles(ctx context.Context,
 // isUnstampedInstallRef). When neither fullsend_ref nor a release ref is
 // available, the expected content is then still rendered, at
 // config.DefaultUpstreamRef, exactly as that install rendered it.
+//
+// targetTemplates reports whether the expected files were rendered from
+// templates that match the target ref: the remote fetch at the pinned ref
+// succeeded, the install is vendored, or no explicit pin was set. It is
+// false when a GitHub fetch failed and the running binary's embedded
+// templates were used instead.
 func convergeContentDriftFiles(ctx context.Context,
 	resolved ResolvedConfig,
 	cfg ConvergeConfig,
@@ -3486,10 +3533,10 @@ func convergeContentDriftFiles(ctx context.Context,
 	coveredPaths map[string]bool,
 	dcfg DriftConfig,
 	unstampedInstall bool,
-	progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
+	progress ProgressFunc) (files []forge.TreeFile, actions []ComponentAction, targetTemplates bool) {
 
 	repoFullName := resolved.Owner + "/" + resolved.Repo
-	var actions []ComponentAction
+	targetTemplates = true
 
 	targetRef := resolved.FullsendRef
 	if targetRef == "" && cfg.UpstreamRef == "" && !unstampedInstall {
@@ -3500,7 +3547,7 @@ func convergeContentDriftFiles(ctx context.Context,
 		progress(repoFullName, "content-drift",
 			fmt.Sprintf("scaffold content drift not checked: %s.fullsend_ref is not set and this build has no release ref; "+
 				"set %s.fullsend_ref to converge template changes such as runner tags", resolved.Forge, resolved.Forge))
-		return nil, actions
+		return nil, actions, targetTemplates
 	}
 
 	rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
@@ -3527,11 +3574,20 @@ func convergeContentDriftFiles(ctx context.Context,
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
 		} else {
 			if resolved.Forge == ForgeGitLab {
-				return nil, []ComponentAction{{Component: "scaffold", Action: "error", Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", fetchErr)}}
+				return nil, []ComponentAction{{Component: "scaffold", Action: "error", Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", fetchErr)}}, false
 			}
+			targetTemplates = false
 			progress(repoFullName, "content-drift",
 				fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
 		}
+	}
+
+	// An explicit pin renders the target ref's templates only when they
+	// were fetched (or the install is vendored). Without a resolver the
+	// fetch never ran and the embedded templates are used, as after a
+	// failed fetch.
+	if manifestRef != "" && !installCfg.VendorBinary && installCfg.PrebuiltScaffoldFiles == nil {
+		targetTemplates = false
 	}
 
 	expectedFiles, buildErr := BuildScaffoldFiles(installCfg)
@@ -3541,7 +3597,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "error",
 			Detail:    fmt.Sprintf("failed to build expected scaffold for content drift check: %v", buildErr),
 		})
-		return nil, actions
+		return nil, actions, targetTemplates
 	}
 
 	// Content drift detection — shared between dry-run and live paths.
@@ -3557,7 +3613,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "error",
 			Detail:    fmt.Sprintf("content drift check failed: %v", driftErr),
 		})
-		return nil, actions
+		return nil, actions, targetTemplates
 	}
 
 	var repairFiles []forge.TreeFile
@@ -3586,13 +3642,9 @@ func convergeContentDriftFiles(ctx context.Context,
 		}
 	}
 
-	if cfg.DryRun && len(actions) > 0 {
-		progress(repoFullName, "dry-run",
-			fmt.Sprintf("Would repair %d files with content drift", len(actions)))
-	} else if len(repairFiles) > 0 {
-		progress(repoFullName, "repair",
-			fmt.Sprintf("Repairing %d files with content drift", len(repairFiles)))
-	}
+	// The caller reports the repair count after it filters the repairs
+	// (collectConvergeScaffoldFiles), so the count matches what is
+	// committed or previewed.
 
 	// Orphan file detection: check for managed scaffold files that
 	// exist on the forge but are no longer produced by the current
@@ -3612,7 +3664,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "error",
 			Detail:    fmt.Sprintf("orphan file check failed: %v", orphanErr),
 		})
-		return repairFiles, actions
+		return repairFiles, actions, targetTemplates
 	}
 	for _, o := range orphanFiles {
 		if coveredPaths[o.Path] {
@@ -3641,7 +3693,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "error",
 			Detail:    fmt.Sprintf("orphan variable check failed: %v", orphanVarErr),
 		})
-		return repairFiles, actions
+		return repairFiles, actions, targetTemplates
 	}
 	for _, o := range orphanVars {
 		actions = append(actions, ComponentAction{
@@ -3653,7 +3705,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			fmt.Sprintf("Orphan variable %s (not in managed set)", o.Name))
 	}
 
-	return repairFiles, actions
+	return repairFiles, actions, targetTemplates
 }
 
 // resolvedRef holds the result of resolving a manifest's fullsend_ref
@@ -3799,6 +3851,71 @@ func convergeRepoCredentials(ctx context.Context, d convergeDiscovery, wifProvid
 	return actions, nil
 }
 
+// supersedePinOnlyRefFiles merges content-drift repairs into files, the
+// scaffold files already queued. A repair for a pin-only ref path (see
+// collectConvergeScaffoldFiles) replaces that queued file in place, so one
+// run delivers both the new pin and any template change shipped with it,
+// such as a changed shim trigger (#9714). The replacement keeps the pin the
+// ref upgrade wrote (withQueuedPin), so the repository's pinning style
+// (SHA with tag comment, plain tag or branch) does not change. A shim
+// repair rendered at the other workflow extension (.yml vs .yaml) replaces
+// the queued shim at its installed path instead of adding a second shim.
+// Other repairs are appended.
+func supersedePinOnlyRefFiles(files, driftFiles []forge.TreeFile, pinOnly map[string]bool, fc ForgeConfig) []forge.TreeFile {
+	workflowPaths := fc.WorkflowPaths
+	for _, df := range driftFiles {
+		idx := slices.IndexFunc(files, func(f forge.TreeFile) bool {
+			if !pinOnly[f.Path] {
+				return false
+			}
+			return f.Path == df.Path ||
+				(slices.Contains(workflowPaths, f.Path) && slices.Contains(workflowPaths, df.Path))
+		})
+		if idx < 0 {
+			files = append(files, df)
+			continue
+		}
+		files[idx].Content = withQueuedPin(df.Content, files[idx].Content, fc)
+	}
+	return files
+}
+
+// countUpdates counts the update actions in actions.
+func countUpdates(actions []ComponentAction) int {
+	n := 0
+	for _, a := range actions {
+		if a.Action == "update" {
+			n++
+		}
+	}
+	return n
+}
+
+// withoutRefPathRepairs drops the content-drift repairs, and their update
+// actions, for the paths skip selects.
+func withoutRefPathRepairs(files []forge.TreeFile, actions []ComponentAction, skip func(string) bool) ([]forge.TreeFile, []ComponentAction) {
+	files = slices.DeleteFunc(files, func(f forge.TreeFile) bool { return skip(f.Path) })
+	actions = slices.DeleteFunc(actions, func(a ComponentAction) bool { return a.Action == "update" && skip(a.Component) })
+	return files, actions
+}
+
+// withQueuedPin returns full with every fullsend workflow pin replaced by
+// the pin in queued, the pin-only rewrite convergeRefFiles produced. The
+// content-drift template always renders a semver target as "<sha>  # tag",
+// while the ref upgrade keeps a repository's own style (a plain tag stays
+// a plain tag). When queued has no pin, full is returned unchanged.
+func withQueuedPin(full, queued []byte, fc ForgeConfig) []byte {
+	if fc.ShimRefPattern == nil {
+		return full
+	}
+	m := fc.ShimRefPattern.FindSubmatchIndex(queued)
+	if len(m) < 4 || m[3] < 0 {
+		return full
+	}
+	pin := strings.ReplaceAll(string(queued[m[3]:m[1]]), "$", "$$")
+	return []byte(fc.ShimRefPattern.ReplaceAllString(string(full), "${1}"+pin))
+}
+
 // collectConvergeScaffoldFiles plans atomic scaffold and configuration delivery.
 // It returns the planned files and actions without writing credentials.
 func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg ConvergeConfig, refResolver *RefResolver, progress ProgressFunc) ([]forge.TreeFile, []ComponentAction, error) {
@@ -3820,11 +3937,10 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 	}
 
 	// A ref upgrade only rewrites the shim's version marker. When the
-	// installed GitHub shim cannot forward FULLSEND_OPENAI_API_KEY, queueing
-	// that marker-only rewrite would also exclude the shim from content-drift
-	// repair and deliver a shim that still cannot use the selected credential.
-	// Leave the shim to content-drift repair, which renders the full template
-	// at the target ref.
+	// installed GitHub shim cannot forward FULLSEND_OPENAI_API_KEY, that
+	// marker-only rewrite would deliver a shim that still cannot use the
+	// selected credential. Leave the shim to content-drift repair, which
+	// renders the full template at the target ref.
 	refFiles, legacyErr := withoutLegacyOpenAIConsumer(ctx, resolved, refFiles)
 	if legacyErr != nil {
 		return allScaffoldFiles, actions, legacyErr
@@ -3879,8 +3995,28 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 	// structure changed between releases while the ref stayed the
 	// same). This is the gap that caused #6576: converge only checked
 	// presence, not content, so stale-but-present files were skipped.
-	contentDriftFiles, contentDriftActions := convergeContentDriftFiles(
-		ctx, resolved, cfg, refResolver, refFileSet,
+	//
+	// On GitHub every ref file is a pin-only rewrite (see
+	// convergeRefFiles), so content drift still checks those paths and
+	// may supersede them with the full template at the target ref. The
+	// dry run queues no ref files, so this also gives both runs the same
+	// skip set (#9714).
+	driftCoveredPaths := refFileSet
+	var pinOnlyPaths map[string]bool
+	if resolved.Forge != ForgeGitLab && len(refFiles) > 0 {
+		pinOnlyPaths = make(map[string]bool, len(refFiles))
+		for _, f := range refFiles {
+			pinOnlyPaths[f.Path] = true
+		}
+		driftCoveredPaths = make(map[string]bool, len(refFileSet))
+		for p := range refFileSet {
+			if !pinOnlyPaths[p] {
+				driftCoveredPaths[p] = true
+			}
+		}
+	}
+	contentDriftFiles, contentDriftActions, targetTemplates := convergeContentDriftFiles(
+		ctx, resolved, cfg, refResolver, driftCoveredPaths,
 		DriftConfig{
 			ReviewAppClientID: d.reviewClientID,
 			AgentRunnerTags:   gitlabAgentRunnerTags(cfg.Manifest),
@@ -3889,6 +4025,39 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 		unstampedWorkflow(resolved.Forge, d.components),
 		progress,
 	)
+	// The drift templates replace the shim and thin callers on a ref
+	// upgrade only when they match the target ref. After a failed remote
+	// fetch they are the running binary's embedded templates, which can
+	// call inputs the target release lacks: keep the pin-only rewrite and
+	// leave the template change to the next run. Filtering here, before
+	// the actions are recorded, keeps the dry run and the live run in step.
+	if !targetTemplates && resolved.Forge != ForgeGitLab && slices.ContainsFunc(refActions, func(a ComponentAction) bool {
+		return a.Component == "ref" && a.Action == "upgrade"
+	}) {
+		// Both runs drop the repairs for every ref-upgrade path: the shim
+		// at either workflow extension (the template always renders
+		// fullsend.yaml, even for an installed fullsend.yml) and the thin
+		// callers. A legacy shim that withoutLegacyOpenAIConsumer took out
+		// of the queue also waits for a run whose fetch succeeds, rather
+		// than taking another release's template now. Using one rule in
+		// both runs keeps the dry run and the live run in step.
+		skip := func(p string) bool {
+			return slices.Contains(resolved.ForgeConfig.WorkflowPaths, p) || slices.Contains(scaffold.PerRepoThinCallerPaths(), p)
+		}
+		before := len(contentDriftActions)
+		contentDriftFiles, contentDriftActions = withoutRefPathRepairs(contentDriftFiles, contentDriftActions, skip)
+		if len(contentDriftActions) < before {
+			progress(resolved.Owner+"/"+resolved.Repo, "content-drift",
+				"template fetch at the target ref failed: delivering the pin upgrade only; run install again to deliver template changes")
+		}
+	}
+	if n := countUpdates(contentDriftActions); n > 0 {
+		if cfg.DryRun {
+			progress(resolved.Owner+"/"+resolved.Repo, "dry-run", fmt.Sprintf("Would repair %d files with content drift", n))
+		} else {
+			progress(resolved.Owner+"/"+resolved.Repo, "repair", fmt.Sprintf("Repairing %d files with content drift", n))
+		}
+	}
 	actions = append(actions, contentDriftActions...)
 
 	var contentErrors []string
@@ -3900,7 +4069,8 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 	if len(contentErrors) > 0 {
 		return allScaffoldFiles, actions, fmt.Errorf("convergence errors: %s", strings.Join(contentErrors, "; "))
 	}
-	allScaffoldFiles = append(allScaffoldFiles, contentDriftFiles...)
+	allScaffoldFiles = supersedePinOnlyRefFiles(allScaffoldFiles, contentDriftFiles,
+		pinOnlyPaths, resolved.ForgeConfig)
 
 	// Root input migration uses the wrapper that will actually be committed,
 	// including ref upgrades, repairs and remote pinned templates.

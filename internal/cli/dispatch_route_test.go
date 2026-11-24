@@ -432,7 +432,10 @@ func TestReviewRouteAccepts(t *testing.T) {
 		event string
 		want  bool
 	}{
-		"PR opened":           {routePROpened, true},
+		"PR opened": {routePROpened, true},
+		"PR opened (pull_request)": {
+			strings.Replace(routePROpened, `"raw_type": "pull_request_target"`, `"raw_type": "pull_request"`, 1), true,
+		},
 		"comment on a PR":     {routeReviewComment, true},
 		"comment on an issue": {routeIssueReviewComment, false},
 	}
@@ -846,6 +849,22 @@ func TestRouteBuiltinAgent_HarnessRoleThreshold(t *testing.T) {
 		assert.Equal(t, routeRun, got.Decision, "reason: %s", got.Reason)
 	})
 
+	t.Run("a harness: block's role sets the threshold", func(t *testing.T) {
+		// The block composes for dispatch too, and role is a field it may set.
+		client, policy, agentsURL := routeAgentsRepo(t, routeTestHarnessBody)
+		dir := writeRouteFixture(t, routeFixture{
+			allowlist: []string{agentsURL},
+			agents:    []config.AgentEntry{{Name: "review", Trigger: commentOnly, Harness: harnessBlocks(t, "role: code")[0]}},
+		})
+		got, err := routeBuiltinAgent(context.Background(), routeOpts{
+			agent: "review", configDir: dir, event: routeEvent(t, routeTriageReviewComment),
+			forgeClient: client, fetchPolicy: policy, printer: ui.New(io.Discard),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, routeSkip, got.Decision)
+		assert.Equal(t, "actor not authorized", got.Reason)
+	})
+
 	t.Run("triage user is denied a sourced harness with a write role", func(t *testing.T) {
 		dir := writeRouteFixture(t, sourcedReview(config.AgentEntry{Trigger: commentOnly}, map[string]string{
 			"harness/review.yaml": strings.Replace(routeTestHarnessBody, "role: review", "role: code", 1),
@@ -977,6 +996,9 @@ func TestRouteBuiltinAgent_ErrorsAndEvaluationFailures(t *testing.T) {
 		"retro": {
 			"write actor":  routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroWriter, "pull_request_target", "closed"),
 			"triage actor": routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroTriager, "pull_request_target", "closed"),
+			// Shims on the pull_request trigger send pull_request closes.
+			"write actor (pull_request)":  routeRetroEvent(routeRetroPR, routeRetroMerged, routeRetroWriter, "pull_request", "closed"),
+			"triage actor (pull_request)": routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroTriager, "pull_request", "closed"),
 		},
 		"triage": {
 			"write actor":  routeIssueTriageComment,

@@ -106,6 +106,15 @@ fails.
   a leaked key works until the operator revokes it. Use `oidc` whenever the
   gateway supports it.
 
+When you install with `fullsend repos install`, a complete block replaces
+`inference.auth`. Gateway-only `oidc` is GitHub only; on GitLab use
+`auth: api-key`. In the `api-key` mode install does not write the key and
+checks that `FULLSEND_INFERENCE_GATEWAY_API_KEY` exists before changing
+anything (`repos status` reports its absence as drift). On GitLab it must be
+a masked, protected CI/CD variable available to all environments, not a
+file-type variable. See
+[Inference gateway route](../../cli/repos.md#inference-gateway-route).
+
 By default the key travels as `Authorization: Bearer`. If your operator says the gateway reads the
 key from `x-api-key` on its Messages API, add `messages_auth_header: x-api-key` to an `api-key`
 block. Claude Code and pi `anthropic-messages` models then send it as `x-api-key`, and every other
@@ -323,6 +332,7 @@ For pi, the harness-plugin path for local runs is in
 |---|---|---|
 | `inference.gateway is partial: missing audience (the oidc mode needs url and audience)`, or from `status`: `inference.gateway is partially configured: missing audience` | The block, after its layers merge, lacks `url`, or lacks `audience` in the `oidc` mode. | Set the missing field with `fullsend github setup --inference-gateway-url` or `--inference-gateway-audience`, or remove the block. |
 | `pi gateway/ models need a model list: set inference.gateway.models or inference.gateway.models_file (pi runs offline and cannot discover gateway models)` | An agent uses a `gateway/` model, and the block has no model list. | List the models with `--inference-gateway-model id=api` or `--inference-gateway-models-file`. |
+| From `repos install`: `missing FULLSEND_INFERENCE_GATEWAY_API_KEY`, or the existing variable is not a masked, protected environment variable | A gateway-only `api-key` repo has no usable gateway key (on GitLab: absent, file-type, unmasked, unprotected, or environment-scoped). | Set the repository secret (a masked, protected CI/CD variable on GitLab) before installing. |
 | `inference.gateway.auth is "api-key" but FULLSEND_INFERENCE_GATEWAY_API_KEY is not set; set it as a forge secret (or in the local environment)` | The block is in the `api-key` mode and the run has no key. | Set the repository secret as shown in [Choosing `auth`](#choosing-auth), or export the variable for a local run. |
 | From `status`: `Gateway refused the assertion (HTTP 401)` or `(HTTP 403)`; in a run, the model call fails with the gateway's `401` or `403` | The gateway did not accept the credential: a different audience, a repository not on its allowed list, or a revoked key. | Check the audience and allowed repositories with the operator. A `401` body only says `authentication failed`; the operator finds the reason in the gateway's access log, as the operator guide's [troubleshooting](../infrastructure/inference-gateway-operator.md#troubleshooting) shows. |
 | Model calls fail just after the host running the run wakes from sleep (a laptop or a suspended VM), in the `oidc` mode: the gateway's `401` on Claude Code, or an OpenShell `500` on pi and codex | The gateway token expired while the host slept. The refresher checks the wall clock every 30 seconds and refreshes on the first check after wake if the token is due or already expired; requests sent before that check can still fail. Only Claude Code's placeholder carries a run deadline past the token's expiry, so a stale token reaches the gateway and gets its `401`; on pi and codex the placeholder expires with the token and OpenShell answers `500`. | None if the run log then shows `Inference gateway token refreshed for … (next expiry` or `Inference gateway token handed off for …`. If it shows the refresh gave up or stopped, re-run. |

@@ -671,6 +671,50 @@ func TestAfterScenario_NotDispatchedPlusDeallocationFailure(t *testing.T) {
 	assert.Equal(t, 2, lister.lists, "one dispatch listing and one failure-log listing, not repeated for the teardown failure")
 }
 
+// TestAfterScenario_FreshRepoNoRunRecordedAsInfrastructure checks that
+// the hook records the error CollectFailureLogs returns (#9779): a
+// not-dispatched failure whose workflow never ran in a repo installed
+// fresh for the scenario is infrastructure, and the same failure on a
+// repo that was not freshly installed stays scenario.
+func TestAfterScenario_FreshRepoNoRunRecordedAsInfrastructure(t *testing.T) {
+	for _, tc := range []struct {
+		fresh bool
+		want  behaviourfail.Class
+	}{
+		{fresh: true, want: behaviourfail.Infrastructure},
+		{fresh: false, want: behaviourfail.Scenario},
+	} {
+		t.Run(fmt.Sprintf("fresh=%v", tc.fresh), func(t *testing.T) {
+			// A full grace wait, kept short; the listing never has a run.
+			steps.ResetDispatchGraceForTest(t, time.Millisecond)
+			t.Setenv("BEHAVIOUR_ARTIFACT_DIR", t.TempDir())
+
+			rec := &behaviourfail.Recorder{}
+			var logs []string
+			w := &world.World{
+				LeasedRepoName: "test-repo-04", Org: "halfsend-18", RepoName: "test-repo-04",
+				RepoFreshlyInstalled: tc.fresh, CI: &countingListerCI{},
+				ScenarioName: "OWNERS approver is not authorized when not opted in",
+				ScenarioURI:  "features/dispatch/owners-auth.feature",
+				Failures:     rec, Logf: captureLogf(&logs),
+			}
+			ctx := world.WithWorld(context.Background(), w)
+
+			scenarioErr := fmt.Errorf("waiting for issue-open workflow: %w",
+				&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Event: "issues"})
+			_, err := afterScenario(ctx, nil, scenarioErr)
+			require.NoError(t, err)
+
+			record := requireRecordedFailure(t, rec, tc.want, w.ScenarioName)
+			assert.Equal(t, "features/dispatch/owners-auth.feature", record.Feature)
+			assert.Contains(t, record.Message, "was not dispatched")
+			lines := failureClassLines(logs)
+			require.Len(t, lines, 1)
+			assert.Contains(t, lines[0], string(tc.want))
+		})
+	}
+}
+
 func TestAfterScenario_NoFailureSummaryForPassingOrSkippedScenario(t *testing.T) {
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
@@ -962,13 +1006,14 @@ func TestAfterScenario_DeallocatesLeaseWithItsOrg(t *testing.T) {
 }
 
 func TestResetScenarioWorld_ClearsLease(t *testing.T) {
-	w := &world.World{LeasedRepoName: "test-repo-01", LeasedRepoOrg: "halfsend-02", MintURL: "https://mint"}
+	w := &world.World{LeasedRepoName: "test-repo-01", LeasedRepoOrg: "halfsend-02", MintURL: "https://mint", RepoFreshlyInstalled: true}
 	w.LeaseOwned = func(context.Context) (bool, error) { return true, nil }
 	resetScenarioWorld(w)
 	assert.Nil(t, w.LeaseOwned)
 	assert.Empty(t, w.LeasedRepoName)
 	assert.Empty(t, w.LeasedRepoOrg)
 	assert.Empty(t, w.MintURL)
+	assert.False(t, w.RepoFreshlyInstalled)
 }
 
 // recordingSCM records every mutation scenario cleanup makes. The other

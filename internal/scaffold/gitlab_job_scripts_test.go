@@ -461,12 +461,14 @@ func TestInstallFullsendCLIScript_DebugTraceAborts(t *testing.T) {
 }
 
 // runInstallFullsendCLIScript renders install-fullsend-cli.sh with version and
-// sources it with stub git, go, curl, and fullsend binaries first on PATH. The
-// go stub records the GOTOOLCHAIN and GOFLAGS it sees and exits goExit. The
-// fullsend stub reports FULLSEND_STUB_VERSION for --version when that is set,
-// and fails when FULLSEND_STUB_FAIL is set. The curl stub answers the latest
-// release lookup with CURL_STUB_LATEST_TAG when that is set; every other
-// request fails as offline.
+// sources it with stub git, go, curl, fullsend, and uname binaries first on
+// PATH. The go stub records the GOTOOLCHAIN and GOFLAGS it sees and exits
+// goExit. The fullsend stub reports FULLSEND_STUB_VERSION for --version when
+// that is set, and fails when FULLSEND_STUB_FAIL is set. The curl stub answers
+// the latest release lookup with CURL_STUB_LATEST_TAG when that is set; every
+// other request fails as offline. The uname stub prints $UNAME_M_STUB (default
+// x86_64) so the release path does not depend on the host architecture (macOS
+// reports arm64, which the Linux-runner script rejects).
 func runInstallFullsendCLIScript(t *testing.T, version string, goExit int, env ...string) (out, goEnv string, err error) {
 	t.Helper()
 	root := t.TempDir()
@@ -486,6 +488,7 @@ func runInstallFullsendCLIScript(t *testing.T, version string, goExit int, env .
 		"fullsend": "#!/bin/sh\nif [ -n \"${FULLSEND_STUB_FAIL:-}\" ]; then exit 127; fi\n" +
 			"if [ \"$1\" = \"--version\" ] && [ -n \"${FULLSEND_STUB_VERSION:-}\" ]; then echo \"fullsend version $FULLSEND_STUB_VERSION\"; exit 0; fi\n" +
 			"echo 'fullsend stub'\n",
+		"uname": "#!/bin/sh\necho \"${UNAME_M_STUB:-x86_64}\"\n",
 		"go": "#!/bin/sh\nprintf 'GOTOOLCHAIN=%s GOFLAGS=%s\\n' \"${GOTOOLCHAIN-unset}\" \"${GOFLAGS-unset}\" > \"$GO_ENV_LOG\"\n" +
 			"exit " + strconv.Itoa(goExit) + "\n",
 	}
@@ -612,6 +615,20 @@ func TestInstallFullsendCLIScript_SourcePinIgnoresImageVersion(t *testing.T) {
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	assert.NotContains(t, out, "skipping download")
 	assert.Equal(t, "GOTOOLCHAIN=unset GOFLAGS=unset\n", goEnv)
+}
+
+func TestInstallFullsendCLIScript_ReleasePinArchitecture(t *testing.T) {
+	// aarch64 maps to a supported arch and proceeds to the (failing) download.
+	out, _, err := runInstallFullsendCLIScript(t, "v0.48.1", 0, "UNAME_M_STUB=aarch64")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "curl stub: offline")
+	assert.NotContains(t, out, "unsupported architecture")
+
+	// Anything else is rejected before any download is attempted.
+	out, _, err = runInstallFullsendCLIScript(t, "v0.48.1", 0, "UNAME_M_STUB=arm64")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "ERROR: unsupported architecture: arm64 (supported: x86_64, aarch64)")
+	assert.NotContains(t, out, "curl stub")
 }
 
 func TestRunPollJobScript_DeniesNonSchedulePinnedSource(t *testing.T) {

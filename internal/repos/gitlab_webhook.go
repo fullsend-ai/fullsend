@@ -725,7 +725,7 @@ func definesDispatcherJob(content []byte) bool {
 //     rule list means protection is gone.
 //   - Trigger pipelines must run only the dispatcher: any other root job or
 //     include that is not excluded from trigger pipelines defers the fast
-//     path (see triggerExtraWorkProblem), as does inherited global
+//     path (see triggerExtraWorkProblems), as does inherited global
 //     execution configuration (see triggerGlobalExecProblem).
 //   - The project must use the standard .gitlab-ci.yml configuration path:
 //     a custom ci_config_path selects configuration that is never evaluated.
@@ -764,7 +764,7 @@ func gitlabTriggerProjectSafetyProblem(ctx context.Context, client forge.Client,
 	if err != nil {
 		return "", safeAPIError("reading ci_pipeline_variables_minimum_override_role", err)
 	}
-	if role != forge.PipelineVarOverrideNoOneAllowed {
+	if !gitlabPipelineVarRoleAccepted(ctx, owner, repo, role) {
 		return fmt.Sprintf("webhook fast-path deferred: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed", displayPipelineVarRole(role)), nil
 	}
 	// A copied account trigger can start a pipeline on any ref. If job tokens

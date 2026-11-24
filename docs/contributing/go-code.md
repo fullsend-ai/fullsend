@@ -594,7 +594,8 @@ The e2e tests mint short-lived GitHub App installation tokens via the central to
 **Do not** increase e2e or behaviour **suite** timeouts without **explicit human
 authorization** in the current session (or an issue/PR comment that clearly
 authorizes that bump). Suite ceilings are job `timeout-minutes` in
-`.github/workflows/e2e.yml` for the `behaviour` / `playback` jobs (90 minutes,
+`.github/workflows/e2e.yml` for the `behaviour` / `playback` /
+`forgejo-behaviour` jobs (90 minutes,
 sized so one infrastructure-classified retry of a 45-minute attempt fits; the
 same applies to the `timeout-minutes` of any job that runs `playback-test`), the
 per-attempt `go test -timeout` values in the `behaviour-test` / `playback-test`

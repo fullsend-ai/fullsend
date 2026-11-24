@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
-# Called by Renovate postUpgradeTasks after a microsoft/onnxruntime bump.
-# ONNX Runtime ships no checksum file, so the linux CPU release tarballs are
-# checked against the sha256 digest GitHub records for each release asset.
-# Updates ORT_SHA256_{AMD64,ARM64} in the runner Containerfile.
+# Called by Renovate postUpgradeTasks after a Microsoft.ML.OnnxRuntime (NuGet)
+# bump. Downloads the NuGet package the runner Containerfile installs from,
+# checks it against the SHA512 NuGet records for that version, and updates
+# ORT_SHA256 in the runner Containerfile. One package carries both linux
+# architectures, so the pin has a single checksum.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib-checksums.sh"
 
 asset_url() {
-  local arch
-  case "$1" in
-    AMD64) arch="x64" ;;
-    ARM64) arch="aarch64" ;;
-    *) return 1 ;;
-  esac
-  echo "https://github.com/microsoft/onnxruntime/releases/download/v${VERSION}/onnxruntime-linux-${arch}-${VERSION}.tgz"
+  echo "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${VERSION}/microsoft.ml.onnxruntime.${VERSION}.nupkg"
 }
-published_sha() { github_asset_digest microsoft/onnxruntime "v${VERSION}" "${2##*/}"; }
+published_sha() { nuget_package_sha256 microsoft.ml.onnxruntime "${VERSION}" "$2"; }
 
-update_pin ORT multi images/runner/Containerfile
+update_pin ORT single images/runner/Containerfile

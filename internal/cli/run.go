@@ -359,6 +359,25 @@ func loadRunConfig(path string) (runConfig, error) {
 	return runConfig{source: source, perRepo: perRepoCfg}, nil
 }
 
+// siblingConfigBlockError fails a run whose agents: entry has a harness:
+// block in the sibling .fullsend/config.yaml that loadRunConfig falls back
+// to. The entry's runtime, model and effort are read from there, but a block
+// composes only from the config at the root of --fullsend-dir, and dropping
+// it would run the agent without its settings.
+func siblingConfigBlockError(path, agentName string) error {
+	rc, err := loadRunConfig(path)
+	if err != nil || rc.perRepo == nil {
+		return nil // reported where the run loads this config
+	}
+	if filepath.Dir(rc.source) == filepath.Dir(path) {
+		return nil // the config blocks compose from
+	}
+	if len(config.HarnessBlocksFor(rc.perRepo.AgentEntries(), agentName)) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s: the %q agents entry has a harness: block, which applies only when --fullsend-dir is the directory that holds config.yaml; pass --fullsend-dir %s", rc.source, agentName, filepath.Dir(rc.source))
+}
+
 // backendFromConfigFile selects the runtime for agentName from the config
 // file at path (see loadRunConfig for which file and layering). The
 // returned source names the file, suffixed with agents.<agent>
@@ -510,13 +529,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// Unpack the runner secrets bundle (ADR 0136) before any child process
-	// starts: loadRunnerSecrets deletes the bundle file and removes both
-	// bundle variables from the environment.
-	runnerSecrets, err := loadRunnerSecrets()
-	if err != nil {
-		printer.StepFail("Invalid runner secrets bundle")
-		return err
+	// Take the runner secrets bundle (ADR 0136) out of the environment
+	// before any child process starts: takeRunnerSecretsBundle deletes the
+	// bundle file and removes both bundle variables from the environment.
+	// The native contents are read and validated only once the source is
+	// known, because a Vault connection (ADR 0155) may supply the bundle.
+	nativeBundle := takeRunnerSecretsBundle()
+	// A bundle that could not be removed from the environment or deleted
+	// from disk stays readable by child processes, so fail closed whether
+	// or not Vault supplies the bundle.
+	if nativeBundle.cleanupErr != nil {
+		printer.StepFail("Could not remove the runner secrets bundle")
+		return nativeBundle.cleanupErr
 	}
 
 	absFullsendDir, err := filepath.Abs(fullsendDir)
@@ -552,7 +576,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	orgCfg, err := loadLockConfig(orgConfigPath)
 	if err != nil {
 		printer.StepFail("Failed to load fullsend config")
-		reportConfigLoadFailure(ctx, agentName, absFullsendDir, forgeFlag, eventFile, sOpts, runnerSecrets, err, printer)
+		// Best effort: the native bundle only feeds redaction here.
+		failureSecrets, _ := nativeBundle.parse()
+		reportConfigLoadFailure(ctx, agentName, absFullsendDir, forgeFlag, eventFile, sOpts, failureSecrets, err, printer)
+		return err
+	}
+
+	if err := siblingConfigBlockError(orgConfigPath, agentName); err != nil {
+		printer.StepFail("Failed to load fullsend config")
 		return err
 	}
 
@@ -561,6 +592,37 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err != nil {
 		printer.StepFail("Invalid --forge flag")
 		return err
+	}
+
+	// Resolve runner secrets the trusted config selects from Vault
+	// (ADR 0155) before any consumer reads them. With no Vault selection
+	// this makes no network request and native delivery is unchanged.
+	var secretCfg config.ConfigReader
+	if orgCfg != nil {
+		secretCfg = orgCfg
+	}
+	vaultValues, err := resolveVaultRunnerSecrets(ctx, secretCfg, forgePlatform)
+	if err != nil {
+		printer.StepFail("Failed to resolve Vault-backed runner secrets")
+		return err
+	}
+	// A Vault-supplied bundle replaces the native one, so the native
+	// contents are neither parsed nor required to be valid then.
+	var runnerSecrets map[string]string
+	if _, vaultBundle := vaultValues[forge.SecretGitHubRunnerSecrets]; !vaultBundle {
+		runnerSecrets, err = nativeBundle.parse()
+		if err != nil {
+			printer.StepFail("Invalid runner secrets bundle")
+			return err
+		}
+	}
+	if len(vaultValues) > 0 {
+		runnerSecrets, err = applyVaultRunnerSecrets(vaultValues, runnerSecrets)
+		if err != nil {
+			printer.StepFail("Invalid Vault-backed runner secret")
+			return err
+		}
+		printer.StepDone("Resolved runner secrets from Vault: " + strings.Join(sortedStringKeys(vaultValues), ", "))
 	}
 	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
 	// handles the omitted-field case when a config is present.
@@ -715,9 +777,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// The agent's agents: entry may carry harness: blocks, composed on the
+	// harness as child layers (ADR 0162).
+	if orgCfg != nil {
+		composeOpts.Blocks = config.HarnessBlocksFor(orgCfg.AgentEntries(), agentName)
+		composeOpts.Agent = agentName
+	}
+
 	// A current lock entry pins the relative files of a URL base, so pass
 	// its pins in before composition fetches them (#8979).
-	lockState, err := readRunLock(absFullsendDir, agentName, harnessPath)
+	lockState, err := readRunLock(absFullsendDir, agentName, harnessPath, composeOpts.Blocks)
 	if err != nil {
 		return err
 	}
@@ -984,6 +1053,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}()
 	if targetRepo != "" {
+		// Export an absolute path: the pre-script, validation script and
+		// post-script run in different working directories, so a relative
+		// value such as "." would name a different directory in each (#9537).
+		absTargetRepo, err := filepath.Abs(targetRepo)
+		if err != nil {
+			return fmt.Errorf("resolving target repo path: %w", err)
+		}
+		targetRepo = absTargetRepo
 		setFlagEnv("TARGET_REPO_DIR", targetRepo)
 	}
 	if sOpts.statusRepo != "" {
@@ -1392,6 +1469,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// (runner_env + env.runner), not just the declared runner_env entries.
 	h.RunnerEnv = effectiveRunnerEnv
 
+	// Resolve where the agent's input text comes from (#9509). An external
+	// source turns on the FULLSEND_DRY_RUN default for host-side scripts and
+	// needs allow_forge_write for a forge-write provider. Decided here, on
+	// the merged runner env, before any gateway change or the pre-script.
+	inputSourceReport, err := applyInputSource(h, absFullsendDir, result.Providers, os.LookupEnv)
+	if err != nil {
+		printer.StepFail("Input source check failed")
+		return err
+	}
+	printer.StepInfo(inputSourceReport)
+
 	// provider/id is pi's model form; Claude Code takes an alias or an
 	// Anthropic model id. The syntax is accepted for every runtime (ids are
 	// not a closed set), so flag the likely mismatch instead of rejecting it.
@@ -1690,6 +1778,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err != nil {
 			printer.StepFail("Failed to bind GitLab provider profiles to the forge host")
 			return fmt.Errorf("binding GitLab forge host to provider profiles: %w", err)
+		}
+		defer cleanupBound()
+		result.Profiles = boundProfiles
+	} else if ghHost, ghPort := githubForgeHostPort(os.Getenv); ghHost != "" {
+		// The same for a GitHub server other than github.com: the stock
+		// GitHub profiles' GH_TOKEN placeholder resolves only at
+		// api.github.com and github.com.
+		boundProfiles, cleanupBound, err := bindGitHubForgeHost(result.Profiles, ghHost, ghPort)
+		if err != nil {
+			printer.StepFail("Failed to add the GitHub server to provider profiles")
+			return fmt.Errorf("binding GitHub server to provider profiles: %w", err)
 		}
 		defer cleanupBound()
 		result.Profiles = boundProfiles
@@ -3650,6 +3749,10 @@ var oidcDenyKeys = map[string]bool{
 	// same way: no harness expansion may copy it, and pre/post scripts
 	// never see it.
 	gatewayAPIKeyEnv: true,
+	// The GitLab job ID token a Vault connection authenticates with
+	// (ADR 0155). It is a bearer credential for Vault login; only the
+	// runner's Vault resolution reads it.
+	vaultIDTokenEnv: true,
 	// The GitLab webhook fast-path credentials `fullsend repos install`
 	// provisions as protected, wildcard-scoped CI/CD variables. The trigger
 	// tokens are bearer credentials that start protected-branch pipelines;
@@ -3803,11 +3906,18 @@ func harnessEnvExpand(key string) string {
 // composite action passes to the fullsend run step (#9079). They stay out of
 // harnessExpansionDenied because that map also gates env.runner, where a
 // harness declares them on purpose.
+//
+// The standalone runner secrets that ADR 0155 lets a Vault connection
+// supply (JIRA_TOKEN and the OTLP header variables) are listed too, so a
+// fetched value never reaches the sandbox through a ${VAR} reference.
 var sandboxDeniedKeys = map[string]bool{
-	jira.TokenEnvVar:        true,
-	jira.EmailEnvVar:        true,
-	jira.ClientIDEnvVar:     true,
-	jira.ClientSecretEnvVar: true,
+	jira.TokenEnvVar:                    true,
+	jira.EmailEnvVar:                    true,
+	jira.ClientIDEnvVar:                 true,
+	jira.ClientSecretEnvVar:             true,
+	"JIRA_TOKEN":                        true,
+	"OTEL_EXPORTER_OTLP_HEADERS":        true,
+	"OTEL_EXPORTER_OTLP_TRACES_HEADERS": true,
 }
 
 // providerCredentialJiraKeys are the sandboxDeniedKeys that provider
@@ -3937,6 +4047,9 @@ func init() {
 		// keys there; only credential values (child env) may expand them.
 		sandbox.CredentialOnlyExpansionKeys(k)
 	}
+	// An agents: entry's harness: block may not set a reserved name in
+	// either env section (ADR 0162 Decision 5).
+	harness.SetReservedSandboxKeyCheck(isReservedSandboxKey)
 }
 
 // isReservedSandboxKey reports whether an env.sandbox key is blocked by name:
@@ -4117,6 +4230,11 @@ func harnessEnvLines(h *harness.Harness) []string {
 	// The runner's PATH goes back in front after every harness-controlled
 	// entry, the same ordering rule as iteration.env below.
 	lines = append(lines, runnerPathRestoreLine())
+
+	// On a GitHub server other than github.com, gh needs GH_HOST and reads
+	// its token from GH_ENTERPRISE_TOKEN. Runner-owned, after the harness
+	// entries, so env.sandbox cannot point gh at another host.
+	lines = append(lines, githubForgeSandboxEnvLines(os.Getenv)...)
 
 	// Runner-owned budget, deadline, and TRACEPARENT come after every
 	// harness-controlled entry so none of them can shadow the values (#7042).
@@ -5200,6 +5318,15 @@ func rootSpanEndAttrs(agg aggregateMetrics, runCount int) []attribute.KeyValue {
 }
 
 func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *agentruntime.RunMetrics) []attribute.KeyValue {
+	// The GenAI semconv defines output_tokens as including reasoning tokens,
+	// and the reasoning key below as a subset of it. Codex and OpenCode
+	// metrics keep reasoning out of OutputTokens, so add it back here: a
+	// backend that subtracts the reasoning key from output would otherwise
+	// subtract it twice (#9386). RunMetrics and metrics.json are unchanged.
+	outputTokens := m.OutputTokens
+	if agentruntime.OutputExcludesReasoning(runtimeName) {
+		outputTokens += m.ReasoningTokens
+	}
 	attrs := []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.Int("exit_code", exitCode),
@@ -5209,15 +5336,32 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 		stringAttr("gen_ai.provider.name", system),
 		boundedStringAttr("gen_ai.request.model", m.Model),
 		stringAttr("fullsend.runtime", runtimeName),
-		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
-		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
+		// The GenAI semconv (v1.40.0+) defines input_tokens as including
+		// cached tokens. RunMetrics.InputTokens is uncached input, so add the
+		// cache counters back; backends that price from the convention
+		// subtract them out again and would otherwise go negative (#9532).
+		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens+m.CacheReadInputTokens+m.CacheCreationInputTokens),
+		// Marks input_tokens above as the inclusive count. Spans written
+		// before that change have no such attribute, which is how a reader
+		// tells the two apart. service.version cannot: a source build
+		// stamps "dev" or a git describe string (a bare commit id on CI's
+		// shallow clone), not a release number.
+		attribute.Bool("fullsend.usage.input_includes_cache", true),
+		attribute.Int("gen_ai.usage.output_tokens", outputTokens),
 		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
 		attribute.Int("gen_ai.usage.cache_read.input_tokens", m.CacheReadInputTokens),
 		attribute.Float64("fullsend.cost_usd", roundUSD(m.TotalCostUSD)),
 		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
 	}
 	if m.ReasoningTokens > 0 {
-		attrs = append(attrs, attribute.Int("gen_ai.usage.reasoning_tokens", m.ReasoningTokens))
+		// gen_ai.usage.reasoning.output_tokens is the semconv key (v1.41.0+).
+		// gen_ai.usage.reasoning_tokens is the deprecated fullsend key. It
+		// is emitted through the first release that has the new key so
+		// consumers can migrate; removing it is part of #9386.
+		attrs = append(attrs,
+			attribute.Int("gen_ai.usage.reasoning.output_tokens", m.ReasoningTokens),
+			attribute.Int("gen_ai.usage.reasoning_tokens", m.ReasoningTokens),
+		)
 	}
 	return attrs
 }
@@ -8136,13 +8280,13 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		return "", nil, fmt.Errorf("resolving agent %q: not in config and agents-repo fallback unavailable", agentName)
 	}
 	if entry.Source == "" {
-		// An override-only entry tunes a built-in agent (runtime/model/
-		// effort) but registers no harness: the built-in still comes from
-		// the agents repo, exactly as if the entry were absent.
+		// An override-only entry tunes a built-in agent (any setting
+		// HasSettings counts) but registers no harness: the built-in still
+		// comes from the agents repo, exactly as if the entry were absent.
 		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
 			return path, deps, nil
 		}
-		return "", nil, fmt.Errorf("resolving agent %q: config entry has no source (it only sets runtime/model/effort) and agents-repo fallback unavailable", agentName)
+		return "", nil, fmt.Errorf("resolving agent %q: config entry has no source (it only tunes the built-in agent) and agents-repo fallback unavailable", agentName)
 	}
 
 	if harness.IsURL(entry.Source) {
