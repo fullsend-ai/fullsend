@@ -42,6 +42,7 @@ if [ "$2" = "exec" ]; then
     case "$last" in *"$FULLSEND_OPENCODE_TEST_FAIL"*) exit 41 ;; esac
   fi
   case "$last" in
+    *"--format json"*) exit "${FULLSEND_OPENCODE_TEST_RUN_EXIT:-0}" ;;
     "mkdir -m 700 -- /tmp/"*|"mkdir -m 700 -- '/tmp/"*|"rm -f -- '/tmp/fs-upload-"*) sh -c "$last"; exit $? ;;
     "test -f '/tmp/fs-upload-"*)
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
@@ -648,6 +649,34 @@ func TestOpenCodeRuntimeRun_UploadsRetryPrompt(t *testing.T) {
 				assert.Contains(t, string(calls), "<"+shellQuote(promptPath))
 				assert.NotContains(t, string(calls), prompt, "feedback must not be in an exec argument")
 			}
+		})
+	}
+}
+
+func TestOpenCodeRuntimeRun_IntegrityFailureDiagnostic(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		exit int
+		want string
+	}{
+		{"prompt", openCodePromptModifiedExit, "opencode prompt " + sandbox.SandboxWorkspace + "/" + openCodePromptFile + " missing or modified; refusing to run"},
+		{"agent", openCodeAgentModifiedExit, "opencode agent file /trusted/agent.md changed after .env was read; refusing to run"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			work := t.TempDir()
+			fakeOpenshellOpenCode(t, filepath.Join(work, "calls.log"), filepath.Join(work, "store"))
+			t.Setenv("FULLSEND_OPENCODE_TEST_RUN_EXIT", fmt.Sprint(tt.exit))
+			recordOpenCodeTrustedEnv("sb", openCodeTrustedEnv{
+				AgentPath: "/trusted/agent.md",
+				Hooks:     openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", sandbox.SandboxWorkspace, &piAgentDef{}, nil),
+			})
+			params := RunParams{
+				SandboxName: "sb", AgentBaseName: "fix", RepoDir: "/repo",
+				Prompt: "Retry the previous attempt", Timeout: 30 * time.Second, OnEvent: func(AgentEvent) {},
+			}
+			exit, err := OpenCodeRuntime{}.Run(t.Context(), params, ui.New(&strings.Builder{}), time.Now(), &RunMetrics{})
+			require.EqualError(t, err, tt.want)
+			assert.Equal(t, tt.exit, exit)
 		})
 	}
 }

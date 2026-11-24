@@ -215,8 +215,9 @@ OpenCode Bash tool calls use a fixed trusted system PATH with
 Retry feedback is uploaded to `/sandbox/workspace/runner-state/opencode-prompt.txt`.
 The runner checks its digest before launch, then OpenCode reads it through stdin.
 This preserves the feedback text without adding it to OpenShell's 32 KiB command
-argument. A missing or changed prompt stops the launch with exit 98. Like the
-other input checks, this detects changes but retains a same-user race between
+argument. A missing or changed prompt stops the launch with exit 96 and an error
+naming the prompt file. Like the other input checks, this detects changes but
+retains a same-user race between
 verification and reading the file.
 
 **Deployment decision:** this adapter uses pi's existing bootstrap-and-hash-check model.

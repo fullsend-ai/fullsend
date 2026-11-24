@@ -461,6 +461,9 @@ func openCodeAgentGuard(agentPath, definition string) string {
 		shellQuote(hex.EncodeToString(sum[:])), openCodePrintfVar, openCodeAgentModifiedExit)
 }
 
+// openCodePromptModifiedExit identifies a missing or changed retry prompt.
+const openCodePromptModifiedExit = 96
+
 // openCodePromptGuard checks the separately uploaded feedback before launch.
 // Like the agent guard, it detects changes but retains the same-user race
 // between verification and the CLI opening the file.
@@ -468,7 +471,7 @@ func openCodePromptGuard(promptPath, prompt string) string {
 	sum := sha256.Sum256([]byte(prompt))
 	return fmt.Sprintf(`{ "$%s" "$("$%s" %s | "$%s" -d' ' -f1)" = %s || { "$%s" '%%s\n' 'fullsend: opencode prompt missing or modified; refusing to run' >&2; exit %d; }; }`,
 		openCodeTestVar, openCodeSHA256Var, shellQuote(promptPath), openCodeCutVar,
-		shellQuote(hex.EncodeToString(sum[:])), openCodePrintfVar, openCodeAgentModifiedExit)
+		shellQuote(hex.EncodeToString(sum[:])), openCodePrintfVar, openCodePromptModifiedExit)
 }
 
 // openCodeHooksExtensionBytes returns the runner-vetted hook adapter bytes the
@@ -587,6 +590,9 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	}
 	if fallback.fellBack {
 		return 1, fmt.Errorf("opencode ran its default agent instead of %q; refusing the result", agentName)
+	}
+	if exitCode == openCodePromptModifiedExit {
+		return exitCode, fmt.Errorf("opencode prompt %s missing or modified; refusing to run", sandbox.SandboxWorkspace+"/"+openCodePromptFile)
 	}
 	if exitCode == openCodeAgentModifiedExit {
 		return exitCode, fmt.Errorf("opencode agent file %s changed after .env was read; refusing to run", trustedEnv.AgentPath)

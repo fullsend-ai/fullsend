@@ -827,7 +827,7 @@ func TestOpenCodePromptGuard(t *testing.T) {
 			} else {
 				var exitErr *exec.ExitError
 				require.ErrorAs(t, err, &exitErr)
-				assert.Equal(t, openCodeAgentModifiedExit, exitErr.ExitCode())
+				assert.Equal(t, openCodePromptModifiedExit, exitErr.ExitCode())
 				assert.Empty(t, out, "changed or missing prompts must prevent invocation")
 			}
 		})
