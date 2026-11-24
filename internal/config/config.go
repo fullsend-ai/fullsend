@@ -740,6 +740,38 @@ func ValidAgentNames() []string {
 	return []string{"triage", "code", "review", "fix", "retro", "prioritize"}
 }
 
+// builtinAgentRoles maps each built-in agent (ValidAgentNames) to the roles:
+// values that enable it. Agent names and roles differ for code (role coder),
+// and the fix stage reuses the coder app, so either fix or coder enables it
+// (see DefaultAgentRoles).
+var builtinAgentRoles = map[string][]string{
+	"triage":     {"triage"},
+	"code":       {"coder"},
+	"review":     {"review"},
+	"fix":        {"fix", "coder"},
+	"retro":      {"retro"},
+	"prioritize": {"prioritize"},
+}
+
+// BuiltinAgentSelected reports whether the configured roles (ConfigRoles,
+// the roles: key or `--agents` at setup) select the built-in agent name.
+// Only nil roles (the key omitted) means roles are not configured, and every
+// built-in agent is selected. A non-nil empty list is an explicit
+// `roles: []` and selects no built-in agent. A name that is not a built-in
+// agent is always selected, since roles do not scope custom agents.
+func BuiltinAgentSelected(name string, roles []string) bool {
+	if roles == nil {
+		return true
+	}
+	enabling, ok := builtinAgentRoles[strings.ToLower(name)]
+	if !ok {
+		return true
+	}
+	return slices.ContainsFunc(roles, func(r string) bool {
+		return slices.Contains(enabling, strings.TrimSpace(r))
+	})
+}
+
 // validEffortLevels are the reasoning effort levels accepted by the claude
 // CLI's --effort flag (the version pinned by CLAUDE_CODE_VERSION in
 // images/sandbox/Containerfile). The CLI also documents an "ultracode"

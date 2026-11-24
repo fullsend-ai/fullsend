@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/jiradispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
@@ -512,6 +513,9 @@ type celMatcher struct {
 	// nil when none is listed. It configures the poller's actor role
 	// resolution and the gate's Jira label rule.
 	jiraAuth *config.AuthorizationProvider
+	// killSwitch records that the matcher has no candidates because the
+	// kill switch is active, rather than because no agent is dispatchable.
+	killSwitch bool
 }
 
 // Match applies the dispatch gate policy the configured jira
@@ -541,13 +545,83 @@ func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error)
 	if cfg.IsKillSwitchActive() {
 		// Kill switch active: return a matcher with no candidates so all
 		// events are silently dropped (no dispatches).
-		return &celMatcher{Matcher: &jiradispatch.Matcher{Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth}, nil
+		return &celMatcher{Matcher: &jiradispatch.Matcher{Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth, killSwitch: true}, nil
 	}
-	candidates, err := harnessdispatch.ListTriggeredHarnesses(ctx, fullsendDir, cfg, nil)
+	// The effective agents: those registered with a source, plus the
+	// built-in agents the config does not disable or replace, resolved
+	// from the agents repository as fullsend run resolves them (#9503).
+	candidates, err := harnessdispatch.ListEffectiveTriggeredHarnesses(ctx, fullsendDir, cfg, nil, newJiraBuiltinResolverFn())
 	if err != nil {
 		return nil, fmt.Errorf("list triggered harnesses: %w", err)
 	}
 	return &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: candidates, Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth}, nil
+}
+
+// DispatchCandidates names the agents the matcher evaluates events
+// against, for the poller's no-match warning (jirapoll.CandidateReporter).
+// An active kill switch drops every event on purpose, so it suppresses the
+// warning.
+func (m *celMatcher) DispatchCandidates() ([]string, bool) {
+	if m.killSwitch {
+		return nil, true
+	}
+	var names []string
+	if m.Matcher != nil {
+		for _, c := range m.Candidates {
+			names = append(names, c.Name)
+		}
+	}
+	return names, false
+}
+
+// newJiraBuiltinResolverFn returns the resolver the Jira matcher loads
+// built-in agents with. Override in tests to resolve built-in harnesses
+// from local files without the network.
+var newJiraBuiltinResolverFn = func() harnessdispatch.BuiltinResolver {
+	// Unauthenticated, as the agents repository is public, and on the
+	// configured host when GITHUB_SERVER_URL and GITHUB_API_URL agree, as
+	// for fullsend run and dispatch --route.
+	return agentsRepoBuiltinResolver(newConfiguredHostGitHubClient(""), ui.New(os.Stderr))
+}
+
+// agentsRepoBuiltinResolver resolves built-in agents from the agents
+// repository with the version-aware fallback fullsend run uses
+// (tryAgentsRepoFallback): a release build reads its own release tag and
+// other builds main, pinned to the commit the ref resolves to. The ref is
+// resolved once, on first use, and every built-in is read from that commit,
+// so a poll cycle makes one ref lookup however many built-ins it loads.
+// The resolver is not safe for concurrent use.
+func agentsRepoBuiltinResolver(forgeClient forge.Client, printer *ui.Printer) harnessdispatch.BuiltinResolver {
+	var (
+		pin      agentsRepoPin
+		pinned   bool
+		resolved bool
+	)
+	return func(ctx context.Context, name string, opts harness.ComposeOpts) (string, harness.ComposeOpts, bool) {
+		normalized := strings.ToLower(name)
+		if !defaultAgentsRepoKnownAgents[normalized] || forgeClient == nil {
+			return "", opts, false
+		}
+		if !resolved {
+			resolved = true
+			pin, pinned = resolveAgentsRepoPin(ctx, forgeClient, printer)
+		}
+		if !pinned {
+			return "", opts, false
+		}
+		// The configured host serves raw content from itself, so allow it
+		// in the fetch policy, as fullsend run does.
+		opts.FetchPolicy = withAgentsRepoHostAllowed(opts.FetchPolicy, forgeClient)
+		path, dep, ok := fetchAgentsRepoFileAtPin(ctx, "harness/"+normalized+".yaml", pin, forgeClient, opts, printer, "agent "+name)
+		if !ok {
+			return "", opts, false
+		}
+		// Relative resources resolve against the harness URL, through the
+		// configured host's API when the harness came from there.
+		opts.SourceURL = dep.URL
+		useAgentsRepoHostFetch(&opts, forgeClient)
+		return path, opts, true
+	}
 }
 
 // jiraAuthOptions returns the dispatch gate policy for the configured

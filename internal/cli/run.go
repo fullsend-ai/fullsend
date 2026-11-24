@@ -8378,19 +8378,50 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	if forgeClient == nil {
 		return "", none, false
 	}
+	pin, ok := resolveAgentsRepoPin(ctx, forgeClient, printer)
+	if !ok {
+		return "", none, false
+	}
+	return fetchAgentsRepoFileAtPin(ctx, relPath, pin, forgeClient, composeOpts, printer, noun)
+}
 
-	allowlist := composeOpts.OrgAllowlist
+// agentsRepoPin is the fullsend-ai/agents commit a fallback fetch reads
+// from: the commit SHA resolveAgentsRef's ref pointed at, and that ref for
+// messages.
+type agentsRepoPin struct {
+	displayRef string
+	sha        string
+}
 
+// resolveAgentsRepoPin resolves the agents ref (resolveAgentsRef: the
+// release tag of a release build, main otherwise) to a commit SHA. A caller
+// that fetches several files resolves the pin once and passes it to
+// fetchAgentsRepoFileAtPin for each. Errors are non-fatal and reported as
+// warnings.
+func resolveAgentsRepoPin(ctx context.Context, forgeClient forge.Client, printer *ui.Printer) (agentsRepoPin, bool) {
 	displayRef, gitRef := resolveAgentsRef()
 	resolvedSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, gitRef)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err))
-		return "", none, false
+		return agentsRepoPin{}, false
 	}
 	if !commitSHAPattern.MatchString(resolvedSHA) {
 		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, resolvedSHA))
+		return agentsRepoPin{}, false
+	}
+	return agentsRepoPin{displayRef: displayRef, sha: resolvedSHA}, true
+}
+
+// fetchAgentsRepoFileAtPin fetches relPath from fullsend-ai/agents at the
+// pinned commit, subject to the allowlist in composeOpts. All errors are
+// non-fatal.
+func fetchAgentsRepoFileAtPin(ctx context.Context, relPath string, pin agentsRepoPin, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
+	var none harness.Dependency
+	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
 		return "", none, false
 	}
+	allowlist := composeOpts.OrgAllowlist
+	displayRef, resolvedSHA := pin.displayRef, pin.sha
 
 	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
 	rawURL := defaultAgentsRepoURLPrefix + resolvedSHA + "/" + relPath
@@ -8410,6 +8441,7 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	printer.StepStart(fmt.Sprintf("Fetching %s from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
 
 	var content []byte
+	var err error
 	if hostPrefix != "" {
 		// A host other than github.com has no raw.githubusercontent.com,
 		// so read the file through the same client that resolved the ref.
