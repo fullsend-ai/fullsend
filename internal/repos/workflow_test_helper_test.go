@@ -89,6 +89,11 @@ func newFakeClientForBatch(repos ...string) *forge.FakeClient {
 		panic(err)
 	}
 	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+scaffoldGitHubShimPath+"@v1.0.0"] = shim
+	stub, err := scaffold.FullsendRepoFile(scaffold.ForkPRStubTemplate)
+	if err != nil {
+		panic(err)
+	}
+	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+scaffoldGitHubForkPRStubPath+"@v1.0.0"] = stub
 	for _, path := range scaffold.PerRepoThinCallerPaths() {
 		raw, err := scaffold.FullsendRepoFile(path)
 		if err != nil {

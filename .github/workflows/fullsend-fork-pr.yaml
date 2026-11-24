@@ -1,0 +1,39 @@
+# This file is managed by fullsend. Do not edit it directly.
+# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/.github/workflows/fullsend-fork-pr.yaml
+---
+# fullsend fork pull request stub (per-repo installation mode, GitHub only)
+#
+# A fork's pull_request run gets no secrets and no OIDC token, so the
+# fullsend shim (fullsend.yaml) skips fork pull requests. This workflow runs
+# on those events instead and does nothing: it has no permissions, checks
+# out nothing, and uploads nothing. When its run completes, GitHub starts
+# the shim's workflow_run trigger from the default branch. That run looks
+# the pull request up through the API and applies the same authorization a
+# same-repository pull request gets.
+#
+# The fork controls the copy of this file that runs for its pull request, so
+# the shim trusts nothing this run produces. It reads only what GitHub
+# records about the run: event, conclusion, file path, head repository,
+# head SHA and creation time.
+name: fullsend-fork-pr
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, labeled, closed]
+
+permissions: {}
+
+jobs:
+  fork-pr:
+    # Fork pull requests only: same-repository pull requests go through the
+    # shim directly. Of the label events, only ready-for-review asks for a
+    # review.
+    if: >-
+      github.event.pull_request.head.repo.id != github.repository_id
+      && (github.event.action != 'labeled'
+       || github.event.label.name == 'ready-for-review')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Hand the event to the fullsend workflow
+        run: echo "Fork pull request event recorded; the fullsend workflow resolves it from the default branch."

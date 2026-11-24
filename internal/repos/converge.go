@@ -4045,7 +4045,8 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 		// than taking another release's template now. Using one rule in
 		// both runs keeps the dry run and the live run in step.
 		skip := func(p string) bool {
-			return slices.Contains(resolved.ForgeConfig.WorkflowPaths, p) || slices.Contains(scaffold.PerRepoThinCallerPaths(), p)
+			return slices.Contains(resolved.ForgeConfig.WorkflowPaths, p) || slices.Contains(scaffold.PerRepoThinCallerPaths(), p) ||
+				p == scaffold.ForkPRStubPath
 		}
 		before := len(contentDriftActions)
 		contentDriftFiles, contentDriftActions = withoutRefPathRepairs(contentDriftFiles, contentDriftActions, skip)

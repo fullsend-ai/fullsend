@@ -692,6 +692,11 @@ func checkPinnedOpenAIWIFContract(ctx context.Context, resolved ResolvedConfig, 
 		return fmt.Errorf("fetching callers at the %s to verify %s support (existing credentials were left unchanged): %w", what, InferenceAuthOpenAIWIF, err)
 	}
 	for _, caller := range callers {
+		// The fork pull request stub calls no workflow and gets no
+		// credentials; it is not an inference credential consumer.
+		if caller.Path == scaffold.ForkPRStubPath {
+			continue
+		}
 		if !callerGrantsIDToken(caller.Content) {
 			return fmt.Errorf("the %s %s does not support inference.auth %s: caller %s must grant id-token: write (existing credentials were left unchanged)", what, ref, InferenceAuthOpenAIWIF, caller.Path)
 		}
