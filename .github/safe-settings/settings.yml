@@ -2,9 +2,11 @@
 # is scoped to this repository only (see deployment-settings.yml); everything
 # else -- rulesets, repository settings -- stays managed by the org repo's
 # safe-settings run (github.com/fullsend-ai/org).
-#
-# Environments are total-state: unlisted ones are deleted on apply.
-environments:
+# Environments are total-state: unlisted ones are deleted on apply. The
+# same goes for per-environment variables, reviewers, wait timers, and
+# protection rules -- anything added later through the GitHub UI is removed
+# by the next run. Edit this file, not the UI.
+#environments:
 - name: dev
 - name: e2e-org-pool
   # safe-settings cannot manage environment secrets; these three live only on
@@ -26,3 +28,7 @@ environments:
 - name: site-preview
 - name: site-production
 - name: stage
+  deployment_branch_policy:
+    protected_branches: false
+    custom_branch_policies:
+    - main

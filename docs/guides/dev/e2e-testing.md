@@ -118,11 +118,12 @@ The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (the merge que
 
 The non-required `forgejo-behaviour` job uses the GitHub Environment `forgejo-stage` on pushes to `main` and `forgejo-dev` for authorized pull requests, the merge queue, and `/ok-to-test` runs for authorized fork pull requests. This separates mainline deployments in the Environments view; the job still sets `ENVIRONMENT=forgejo-dev` for every event because there is only one Forgejo driver target. It also sets `BEHAVIOUR_SCM=forgejo`, `BEHAVIOUR_CI=forgejoactions`, and `GODOG_TAGS=@forgejo`. The current job needs no GCP, Cloudflare, or actor credentials. `make behaviour-test` starts and tears down the managed Forgejo stack itself on the runner's Docker engine, so the job has no separate provisioning step (see [Managed forgejo-dev stack](behaviour-drivers.md#managed-forgejo-dev-stack)). GitHub creates each environment on first use. If future Forgejo-specific secrets are needed, configure them in both environments (or use appropriately scoped repository secrets) and add them to the artifact-redaction step before passing them to the test process.
 
-After the environments exist, restrict `stage` to `main`:
-
-1. Open the repository **Settings → Environments → `stage`**.
-2. Under **Deployment branches and tags**, choose **Selected branches and tags**.
-3. Add a branch rule for `main`.
+The `stage` environment is restricted to `main` through
+[`.github/safe-settings/settings.yml`](../../../.github/safe-settings/settings.yml)
+(`deployment_branch_policy` on `stage`). Environments, their branch policies,
+variables, and reviewers are managed total-state by the safe-settings workflow:
+restrictions made in the GitHub UI are undone by the next run, so edit the
+settings file instead.
 
 ### Cloudflare Worker mint BT credentials
 

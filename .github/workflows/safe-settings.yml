@@ -1,65 +1,46 @@
 # Environment configuration via safe-settings full-sync, scoped to this
 # repository only (config under .github/safe-settings/). Everything else --
 # rulesets, repository settings -- stays managed by the org repo's
-# safe-settings run. PRs run dry; merges to main and the daily schedule apply.
+# safe-settings run.
+#
+# No pull_request trigger: full-sync needs the governance App private key,
+# and a PR must never be able to run code that holds it. Validation happens
+# through a workflow_dispatch dry run (dry_run defaults to true) before the
+# first real apply; the daily schedule then reconciles drift.
 name: safe-settings
 
 on:
-  push:
-    branches: [main]
-    paths: ['.github/safe-settings/**']
-  pull_request:
-    paths: ['.github/safe-settings/**']
   schedule:
     - cron: '0 8 * * *' # daily reconcile against drift; offset from the org run
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log what would change without applying (FULL_SYNC_NOP)'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
-  SAFE_SETTINGS_VERSION: '3.0.0'
+  # Pinned to the commit the 3.0.0 tag pointed at; tags are mutable.
+  SAFE_SETTINGS_VERSION: a9a1f366ad6a738b55682d346d94f8d6c4893b09 # 3.0.0
   SAFE_SETTINGS_CODE_DIR: ${{ github.workspace }}/.safe-settings-code
   # Points safe-settings at our deployment config so the sync is restricted
   # to this repository (restrictedRepos.include).
   DEPLOYMENT_CONFIG_FILE: ${{ github.workspace }}/.github/safe-settings/deployment-settings.yml
 
 jobs:
-  # Skipped on fork PRs: they cannot mint the App token.
-  safe-settings-dry-run:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: github-community-projects/safe-settings
-          ref: ${{ env.SAFE_SETTINGS_VERSION }}
-          path: ${{ env.SAFE_SETTINGS_CODE_DIR }}
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: ${{ env.SAFE_SETTINGS_CODE_DIR }}/.nvmrc
-      - run: npm install
-        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
-      - run: npm run full-sync
-        working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
-        env:
-          GH_ORG: fullsend-ai
-          APP_ID: ${{ vars.GOVERNANCE_APP_ID }}
-          PRIVATE_KEY: ${{ secrets.GOVERNANCE_PRIVATE_KEY }}
-          ADMIN_REPO: fullsend
-          CONFIG_PATH: .github/safe-settings
-          FULL_SYNC_NOP: 'true'
-
   apply:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    # Main only: a dispatch from another branch would apply main's config
+    # with that branch's repo scoping.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,11 +50,25 @@ jobs:
           repository: github-community-projects/safe-settings
           ref: ${{ env.SAFE_SETTINGS_VERSION }}
           path: ${{ env.SAFE_SETTINGS_CODE_DIR }}
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: ${{ env.SAFE_SETTINGS_CODE_DIR }}/.nvmrc
-      - run: npm install
+      - run: npm ci --ignore-scripts
         working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
+      # Fail closed: if the deployment config is missing or no longer scoped
+      # to exactly this repo, safe-settings falls back to a denylist and the
+      # total-state sync would reach every org repo.
+      - name: Verify repo scoping
+        run: |
+          python3 - <<'EOF'
+          import os, sys, yaml
+          path = os.environ["DEPLOYMENT_CONFIG_FILE"]
+          with open(path) as f:
+              cfg = yaml.safe_load(f) or {}
+          include = (cfg.get("restrictedRepos") or {}).get("include")
+          if include != ["fullsend"]:
+              sys.exit(f"restrictedRepos.include is {include!r}, expected ['fullsend']")
+          EOF
       - run: npm run full-sync
         working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
         env:
@@ -82,3 +77,4 @@ jobs:
           PRIVATE_KEY: ${{ secrets.GOVERNANCE_PRIVATE_KEY }}
           ADMIN_REPO: fullsend
           CONFIG_PATH: .github/safe-settings
+          FULL_SYNC_NOP: ${{ inputs.dry_run && 'true' || 'false' }}
