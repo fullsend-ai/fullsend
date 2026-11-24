@@ -80,8 +80,8 @@ leaves change detection and authorization alone.
 ## Decision
 
 We run one `jira-poll` poller per repository and serve every issue that
-changed within the backfill window, oldest change first, to remove the row
-limit, the random pick, and the lock.
+changed within the backfill window, oldest change first by default, to
+remove the row limit, the random pick, and the lock.
 
 1. **One poller per repository.** The driver neither reads nor writes the lock
    property, and it ignores lock properties left by earlier versions. What
@@ -98,15 +98,20 @@ limit, the random pick, and the lock.
    error, as today, so a credential that cannot write shows as a failed run.
    How the driver confirms it is left to the implementation.
 2. **Pool.** The issues that match the configured query and whose `updated`
-   value falls within the driver's backfill window, read in ascending order
-   of `updated`, with no row limit. The window is the 24 hours the driver
+   value falls within the driver's backfill window, read in the search's
+   sort order, with no row limit. The window is the 24 hours the driver
    already uses to bound a first poll and to clamp an old checkpoint; its
-   length is fixed today and does not change. The driver sets the search's
-   sort order itself: it drops a sort clause from the configured query and
-   logs once that it did, and the default query no longer carries one. A
-   candidate is active as ADR 0160 defines it, with the checkpoint returned by
-   the search itself. That value is used only to skip idle issues; processing
-   still reads the checkpoint from the issue, as today.
+   length is fixed today and does not change. The search is sorted oldest
+   change first unless the configured query carries its own sort clause,
+   which the driver keeps, as it does today. The default query sorts newest
+   first today; it no longer carries a sort clause, so it is served oldest
+   change first. When the configured query sorts newest change first
+   (`ORDER BY updated DESC`), as the documented examples do today, the driver
+   warns once per cycle that oldest change first is recommended; any other
+   order draws no warning. A candidate is active as ADR 0160 defines it, with
+   the checkpoint returned by the search itself. That value is used only to
+   skip idle issues; processing still reads the checkpoint from the issue, as
+   today.
 3. **Selection.** The driver processes active issues in that order until the
    cycle holds `tracker.jira.poll.max_dispatches_per_cycle` dispatch records
    (default 100, from 1 to 250), until on the GitHub target the next issue's
@@ -119,7 +124,7 @@ limit, the random pick, and the lock.
    naming the issue, takes none of its records, leaves its checkpoint where
    it was, and goes on to the next issue. All of an issue's records go out
    in the same cycle, so an issue that does not fit in the room left waits
-   and is first in line next cycle; the driver does not skip ahead to a
+   for the next cycle; the driver does not skip ahead to a
    smaller issue. An issue is always taken when the cycle holds no records
    yet, so a cycle can exceed the configured limit by that one issue. One
    issue contributes at most 250 records and, on the GitHub target, 768 KB:
@@ -184,14 +189,19 @@ Forgejo has no Jira poll target.
   tried again every cycle until its change leaves the window. Its requests
   are not served. It takes no record room from other issues, and a slow one
   costs up to two minutes of each cycle.
-- Any change to a waiting issue, including a comment from anyone allowed to
-  comment, moves it to the back of the line; under a sustained backlog that
-  can cost the issue its request.
+- A configured query that sets another order is served in that order. Under
+  a sustained backlog, an order other than oldest change first can leave
+  older requests waiting until they leave the window, so the guide and the
+  config reference recommend oldest change first, say what another order
+  costs, and drop the newest-first sort clause from their example queries.
+- Under oldest change first, any change to a waiting issue, including a
+  comment from anyone allowed to comment, moves it to the back of the line;
+  under a sustained backlog that can cost the issue its request.
 - A rewound checkpoint can replay old requests from every issue that changed
   within the window, where today it reaches five issues per cycle; the
   per-cycle limit bounds the runs that starts. A rewind does not move an
   issue in the line, so an editor who keeps rewinding issues near the front
-  can hold newer requests back. The random pick did not allow that; this ADR
+  can hold the requests behind them back. The random pick did not allow that; this ADR
   accepts it and extends the
   [Jira guide](../guides/user/jira-integration.md)'s rule that Edit Issues on
   a polled project is part of the trust boundary.
