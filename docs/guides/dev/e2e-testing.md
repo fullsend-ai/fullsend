@@ -110,6 +110,20 @@ Required repository secrets:
 | `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
 | `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
 
+Secrets for the `e2e-org-pool` GitHub Environment (do **not** also add these
+as repository secrets — every workflow could then read the org-admin token,
+which is exactly what the Environment exists to prevent):
+
+| Secret | Purpose |
+|--------|---------|
+| `TEST_BOTSEND_PAT` | Org-admin PAT for `botsend`; lives only in the `e2e-org-pool` GitHub Environment (restricted to `main`); used only by the *E2E Org Pool* workflow to run `e2e/org-pool/setup-org.sh` from `main` |
+
+The actor PATs (`TEST_ACTOR_WRITE_PAT`, `TEST_ACTOR_TRIAGE_PAT`,
+`TEST_ACTOR_OUTSIDER_PAT`) stay repository secrets only. The *E2E Org Pool*
+workflow's environment job can still read repository secrets, so there is no
+need to copy them into the Environment — and copying them would create two
+copies that can drift apart on rotation.
+
 Mint URL uses the hosted public endpoint by default (same as `fullsend github setup --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
 ### Behaviour test GitHub Environments
@@ -204,6 +218,13 @@ tests locally can assume the pool orgs are already provisioned.
    e2e/org-pool/setup-org.sh halfsend
    ```
 
+   Pass `--dry-run` to verify state read-only and print planned changes
+   without mutating anything:
+
+   ```bash
+   e2e/org-pool/setup-org.sh --dry-run 07
+   ```
+
    If an actor invitation is still pending, the script accepts it when the
    actor PATs are exported:
 
@@ -212,9 +233,33 @@ tests locally can assume the pool orgs are already provisioned.
      e2e/org-pool/setup-org.sh 07
    ```
 
-The behaviour job in `.github/workflows/e2e.yml` does not run this script;
-CI runs it are planned as a follow-up once the scripts land on `main`
-(#8886). Until then, an org owner runs it per org to correct drift.
+The dedicated *E2E Org Pool* workflow (`.github/workflows/e2e-org-pool.yml`)
+keeps the STAGE org and every pool org configured. Runs that touch
+GitHub — pushes to `main` (path-filtered to `e2e/org-pool/**`, the
+workflow file, and `pkg/behaviourtest/drivers/install/slotpool.go`), manual
+dispatches, and a weekly schedule — check out
+`e2e/org-pool` from `main` — never from the PR head — and run
+`setup-org.sh` for real with the org-admin `TEST_BOTSEND_PAT` secret plus
+the actor PAT secrets, correcting drift. Pull requests never touch
+GitHub: they run the stub-based `setup-org_test.sh` on the PR head, with
+no secrets, so PR changes are exercised without exposing credentials.
+
+`TEST_BOTSEND_PAT` lives in the `e2e-org-pool` GitHub Environment, which
+must be restricted to the `main` branch, so pull-request runs can never
+reach the org-admin token. The actor PATs are repository secrets (see
+above) and are readable by the environment job without being copied into
+the Environment. `TEST_BOTSEND_PAT` is a long-lived classic PAT
+because the setup performs org-admin operations (creating teams,
+assigning organization roles, writing actions variables, accepting
+invitations) that the short-lived per-repo mint tokens cannot do; its
+blast radius is `botsend`'s admin membership in the pool orgs.
+`TEST_ACTOR_OUTSIDER_PAT` is deliberately not passed: the script only
+verifies that the outsider has no org membership, using the admin token.
+
+Because the push trigger is path-filtered, a pending actor invitation is
+not necessarily accepted by the next run on `main`. Run `setup-org.sh`
+locally with the actor PATs exported, or trigger the workflow manually,
+within the 7-day invitation window.
 
 Verify foreign authorization:
 
@@ -275,11 +320,16 @@ The setup scripts in `e2e/org-pool/` create or verify this
 model idempotently on `halfsend-NN` and on the STAGE org `halfsend`.
 `setup-manual.sh` invites the actors and accepts the invitations itself
 when the actor PATs are exported. `setup-org.sh` accepts pending
-invitations with the actor PATs; a CI step that provides them from the
-repository secrets `TEST_ACTOR_WRITE_PAT` and `TEST_ACTOR_TRIAGE_PAT` is
-planned but does not exist yet, so run locally with the PATs exported as
-shown above, within 7 days of the invitation — GitHub expires pending
-org invitations after 7 days. It fails when an actor has no membership
+invitations with the actor PATs; the *E2E Org Pool* workflow provides
+them from the repository secrets `TEST_ACTOR_WRITE_PAT` and
+`TEST_ACTOR_TRIAGE_PAT` on its runs (a path-matching push to `main`, a
+manual dispatch, or the weekly schedule), so a pending invitation is
+accepted by the next such run — or by a local run with the PATs exported
+(pull-request runs never execute `setup-org.sh`; they run the stub-based
+`setup-org_test.sh` instead, so invitations stay pending until one of
+those runs accepts them). Whichever it is, it must happen within 7 days
+of the invitation — GitHub expires pending org invitations after 7
+days. It fails when an actor has no membership
 at all.
 
 Accounts and PATs are managed under

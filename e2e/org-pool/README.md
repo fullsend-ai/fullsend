@@ -32,8 +32,13 @@ org-admin `gh` session. The script walks through them, pausing for each:
    (`TEST_ACTOR_WRITE_PAT`, `TEST_ACTOR_TRIAGE_PAT`) are exported, the
    script accepts the invitations itself. Otherwise, run
    `setup-org.sh` with the PATs exported within 7 days — GitHub expires
-   pending org invitations after 7 days. A CI step that accepts them
-   from the repository secrets is planned but does not exist yet.
+   pending org invitations after 7 days — or trigger the *E2E Org Pool*
+   workflow manually (`workflow_dispatch`), which accepts them using the
+   repository secrets `TEST_ACTOR_WRITE_PAT` and `TEST_ACTOR_TRIAGE_PAT`.
+   Note that the workflow's push trigger is
+   path-filtered to `e2e/org-pool/**`, the workflow file, and
+   `pkg/behaviourtest/drivers/install/slotpool.go`, so it does not run on
+   every push to `main`.
 4. **Install the GitHub Apps.** The script opens the install page for each
    missing app: the six `fullsend-test-*` role apps and `fullsend-ai-e2e`.
    Grant access to "All repositories" and click Install.
@@ -69,9 +74,17 @@ for required operator IAM.
 ## Execution (`setup-org.sh`)
 
 Once the manual steps are done, `setup-org.sh` completes the configuration.
-It never pauses and never opens a browser, so it can run unattended. CI
-execution is planned as a follow-up once the scripts land on `main`
-(#8886); until then an org owner runs it per org.
+It never pauses and never opens a browser, so it can run unattended. The
+*E2E Org Pool* workflow (`.github/workflows/e2e-org-pool.yml`) runs it
+for the STAGE org and every pool org: pushes to `main` (path-filtered to
+this directory, the workflow file, and
+`pkg/behaviourtest/drivers/install/slotpool.go`), manual dispatches, and a weekly
+schedule check out this directory from `main` — never from the PR head —
+and run with the org-admin `TEST_BOTSEND_PAT` secret plus the actor PAT
+secrets, correcting drift. Pull requests run the stub-based
+`setup-org_test.sh` on the PR head instead, with no secrets. A manual
+dispatch can also run `setup-org.sh` with `--dry-run`, which verifies
+state read-only and reports what a real run would change.
 It is idempotent: it checks each prerequisite and only acts on what is
 missing. It verifies the manual prerequisites and fails with a message to
 run `setup-manual.sh` when one is missing.
@@ -101,4 +114,7 @@ Then add the org to `orgPool` in `internal/e2etest/testutil.go`
 to `POOL_ORG_IDS` so the e2e inference gateway admits the org's
 repositories (a frozen change — see
 [Inference gateway test gateway](../../docs/guides/dev/e2e-testing.md#inference-gateway-test-gateway)),
-and run `make behaviour-test`.
+update the org range in the *E2E Org Pool* workflow
+(`.github/workflows/e2e-org-pool.yml`, the `seq -f 'halfsend-%02g' 1 NN`
+line — `setup-org_test.sh` checks it against `DevPoolOrgCount`), and run
+`make behaviour-test`.
