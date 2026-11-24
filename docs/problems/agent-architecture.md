@@ -23,6 +23,10 @@ No agent trusts another agent's output because of who (or what) produced it. Tru
 
 This mirrors how humans work today. You don't trust a code reviewer because they claim to be senior. You trust their authority to block because GitHub shows they have approval rights on that path.
 
+The per-agent mint authority decision requires explicit approval of the roles
+an agent may assume, then bounds the run-stage levels it may request within
+those roles ([ADR 0163](../ADRs/0163-require-per-agent-mint-level-approval.md)).
+
 ## Two-phase review model
 
 Code review happens twice: before a PR is submitted and after. Both phases run the same review process.
