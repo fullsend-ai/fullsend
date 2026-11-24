@@ -60,49 +60,42 @@ sources).
 **Output**: one of:
 - Resolved: the repository (org and name) with the layer that resolved it
 - Unresolved: a reason, the candidate repositories from the mapping,
-  and a hint from the LLM guess if layer 4 ran
+  and a hint from the LLM guess if layer 3 ran
 
-### Four resolution layers
+### Three resolution layers
 
-Resolution proceeds through four ordered layers, cheapest and most
+Resolution proceeds through three ordered layers, cheapest and most
 certain first. Stop at the first definitive answer. Because each layer
-records which layer resolved and why — a mapping hit, a metadata match,
-a cited architecture doc, or an LLM guess — the selection is verifiable
-by both agents (downstream validation scripts) and humans (the reviewer
-sees the evidence in the epic comment).
+records which layer resolved and why — a mapping hit, a cited
+architecture doc, or an LLM guess — the selection is verifiable by both
+agents (downstream validation scripts) and humans (the reviewer sees
+the evidence in the epic comment).
 
 **Layer 1 — Component mapping (deterministic).** Look up the Jira
-component in a maintained mapping. If the component maps to exactly one
-repository, return it. No LLM needed. If the component maps to multiple
-repositories, pass the narrowed candidate set to layer 2. If the
-component is not in the mapping, the resolver returns unresolved — the
-mapping is the source of truth for which components have approved
-repositories.
+component in a maintained mapping. The mapping resolves deterministically
+in two cases:
+- The component maps to exactly one repository — return it.
+- The component maps to multiple repositories but one is marked as the
+  default (e.g., the primary repo for that component) — return the
+  default.
 
-**Layer 2 — Architecture context metadata (deterministic).** Given the
-candidate repositories from layer 1, use structured metadata in the
-architecture context to narrow the candidates. For RHAI, the
-`component-map.json` already has component type (operator, ui, asset),
-tier (core_platform, …), cross-references, and dependency declarations
-— enough to disambiguate deterministically when the metadata covers
-the case. No LLM, no maintenance of a separate crosswalk — the
-structured data in the architecture-context repo is the crosswalk.
+No LLM needed in either case. If the component maps to multiple
+repositories and no default is set, pass the narrowed candidate set to
+layer 2. If the component is not in the mapping, the resolver returns
+unresolved — the mapping is the source of truth for which components
+have approved repositories.
 
-If this layer identifies exactly one repository, return it. If the
-metadata does not cover the case or cannot narrow the candidates,
-pass them to layer 3.
-
-**Layer 3 — Architecture context with LLM (evidence-based).** The LLM
+**Layer 2 — Architecture context with LLM (evidence-based).** The LLM
 reads the architecture docs and the candidate repositories from
-layer 2. It selects a repo, citing specific text from the architecture
-context as evidence. This is the first time an LLM runs — only when
-both deterministic layers could not resolve. The cited evidence must
-exist in the pinned source at the recorded commit SHA, and the selected
+layer 1. It selects a repo, citing specific text from the architecture
+context as evidence. This is the first time an LLM runs — only when the
+deterministic mapping could not resolve. The cited evidence must exist
+in the pinned source at the recorded commit SHA, and the selected
 repository must be in the candidate set from layer 1. If the LLM can
 identify exactly one repository with supporting evidence, return it.
-If it cannot, pass the candidates to layer 4.
+If it cannot, pass the candidates to layer 3.
 
-**Layer 4 — LLM guess (hint only).** The LLM receives the candidate
+**Layer 3 — LLM guess (hint only).** The LLM receives the candidate
 repositories from the mapping, the Jira issue description, and the
 architecture context. It picks the most likely repository from the
 candidates. The guess is recorded as a hint for a human reviewer — it
@@ -112,7 +105,7 @@ not a decision by the system.
 When no layer resolves, the resolver returns unresolved with:
 - The reason resolution failed
 - The candidate repositories from the mapping
-- The hint from layer 4, if one exists
+- The hint from layer 3, if one exists
 
 What the consumer does with an unresolved result — leave the field
 empty, add a warning comment, block publication — is up to the
@@ -127,6 +120,9 @@ The mapping records:
 - Which repositories are associated with each Jira component
 - Repository details (organization, name) — the caller builds the
   SSH or HTTP URL from these as needed
+- Optionally, which repository is the default for a component — when
+  a component maps to multiple repos, the default is returned without
+  invoking an LLM
 
 For RHAI, this data already exists. The Component Mapping Results
 document maps every Jira component to its repos.
@@ -215,11 +211,10 @@ repos live instead of maintaining a static architecture-context repo —
 the workload provides skills that get the same information from their
 source.
 
-Layers 2 and 3 read the pre-loaded architecture context using the
+Layer 2 reads the pre-loaded architecture context using the
 interpretation guidance from the workload's declared skills, rather than
-hardcoding how to read a specific source. Layer 2 uses them for
-deterministic metadata lookup; Layer 3 uses them to guide the LLM's
-evidence-based interpretation. This also addresses the scaling concern
+hardcoding how to read a specific source. This also addresses the
+scaling concern
 from the Nov 17 review — workloads that cannot afford to maintain a
 static architecture-context repo at scale can provide skills that work
 differently.
@@ -229,15 +224,11 @@ differently.
 Layer 1 is deterministic — the result comes directly from the mapping,
 no verification beyond mapping membership needed.
 
-Layer 2 is deterministic — the result comes from structured metadata
-in the architecture context. Same verification as Layer 1: mapping
-membership check.
-
-Layer 3 is LLM-based with evidence — the cited evidence must exist in
+Layer 2 is LLM-based with evidence — the cited evidence must exist in
 the pinned source at the recorded commit SHA, and the selected
 repository must be in the candidate set from Layer 1.
 
-Layer 4 is a hint — it is never published as the answer, so it does
+Layer 3 is a hint — it is never published as the answer, so it does
 not require verification. The hint is presented to the human reviewer
 alongside the candidates and the reason resolution failed.
 
@@ -249,7 +240,7 @@ instructions and scripts — the layered lookup, evidence citation rules,
 and verification logic.
 
 The skill owns:
-- The four-layer resolution procedure
+- The three-layer resolution procedure
 - The verification logic (mapping membership check)
 - The output contract: resolved repo + resolving layer + evidence,
   or unresolved + reason + candidates + hint
@@ -270,7 +261,7 @@ A RHAISTRAT strategy arrives with one or more Jira components and a
 description containing requirements and acceptance criteria.
 
 **Step 1 — Resolve components.** For each Jira component in the
-strategy, call the resolution skill (see "Four resolution layers"
+strategy, call the resolution skill (see "Three resolution layers"
 above). Each component gets a resolved repo with evidence, or an
 unresolved result with candidates and a hint. The evidence is preserved
 through the remaining steps.
@@ -362,16 +353,14 @@ operational cost of maintaining that data at scale is high — for a
 workload with hundreds of repos across multiple releases, keeping the
 mappings current is a significant ongoing effort.
 
-The four-layer design is a middle ground:
+The three-layer design is a middle ground:
 
 - Layer 1 handles the easy cases cheaply — a maintained mapping that
-  covers the common path. For RHAI, this data already exists.
-- Layer 2 handles cases where structured metadata can disambiguate —
-  deterministic lookup in the architecture context when the mapping
-  returns multiple candidates.
-- Layer 3 handles the ambiguous cases — LLM reads the architecture
+  covers the common path, including a default repo when multiple
+  candidates exist. For RHAI, this data already exists.
+- Layer 2 handles the ambiguous cases — LLM reads the architecture
   docs and selects a repo with cited evidence.
-- Layer 4 handles the hard cases honestly — the LLM guesses from the
+- Layer 3 handles the hard cases honestly — the LLM guesses from the
   Jira description, but the guess is a hint, not a published answer.
 
 The user sees: a resolved repo or an unresolved result with a hint.
@@ -380,8 +369,9 @@ supports it, and explicit when it doesn't — the system never silently
 guesses wrong.
 
 The operational cost scales with how much of the resolution a workload
-wants to be deterministic. A workload that invests in its mapping gets
-more Layer 1 hits. A workload that cannot afford that investment still
+wants to be deterministic. A workload that invests in its mapping —
+including setting defaults for multi-repo components — gets more
+Layer 1 hits. A workload that cannot afford that investment still
 gets Layer 2 and 3 coverage. The architecture context skill (see
 above) allows workloads to provide their own implementation of how
 context is fetched, so the operational model is not one-size-fits-all.
@@ -427,10 +417,7 @@ lookup out of the LLM:
   returns candidates. If one repo, done — the LLM never runs. This is
   the same pattern as `fetch_components.py` and other fullsend scripts
   that handle deterministic work before the LLM.
-- **Layer 2 becomes a script**: a second deterministic step reads
-  structured metadata from the architecture context to narrow
-  candidates. Still no LLM.
-- **Layers 3 and 4 become separate LLM steps** instead of one combined
+- **Layers 2 and 3 become separate LLM steps** instead of one combined
   pass, each with different inputs and confidence levels.
 - **The resolver becomes a standalone skill** that any agent can call,
   not embedded in the epic-creator wave prompt.
@@ -443,8 +430,8 @@ execution order and separation, not rewriting the logic.
 
 | Aspect | PR #56 | This ADR |
 | --- | --- | --- |
-| Layers 1–2 | LLM reads mapping doc | Deterministic code lookup — no LLM for unambiguous components or metadata-resolvable cases |
-| Layer separation | All layers in one LLM pass | Four distinct steps: deterministic mapping → deterministic metadata → LLM with evidence → LLM guess |
+| Layer 1 | LLM reads mapping doc | Deterministic code lookup — no LLM for unambiguous components or components with a default repo |
+| Layer separation | All layers in one LLM pass | Three distinct steps: deterministic mapping → LLM with evidence → LLM guess |
 | Resolver scope | Embedded in epic-creator's wave prompt | Standalone skill, any agent can call |
 | Input | Strategy + all sources | Jira component + issue context |
 | Output | Work items with resolutions + planned PRs | Resolved repo or unresolved per component |
@@ -499,11 +486,10 @@ execution order and separation, not rewriting the logic.
 - The resolver is a standalone skill: component in, repo out. Any
   agent can use it without importing epic-creator pipeline concepts.
 - The resolution order is visible and explainable: deterministic
-  mapping → deterministic metadata → LLM with evidence → LLM guess
-  as hint
-- Layers 1 and 2 are deterministic — no LLM needed when mapping or
-  metadata can resolve
-- Layer 4 (LLM guess) is only used as a last resort and its output
+  mapping → LLM with evidence → LLM guess as hint
+- Layer 1 is deterministic — no LLM needed when the mapping resolves
+  (single repo or default repo)
+- Layer 3 (LLM guess) is only used as a last resort and its output
   is a hint, never a published answer
 - Epic boundaries shift from Jira component to repository — each epic
   corresponds to exactly one PR in one repo
@@ -516,9 +502,6 @@ execution order and separation, not rewriting the logic.
 
 ## Open questions
 
-- What structured fields in `component-map.json` Layer 2 should match
-  on — component type and tier alone may suffice, or cross-references
-  and dependency declarations may be needed
 - Whether the approved repository inventory (PR #56's
   `repository-inventory.yaml`) is a separate source from the mapping,
   and how it relates to Layer 1
