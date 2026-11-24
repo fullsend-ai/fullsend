@@ -510,18 +510,19 @@ func gatewayRecoveryStub(t *testing.T) string {
 	return dir
 }
 
-// gatewayTestSettle is the settle window under shrinkGatewayRefreshTimers.
-// Each placeholder poll execs the openshell stub (a /bin/sh script), which
-// takes ~100 ms on macOS, so the window must fit several polls: a test whose
-// stub answers the old placeholder once (the "lag" file) needs a second poll
-// inside it. Tests that wait for the window to run out allow 10 s.
-const gatewayTestSettle = 500 * time.Millisecond
+// pendingHandOffSettle is the settle window for the PendingHandOff tests.
+// Their openshell stub answers the old placeholder once (the "lag" file), so
+// the hand-off needs a second poll inside the window. Each poll execs the
+// stub (a /bin/sh script), ~100 ms on macOS and more under -race or load, so
+// the window is wide enough that the poll count never depends on the clock.
+// A landed hand-off returns at the second poll, so it costs nothing.
+const pendingHandOffSettle = 10 * time.Second
 
 // shrinkGatewayRefreshTimers makes the refresher's waits test-sized.
 func shrinkGatewayRefreshTimers(t *testing.T) {
 	t.Helper()
 	oldPoll, oldSettle, oldMin, oldBackoff := openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff
-	openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff = time.Millisecond, gatewayTestSettle, time.Millisecond, time.Millisecond
+	openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff = time.Millisecond, 20*time.Millisecond, time.Millisecond, time.Millisecond
 	t.Cleanup(func() {
 		openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff = oldPoll, oldSettle, oldMin, oldBackoff
 	})
@@ -685,6 +686,7 @@ func TestRunGatewayRefresh_PendingHandOffSeedsTheNewestGeneration(t *testing.T) 
 		"  *'provider update'*) n=$(cat "+q("count")+"); echo $((n+1)) > "+q("count")+"; touch "+q("lag")+" ;;\n"+
 		"esac")
 	shrinkGatewayRefreshTimers(t)
+	openAIPlaceholderSettle = pendingHandOffSettle // restored by shrinkGatewayRefreshTimers' cleanup
 	var calls atomic.Int32
 	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
 		// The first token's lifetime is inside the refresh budget, so the
@@ -730,6 +732,7 @@ func TestRunGatewayRefresh_PendingHandOffRetiresTheHeldGenerationToo(t *testing.
 		"  *'provider update'*) n=$(cat "+q("count")+"); echo $((n+1)) > "+q("count")+"; touch "+q("lag")+" ;;\n"+
 		"esac")
 	shrinkGatewayRefreshTimers(t)
+	openAIPlaceholderSettle = pendingHandOffSettle // restored by shrinkGatewayRefreshTimers' cleanup
 	var calls atomic.Int32
 	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
 		lifetime := 5 * time.Minute
