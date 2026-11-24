@@ -193,7 +193,10 @@ Forgejo has no Jira poll target.
 - An issue the driver cannot write to, or cannot read within two minutes, is
   tried again every cycle until its change leaves the window. Its requests
   are not served. It takes no record room from other issues, and a slow one
-  costs up to two minutes of each cycle.
+  costs up to two minutes of each cycle. Two or three slow issues at the
+  front of the line can use up a whole cycle, and the issues behind them are
+  then not reached and can lose their requests; this ADR accepts that and
+  adds no way to set a slow issue aside.
 - A configured query that sets another order is served in that order. Under
   a sustained backlog, an order other than oldest change first can leave
   older requests waiting until they leave the window, so the guide and the
