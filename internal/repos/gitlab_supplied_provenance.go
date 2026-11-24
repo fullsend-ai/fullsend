@@ -230,15 +230,16 @@ func recordSuppliedEnrollment(ctx context.Context, client forge.Client, owner, r
 	}
 	previous, hadPrevious := state.Roles[string(role)]
 	enrolled := rotationRoleState{
-		CreatedTokenIDs: previous.CreatedTokenIDs,
-		ManagedUserID:   previous.ManagedUserID,
-		OutgoingIDs:     retainedManagedTokenIDs(previous, id.TokenID),
-		Holder:          previous.Holder,
-		LockUntil:       previous.LockUntil,
-		Phase:           rotationPhaseIdle,
-		DistributedAt:   now.UTC().Format(time.RFC3339),
-		Supplied:        true,
-		ExcludedUserIDs: append([]int(nil), previous.ExcludedUserIDs...),
+		CreatedTokenIDs:  previous.CreatedTokenIDs,
+		LegacyBotUserIDs: previous.LegacyBotUserIDs,
+		ManagedUserID:    previous.ManagedUserID,
+		OutgoingIDs:      retainedManagedTokenIDs(previous, id.TokenID),
+		Holder:           previous.Holder,
+		LockUntil:        previous.LockUntil,
+		Phase:            rotationPhaseIdle,
+		DistributedAt:    now.UTC().Format(time.RFC3339),
+		Supplied:         true,
+		ExcludedUserIDs:  append([]int(nil), previous.ExcludedUserIDs...),
 		// Poller identity generations describe accounts, not this credential.
 		GenerationCurrentUserID:  previous.GenerationCurrentUserID,
 		GenerationPendingUserID:  previous.GenerationPendingUserID,
