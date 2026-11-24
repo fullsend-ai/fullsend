@@ -296,13 +296,11 @@ type convergeDiscovery struct {
 	// failed read changes nothing.
 	staleVendored *scaffold.StaleVendoredAssets
 
-	// credsPresent reports that every inference secret for the repo's
-	// inference.auth existed before this run. credsSupplied reports that
-	// the run supplied inputs for at least one selected method, so those
-	// secrets are (re)written: openAISupplied for FULLSEND_OPENAI_API_KEY,
-	// vertexSupplied for the GCP pair. A mix may supply one group and
-	// reuse the other. Set by the serial validation phase.
-	credsPresent   bool
+	// credsSupplied reports that the run supplied inputs for at least one
+	// selected method, so those secrets are (re)written: openAISupplied
+	// for FULLSEND_OPENAI_API_KEY, vertexSupplied for the GCP pair. A mix
+	// may supply one group and reuse the other. Set by the serial
+	// validation phase.
 	credsSupplied  bool
 	openAISupplied bool
 	vertexSupplied bool
@@ -351,17 +349,6 @@ func hasComponent(components []ComponentStatus, name string) bool {
 		}
 	}
 	return false
-}
-
-// secretsPresent returns true when every required inference secret for
-// auth is present (always true for openai-wif alone, which requires none).
-func secretsPresent(components []ComponentStatus, auth string) bool {
-	for _, name := range requiredInferenceSecretsForAuth(auth) {
-		if !hasComponent(components, "secret:"+name) {
-			return false
-		}
-	}
-	return true
 }
 
 // openAIKeyDefect names why an existing FULLSEND_OPENAI_API_KEY cannot be
@@ -1376,7 +1363,6 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// must supply inputs for that method (which then replace them).
 		auth := d.resolved.InferenceAuth
 		repoCfg := d.withVertexInputs(cfg)
-		d.credsPresent = secretsPresent(d.components, auth)
 		d.openAISupplied = openAIInputsSupplied(repoCfg, auth)
 		d.vertexSupplied = vertexInputsSupplied(repoCfg, auth)
 		d.credsSupplied = d.openAISupplied || d.vertexSupplied
