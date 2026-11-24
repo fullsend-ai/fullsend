@@ -99,9 +99,11 @@ remove the row limit, the random pick, and the lock.
    How the driver confirms it is left to the implementation.
 2. **Pool.** The issues that match the configured query and whose `updated`
    value falls within the driver's backfill window, read in the search's
-   sort order, with no row limit. The window is the 24 hours the driver
-   already uses to bound a first poll and to clamp an old checkpoint; its
-   length is fixed today and does not change. The search is sorted oldest
+   sort order, with no row limit. The window is the one the driver already
+   uses to bound a first poll and to clamp an old checkpoint. Its length is
+   fixed at 24 hours today and becomes a setting,
+   `tracker.jira.poll.backfill_window_hours` (default 24, a whole number of
+   hours, at least 1, with no upper limit). The search is sorted oldest
    change first unless the configured query carries its own sort clause,
    which the driver keeps, as it does today. The default query sorts newest
    first today; it no longer carries a sort clause, so it is served oldest
@@ -149,11 +151,14 @@ remove the row limit, the random pick, and the lock.
    times what an ordinary issue takes, and it leaves room for an issue with
    the longest comment and history listings the driver reads. The default,
    the size limit, and the two time limits are initial values; revisit them
-   when a deployment needs more. This one key replaces both keys of ADR 0160,
-   neither of which shipped.
-5. **Unchanged.** Change detection, bot filtering, authorization, the 24-hour
-   window with its clamps and ADR 0160's one log line per cycle naming the
-   clamped candidates, the checkpoint commit with ADR 0160's `updated` clause,
+   when a deployment needs more. The window has no upper limit because no
+   one length suits every project: what a project can afford depends on how
+   many of its issues change, so the operator chooses.
+   `max_dispatches_per_cycle` replaces both keys of ADR 0160, neither of
+   which shipped.
+5. **Unchanged.** Change detection, bot filtering, authorization, the
+   window's clamps and ADR 0160's one log line per cycle naming the clamped
+   candidates, the checkpoint commit with ADR 0160's `updated` clause,
    and on GitLab the record-by-record dispatch with its retry of an issue
    whose dispatch failed.
 
@@ -174,8 +179,8 @@ Forgejo has no Jira poll target.
   order, so none is skipped because of its position in the results or by
   chance.
 - Requests are still lost when issues change faster than the driver can
-  process them within 24 hours, when the poller is stopped for longer than
-  that, or when one issue produces more than 250 dispatch records, or on
+  process them within the window, when the poller is stopped for longer than
+  the window, or when one issue produces more than 250 dispatch records, or on
   GitHub more than 768 KB of them, in one cycle; removing the window is left
   to the entity-based design.
 - On the GitHub target a batch is still lost whole when GitHub discards the
@@ -194,6 +199,12 @@ Forgejo has no Jira poll target.
   older requests waiting until they leave the window, so the guide and the
   config reference recommend oldest change first, say what another order
   costs, and drop the newest-first sort clause from their example queries.
+- A longer window lets requests survive a longer outage, at two costs. A
+  missing or rewound checkpoint replays requests as old as the window. A
+  window that holds more issues than a cycle can list makes the driver fall
+  behind without failing, so recent requests are not served and the run still
+  looks healthy. The guide and the config reference say how to choose the
+  length and what a long one costs.
 - Under oldest change first, any change to a waiting issue, including a
   comment from anyone allowed to comment, moves it to the back of the line;
   under a sustained backlog that can cost the issue its request.
@@ -201,8 +212,8 @@ Forgejo has no Jira poll target.
   within the window, where today it reaches five issues per cycle; the
   per-cycle limit bounds the runs that starts. A rewind does not move an
   issue in the line, so an editor who keeps rewinding issues near the front
-  can hold the requests behind them back. The random pick did not allow that; this ADR
-  accepts it and extends the
+  can hold the requests behind them back. The random pick did not allow
+  that; this ADR accepts it and extends the
   [Jira guide](../guides/user/jira-integration.md)'s rule that Edit Issues on
   a polled project is part of the trust boundary.
 - Each cycle reads the search rows of every issue that changed within the
