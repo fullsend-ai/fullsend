@@ -196,6 +196,17 @@ func gitlabTopLevelVariables(content []byte) (*yaml.Node, bool) {
 // Excluding unrelated work is insufficient if those files also exclude the
 // intended schedule pipeline or omit its poll stage.
 func gitlabScheduledPollProblem(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) string {
+	var descriptions []string
+	for _, spec := range PipelineScheduleSpecs() {
+		descriptions = append(descriptions, spec.Description)
+	}
+	return gitlabScheduledPollProblemFor(ctx, client, owner, repo, defaultBranch, descriptions)
+}
+
+// gitlabScheduledPollProblemFor is gitlabScheduledPollProblem for an explicit
+// set of schedule descriptions, so the Jira poll schedule, which is not one of
+// PipelineScheduleSpecs, can be verified through the same chain.
+func gitlabScheduledPollProblemFor(ctx context.Context, client forge.Client, owner, repo, defaultBranch string, descriptions []string) string {
 	const repair = "; merge the scaffold repair first"
 	files := map[string][]byte{}
 	for _, path := range []string{".gitlab-ci.yml", fullsendPipelineInclude, fullsendPollTemplatePath} {
@@ -209,20 +220,20 @@ func gitlabScheduledPollProblem(ctx context.Context, client forge.Client, owner,
 	if problem := gitlabEffectiveStagesProblemForStage(root, wrapper, poll, "poll"); problem != "" {
 		return "the committed scheduled pipeline configuration does not include a runnable poll stage: " + problem + repair
 	}
-	for _, spec := range PipelineScheduleSpecs() {
+	for _, description := range descriptions {
 		env := pipelineSourceEnv(defaultBranch, "schedule")
-		env["CI_PIPELINE_SCHEDULE_DESCRIPTION"] = &spec.Description
+		env["CI_PIPELINE_SCHEDULE_DESCRIPTION"] = &description
 		if problem := gitlabEffectiveWorkflowProblemForEnv(root, wrapper, poll, fullsendPollTemplatePath, env, "scheduled (source=schedule)"); problem != "" {
-			return "the committed workflow does not admit " + spec.Description + ": " + problem + repair
+			return "the committed workflow does not admit " + description + ": " + problem + repair
 		}
 		if !gitlabIncludeAdmits(root, isFullsendPipelineInclude, env) {
-			return "the committed .gitlab-ci.yml does not include " + fullsendPipelineInclude + " for " + spec.Description + repair
+			return "the committed .gitlab-ci.yml does not include " + fullsendPipelineInclude + " for " + description + repair
 		}
 		if !gitlabIncludeAdmits(wrapper, func(n *yaml.Node) bool { return namesLocalInclude(n, fullsendPollTemplatePath) }, env) {
-			return "the committed " + fullsendPipelineInclude + " does not include " + fullsendPollTemplatePath + " for " + spec.Description + repair
+			return "the committed " + fullsendPipelineInclude + " does not include " + fullsendPollTemplatePath + " for " + description + repair
 		}
 		if !gitlabJobAdmits(poll, fullsendPollJobName, env) {
-			return "the committed poll job in " + fullsendPollTemplatePath + " does not start automatically for " + spec.Description + repair
+			return "the committed poll job in " + fullsendPollTemplatePath + " does not start automatically for " + description + repair
 		}
 	}
 	return ""

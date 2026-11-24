@@ -9,7 +9,9 @@
 # The job requests one token from the mint with the GitHub Actions OIDC
 # token and uploads a compact result. It never writes either token
 # anywhere: a minted token is masked and revoked straight away, and only
-# its reported scope is kept. The job exits 0 whatever the mint answers;
+# its reported scope is kept. It also records the Strict-Transport-Security
+# value of the mint's /v1/token and /health responses. The job exits 0
+# whatever the mint answers;
 # the suite classifies the uploaded result, so a missing result (for
 # example a failed upload) fails the run instead of passing silently.
 name: mint-probe
@@ -58,6 +60,10 @@ jobs:
           scope='{}'
           repos='[]'
           token=''
+          # Strict-Transport-Security values of the mint's /v1/token and
+          # /health responses; empty when the header or response is missing.
+          hsts_token=''
+          hsts_health=''
           # oidc_verified becomes true only once the OIDC token's signature,
           # issuer, audience and time claims were verified here. The mint
           # answers a workflow-host denial and an OIDC failure with the same
@@ -77,13 +83,34 @@ jobs:
               --arg outcome "$1" --arg error "$2" --arg status "$3" --arg message "${4:0:300}" \
               --arg role "${ROLE}" --arg level "${LEVEL}" --argjson repos "${repos}" \
               --argjson verified "${oidc_verified}" \
+              --arg hsts_token "${hsts_token}" --arg hsts_health "${hsts_health}" \
               --argjson claims "${claims}" --argjson scope "${scope}" \
               '{outcome: $outcome, role: $role, level: $level, repos: $repos, oidc_verified: $verified}
                + (if $error == "" then {} else {error: $error} end)
                + (if $status == "" then {} else {http_status: ($status | tonumber)} end)
                + (if $message == "" then {} else {message: $message} end)
+               + (if $hsts_token == "" then {} else {hsts_token: $hsts_token} end)
+               + (if $hsts_health == "" then {} else {hsts_health: $hsts_health} end)
                + $claims + $scope' >"${out}"
             echo "mint probe result: outcome=$1 error=${2:--} http_status=${3:--} oidc_verified=${oidc_verified}"
+          }
+
+          # hsts_value FILE prints the Strict-Transport-Security value of the
+          # last response in a curl --dump-header FILE (a retried request
+          # leaves one header block per attempt), or nothing. A response
+          # with more than one such field yields nothing, since a client
+          # honours only the first and the other fields cannot be vouched
+          # for. So does a value with a character outside the header-value
+          # set, or one over 200 bytes, since the value lands in the result
+          # artifact.
+          hsts_value() {
+            local v
+            [[ -f "$1" ]] || return 0
+            v="$(tr -d '\r' <"$1" | LC_ALL=C awk '
+              /^HTTP\// { v = ""; n = 0 }
+              tolower($0) ~ /^strict-transport-security:/ { sub(/^[^:]*:[ \t]*/, ""); sub(/[ \t]+$/, ""); v = $0; n++ }
+              END { if (n != 1 || v !~ /^[A-Za-z0-9=;,. _-]*$/ || length(v) > 200) v = ""; print v }')" || v=''
+            printf '%s' "${v}"
           }
 
           # b64url_decode VALUE decodes unpadded base64url to stdout.
@@ -101,10 +128,15 @@ jobs:
           # the mint does: RS256 signature against GitHub's published signing
           # key, issuer, audience and time claims. It prints the failing
           # check on stderr and succeeds only for a fully verified token.
+          # github.com's issuer; a GitHub server other than github.com (such
+          # as an emulator) issues the tokens from its own URL.
           oidc_issuer='https://token.actions.githubusercontent.com'
+          if [[ "${GITHUB_SERVER_URL:-https://github.com}" != https://github.com ]]; then
+            oidc_issuer="${GITHUB_SERVER_URL%/}"
+          fi
           oidc_audience='fullsend-mint'
           verify_oidc_token() {
-            local h p s header kid cert dir now jwks
+            local h p s header kid n e n_hex e_hex dir now jwks
             IFS=. read -r h p s <<<"$1"
             if [[ -z "${h}" || -z "${p}" || -z "${s}" ]]; then
               echo "not a three-part JWT" >&2
@@ -127,15 +159,19 @@ jobs:
               echo "fetching GitHub's signing keys failed" >&2
               return 1
             fi
-            cert="$(jq -er --arg kid "${kid}" '[.keys[] | select(.kid == $kid)][0].x5c[0] | select(type == "string" and test("^[A-Za-z0-9+/=]+$"))' <<<"${jwks}" 2>/dev/null)" \
+            # The key's modulus and exponent, which every JWKS key carries
+            # (GitHub's newer keys have no x5c certificate chain).
+            n="$(jq -er --arg kid "${kid}" '[.keys[] | select(.kid == $kid and .kty == "RSA")][0].n | select(type == "string" and test("^[A-Za-z0-9_-]+$"))' <<<"${jwks}" 2>/dev/null)" \
+              && e="$(jq -er --arg kid "${kid}" '[.keys[] | select(.kid == $kid and .kty == "RSA")][0].e | select(type == "string" and test("^[A-Za-z0-9_-]+$"))' <<<"${jwks}" 2>/dev/null)" \
               || { echo "no signing key for the token's kid" >&2; return 1; }
             dir="$(mktemp -d)" || return 1
-            {
-              echo '-----BEGIN CERTIFICATE-----'
-              fold -w 64 <<<"${cert}"
-              echo '-----END CERTIFICATE-----'
-            } >"${dir}/cert.pem"
-            if ! openssl x509 -in "${dir}/cert.pem" -pubkey -noout >"${dir}/pub.pem" 2>/dev/null \
+            n_hex="$(b64url_decode "${n}" | od -An -v -tx1 | tr -d ' \n')"
+            e_hex="$(b64url_decode "${e}" | od -An -v -tx1 | tr -d ' \n')"
+            printf '%s\n' 'asn1=SEQUENCE:spki' '[spki]' 'alg=SEQUENCE:alg' 'key=BITWRAP,SEQUENCE:rsakey' \
+              '[alg]' 'oid=OID:rsaEncryption' 'null=NULL' '[rsakey]' "n=INTEGER:0x${n_hex}" "e=INTEGER:0x${e_hex}" >"${dir}/key.cnf"
+            if [[ -z "${n_hex}" || -z "${e_hex}" ]] \
+              || ! openssl asn1parse -genconf "${dir}/key.cnf" -out "${dir}/key.der" -noout >/dev/null 2>&1 \
+              || ! openssl pkey -pubin -inform DER -in "${dir}/key.der" -out "${dir}/pub.pem" 2>/dev/null \
               || ! b64url_decode "${s}" >"${dir}/sig.bin" 2>/dev/null \
               || ! printf '%s' "${h}.${p}" | openssl dgst -sha256 -verify "${dir}/pub.pem" -signature "${dir}/sig.bin" >/dev/null 2>&1; then
               rm -rf "${dir}"
@@ -165,7 +201,7 @@ jobs:
               code="$(curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w '%{http_code}' -X DELETE \
                 -H "Authorization: Bearer ${token}" \
                 -H "Accept: application/vnd.github+json" \
-                https://api.github.com/installation/token)" || code=000
+                "${GITHUB_API_URL:-https://api.github.com}/installation/token")" || code=000
               if [[ "${code}" == 204 ]]; then
                 token=''
                 return 0
@@ -184,6 +220,14 @@ jobs:
             emit error config "" "repos_json is not a non-empty JSON array of strings"
             exit 0
           fi
+
+          # Record the HSTS value of the mint's health response. A failed
+          # request leaves it empty, which the suite's HSTS step reports.
+          if curl -sS --max-time 20 --retry 2 --retry-delay 2 -o /dev/null -D health-headers.txt \
+            "${MINT_URL%/}/health"; then
+            hsts_health="$(hsts_value health-headers.txt)"
+          fi
+          rm -f health-headers.txt
 
           if ! oidc_response="$(curl -sS --fail --retry 3 --retry-delay 2 --retry-all-errors \
             -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
@@ -215,14 +259,17 @@ jobs:
 
           body="$(jq -nc --arg role "${ROLE}" --arg level "${LEVEL}" --argjson repos "${repos}" \
             '{role: $role, level: $level, repos: $repos}')"
-          if ! status="$(curl -sS --retry 2 --retry-delay 2 -o mint-response.json -w '%{http_code}' \
+          if ! status="$(curl -sS --retry 2 --retry-delay 2 -o mint-response.json -D mint-headers.txt -w '%{http_code}' \
             -H "Authorization: Bearer ${oidc_token}" \
             -H "Content-Type: application/json" \
             -d "${body}" \
             "${MINT_URL%/}/v1/token")"; then
+            rm -f mint-headers.txt
             emit error transport "" "the mint request did not complete"
             exit 0
           fi
+          hsts_token="$(hsts_value mint-headers.txt)"
+          rm -f mint-headers.txt
           message="$(jq -r '.error // empty' mint-response.json 2>/dev/null || true)"
 
           case "${status}" in

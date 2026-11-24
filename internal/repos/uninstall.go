@@ -13,7 +13,10 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID})
+// uninstallVariables are the variables uninstall deletes outside GitLab,
+// including FULLSEND_TRACE_SIGNING_KEY_ID, which install writes next to the
+// trace signing key (ADR 0154).
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID, forge.VarTraceSigningKeyID})
 
 // uninstallSecrets deletes every Fullsend-managed inference secret of
 // every inference.auth method (managedInferenceSecrets), independent of
@@ -22,7 +25,21 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 // block cleanup. Deleting an absent secret is a no-op, so repeating
 // uninstall is safe. It must not become requiredSecrets — probe/converge
 // require only the selected method's secrets.
-var uninstallSecrets = managedInferenceSecrets()
+//
+// It also deletes the Jira polling credentials (FULLSEND_JIRA_TOKEN,
+// FULLSEND_JIRA_EMAIL, FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET) that `repos install` provisions for repositories
+// whose effective tracker.jira.poll.enabled is true. Install deliberately
+// keeps them while polling is disabled, but teardown must not leave a
+// long-lived Jira credential behind.
+//
+// It also deletes the trace signing key (FULLSEND_TRACE_SIGNING_KEY,
+// ADR 0154), so a torn-down repository keeps no private key.
+var uninstallSecrets = slices.Concat(managedInferenceSecrets(), jiraManagedSecrets, []string{forge.SecretTraceSigningKey})
+
+// jiraManagedSecrets are the Jira polling credentials written by install
+// (convergeJiraPoll) outside installSecretsForForge.
+var jiraManagedSecrets = []string{forge.SecretJiraToken, forge.SecretJiraEmail, forge.SecretJiraClientID, forge.SecretJiraClientSecret}
 
 // gitlabUninstallVars intentionally does NOT include the legacy
 // FULLSEND_FORGE_TOKEN shared secret. Uninstall no longer retires it
@@ -66,7 +83,10 @@ var gitlabUninstallVars = []string{
 // It also includes the webhook fast-path credentials (FULLSEND_TRIGGER_TOKEN
 // and FULLSEND_WEBHOOK_SECRET). Secret deletion addresses only the
 // wildcard-scoped variable, which is the one Fullsend creates.
-var gitlabUninstallSecrets = append(managedInferenceSecrets(), forge.SecretTriggerToken, forge.SecretWebhookSecret)
+//
+// It also includes the Jira polling credentials, which GitLab injects into
+// every protected-branch job while they exist, and the trace signing key.
+var gitlabUninstallSecrets = slices.Concat(managedInferenceSecrets(), []string{forge.SecretTriggerToken, forge.SecretWebhookSecret}, jiraManagedSecrets, []string{forge.SecretTraceSigningKey})
 
 // gitlabScaffoldPaths is the full set of files uninstall removes. It is
 // a superset of the current install set: fullsend-dispatch.yml is no
@@ -321,6 +341,26 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		files = append(files, forge.TreeFile{Path: p, Delete: true})
 	}
 
+	// The managed Jira poll caller (#9109) is removed with the rest of the
+	// scaffold, since uninstall also deletes the Jira credentials it uses.
+	// A user-owned workflow at the same path is left alone.
+	if cfg.Forge == ForgeGitHub || cfg.Forge == "" {
+		actions, err := githubJiraPollReconciler{}.Remove(ctx, jiraPollRequest{
+			Client:    client,
+			Owner:     owner,
+			Repo:      repo,
+			StageFile: func(f forge.TreeFile) { files = append(files, f) },
+		})
+		if err != nil {
+			result.Error = fmt.Errorf("checking managed Jira poll workflow before uninstall: %w", err)
+			progress(fullName, "workflow", fmt.Sprintf("Failed: %v", result.Error))
+			return result
+		}
+		for _, a := range actions {
+			progress(fullName, "workflow", a.Detail)
+		}
+	}
+
 	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml
 	// in the same commit as the scaffold deletes. The root file is
 	// user-owned: we remove only fullsend's include directive and
@@ -568,10 +608,11 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		defer innerWg.Done()
 		for _, name := range forgeSecrets {
 			if delErr := client.DeleteRepoSecret(ctx, owner, repo, name); delErr != nil {
-				if name == forge.SecretTriggerToken || name == forge.SecretWebhookSecret {
-					// The webhook credentials are not known to any redactor
-					// at this point, so an error echoing one must not reach
-					// uninstall output; withhold the server text.
+				if name == forge.SecretTriggerToken || name == forge.SecretWebhookSecret || name == forge.SecretTraceSigningKey {
+					// The webhook credentials and the trace signing key are
+					// not known to any redactor at this point, so an error
+					// echoing one must not reach uninstall output; withhold
+					// the server text.
 					secretErr = safeAPIError("deleting secret "+name, delErr)
 				} else {
 					secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)

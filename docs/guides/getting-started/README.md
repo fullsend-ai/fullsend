@@ -6,7 +6,7 @@ description: Step-by-step setup for fullsend — connect a model provider, choos
 # Getting Started
 
 This section contains easy and to the point guides to help you
-set up Fullsend. These are intended to be read in a certain order:
+set up fullsend. These are intended to be read in a certain order:
 
 1. [Getting Inference](getting-inference.md)
 2. [Choose an agent runtime](choosing-a-runtime.md)

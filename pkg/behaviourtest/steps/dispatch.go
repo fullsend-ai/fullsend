@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -37,7 +38,7 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 		return ctx, thenHarnessAgentDidNotRun(world.FromContext(ctx), agent)
 	})
 	sc.Step(`^the harness "([^"]+)" workflow logs (do not )?contain "([^"]+)"$`, func(ctx context.Context, agent, negate, needle string) (context.Context, error) {
-		return ctx, thenHarnessWorkflowLogsContain(world.FromContext(ctx), agent, needle, negate == "")
+		return ctx, thenHarnessWorkflowLogsContain(ctx, world.FromContext(ctx), agent, needle, negate == "")
 	})
 	sc.Step(`^the harness "([^"]+)" workflow logs register persona "([^"]+)" and not "([^"]+)"$`, func(ctx context.Context, agent, want, notWant string) (context.Context, error) {
 		return ctx, thenHarnessLogsRegisterPersona(world.FromContext(ctx), agent, want, notWant)
@@ -426,9 +427,14 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 // thenHarnessWorkflowLogsContain checks the harness run's logs for needle
 // (want) or its absence (!want). It reads the run recorded by "the harness
 // ... workflow completes successfully", waiting for it first when no run is
-// recorded yet. A log snapshot with a job missing or truncated cannot prove
-// absence, so a negative check on one fails instead of passing.
-func thenHarnessWorkflowLogsContain(w *world.World, agent, needle string, want bool) error {
+// recorded yet. Logs that could not be fetched, were empty or hold a
+// fetch-failure note are fetched again until harnessLogPollWindow passes
+// (fetchUsableHarnessLogs, shared with the fails-with-log step). A log
+// snapshot with a job missing or truncated cannot prove absence, so a
+// negative check on one fails instead of passing, and a window that ends
+// with no log output proves nothing either: the check fails saying the
+// forge returned no logs, whatever the expected outcome.
+func thenHarnessWorkflowLogsContain(ctx context.Context, w *world.World, agent, needle string, want bool) error {
 	agent = strings.TrimSpace(agent)
 	if w.WorkflowRun == nil {
 		if err := thenHarnessWorkflowCompletes(w, agent); err != nil {
@@ -436,28 +442,43 @@ func thenHarnessWorkflowLogsContain(w *world.World, agent, needle string, want b
 		}
 	}
 	run := w.WorkflowRun
-	logs, err := w.CI.GetRunLogs(context.Background(), w.Org, w.RepoName, run.ID)
-	if err != nil {
-		return fmt.Errorf("reading harness %q workflow logs (run %d): %w", agent, run.ID, err)
-	}
+	logs, fetchErr, stopped := fetchUsableHarnessLogs(ctx, w, agent, needle, run)
 	found := strings.Contains(logs, needle)
 	complete := runLogsComplete(*run, logs)
+	var checkErr error
 	switch {
+	case fetchErr != nil:
+		checkErr = fmt.Errorf("reading harness %q workflow logs (run %d): %w", agent, run.ID, fetchErr)
+	// An empty body with no error is not a log snapshot
+	// (writeFetchedWorkflowRunLogs, checkHarnessRunLogs): it proves
+	// neither presence nor absence.
+	case strings.TrimSpace(logs) == "":
+		checkErr = fmt.Errorf("the forge returned no log output for harness %q run %d, so %q was not checked", agent, run.ID, needle)
 	case want && !found && !complete:
-		return fmt.Errorf("harness %q workflow logs (run %d) do not contain %q, but the log snapshot is incomplete", agent, run.ID, needle)
+		checkErr = fmt.Errorf("harness %q workflow logs (run %d) do not contain %q, but the log snapshot is incomplete", agent, run.ID, needle)
 	case want && !found:
-		return fmt.Errorf("harness %q workflow logs (run %d) do not contain %q", agent, run.ID, needle)
+		checkErr = fmt.Errorf("harness %q workflow logs (run %d) do not contain %q", agent, run.ID, needle)
 	case !want && found:
-		return fmt.Errorf("harness %q workflow logs (run %d) unexpectedly contain %q", agent, run.ID, needle)
+		checkErr = fmt.Errorf("harness %q workflow logs (run %d) unexpectedly contain %q", agent, run.ID, needle)
 	case !want && !complete:
-		return fmt.Errorf("harness %q workflow logs (run %d) are incomplete, so they cannot show %q is absent", agent, run.ID, needle)
+		checkErr = fmt.Errorf("harness %q workflow logs (run %d) are incomplete, so they cannot show %q is absent", agent, run.ID, needle)
 	}
-	return nil
+	if checkErr == nil {
+		return nil
+	}
+	// A cancelled or timed-out scenario is the cause whatever the
+	// diagnosis, the way the fails-with-log step wraps its check error.
+	if stopped != nil {
+		checkErr = fmt.Errorf("%w (stopped waiting for the logs: %w)", checkErr, stopped)
+	}
+	return checkErr
 }
 
 // defaultSettleDuration is the maximum time to wait for the dispatch
 // pipeline to settle before asserting artifact absence.
-const defaultSettleDuration = 90 * time.Second
+// BEHAVIOUR_NEGATIVE_SETTLE overrides it (a Go duration), for a local
+// forge that delivers events and starts runs at once.
+var defaultSettleDuration = env.MustDuration("BEHAVIOUR_NEGATIVE_SETTLE", 90*time.Second)
 
 // negativeSettleDuration returns how long to wait before a negative
 // (did-not-run) assertion.  When the scenario already completed a
@@ -532,7 +553,7 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 	if w.WorkflowRun == nil {
 		return fmt.Errorf("no workflow run recorded")
 	}
-	if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, w.WorkflowRun.ID, "fullsend-"+agent, dest); err != nil {
+	if err := ci.DownloadAgentArtifactsFromRun(ctx, w.CI, w.Org, w.RepoName, w.WorkflowRun.ID, agent, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
 	}
@@ -576,6 +597,12 @@ func givenPullRequestChangingPath(w *world.World, path string) error {
 // author (and the sender of its opened event) is driver's identity. It
 // returns the head branch.
 func openPullRequest(w *world.World, driver scm.Driver, path, body string) (string, error) {
+	return openPullRequestWithContent(w, driver, path, body, []byte("behaviour test\n"))
+}
+
+// openPullRequestWithContent is openPullRequest with the committed file
+// content given.
+func openPullRequestWithContent(w *world.World, driver scm.Driver, path, body string, content []byte) (string, error) {
 	if w.RepoOwner == "" || w.RepoName == "" {
 		return "", fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
 	}
@@ -587,7 +614,7 @@ func openPullRequest(w *world.World, driver scm.Driver, path, body string) (stri
 		return "", err
 	}
 	msg := fmt.Sprintf("behaviour pr %s", branch)
-	if err := driver.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, path, msg, []byte("behaviour test\n")); err != nil {
+	if err := driver.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, path, msg, content); err != nil {
 		return branch, err
 	}
 	pr, err := driver.CreateChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour test PR", body, branch, "main")

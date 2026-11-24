@@ -65,6 +65,7 @@ func TestGivenEnrolledTestRepository_BindsWorldToLeasedOrg(t *testing.T) {
 		Client: client, MintURL: "https://mint.halfsend-07",
 		MintStatusGroup:       "halfsend-11/mint-status",
 		MintWorkflowHostRepos: []string{"halfsend-07/test-repo-03", "halfsend-08/test-repo-03"},
+		FreshInstall:          true,
 	}}
 	od := &recordingOrgDrivers{}
 	templateSCM := &fakeDispatchSCM{}
@@ -84,6 +85,7 @@ func TestGivenEnrolledTestRepository_BindsWorldToLeasedOrg(t *testing.T) {
 	assert.Equal(t, []string{"halfsend-07/test-repo-03", "halfsend-08/test-repo-03"}, w.MintWorkflowHostRepos)
 	assert.Equal(t, "test-repo-03", w.LeasedRepoName)
 	assert.Equal(t, "halfsend-07", w.LeasedRepoOrg)
+	assert.True(t, w.RepoFreshlyInstalled, "the lease's fresh install is recorded (#9779)")
 	assert.Same(t, client, od.client, "drivers built from the leased org's client")
 	assert.Equal(t, "tok-07", od.token)
 	assert.Same(t, od.scm, w.SCM)

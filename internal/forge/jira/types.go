@@ -28,10 +28,14 @@ type IssueFields struct {
 	Status      Status       `json:"status"`
 	Labels      []string     `json:"labels"`
 	Reporter    User         `json:"reporter"`
+	Assignee    User         `json:"assignee"` // zero value when unassigned (Jira returns null)
 	Created     string       `json:"created"`
 	Updated     string       `json:"updated"`
 	Comment     *CommentPage `json:"comment,omitempty"`
 	IssueType   *IssueType   `json:"issuetype,omitempty"`
+	// Project is the issue's project. Its ID is the immutable Jira
+	// container identity for trace binding; the key is display-only.
+	Project *ProjectRef `json:"project,omitempty"`
 
 	// CustomFields holds the raw JSON value of every "customfield_*" key
 	// in the fields object, keyed by field ID (e.g. "customfield_10875").
@@ -43,6 +47,13 @@ type IssueFields struct {
 
 // customFieldPrefix is the prefix Jira uses for custom field IDs.
 const customFieldPrefix = "customfield_"
+
+// ProjectRef identifies a Jira project. ID is the immutable project
+// database ID (the trace container identity); Key is the display key.
+type ProjectRef struct {
+	ID  string `json:"id"`
+	Key string `json:"key"`
+}
 
 // UnmarshalJSON decodes the standard fields and additionally collects
 // every "customfield_*" key into CustomFields.

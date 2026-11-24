@@ -70,7 +70,7 @@ func TestEnsureManagedConfigDefaults_KeepsDenyAllOnUnselectedRepo(t *testing.T) 
 	assert.Empty(t, web.AllowedResources())
 }
 
-// The upstream create_issues grant is only a default for a pristine
+// The upstream tracking grant is only a default for a pristine
 // repository; one with an existing base layer needs an operator declaration.
 func TestEnsureManagedConfigDefaults_NonPristineRepoGetsNoUpstreamGrant(t *testing.T) {
 	m := newConvergeManifest("acme/api")

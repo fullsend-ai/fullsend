@@ -10,15 +10,17 @@ import (
 	"io"
 	"log"
 	"math"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // LiveClient is an HTTP client for the Jira Cloud REST API v3.
@@ -27,6 +29,21 @@ type LiveClient struct {
 	baseURL    string
 	email      string // for Basic auth (Cloud)
 	token      string
+
+	// oauth, when set, supplies Bearer access tokens from a service
+	// account's OAuth 2.0 client credentials instead of token (see
+	// NewScoped). oauthTokenURL overrides its token endpoint.
+	oauth         *oauthTokenSource
+	oauthTokenURL string
+
+	// gatewayURL, when set, routes REST requests through the Atlassian
+	// API gateway (see WithAPIGateway) instead of the site URL.
+	gatewayURL string
+	// cloudSem serializes cloud ID discovery; cloudID caches the result.
+	// Only a successful discovery is cached, so a failed one is retried
+	// on the next request.
+	cloudSem chan struct{}
+	cloudID  string
 }
 
 // Option configures the Jira client.
@@ -50,6 +67,21 @@ func WithEmail(email string) Option {
 	}
 }
 
+// WithAPIGateway routes REST requests through the Atlassian API gateway
+// at apiURL (for example https://api.atlassian.com) instead of the site
+// URL: requests go to {apiURL}/ex/jira/{cloudId}/rest/api/3/... Scoped
+// API tokens, including service-account tokens, are only accepted
+// through the gateway. The cloud ID is discovered from the site URL set
+// by WithBaseURL (GET {baseURL}/_edge/tenant_info) on the first request
+// and cached for the client's lifetime. The site URL stays the source of
+// issue browse links. An apiURL override must serve the same
+// /ex/jira/{cloudId}/rest/api/3 path layout.
+func WithAPIGateway(apiURL string) Option {
+	return func(c *LiveClient) {
+		c.gatewayURL = strings.TrimRight(apiURL, "/")
+	}
+}
+
 // WithHTTPClient sets a custom HTTP client for API calls.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *LiveClient) {
@@ -69,11 +101,12 @@ func ValidateBaseURL(rawURL string) error {
 	// Credentials in the URL (https://user:token@host) would be stored
 	// verbatim, propagated into the issue browse URL that lands in every
 	// dispatched NormalizedEvent (and the Actions UI via the guide's
-	// script), and echoed into the error below. Require them via
-	// JIRA_USER_EMAIL/JIRA_TOKEN instead. u.Redacted() masks any password
-	// in error text.
+	// script), and echoed into the error below. Require them via the
+	// FULLSEND_JIRA_* credential variables instead. u.Redacted() masks any
+	// password in error text.
 	if u.User != nil {
-		return fmt.Errorf("base URL %q must not embed credentials; use JIRA_USER_EMAIL and JIRA_TOKEN", u.Redacted())
+		return fmt.Errorf("base URL %q must not embed credentials; use %s and %s, or %s and %s", u.Redacted(),
+			TokenEnvVar, EmailEnvVar, ClientIDEnvVar, ClientSecretEnvVar)
 	}
 	if u.Scheme == "https" {
 		return nil
@@ -108,28 +141,61 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-// New creates a new Jira client with the given API token.
+// New creates a new Jira client with the given API token. NewScoped also
+// uses it for OAuth 2.0 client credentials, which take the place of the
+// token.
 func New(token string, opts ...Option) (*LiveClient, error) {
-	if token == "" {
+	c := newLiveClient(token, opts)
+	if c.oauth == nil && token == "" {
 		return nil, fmt.Errorf("jira: token must not be empty")
 	}
+	if c.oauth != nil {
+		c.oauth.tokenURL = DefaultOAuthTokenURL
+		if c.oauthTokenURL != "" {
+			c.oauth.tokenURL = c.oauthTokenURL
+		}
+		if err := ValidateBaseURL(c.oauth.tokenURL); err != nil {
+			return nil, fmt.Errorf("jira: OAuth token URL: %w", err)
+		}
+	}
+	if err := c.validateEndpoints(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// newLiveClient returns a client with the default HTTP client and opts
+// applied, without validating it.
+func newLiveClient(token string, opts []Option) *LiveClient {
 	c := &LiveClient{
 		httpClient: &http.Client{
 			Timeout:       30 * time.Second,
 			CheckRedirect: checkRedirect,
 		},
-		token: token,
+		token:    token,
+		cloudSem: make(chan struct{}, 1),
 	}
 	for _, o := range opts {
 		o(c)
 	}
+	return c
+}
+
+// validateEndpoints checks that the site URL is set and that the site and
+// API gateway URLs pass ValidateBaseURL.
+func (c *LiveClient) validateEndpoints() error {
 	if c.baseURL == "" {
-		return nil, fmt.Errorf("jira: base URL must be set via WithBaseURL")
+		return fmt.Errorf("jira: base URL must be set via WithBaseURL")
 	}
 	if err := ValidateBaseURL(c.baseURL); err != nil {
-		return nil, err
+		return err
 	}
-	return c, nil
+	if c.gatewayURL != "" {
+		if err := ValidateBaseURL(c.gatewayURL); err != nil {
+			return fmt.Errorf("jira: API gateway URL: %w", err)
+		}
+	}
+	return nil
 }
 
 // APIError represents an error response from the Jira API.
@@ -163,13 +229,112 @@ func (e *APIError) Unwrap() error {
 
 const maxRetries = 5
 
-// apiURL builds a Jira Cloud REST API v3 URL. This client targets Cloud
-// only: v3/ADF and the cursor-based search/group endpoints below don't
-// exist on Data Center (which speaks /rest/api/2 with startAt/total
-// pagination and takes a groupname, not a groupId). Data Center support
-// is tracked as future work, not implemented here.
-func (c *LiveClient) apiURL(path string) string {
-	return c.baseURL + "/rest/api/3" + path
+// apiURL builds a Jira Cloud REST API v3 URL: under the site URL by
+// default, or under the API gateway and the site's cloud ID when
+// WithAPIGateway is set. This client targets Cloud only: v3/ADF and the
+// cursor-based search/group endpoints below don't exist on Data Center
+// (which speaks /rest/api/2 with startAt/total pagination and takes a
+// groupname, not a groupId). Data Center support is tracked as future
+// work, not implemented here.
+func (c *LiveClient) apiURL(ctx context.Context, path string) (string, error) {
+	if c.gatewayURL == "" {
+		return c.baseURL + "/rest/api/3" + path, nil
+	}
+	base, err := c.gatewaySiteURL(ctx)
+	if err != nil {
+		return "", err
+	}
+	return base + "/rest/api/3" + path, nil
+}
+
+// gatewaySiteURL returns the per-site gateway base
+// {gatewayURL}/ex/jira/{cloudId}, discovering the cloud ID on first use.
+func (c *LiveClient) gatewaySiteURL(ctx context.Context) (string, error) {
+	cloudID, err := c.resolveCloudID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.gatewayURL + "/ex/jira/" + cloudID, nil
+}
+
+// maxTenantInfoBytes bounds the tenant_info response body.
+const maxTenantInfoBytes = 64 << 10
+
+// cloudIDRe matches a Jira Cloud ID (a UUID). Anything else is rejected so
+// a malformed tenant_info response cannot inject path segments into the
+// gateway URL.
+var cloudIDRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+
+// resolveCloudID returns the site's cloud ID, discovering it on first use.
+// Concurrent callers wait for a single discovery; waiting honours ctx.
+func (c *LiveClient) resolveCloudID(ctx context.Context) (string, error) {
+	select {
+	case c.cloudSem <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-c.cloudSem }()
+	if c.cloudID != "" {
+		return c.cloudID, nil
+	}
+	cloudID, err := c.fetchCloudID(ctx)
+	if err != nil {
+		return "", err
+	}
+	c.cloudID = cloudID
+	return cloudID, nil
+}
+
+// fetchCloudID reads the cloud ID from GET {baseURL}/_edge/tenant_info.
+// The endpoint is public, so no credentials are sent to it.
+func (c *LiveClient) fetchCloudID(ctx context.Context) (string, error) {
+	tenantURL := c.baseURL + "/_edge/tenant_info"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tenantURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("jira: discover cloud ID: create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("jira: discover cloud ID: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: unexpected status %d", tenantURL, resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxTenantInfoBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: read response: %w", tenantURL, err)
+	}
+	if len(data) > maxTenantInfoBytes {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: response exceeds %d bytes", tenantURL, maxTenantInfoBytes)
+	}
+	var info struct {
+		CloudID string `json:"cloudId"`
+	}
+	if err := json.Unmarshal(data, &info); err != nil {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: malformed response: %w", tenantURL, err)
+	}
+	if !cloudIDRe.MatchString(info.CloudID) {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: response has no valid cloudId", tenantURL)
+	}
+	return info.CloudID, nil
+}
+
+// authorize sets the request's Authorization header and returns the OAuth
+// access token it used ("" with a token). stale is an access token the API
+// just rejected: it is replaced rather than reused.
+func (c *LiveClient) authorize(ctx context.Context, req *http.Request, stale string) (string, error) {
+	if c.oauth == nil {
+		c.setAuth(req)
+		return "", nil
+	}
+	tok, err := c.oauth.token(ctx, c.httpClient, stale)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	return tok, nil
 }
 
 func (c *LiveClient) setAuth(req *http.Request) {
@@ -183,7 +348,10 @@ func (c *LiveClient) setAuth(req *http.Request) {
 
 // do executes an HTTP request with auth, error handling, and retry with backoff.
 func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader, result any) error {
-	reqURL := c.apiURL(path)
+	reqURL, err := c.apiURL(ctx, path)
+	if err != nil {
+		return err
+	}
 
 	var bodyBytes []byte
 	if body != nil {
@@ -194,6 +362,11 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 		}
 	}
 
+	// stale is an OAuth access token the API rejected with 401 on this
+	// call. The request is retried once with a freshly requested token:
+	// a 401 means the request was not processed, so the retry is safe
+	// for any method.
+	var stale string
 	for attempt := range maxRetries {
 		var reqBody io.Reader
 		if bodyBytes != nil {
@@ -205,7 +378,10 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 			return fmt.Errorf("create request: %w", err)
 		}
 
-		c.setAuth(req)
+		usedToken, err := c.authorize(ctx, req, stale)
+		if err != nil {
+			return err
+		}
 		req.Header.Set("Accept", "application/json")
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -223,6 +399,12 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 				continue
 			}
 			return fmt.Errorf("http %s %s: %w", method, path, err)
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized && usedToken != "" && stale == "" && attempt < maxRetries-1 {
+			_ = resp.Body.Close()
+			stale = usedToken
+			continue
 		}
 
 		if isRetryable(resp, method, path) {
@@ -329,7 +511,7 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 	}
 	base := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 	half := base / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 // ---------------------------------------------------------------------------
@@ -344,14 +526,19 @@ type searchRequest struct {
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
-// searchFields lists the issue fields the poller actually consumes.
-// Requesting them explicitly (rather than "*all") bounds search payloads:
+// searchFields lists the issue fields SearchIssues requests. The poller
+// reads "created", "labels", "reporter", "assignee", and "issuetype"
+// (for normalized state.issue_type metadata). "project"
+// carries the immutable project database ID, the Jira container identity
+// for trace binding (ADR 0154), so search results hold the same identity
+// as issue reads; GetIssue fetches it through its own request.
+// Requesting fields explicitly (rather than "*all") bounds search payloads:
 // with "*all", 50 issues per page each carrying full ADF descriptions,
 // embedded first comment pages, attachments, and every custom field can
 // plausibly exceed the client's 10MB decode cap — and since a failed
 // search aborts the whole cycle with the same data returning every time,
 // that failure mode would wedge the poller for the entire project.
-var searchFields = []string{"summary", "status", "labels", "reporter", "created", "updated"}
+var searchFields = []string{"summary", "status", "labels", "reporter", "assignee", "created", "updated", "project", "issuetype"}
 
 // maxSearchPages limits pagination to prevent unbounded memory growth
 // from overly broad JQL queries.
@@ -415,6 +602,28 @@ func (c *LiveClient) GetIssue(ctx context.Context, issueIDOrKey string) (*Issue,
 		return nil, fmt.Errorf("get issue %s: %w", issueIDOrKey, err)
 	}
 	return &issue, nil
+}
+
+// AddIssueLabel adds a label without replacing any existing labels. If the
+// issue already has it, no update is sent (and no changelog entry is created).
+func (c *LiveClient) AddIssueLabel(ctx context.Context, issueIDOrKey, label string) error {
+	issue, err := c.GetIssue(ctx, issueIDOrKey)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(issue.Fields.Labels, label) {
+		return nil
+	}
+	body, err := json.Marshal(map[string]any{
+		"update": map[string]any{"labels": []map[string]string{{"add": label}}},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal label update: %w", err)
+	}
+	if err := c.do(ctx, http.MethodPut, "/issue/"+url.PathEscape(issueIDOrKey), bytes.NewReader(body), nil); err != nil {
+		return fmt.Errorf("add label to issue %s: %w", issueIDOrKey, err)
+	}
+	return nil
 }
 
 // CreateIssueInput describes a new Jira issue for CreateIssue.

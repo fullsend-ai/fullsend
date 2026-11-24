@@ -51,7 +51,8 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   > **Note:** `iamcredentials.googleapis.com` is a runtime dependency — the deployed mint Cloud Function uses it for WIF token exchange, not the CLI itself. It must be enabled before `mint deploy`.
 
-- **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases)
+- **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases),
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later
 
 - **GCP IAM roles** — the user running mint commands authenticates via ADC (`gcloud auth application-default login`). The required roles depend on the command:
 
@@ -80,7 +81,7 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` and `halfsend-NN/test-repo-01` … `test-repo-12` (created by each slot claim and installed on demand by the shared slot driver — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo-01` … `test-repo-12` (created by each slot claim and installed on demand by the shared slot driver — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`); use `e2e/org-pool/enroll.sh` to do it. For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Do not enroll the singular `test-repo`, `*-fork` names, or the `*-mint-host` / `*-mint-unapproved` probe hosts. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 
@@ -173,6 +174,37 @@ fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems \
 The mint URL is stable across redeploys within the same project and region — updating the Cloud Function does not change its URL. Enrolling a new repository in an existing mint only updates `PER_REPO_WIF_REPOS` (and WIF configuration) without redeploying the function. Shared `ROLE_APP_IDS` are managed at deploy/bootstrap time (`mint deploy --pem-dir`) or per-role via `mint add-role` / `remove-role` — not during enrollment. Existing enrolled repos continue working with no changes when new repos are enrolled.
 
 Deploying to a **different region** (e.g., changing `--region` from `us-central1` to `us-east5`) creates a new Cloud Run service with a different URL. All enrolled repos store the mint URL in a repo or org variable (`FULLSEND_MINT_URL`), so changing the region requires updating every enrolled repo's variable. Avoid changing `--region` after initial deployment unless you plan to update all consumers.
+
+### HTTP Strict Transport Security
+
+Mint responses from the Cloud Function and the Cloudflare Worker carry
+this header, success and error responses alike:
+
+```
+Strict-Transport-Security: max-age=31536000
+```
+
+The shared mint handler sets it (`hstsHeaderValue` in
+`internal/mintcore/handler.go`) on every response it writes. The
+Cloudflare Worker also sets it on the error responses it writes before
+the handler runs, such as `429 rate_limited`.
+
+- **`max-age=31536000` (one year):** after one HTTPS response, a browser
+  or HSTS-aware client upgrades `http://` requests for the mint hostname to
+  HTTPS for a year. Clients that ignore HSTS still get the HTTP-to-HTTPS
+  redirect at the edge.
+- **No `includeSubDomains`:** the policy applies only to the mint's own
+  hostname (for example `mint.fullsend.sh`). It never extends to sibling
+  or child hostnames.
+- **No `preload`:** the mint does not ask to be added to browser preload
+  lists. Preloading covers the whole registrable domain, including the
+  public website, and is hard to undo.
+
+Clients ignore the header on plain-HTTP responses, so a self-hosted mint
+served without TLS is unaffected. The
+[GitHub mint scope behaviour scenarios](../dev/behaviour-testing.md#github-mint-scope-scenarios)
+check the header on `/v1/token` and `/health` against each deployed
+behaviour-test mint.
 
 ## Managing roles
 

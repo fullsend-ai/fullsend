@@ -274,6 +274,28 @@ func TestPrintStatusTable_WithDrift(t *testing.T) {
 	assert.Contains(t, output, "1 installed, 1 drifted, 0 not installed")
 }
 
+func TestPrintStatusTable_ConfigCompatibility(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{Owner: "acme", Repo: "ok", Installed: true, ConfigCompatibility: repos.ConfigCompatible, ConfigSchemaRef: "v0.1.0"},
+			{Owner: "acme", Repo: "old", Installed: true, ConfigCompatibility: repos.ConfigIncompatible, ConfigSchemaRef: "v0.1.0", ConfigCompatibilityReason: "uses the tracker mapping"},
+			{Owner: "acme", Repo: "lost", Installed: true, ConfigCompatibility: repos.ConfigUnknown, ConfigSchemaRef: "v9.9.9", ConfigCompatibilityReason: "the ref cannot be resolved"},
+			{Owner: "acme", Repo: "cur", Installed: true, ConfigCompatibility: repos.ConfigIncompatible, ConfigCompatibilityReason: "legacy keys"},
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.NotContains(t, output, "acme/ok config compatibility")
+	assert.Contains(t, output, "acme/old config compatibility (fullsend_ref v0.1.0): incompatible\n  uses the tracker mapping")
+	assert.Contains(t, output, "acme/lost config compatibility (fullsend_ref v9.9.9): unknown\n  the ref cannot be resolved")
+	assert.Contains(t, output, "acme/cur config compatibility (fullsend_ref running release): incompatible")
+}
+
 func TestPrintStatusTable_GitLabWebhook(t *testing.T) {
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{
@@ -304,6 +326,37 @@ func TestPrintStatusTable_GitLabWebhook(t *testing.T) {
 	assert.Contains(t, output, "group/deferred GitLab webhook fast path: deferred\n  the pipeline wrapper does not include the dispatcher yet\n")
 	assert.Contains(t, output, "group/drifted GitLab webhook fast path: drifted\n  hook differs\n")
 	assert.NotContains(t, output, "group/ready GitLab webhook fast path")
+}
+
+// Unrelated CI work in Fullsend pipelines is listed per repository as a
+// warning, one finding per line, without adding drift (#9708).
+func TestPrintStatusTable_GitLabUnrelatedCIWork(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{Owner: "group", Repo: "clean", Forge: repos.ForgeGitLab, Installed: true},
+			{
+				Owner: "group", Repo: "noisy", Forge: repos.ForgeGitLab, Installed: true,
+				GitLabUnrelatedCIWork: []string{
+					`the committed .gitlab-ci.yml has job "build" that a trigger pipeline would run`,
+					"the committed .gitlab-ci.yml has job \"build\x1b[31m\" that a scheduled pipeline (source=schedule) would run",
+				},
+			},
+		},
+		Summary: repos.StatusSummary{Total: 2, Installed: 2},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.Contains(t, output, "\n2 installed, 0 drifted, 0 not installed\n")
+	assert.Contains(t, output, "group/noisy GitLab unrelated CI work in Fullsend pipelines (warning; polling stays the dispatch path, but the managed polling schedules run it on the protected default branch):\n"+
+		`  the committed .gitlab-ci.yml has job "build" that a trigger pipeline would run`+"\n")
+	assert.Contains(t, output, "scheduled pipeline (source=schedule) would run\n")
+	assert.NotContains(t, output, "\x1b")
+	assert.NotContains(t, output, "group/clean GitLab unrelated CI work")
 }
 
 func TestPrintStatusTable_NotInstalled(t *testing.T) {
@@ -1132,7 +1185,12 @@ func TestReposInstallCmd_FullsendBinarySourceFlags(t *testing.T) {
 	assert.Equal(t, "", sourceFlag.DefValue)
 }
 
+// Install checks the vendoring flags after its forge reads, so this command
+// test selects no repository: the run reaches the check without the forge,
+// and the token stub makes any forge access fail instead of using the host's
+// credentials.
 func TestReposInstallCmd_VendorArtifactsWithoutDeclaredVendor(t *testing.T) {
+	stubMissingGitHubToken(t)
 	for _, flag := range []string{"--fullsend-binary", "--fullsend-source"} {
 		t.Run(flag, func(t *testing.T) {
 			cmd := newRootCmd()
@@ -1140,7 +1198,7 @@ func TestReposInstallCmd_VendorArtifactsWithoutDeclaredVendor(t *testing.T) {
 			cmd.SetErr(io.Discard)
 			cmd.SetArgs([]string{
 				"repos", "install",
-				"--manifest", writeTestManifest(t, testManifestYAML),
+				"--manifest", writeTestManifest(t, emptyReposManifestYAML),
 				flag, "/tmp/fullsend",
 			})
 			err := cmd.Execute()
@@ -1565,6 +1623,58 @@ github:
 	data, readErr := os.ReadFile(manifestPath)
 	require.NoError(t, readErr)
 	assert.NotContains(t, string(data), "test-openai-key", "--openai-api-key must never be written to repos.yaml")
+}
+
+func TestRunReposInstall_JiraCredentialsWrittenNotPersisted(t *testing.T) {
+	manifestPath := writeTestManifest(t, `version: 1
+github:
+  inference:
+    auth: openai-api-key
+  repos:
+    - name: acme/api
+      config:
+        tracker:
+          jira:
+            base_url: https://example.atlassian.net
+            project: PROJ
+            poll:
+              enabled: true
+`)
+	fc := newInstallFakeClient("acme/api")
+	// repos install verifies that the upstream ref it resolves (main here)
+	// contains the reusable Jira poll workflow before writing credentials.
+	fc.FileContentsRef["fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml@main"] = []byte("name: Poll Jira\n")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:     manifestPath,
+		concurrency:  4,
+		direct:       true,
+		openAIAPIKey: "test-openai-key",
+		jiraToken:    "test-jira-token",
+		jiraEmail:    "poller@example.com",
+		testClient:   fc,
+	})
+	require.NoError(t, err)
+	assert.True(t, fc.Secrets["acme/api/"+forge.SecretJiraToken])
+	assert.True(t, fc.Secrets["acme/api/"+forge.SecretJiraEmail])
+
+	data, readErr := os.ReadFile(manifestPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(data), "test-jira-token", "--jira-token must never be written to repos.yaml")
+	assert.NotContains(t, string(data), "poller@example.com", "--jira-email must never be written to repos.yaml")
+}
+
+func TestReposInstallCmd_JiraFlags(t *testing.T) {
+	cmd := newReposInstallCmd()
+	for _, name := range []string{"jira-token", "jira-email", "jira-client-id", "jira-client-secret"} {
+		f := cmd.Flags().Lookup(name)
+		require.NotNil(t, f, name)
+		assert.Empty(t, f.DefValue, "%s has no default", name)
+	}
+	// Jira site, project and query come only from the effective config.
+	for _, name := range []string{"jira-url", "jira-project", "jql"} {
+		assert.Nil(t, cmd.Flags().Lookup(name), name)
+	}
 }
 
 func TestRunReposInstall_WIFProviderSkipsProjectNumberLookup(t *testing.T) {
@@ -2567,7 +2677,9 @@ func TestRunReposInstall_GitLabPinRejectsMissingUpstreamClient(t *testing.T) {
 		})
 	})
 	require.Error(t, err, "a pin cannot silently use embedded GitLab templates without an upstream client")
-	assert.Contains(t, output, "matching pinned GitLab templates require an upstream GitHub client")
+	// The pin's configuration schema (#9292) and its GitLab templates both
+	// need the upstream GitHub client; either check rejects the repo.
+	assert.Contains(t, output, "upstream GitHub client")
 	assert.True(t, factory.requested(repos.ForgeGitLab))
 }
 
@@ -2615,7 +2727,9 @@ func TestRunReposInstall_GitLabFilterSkipsGitHubGlobExpansion(t *testing.T) {
 		})
 	})
 	require.Error(t, err, "a pin cannot silently use embedded GitLab templates without an upstream client")
-	assert.Contains(t, output, "matching pinned GitLab templates require an upstream GitHub client")
+	// The pin's configuration schema (#9292) and its GitLab templates both
+	// need the upstream GitHub client; either check rejects the repo.
+	assert.Contains(t, output, "upstream GitHub client")
 	assert.True(t, factory.requested(repos.ForgeGitLab))
 }
 

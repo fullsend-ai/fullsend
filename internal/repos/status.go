@@ -127,6 +127,17 @@ type RepoStatus struct {
 	Drifts          []Drift `json:"drifts,omitempty"`
 	Error           string  `json:"error,omitempty"`
 
+	// ConfigCompatibility reports whether the installed
+	// .fullsend/config.yaml is readable at the repository's effective
+	// fullsend_ref (#9292): ConfigCompatible, ConfigIncompatible or
+	// ConfigUnknown; empty when no overlay is installed.
+	// ConfigCompatibilityReason explains an incompatible or unknown result,
+	// and ConfigSchemaRef names the pinned ref it was assessed against
+	// (empty when the repository follows the running release).
+	ConfigCompatibility       string `json:"config_compatibility,omitempty"`
+	ConfigCompatibilityReason string `json:"config_compatibility_reason,omitempty"`
+	ConfigSchemaRef           string `json:"config_schema_ref,omitempty"`
+
 	// ConfigRejected marks a repo whose manifest configuration was rejected
 	// before any forge state was inspected (for example a missing
 	// inference.auth selection). Callers that enrich status with further
@@ -146,6 +157,14 @@ type RepoStatus struct {
 	// GitLabWebhook is the webhook fast path's readiness (ADR 0125): names,
 	// IDs and booleans only, never the trigger token, webhook secret or URL.
 	GitLabWebhook *GitLabWebhookStatus `json:"gitlab_webhook,omitempty"`
+
+	// GitLabUnrelatedCIWork lists the committed CI jobs and includes that a
+	// Fullsend trigger, agent child (source=pipeline) or scheduled
+	// (source=schedule) pipeline would run besides Fullsend's own, or why
+	// that could not be verified (#9708). It is informational and adds no
+	// drift: polling keeps working, but the managed polling schedules run
+	// these jobs on the protected default branch.
+	GitLabUnrelatedCIWork []string `json:"gitlab_unrelated_ci_work,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.
@@ -165,6 +184,9 @@ type StatusResult struct {
 	Repos    []RepoStatus  `json:"repos"`
 	Summary  StatusSummary `json:"summary"`
 	Warnings []string      `json:"warnings,omitempty"`
+	// Forgejo reports the declared Forgejo repositories the command
+	// selected (see ForgejoLifecycle.Status).
+	Forgejo []ForgejoRepoResult `json:"forgejo,omitempty"`
 }
 
 // Status compares the manifest's desired state against the actual forge
@@ -173,6 +195,9 @@ type StatusResult struct {
 // The optional release supplies the running binary's ref/tag for matching
 // embedded scaffold templates after release-default manifest writeback.
 func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string, release ...DriftConfig) (*StatusResult, error) {
+	// ADR 0175: status treats a saved allow_insecure_pipeline_variables
+	// opt-in as expected, the same way install does.
+	ctx = WithGitLabPipelineVarOptIns(ctx, manifest)
 	resolved, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
@@ -236,8 +261,18 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 			defer func() { <-sem }()
 
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+			// The declared preset may supply the inference.gateway route,
+			// so load it before the check. A load failure is reported by
+			// checkRepoStatus (checkPresetDrift); the check then sees the
+			// managed configuration alone.
+			if cfg.Config != "" {
+				if data, loadErr := store.Load(ctx, cfg.Config, cfg.ConfigHash); loadErr == nil {
+					cfg.ProposedBase = data
+				}
+			}
 			// Status checks the same desired state as install, so a repo
-			// without an inference.auth selection cannot be evaluated.
+			// without an inference.auth selection (or an inference.gateway
+			// route) cannot be evaluated.
 			if authErr := cfg.RequireInferenceAuth(); authErr != nil {
 				results[idx] = RepoStatus{
 					Owner: rr.Owner,
@@ -307,6 +342,14 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			presetLoaded = true
 		}
 	}
+	// Assess managed configuration against the schema of the repository's
+	// effective fullsend_ref, as install renders it (#9292).
+	// The installed overlay is read here only for a pinned ref; a read
+	// error is reported by checkManagedConfigDrift.
+	if cfg.ConfigManaged && pinnedFullsendRef(cfg.FullsendRef, dcfg.UpstreamRef, dcfg.UpstreamTag) {
+		existing, _, _ := readManagedConfigOverlayFile(ctx, cfg)
+		cfg.ConfigSchema = selectManagedConfigSchema(ctx, cfg, existing, dcfg.UpstreamRef, dcfg.UpstreamTag, resolver)
+	}
 	// Resolve the mint URL and region from the effective configuration, as
 	// install and dry run do (#8220). Without the declared preset the
 	// effective values are unknown; checkPresetDrift reports the load error.
@@ -352,7 +395,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)
 		return status
 	}
-	components, probeErr := ProbeComponentsForAuth(ctx, client, owner, repo, cfg.Forge, cfg.InferenceAuth, fc, expectedVars)
+	components, probeErr := ProbeComponentsForConfig(ctx, client, cfg, fc, expectedVars)
 	if probeErr != nil {
 		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status
@@ -512,9 +555,34 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		if GitLabBaseURL(client) != "" {
 			ApplyGitLabWebhookStatus(&status, DiagnoseGitLabWebhook(ctx, client, owner, repo))
 		}
+		status.GitLabUnrelatedCIWork = DiagnoseGitLabUnrelatedCIWork(ctx, client, owner, repo)
 	}
 
 	return status
+}
+
+// DiagnoseGitLabUnrelatedCIWork runs the dispatch gate's unrelated-work scan
+// (GitLabDispatchExtraWorkProblems) on the default branch for repos status,
+// whatever the trigger account's state (#9708). The scan needs neither the
+// account nor the activation, and the managed polling schedules run on the
+// protected default branch on every dispatch route, so its findings matter
+// while polling stays the dispatch path. It returns the findings, a single
+// reason when the scan cannot complete, or nil when nothing unrelated runs.
+// It only reads.
+func DiagnoseGitLabUnrelatedCIWork(ctx context.Context, client forge.Client, owner, repo string) []string {
+	const unverified = "could not verify that unrelated CI jobs are excluded from Fullsend's scheduled, trigger and agent child pipelines: "
+	info, err := client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return []string{unverified + safeAPIError("reading the repository", err).Error()}
+	}
+	if info == nil || info.DefaultBranch == "" {
+		return []string{unverified + "the default branch is unknown"}
+	}
+	problems, err := GitLabDispatchExtraWorkProblems(ctx, client, owner, repo, info.DefaultBranch)
+	if err != nil {
+		return []string{unverified + err.Error()}
+	}
+	return problems
 }
 
 // ApplyGitLabTriggerAccountStatus records the trigger account's diagnosis on

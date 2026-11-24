@@ -4378,3 +4378,91 @@ func TestNewHandler_CustomRolePermissions_MultiLevel(t *testing.T) {
 
 	t.Cleanup(func() { RegisterCustomRoleLevels(nil) })
 }
+
+// TestHandler_StrictTransportSecurity verifies that every response the
+// handler writes, success or error, carries the documented HSTS value
+// without includeSubDomains or preload.
+func TestHandler_StrictTransportSecurity(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/test-repo")
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+	env := newTestOIDCEnv(t, &fakePEMAccessor{pems: map[string][]byte{"coder": pemData}})
+	token := env.signToken(t, nil)
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/installation") && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 1, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_ok",
+				ExpiresAt: "2026-05-06T12:00:00Z",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	for _, tc := range []struct {
+		name       string
+		method     string
+		path       string
+		auth       string
+		body       string
+		wantStatus int
+	}{
+		{name: "health", method: http.MethodGet, path: "/health", wantStatus: http.StatusOK},
+		{name: "minted token", method: http.MethodPost, path: "/v1/token", auth: "Bearer " + token,
+			body: `{"role":"coder","repos":["test-repo"]}`, wantStatus: http.StatusOK},
+		{name: "wrong method", method: http.MethodGet, path: "/v1/token", wantStatus: http.StatusMethodNotAllowed},
+		{name: "missing authorization", method: http.MethodPost, path: "/v1/token",
+			body: `{"role":"coder","repos":["test-repo"]}`, wantStatus: http.StatusUnauthorized},
+		{name: "invalid token", method: http.MethodPost, path: "/v1/token", auth: "Bearer not-a-jwt",
+			body: `{"role":"coder","repos":["test-repo"]}`, wantStatus: http.StatusUnauthorized},
+		{name: "malformed body", method: http.MethodPost, path: "/v1/token", auth: "Bearer " + token,
+			body: `{`, wantStatus: http.StatusBadRequest},
+		{name: "role not allowed", method: http.MethodPost, path: "/v1/token", auth: "Bearer " + token,
+			body: `{"role":"triage","repos":["test-repo"]}`, wantStatus: http.StatusForbidden},
+		{name: "unknown route", method: http.MethodGet, path: "/nonexistent", wantStatus: http.StatusNotFound},
+		{name: "unauthenticated status", method: http.MethodGet, path: "/v1/status", wantStatus: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			if tc.auth != "" {
+				req.Header.Set("Authorization", tc.auth)
+			}
+			env.handler.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("%s %s: expected %d, got %d: %s", tc.method, tc.path, tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Values("Strict-Transport-Security"); len(got) != 1 || got[0] != "max-age=31536000" {
+				t.Fatalf("%s %s: Strict-Transport-Security = %q, want exactly [max-age=31536000]", tc.method, tc.path, got)
+			}
+		})
+	}
+
+	t.Run("unhealthy health", func(t *testing.T) {
+		t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100"}`)
+		h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d", rec.Code)
+		}
+		if got := rec.Header().Get("Strict-Transport-Security"); got != "max-age=31536000" {
+			t.Fatalf("Strict-Transport-Security = %q, want max-age=31536000", got)
+		}
+	})
+}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // This file implements `fullsend repos set`: a schema-aware editor for any
@@ -255,8 +255,12 @@ func newManifestMode(dir string) (os.FileMode, error) {
 // createManifestTemp exclusively creates a temp file in dir with the given
 // mode filtered by the process umask.
 func createManifestTemp(dir string, mode os.FileMode) (*os.File, error) {
+	return createManifestTempWithRandom(dir, mode, randutil.Uint64)
+}
+
+func createManifestTempWithRandom(dir string, mode os.FileMode, nextRandom func() uint64) (*os.File, error) {
 	for range 100 {
-		name := filepath.Join(dir, fmt.Sprintf(".repos.yaml.tmp.%d", rand.Uint64()))
+		name := filepath.Join(dir, fmt.Sprintf(".repos.yaml.tmp.%d", nextRandom()))
 		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 		if errors.Is(err, os.ErrExist) {
 			continue
@@ -550,10 +554,12 @@ func resolveManifestPath(raw string, segs []pathSeg, unset bool) (*resolvedPath,
 
 // githubOnlyFields are the PlatformConfig and RepoEntry fields that only
 // apply to GitHub; gitlabOnlyFields are the PlatformConfig fields that only
-// apply to GitLab.
+// apply to GitLab; gitlabOnlyRepoEntryFields are the RepoEntry fields that
+// only apply to GitLab.
 var (
-	githubOnlyFields = []string{"mint_url", "mint_mode", "app_set"}
-	gitlabOnlyFields = []string{"agent_runner_tags", "control_runner_tags", "runner_tags"}
+	githubOnlyFields          = []string{"mint_url", "mint_mode", "app_set"}
+	gitlabOnlyFields          = []string{"agent_runner_tags", "control_runner_tags", "runner_tags"}
+	gitlabOnlyRepoEntryFields = []string{"allow_insecure_pipeline_variables"}
 )
 
 // forgeFieldError reports a field that the forge section does not support,
@@ -568,6 +574,8 @@ func forgeFieldError(forge string, t reflect.Type, name, prefix string) error {
 		return fmt.Errorf("%s is not supported; %s is a GitLab-only field", full, name)
 	case t == repoEntryType && forge == ForgeGitLab && slices.Contains(githubOnlyFields, name):
 		return fmt.Errorf("%s is only supported for GitHub repos", full)
+	case t == repoEntryType && forge == ForgeGitHub && slices.Contains(gitlabOnlyRepoEntryFields, name):
+		return fmt.Errorf("%s is only supported for GitLab repos", full)
 	}
 	return nil
 }

@@ -18,7 +18,8 @@ Common configuration goals:
 
 | Goal | How |
 |------|-----|
-| Change model, timeout, or image | Override scalar fields via `base:` composition |
+| Change a setting of an agent's harness, such as a timeout or a variable it declares (for example `REVIEW_FINDING_SEVERITY_THRESHOLD`) | Set it in the agent entry's [`harness:` block](../../reference/config-reference.md#agents) in `config.yaml`; no `base:` harness needed, and the agent keeps getting updates |
+| Change model, timeout, or image in a harness file of your own | Override scalar fields via `base:` composition |
 | Add org-specific skills | Add entries to the `skills:` list |
 | Add environment variables | Add entries under `env.runner` or `env.sandbox` |
 | Install GitHub Packages npm dependencies | Add a repo-level GitHub Packages provider (see [Private registries and GitHub Packages](#private-registries-and-github-packages)) |
@@ -97,7 +98,7 @@ base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.ya
 
 env:
   runner:
-    JIRA_TOKEN: "${JIRA_TOKEN}"     # Merged with base env; child keys win
+    MYORG_API_TOKEN: "${MYORG_API_TOKEN}"  # Merged with base env; child keys win
   sandbox:
     JIRA_PROJECT: "MYPROJ"
 ```
@@ -121,6 +122,11 @@ Setting `validation_loop.preflight_check` swaps the dependency probe. It runs in
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
+- **`readonly_repo` inherits from the base** — leaving it out, or setting it
+  to `null`, means inherit. An explicit `readonly_repo: false` turns off a
+  read-only base. An inherited `true` needs an image with a `sandbox` user.
+  See the
+  [harness reference § `readonly_repo`](../../reference/harness-reference.md#field-details).
 - **Add skills** — your entries are merged with the base's by skill identity (declared `SKILL.md` name when on disk, otherwise directory basename); a matching child skill overrides the base entry. Nested forge skills that share a leaf directory name are kept alongside each other. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Override files inside a skill** — repeat the skill's entry in map form
   with [per-file overrides](customizing-with-skills.md#overriding-single-files-in-a-skill);
@@ -130,9 +136,9 @@ Any harness field can be overridden. See the [field merge rules](../../reference
 
 Base chains support up to 5 levels. Circular references are detected and rejected. Resolution order: base chain, child overrides, overlay resolution.
 
-> **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
+> **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches`, and `allow_ci_variable_credential` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes, enabling runtime fetching, or silencing the GitLab CI/CD-variable credential warning in the child.
 
-> **Config-level fallback:** Separately from base-harness inheritance, the config-level `allowed_remote_resources` from the repository's `.fullsend/config.yaml` (layered over `config.base.yaml`) acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. This is a distinct trust layer from base composition — the config-level list is set by the repository's administrators, not by base harness authors.
+> **Config-level fallback:** Separately from base-harness inheritance, the config-level `allowed_remote_resources` from the repository's `.fullsend/config.yaml` (layered over `config.base.yaml`) acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. It is also the ceiling for the harness-level list: whenever the harness's runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration), every harness-level prefix must be covered by the config-level allowlist (the config-level list plus the built-in default prefixes; an explicit `allowed_remote_resources: []` in the config stays deny-all and excludes the defaults), and `fullsend run`, `fullsend lint` and `fullsend lock` fail naming an uncovered prefix and fail closed without a repository config (`config.yaml` or `config.base.yaml`). This is a distinct trust layer from base composition — the config-level list is set by the repository's administrators, not by base harness authors.
 
 ### Remote providers and profiles
 
@@ -161,7 +167,7 @@ When using `base:` composition, the base harness can declare its own providers a
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
 
-Only profiles listed in `openshell.profiles` are imported. A YAML file that merely exists under the `profiles/` directory is **not** imported unless the harness names it. To use a local profile as a per-repo override, list it explicitly under its own `id` (e.g., `profiles/myorg-vertex-ai.yaml`); the child-wins dedup rule applies by `id`. The `fullsend-<name>` ids of the built-in profiles are reserved: list a copy under one and `fullsend run` warns and uses it for now, and a later release rejects it.
+Only profiles listed in `openshell.profiles` are imported. A YAML file that merely exists under the `profiles/` directory is **not** imported unless the harness names it. To use a local profile as a per-repo override, list it explicitly under its own `id` (e.g., `profiles/myorg-vertex-ai.yaml`); the child-wins dedup rule applies by `id`. The `fullsend-<name>` ids of the built-in profiles are reserved: list a copy under one and `fullsend run` warns and uses it for now, and a later release rejects it. Two are rejected already, because `fullsend run` mints the tokens those profiles govern: `fullsend-openai` always, and `fullsend-jira` when the run mints the Jira token.
 
 Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
 
@@ -176,13 +182,17 @@ fix workflows grant `packages: read`. Nothing in this section ships by
 default.
 
 **What fullsend provides.** On GitHub Actions the runner keeps the job's own
-workflow token as `GH_WORKFLOW_TOKEN`, a *provider-only* credential:
+workflow token as `GH_WORKFLOW_TOKEN`, a credential harness `${}` sites
+refuse:
 
-- Only provider credential expansion can read it. `${GH_WORKFLOW_TOKEN}` is
-  refused in `runner_env`, `env.runner`, `env.sandbox`, `host_files` and
-  `validation_loop.schema`, and pre/post/validation scripts never see it.
+- `${GH_WORKFLOW_TOKEN}` is refused in `runner_env`, `env.runner`,
+  `env.sandbox`, `host_files` and `validation_loop.schema`, and
+  pre/post/validation scripts never see it. Provider credential expansion
+  reads it, and so does the runner's own `ghcr.io` image pull (see
+  [Extending the sandbox image](#extending-the-sandbox-image)).
 - `gh` and the post-script keep using the minted token (`GH_TOKEN`,
-  `GITHUB_TOKEN`, `PUSH_TOKEN`).
+  `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
+  `PUSH_TOKEN`).
 - Outside GitHub Actions the variable is left alone; a local PAT is never
   copied into it. Set it yourself only for a local run against GitHub Packages.
 - Any provider definition in `.fullsend` may reference it, the same way one
@@ -371,6 +381,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends rustc \
 Use `ghcr.io/fullsend-ai/fullsend-code:latest` as the parent instead when you
 also need the Go toolchain. Pin the parent tag to a digest before CI use.
 
+The image can be a **private** package on `ghcr.io` for the code and fix
+agents, whose shipped workflows grant `packages: read`. On GitHub Actions,
+`fullsend run` pulls the image with the job's workflow token
+(`GH_WORKFLOW_TOKEN`) before it creates the sandbox. Prerequisites and
+failure behaviour: [GitHub Packages credentials](../../cli/run.md#github-packages-credentials).
+
 ### Adding executables
 
 On Claude and pi runs the sandbox already has `/sandbox/workspace/bin` on its
@@ -465,10 +481,13 @@ shell-behavior variables like `HTTPS_PROXY`, `SSL_CERT_FILE`,
 `GIT_SSH_COMMAND` and `NODE_OPTIONS`, instead of exporting them into the
 sandbox. Matching is case-insensitive, and `fullsend run` warns about every
 key it drops. The gate covers `env.sandbox` only; it is not a reason to move
-those settings into `.env.d` files.
+those settings into `.env.d` files. The full reserved set is published in the
+generated [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md).
 
-For the full list, how to check a harness with `fullsend lock`, and where
-proxy and certificate settings go instead, see [Reserved `env.sandbox`
+For the full list, how to check a harness with `fullsend lint` or
+`fullsend lock`, and where proxy and certificate settings go instead, see
+[Reserved `env.sandbox`
 names](../../reference/harness-reference.md#reserved-envsandbox-names) and
 [Migrating proxy and certificate
 settings](../../reference/harness-reference.md#migrating-proxy-and-certificate-settings)
@@ -544,7 +563,8 @@ disables nothing because no agent has that harness name.
 ## Choosing when review runs
 
 By default, the dispatch workflow decides when the review agent runs: when a
-pull request is opened, pushed to or marked ready, when the
+same-repository pull request is opened, pushed to or marked ready (fork and
+Dependabot pull requests need a `/fs-review` comment), when the
 `ready-for-review` label is added, and on a `/fs-review` comment. To decide it
 yourself, give the `review` entry in `.fullsend/config.yaml` a `trigger`: a
 [CEL expression](cel-triggers-reference.md) over the event. The review still
@@ -577,11 +597,18 @@ job, and how to
 
 ## Choosing when retro runs
 
-By default, the dispatch workflow starts the retro agent when a pull request
-is closed, merged or not, and on a `/fs-retro` comment on an issue or a pull
-request. To decide it yourself, give the `retro` entry in
+By default, the dispatch workflow starts the retro agent when a
+same-repository pull request is closed, merged or not, and on a `/fs-retro`
+comment on an issue or a pull request (a fork pull request needs the comment). To decide it yourself, give the `retro` entry in
 `.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
 job; the trigger only decides whether that job starts.
+
+Closing or merging a same-repository pull request starts retro only when the
+event actor has write access (a fork pull request needs `/fs-retro`). Merge-queue events follow the same rule, and a CEL routing
+failure skips retro for that close event.
+The `/fs-retro` command also requires write access, regardless of a lower
+`role:` on the retro harness; CEL cannot promote a command the Bash route
+denied.
 
 To stop the retro on every closed pull request but keep `/fs-retro`, add this
 entry to `.fullsend/config.yaml` on your default branch:
@@ -646,12 +673,35 @@ threshold follows the harness `role:`:
   [OWNERS authorization](owners-file-authorization.md) is enabled.
 - Any other `role:` — the actor needs `write`.
 
+These thresholds apply to human actors. On GitHub, `fullsend dispatch` does
+not read a permission level for a bot. For a non-label event, it asks the mint
+for the fullsend role registered for the bot, using the mint URL (a layered
+`mint_url` in `config.yaml` or `config.base.yaml`, else the
+`FULLSEND_MINT_URL` variable) and the job's Actions OIDC token, and exposes it
+to triggers as `event.actor.bot_role`. A bot that is not registered with a
+fullsend role, or whose lookup fails, gets `actor.role: "none"` and is denied.
+Label-added events skip the lookup.
+
+This is a breaking change for bots that are not registered with the mint:
+third-party bots such as Dependabot or Renovate no longer reach harness
+dispatch or CEL-routed stages on non-label events. The denial applies where
+`fullsend dispatch` runs: harness dispatch, and `--route` for an agent whose
+`config.yaml` entry sets `agents[].trigger`. In a repository with no
+`agents[].trigger`, the dispatch workflow does not run `--route`, so its
+bash-routed stages still admit a bot's events as before. To keep a bot's
+events, register the bot with the mint.
+Callers that run `fullsend dispatch` outside the shipped dispatch workflow,
+or an older shim, must provide a mint URL and grant the job `id-token: write`;
+without them the lookup fails and every bot actor is denied. See
+[ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
+
 GitLab uses its own stage router, which applies the same triage and write
 split to slash commands. The GitLab agent job also requires the event actor
-to hold Developer access or higher for every stage except retro and
-prioritize, so automatic triage of a newly opened issue runs only when its
-author is a Developer, Maintainer, or Owner. Jira work items dispatched to a
-GitLab project skip that check, because their actor has no GitLab account; the
+to hold Developer access or higher for every stage except prioritize,
+including retro on merged or closed merge requests. Automatic triage of a
+newly opened issue runs only when its author has Developer, Maintainer, or
+Owner access. Jira work items dispatched to a GitLab project skip that check,
+because their actor has no GitLab account; the
 Jira poller authorizes them by Jira project role (see
 [Jira integration](jira-integration.md#gitlab-runtime)).
 See the

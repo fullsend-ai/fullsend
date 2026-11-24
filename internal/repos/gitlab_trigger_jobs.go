@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 
@@ -37,7 +38,7 @@ const fullsendPollJobName = "$[[ inputs.schedule_name | expand_vars ]]"
 // rewrites user-owned jobs, so the remediation is the owner's to apply.
 const triggerExtraWorkRemedy = "; add rules to it that reject $CI_PIPELINE_SOURCE == \"trigger\" pipelines (Fullsend does not edit user-owned jobs)"
 
-// triggerExtraWorkProblem reports work in one committed CI file, other than
+// triggerExtraWorkProblems reports work in one committed CI file, other than
 // the dispatcher, that a protected-default-branch trigger pipeline would
 // run. The webhook's trigger token starts such pipelines independently of
 // the dispatcher's authorization and HMAC gates, so a job or include that
@@ -77,23 +78,31 @@ const triggerExtraWorkRemedy = "; add rules to it that reject $CI_PIPELINE_SOURC
 // makes agent child pipelines reachable and moves schedule ownership; the
 // webhook fast path alone does neither, so a job that only a source=pipeline
 // or source=schedule pipeline would run does not defer it.
-func triggerExtraWorkProblem(content []byte, file, defaultBranch string, agentChild bool, allowInclude func(*yaml.Node) bool, allowJob func(string) bool, sharedKey func(string) bool) string {
-	if problem := triggerExtraWorkProblemForSource(content, file, defaultBranch, "trigger", allowInclude, allowJob, nil, sharedKey); problem != "" {
-		return problem
+//
+// Each source is evaluated independently and every source's problem is
+// returned (#9708), so a source=trigger finding does not hide the
+// source=pipeline or source=schedule finding for the same file. A problem that
+// reads the same for several sources is reported once.
+func triggerExtraWorkProblems(content []byte, file, defaultBranch string, agentChild bool, allowInclude func(*yaml.Node) bool, allowJob func(string) bool, sharedKey func(string) bool) []string {
+	var problems []string
+	add := func(problem string) {
+		if problem != "" && !slices.Contains(problems, problem) {
+			problems = append(problems, problem)
+		}
 	}
+	add(triggerExtraWorkProblemForSource(content, file, defaultBranch, "trigger", allowInclude, allowJob, nil, sharedKey))
 	if !agentChild {
-		return ""
+		return problems
 	}
 	pipelineInclude := func(n *yaml.Node) bool {
 		return (allowInclude != nil && allowInclude(n)) || namesAgentInclude(n)
 	}
-	if problem := triggerExtraWorkProblemForSource(content, file, defaultBranch, "pipeline", pipelineInclude, allowJob, nil, sharedKey); problem != "" {
-		return problem
-	}
+	add(triggerExtraWorkProblemForSource(content, file, defaultBranch, "pipeline", pipelineInclude, allowJob, nil, sharedKey))
 	scheduleInclude := func(n *yaml.Node) bool {
 		return (allowInclude != nil && allowInclude(n)) || namesPollInclude(n)
 	}
-	return triggerExtraWorkProblemForSource(content, file, defaultBranch, "schedule", scheduleInclude, allowJob, nil, sharedKey)
+	add(triggerExtraWorkProblemForSource(content, file, defaultBranch, "schedule", scheduleInclude, allowJob, nil, sharedKey))
+	return problems
 }
 
 // namesAgentInclude reports whether an include item is a local include of the
@@ -550,27 +559,39 @@ func jobDisablesDefaultInheritance(template []byte, jobName string) bool {
 // contributes nothing: GitLab runs only what is committed on the default
 // branch. Read failures are returned so the caller fails closed.
 func gitlabTriggerExtraWorkProblem(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) (string, error) {
-	problem, err := gitlabExtraWorkProblem(ctx, client, owner, repo, defaultBranch, false)
-	if err != nil || problem == "" {
+	problems, err := gitlabExtraWorkProblems(ctx, client, owner, repo, defaultBranch, false)
+	if err != nil || len(problems) == 0 {
 		return "", err
 	}
 	// The webhook fast-path readiness report prefixes every deferral reason;
-	// gitlabExtraWorkProblem returns bare problem text so the activation gate
-	// (gitlabDispatchExtraWorkProblem) can list it without stripping a prefix.
-	return "webhook fast-path deferred: " + problem, nil
+	// gitlabExtraWorkProblems returns bare problem text so the activation gate
+	// (GitLabDispatchExtraWorkProblems) can list it without stripping a prefix.
+	// Only source=trigger is evaluated here; the first problem in scan order is
+	// reported.
+	return "webhook fast-path deferred: " + problems[0], nil
 }
 
-// gitlabDispatchExtraWorkProblem is gitlabTriggerExtraWorkProblem plus the
-// source=pipeline check (#8438): the trigger-dispatch activation gate uses it
-// so an unrelated user job cannot run in an agent child pipeline. It returns
-// bare problem text (no webhook fast-path prefix) for the gate's reason list.
-func gitlabDispatchExtraWorkProblem(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) (string, error) {
-	return gitlabExtraWorkProblem(ctx, client, owner, repo, defaultBranch, true)
+// GitLabDispatchExtraWorkProblems is gitlabTriggerExtraWorkProblem plus the
+// source=pipeline and source=schedule checks (#8438, #8508): the
+// trigger-dispatch activation gate uses it so an unrelated user job cannot run
+// in an agent child or scheduled pipeline. It returns bare problem text (no
+// webhook fast-path prefix), one entry per problem, for the gate's reason list.
+// Install also runs it when the trigger account defers and the gate is not
+// reached (#9708): the managed polling schedules keep running on the protected
+// default branch whatever the dispatch route, so the source=schedule findings
+// matter on the polling route too. repos status reports it for the same reason
+// (DiagnoseGitLabUnrelatedCIWork). It only reads.
+func GitLabDispatchExtraWorkProblems(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) ([]string, error) {
+	return gitlabExtraWorkProblems(ctx, client, owner, repo, defaultBranch, true)
 }
 
-func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, repo, defaultBranch string, agentChild bool) (string, error) {
+// gitlabExtraWorkProblems runs every scan and returns the deduplicated problems
+// of all of them, in scan order, so a finding in one committed file does not
+// hide a finding in another (#9708). A per-file source scan returns every
+// source's problem for that file (triggerExtraWorkProblems).
+func gitlabExtraWorkProblems(ctx context.Context, client forge.Client, owner, repo, defaultBranch string, agentChild bool) ([]string, error) {
 	if defaultBranch == "" {
-		return "", nil
+		return nil, nil
 	}
 	// Global execution defaults are only a problem when a job that would run
 	// in a trigger or agent child pipeline inherits them, so the dispatcher
@@ -579,7 +600,7 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 	if template, err := client.GetFileContent(ctx, owner, repo, fullsendDispatcherTemplatePath); err == nil {
 		checkInherited = !dispatcherDisablesDefaultInheritance(template)
 	} else if !forge.IsNotFound(err) {
-		return "", safeAPIError("reading "+fullsendDispatcherTemplatePath, err)
+		return nil, safeAPIError("reading "+fullsendDispatcherTemplatePath, err)
 	}
 	// The agent template is read once when the source=pipeline check runs: it
 	// is both scanned for unrelated work below and consulted here, because the
@@ -595,7 +616,7 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 				checkInherited = true
 			}
 		case !forge.IsNotFound(err):
-			return "", safeAPIError("reading "+fullsendAgentTemplatePath, err)
+			return nil, safeAPIError("reading "+fullsendAgentTemplatePath, err)
 		}
 	}
 	// The poll template is read once when the source=schedule check runs, for
@@ -611,7 +632,7 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 			pollContent = content
 			checkPollInherited = !pollJobDisablesDefaultInheritance(content)
 		case !forge.IsNotFound(err):
-			return "", safeAPIError("reading "+fullsendPollTemplatePath, err)
+			return nil, safeAPIError("reading "+fullsendPollTemplatePath, err)
 		}
 	}
 	files := []struct {
@@ -634,7 +655,7 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 			if forge.IsNotFound(err) {
 				continue
 			}
-			return "", safeAPIError("reading "+files[i].path, err)
+			return nil, safeAPIError("reading "+files[i].path, err)
 		}
 		if content == nil {
 			content = []byte{}
@@ -642,29 +663,29 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 		files[i].content = content
 	}
 	sharedKey := sharedTopLevelKeys(files[0].content, files[1].content, files[2].content, agentContent, pollContent)
+	var all []string
+	add := func(problems ...string) {
+		for _, p := range problems {
+			if p != "" && !slices.Contains(all, p) {
+				all = append(all, p)
+			}
+		}
+	}
 	for _, f := range files {
 		content := f.content
 		if content == nil {
 			continue
 		}
-		if problem := triggerExtraWorkProblem(content, "the committed "+f.path, defaultBranch, agentChild, f.allowInclude, f.allowJob, sharedKey); problem != "" {
-			return problem, nil
-		}
+		add(triggerExtraWorkProblems(content, "the committed "+f.path, defaultBranch, agentChild, f.allowInclude, f.allowJob, sharedKey)...)
 		if f.path == fullsendDispatcherTemplatePath {
 			// The dispatcher job itself is skipped by the job checks above;
 			// its own job-level execution surfaces are checked here.
-			if problem := triggerDispatcherExecProblem(content, "the committed "+f.path); problem != "" {
-				return problem, nil
-			}
+			add(triggerDispatcherExecProblem(content, "the committed "+f.path))
 		}
 		if checkInherited {
-			if problem := triggerGlobalExecProblem(content, "the committed "+f.path); problem != "" {
-				return problem, nil
-			}
+			add(triggerGlobalExecProblem(content, "the committed "+f.path))
 		} else if checkPollInherited {
-			if problem := pollGlobalExecProblem(content, "the committed "+f.path); problem != "" {
-				return problem, nil
-			}
+			add(pollGlobalExecProblem(content, "the committed "+f.path))
 		}
 	}
 	// The agent template itself must contain only the one agent job, no extra
@@ -675,18 +696,12 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 	if agentContent != nil {
 		agentFile := "the committed " + fullsendAgentTemplatePath
 		allowAgentJob := func(n string) bool { return n == fullsendAgentJobName }
-		if problem := triggerExtraWorkProblemForSource(agentContent, agentFile, defaultBranch, "pipeline", nil, nil, allowAgentJob, sharedKey); problem != "" {
-			return problem, nil
-		}
-		if problem := triggerAgentExecProblem(agentContent, agentFile); problem != "" {
-			return problem, nil
-		}
+		add(triggerExtraWorkProblemForSource(agentContent, agentFile, defaultBranch, "pipeline", nil, nil, allowAgentJob, sharedKey))
+		add(triggerAgentExecProblem(agentContent, agentFile))
 		// Only the agent job's own inherit setting governs the agent template's
 		// global defaults; the dispatcher is not part of the agent child pipeline.
 		if !agentJobDisablesDefaultInheritance(agentContent) {
-			if problem := agentGlobalExecProblem(agentContent, agentFile); problem != "" {
-				return problem, nil
-			}
+			add(agentGlobalExecProblem(agentContent, agentFile))
 		}
 	}
 	// The poll template is included by name for source=schedule, so its own
@@ -696,27 +711,19 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 	if pollContent != nil {
 		pollFile := "the committed " + fullsendPollTemplatePath
 		allowPollJob := func(n string) bool { return n == fullsendPollJobName }
-		if problem := triggerExtraWorkProblemForSource(pollContent, pollFile, defaultBranch, "schedule", nil, nil, allowPollJob, sharedKey); problem != "" {
-			return problem, nil
-		}
-		if problem := triggerPollExecProblem(pollContent, pollFile); problem != "" {
-			return problem, nil
-		}
+		add(triggerExtraWorkProblemForSource(pollContent, pollFile, defaultBranch, "schedule", nil, nil, allowPollJob, sharedKey))
+		add(triggerPollExecProblem(pollContent, pollFile))
 		// The poll job disabling default inheritance does not protect the other
 		// managed jobs: the dispatcher and agent jobs are exempt by name from
 		// the scans above, so a scheduled pipeline that also admits one of them
 		// would run it with the poll template's global defaults.
 		if checkPollInherited {
-			if problem := pollGlobalExecProblem(pollContent, pollFile); problem != "" {
-				return problem, nil
-			}
+			add(pollGlobalExecProblem(pollContent, pollFile))
 		} else if checkInherited {
-			if problem := managedGlobalExecProblem(pollContent, pollFile, "a scheduled pipeline (source=schedule) as the trigger-only account"); problem != "" {
-				return problem, nil
-			}
+			add(managedGlobalExecProblem(pollContent, pollFile, "a scheduled pipeline (source=schedule) as the trigger-only account"))
 		}
 	}
-	return "", nil
+	return all, nil
 }
 
 // gitlabDispatcherTemplateProblem validates the committed dispatcher
@@ -788,8 +795,9 @@ func gitlabDispatcherTemplateProblem(template []byte, defaultBranch string) stri
 		return "defines a dispatcher job whose rules can be evaluated"
 	}
 	if rules != nil {
-		outcome, idx := evaluateRules(rules, triggerPipelineEnv(defaultBranch))
-		if p := rulesProblem(outcome, idx, "dispatcher job rule"); p != "" {
+		env := triggerPipelineEnv(defaultBranch)
+		outcome, idx := evaluateRules(rules, env)
+		if p := rulesProblem(rules, env, outcome, idx, "dispatcher job rule"); p != "" {
 			return "admits protected-default-branch trigger pipelines to the dispatcher job " + p
 		}
 		matched := resolveAlias(resolveAlias(rules).Content[idx-1])
@@ -839,13 +847,19 @@ func triggerVariableOverrideProblemSeen(node *yaml.Node, env map[string]*string,
 			sectionKey, sectionOK := classifyTopLevelKey(node.Content[i])
 			if sectionKey != "<<" && (!sectionOK || hasInterpolationSyntax(sectionKey)) {
 				if !(sectionOK && allowKeyRaw != nil && allowKeyRaw(sectionKey)) {
-					return "variable overrides cannot be verified"
+					return fmt.Sprintf("variable overrides cannot be verified (unverifiable key at line %d)", node.Content[i].Line)
 				}
 			}
 			if sectionKey == "variables" {
 				vars := node.Content[i+1]
+				// A bare variables: key (no value, or only comments) is
+				// null, which GitLab accepts as no variables (#9708): it
+				// overrides nothing.
+				if vars.Kind == yaml.ScalarNode && vars.ShortTag() == "!!null" {
+					continue
+				}
 				if vars.Kind != yaml.MappingNode {
-					return "variable overrides cannot be verified"
+					return fmt.Sprintf("variable overrides cannot be verified (variables: at line %d is not a mapping)", vars.Line)
 				}
 				for j := 0; j+1 < len(vars.Content); j += 2 {
 					key, keyOK := classifyTopLevelKey(vars.Content[j])

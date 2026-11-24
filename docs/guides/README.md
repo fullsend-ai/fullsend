@@ -42,9 +42,10 @@ Guides for developers working in repositories where fullsend is active.
 - [How fullsend authenticates](user/how-fullsend-authenticates.md) — Which credential path fullsend uses in each case: the mint, GCP and OpenAI Workload Identity, and the gateway's direct OIDC trust
 - [Using an inference gateway](user/inference-gateway.md) — Reach models through an OpenAI/Anthropic-compatible gateway with direct OIDC trust (no token exchange) or a gateway key
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
-- [Issue commands](user/issues-commands.md) — Read, create, and post comments on issues across GitHub, GitLab, and Jira (`fullsend issues get`, `create`, `post-comment`)
+- [Issue commands](user/issues-commands.md) — Read, create, comment on, and transition issues across GitHub, GitLab, and Jira (`fullsend issues get`, `create`, `post-comment`, `transition`)
 - [OWNERS file authorization](user/owners-file-authorization.md) — Authorize agent dispatch via Prow-style OWNERS files
 - [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux)
+- [Tightening command scanning](user/tightening-command-scanning.md) — Commit a `.tirith/policy.yaml` to make sandbox command scanning stricter for your repository
 
 ### Customizing agents
 
@@ -65,6 +66,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 ### Integrations & observability
 
 - [Jira Integration](user/jira-integration.md) — Connect fullsend to a Jira project so that issue comments and label changes trigger agents
+- [Run artifacts and private data](user/run-artifacts-and-private-data.md) — Limit what a run artifact publishes for runs started from a private tracker (`artifacts` in `config.yaml`)
 - [How to emit traces](user/how-to-emit-traces.md) — Configure a repository or organization to send OpenTelemetry traces to a remote backend
 - [Tracing with MLflow](user/tracing-with-mlflow.md) — MLflow-specific setup: experiment routing, Basic auth encoding, org-level organization, and cost column caveats
 
@@ -72,7 +74,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 
 Guides for contributors developing and testing fullsend itself.
 
-- [E2E testing](dev/e2e-testing.md) — Local and CI e2e runs, including PR authorization and `ok-to-test`
+- [E2E testing](dev/e2e-testing.md) — Local and CI e2e runs, including PR authorization and `/ok-to-test`
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
 - [Behaviour testing](dev/behaviour-testing.md) — Write Gherkin scenarios for end-to-end agent behaviour
 - [Behaviour test drivers](dev/behaviour-drivers.md) — Implement SCM and CI drivers for behaviour tests

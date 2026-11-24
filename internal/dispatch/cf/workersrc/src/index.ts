@@ -724,6 +724,15 @@ function canonicalRoutePath(pathname: string): string | null {
 }
 
 /**
+ * Strict-Transport-Security value for responses the Worker writes itself.
+ * Responses from the Go handler already carry it (hstsHeaderValue in
+ * internal/mintcore/handler.go); keep the two in sync. No
+ * includeSubDomains or preload, so the policy stays scoped to the mint's
+ * own hostname.
+ */
+const HSTS_HEADER_VALUE = "max-age=31536000";
+
+/**
  * Return a JSON error response.
  */
 function errorResponse(status: number, message: string): Response {
@@ -732,6 +741,7 @@ function errorResponse(status: number, message: string): Response {
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",
+      "strict-transport-security": HSTS_HEADER_VALUE,
     },
   });
 }

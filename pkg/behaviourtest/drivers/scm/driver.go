@@ -21,6 +21,9 @@ import (
 type Driver interface {
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*forge.Issue, error)
 	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
+	// EnsureLabel creates a repository label, returning nil when it
+	// already exists. It fires no issue event, so no workflow run starts.
+	EnsureLabel(ctx context.Context, owner, repo, name string) error
 	AddComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error)
 	GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error)
 	// ListOpenIssues returns the repository's open issues (pull requests

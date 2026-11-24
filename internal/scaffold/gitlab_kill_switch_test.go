@@ -172,10 +172,9 @@ func TestRunAgentJobScript_KillSwitchConsultsConfigBaseYAML(t *testing.T) {
 				"FULLSEND_DISPATCH_SECRET=" + secret,
 				"FULLSEND_DISPATCH_HMAC=" + hmacHex,
 				"CI_PROJECT_PATH=group/project",
-				"CI_SERVER_URL=https://gitlab.example",
 				"CI_PIPELINE_URL=https://gitlab.example/group/project/-/pipelines/100",
 				"CI_PROJECT_ID=1",
-			}, pinTLSEnv(t, srv)...)
+			}, pinAgentJobEnv(t, srv)...)
 			out, err := cmd.CombinedOutput()
 
 			if tc.wantHalt {

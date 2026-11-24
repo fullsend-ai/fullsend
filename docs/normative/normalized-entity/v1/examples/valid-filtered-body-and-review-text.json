@@ -1,0 +1,335 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "change_proposal",
+    "source": {
+      "system": "github",
+      "host": "github.com",
+      "repository": "fullsend-ai/demo",
+      "repository_id": "R_kgDOExample"
+    },
+    "id": "fullsend:entity:v1:github:github.com:change_proposal:PR_kwDOExample53",
+    "source_id": "PR_kwDOExample53",
+    "key": "#53",
+    "number": 53,
+    "url": "https://github.com/fullsend-ai/demo/pull/53",
+    "state": "open",
+    "title": "Improve entity handling",
+    "author": {
+      "id": "U_kgDOBob",
+      "login": "bob",
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": {
+      "id": "PR_kwDOExample53",
+      "created_at": "2026-10-12T09:00:00.000000000Z",
+      "revised_at": "2026-10-12T09:00:00.000000000Z",
+      "actor": {
+        "id": "U_kgDOBob",
+        "login": "bob",
+        "kind": "human",
+        "role": "write",
+        "role_verified": true
+      },
+      "text": "Explain the proposed change.",
+      "command": null,
+      "is_entity_author": true
+    },
+    "comments": [
+      {
+        "id": "PRRC_kwDOExample9",
+        "created_at": "2026-10-13T10:05:00.000000000Z",
+        "revised_at": "2026-10-13T10:05:00.000000000Z",
+        "actor": {
+          "id": "U_kgDOBob",
+          "login": "bob",
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "text": "Please check this line.",
+        "command": null,
+        "thread_id": "PRRT_kwDOExample3",
+        "is_entity_author": true
+      }
+    ],
+    "label_applications": [],
+    "reviews": [
+      {
+        "id": "PRR_kwDOExample7",
+        "created_at": "2026-10-13T10:00:00.000000000Z",
+        "revised_at": "2026-10-13T10:00:00.000000000Z",
+        "actor": {
+          "id": "U_kgDOBob",
+          "login": "bob",
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "text": "Looks good.",
+        "command": null,
+        "review_state": "approved",
+        "is_entity_author": true
+      }
+    ],
+    "threads": [
+      {
+        "id": "PRRT_kwDOExample3",
+        "created_at": "2026-10-13T10:05:00.000000000Z",
+        "comment_ids": [
+          "PRRC_kwDOExample9"
+        ],
+        "resolved": false,
+        "outdated": false,
+        "review_id": "PRR_kwDOExample7",
+        "location": {
+          "path": "internal/example.go",
+          "line": 42,
+          "side": "right"
+        }
+      }
+    ],
+    "labels": [],
+    "change_proposal": {
+      "base_repository": "fullsend-ai/demo",
+      "head_repository": {
+        "$unknown": "not_loaded"
+      },
+      "base_ref": "main",
+      "head_ref": {
+        "$unknown": "not_loaded"
+      },
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "is_fork": {
+        "$unknown": "not_loaded"
+      },
+      "draft": false,
+      "approval": {
+        "gate": "unsatisfied"
+      },
+      "changed_files": [],
+      "commits": []
+    },
+    "checks": [
+      {
+        "id": "CR_kwDOExample7",
+        "name": "test",
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-10-13T10:30:00.000000000Z",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "started_at": "2026-10-13T10:31:00.000000000Z",
+        "completed_at": "2026-10-13T10:36:00.000000000Z",
+        "never_started": false,
+        "log": {
+          "ascending": [
+            {
+              "text": "Starting tests",
+              "timestamp": null
+            },
+            {
+              "text": "Loading fixtures",
+              "timestamp": null
+            }
+          ],
+          "descending": [
+            {
+              "text": "1 test failed",
+              "timestamp": null
+            },
+            {
+              "text": "Job failed",
+              "timestamp": null
+            }
+          ]
+        },
+        "report": {
+          "title": "Test results",
+          "summary": "1 test failed",
+          "details": "The example test failed its assertion.",
+          "annotations": [
+            {
+              "path": "internal/example_test.go",
+              "start_line": 42,
+              "end_line": 42,
+              "start_column": null,
+              "end_column": null,
+              "level": "failure",
+              "title": "Assertion failed",
+              "message": "Expected 2, got 3",
+              "details": null
+            }
+          ]
+        }
+      },
+      {
+        "id": "CR_kwDOExample8",
+        "name": "external/analyzer",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-13T10:40:00.000000000Z",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "started_at": "2026-10-13T10:41:00.000000000Z",
+        "completed_at": "2026-10-13T10:45:00.000000000Z",
+        "never_started": false,
+        "log": {
+          "ascending": [],
+          "descending": []
+        },
+        "report": {
+          "title": "Static analysis",
+          "summary": "No findings",
+          "details": null,
+          "annotations": []
+        }
+      }
+    ],
+    "reviewers": [
+      {
+        "subject": {
+          "id": "U_kgDOBob",
+          "login": "bob",
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "state": "approved"
+      },
+      {
+        "subject": {
+          "kind": "team",
+          "id": "T_kwDOExample",
+          "name": "maintainers"
+        },
+        "state": "unreviewed"
+      }
+    ],
+    "current_approvals": [
+      {
+        "actor": {
+          "id": "U_kgDOBob",
+          "login": "bob",
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "approved_at": "2026-10-13T10:00:00.000000000Z",
+        "is_entity_author": true
+      }
+    ],
+    "assignees": [],
+    "reactions": [],
+    "lifecycle": {
+      "closed_at": {
+        "$unknown": "not_loaded"
+      },
+      "closed_by": {
+        "$unknown": "not_loaded"
+      },
+      "merged_at": {
+        "$unknown": "not_loaded"
+      },
+      "merged_by": {
+        "$unknown": "not_loaded"
+      }
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "complete"
+    },
+    "comments": {
+      "status": "complete"
+    },
+    "label_applications": {
+      "status": "complete"
+    },
+    "reviews": {
+      "status": "complete"
+    },
+    "threads": {
+      "status": "complete"
+    },
+    "thread_comments": [
+      {
+        "thread_id": "PRRT_kwDOExample3",
+        "status": "complete"
+      }
+    ],
+    "checks": {
+      "status": "complete",
+      "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "check_logs": [
+      {
+        "check_id": "CR_kwDOExample7",
+        "ascending": {
+          "status": "partial",
+          "source_revision": "log-revision-1"
+        },
+        "descending": {
+          "status": "partial",
+          "source_revision": "log-revision-1"
+        }
+      },
+      {
+        "check_id": "CR_kwDOExample8",
+        "ascending": {
+          "status": "unsupported",
+          "reason": "no_forge_log_api"
+        },
+        "descending": {
+          "status": "unsupported",
+          "reason": "no_forge_log_api"
+        }
+      }
+    ],
+    "check_annotations": [
+      {
+        "check_id": "CR_kwDOExample7",
+        "coverage": {
+          "status": "partial",
+          "reason": "more_pages_not_requested",
+          "source_revision": "check-output-revision-1"
+        }
+      },
+      {
+        "check_id": "CR_kwDOExample8",
+        "coverage": {
+          "status": "complete",
+          "source_revision": "check-output-revision-2"
+        }
+      }
+    ],
+    "reviewers": {
+      "status": "complete",
+      "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "current_approvals": {
+      "status": "complete",
+      "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "changed_files": {
+      "status": "not_loaded"
+    },
+    "commits": {
+      "status": "not_loaded"
+    },
+    "assignees": {
+      "status": "not_loaded"
+    },
+    "reactions": {
+      "status": "not_loaded"
+    },
+    "extension_lists": []
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}

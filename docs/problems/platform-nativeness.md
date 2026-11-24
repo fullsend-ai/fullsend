@@ -20,7 +20,7 @@ Fullsend used a centralized `.fullsend` config repo as the hub for agent pipelin
 
 - `workflow_dispatch` as the cross-repo trigger mechanism, because `workflow_call` would require the caller to have the App PEM ([ADR 0008](../ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md))
 - A fine-grained PAT (`FULLSEND_DISPATCH_TOKEN`) stored as an org secret with selected-repo visibility, so enrolled repos can trigger `.fullsend` workflows
-- `pull_request_target` in the shim workflow, so PR authors cannot rewrite the dispatch code to steal the token ([ADR 0009](../ADRs/0009-pull-request-target-in-shim-workflows.md))
+- `pull_request_target` in the shim workflow, so PR authors cannot rewrite the dispatch code to steal the token ([ADR 0009](../ADRs/0009-pull-request-target-in-shim-workflows.md); superseded by [ADR 0164](../ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md), which runs the shim on `pull_request` for same-repo PRs)
 - Verification logic — the CLI dispatches `agent.yaml` with `event_type=verify` to confirm the token works
 
 gh-aw workflows are defined **in the repo itself** as markdown files. Events trigger Actions workflows directly. There is no cross-repo dispatch to set up, no dispatch token to manage, no shim to secure.
@@ -43,7 +43,7 @@ That weakens retriggering as its own justification for per-role Apps: it's solva
 
 ### Repository enrollment
 
-Fullsend must inject a shim workflow into each target repo. The CLI creates a branch (`fullsend/onboard`), writes `.github/workflows/fullsend.yaml` with the `pull_request_target` trigger, and opens a PR. A human must merge this PR to complete enrollment ([ADR 0013, proposed](../ADRs/0013-admin-install-repo-enrollment-v1.md)).
+Fullsend must inject a shim workflow into each target repo. The CLI creates a branch (`fullsend/onboard`), writes `.github/workflows/fullsend.yaml` with the `pull_request` trigger, and opens a PR. A human must merge this PR to complete enrollment ([ADR 0013, proposed](../ADRs/0013-admin-install-repo-enrollment-v1.md)).
 
 gh-aw enrollment is adding a markdown file to your repo. `gh aw compile` generates the corresponding `.lock.yml`; `gh aw run` is a separate command that executes a workflow immediately in Actions.
 
@@ -102,7 +102,17 @@ These are shared concerns where gh-aw's native position provides a structural ad
 
 GitHub Actions has no built-in approval gate for `issue_comment` or `issues.opened` triggers — unlike `pull_request` from public forks, which can require a maintainer's approval before running. Any user who can comment on an issue or open one fires the workflow immediately, full stop. [GitHub Security Lab documented a related class of vulnerability in 2021](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/) that they named "pwn request" — focused specifically on privilege escalation via `pull_request_target` code execution. The underlying issue is broader: an absent trigger-level authorization gate, which extends to `issue_comment` and `issues.opened` as well. There the risk isn't code execution, it's unauthorized cost and abuse exposure — for a workflow that runs paid LLM inference, an attacker doesn't need a security bug, just a repo they can comment on.
 
-Fullsend closes this itself: nearly every dispatch path — slash commands and automatic event triggers alike — is gated on collaborator repository permission before dispatching an agent, via a parameterized `has_repo_permission` check against the collaborator-permission API (observation stages like triage/review require `triage`+, mutation stages like code/fix require `write`+) or, for label-triggered handoffs, the implicit requirement that applying a label itself needs write access ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)). The `issue_comment` needs-info re-triage path was removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — re-triage after providing requested information now requires an explicit `/fs-triage` command. `retro` on PR-close is intentionally left ungated for read-only lifecycle accounting. This was not the default behavior; it had to be built and applied consistently after discovering some dispatch paths were gated and others weren't.
+Fullsend closes this itself: dispatch paths — slash commands and automatic
+event triggers alike — check collaborator repository permission before starting
+an agent. Observation stages such as triage and review require `triage`+, while
+mutation stages such as code, fix, and retro require `write`+ on GitHub and
+Developer access on GitLab, including for completed merge-queue merges ([ADR
+0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+Label-triggered handoffs rely on the permission needed to apply the label. The
+`issue_comment` needs-info re-triage path was removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740)
+— re-triage after providing requested information now requires an explicit
+`/fs-triage` command. A CEL routing failure on PR close skips retro instead of
+falling back to the Bash route.
 
 gh-aw's docs now define [`on.roles`/`on.skip-roles`](https://github.github.com/gh-aw/reference/triggers/) — an actor-authorization allowlist against the triggering user's repository role, defaulting to `[admin, maintainer, write]` — automatically enforced by default for `push`, `issues`, and `pull_request` triggers, closing the gap for `issues.opened`. However, `issue_comment` (the event slash commands and comment-driven automation use — the primary "pwn request" vector this section describes) is not in that default-enforced list; a workflow author must explicitly add `roles:` to gate comment-triggered workflows, or they inherit the same ungated-trigger behavior as any other GitHub Actions workflow.
 

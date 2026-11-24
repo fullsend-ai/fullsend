@@ -18,6 +18,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -541,6 +542,58 @@ func TestListTriggeredHarnesses_LoadFailureAnnotation(t *testing.T) {
 	assert.Contains(t, annotation, "load failed")
 }
 
+// A registered harness declaring an unsupported schema_version must surface
+// the parse funnel's version rejection through enumeration (ADR 0127
+// Decision 1). The enumerate path loads registered harnesses via
+// LoadWithBase, whose child load runs parseRaw → validateSchemaVersion, so
+// the rejection arrives as an ordinary load failure: the agent is skipped
+// with a ::error:: annotation and, because it is the only registered agent,
+// enumeration returns the aggregated error rather than an empty result.
+func TestListTriggeredHarnesses_UnsupportedSchemaVersion(t *testing.T) {
+	buf := captureAnnotations(t)
+
+	dir := t.TempDir()
+	harnessDir := filepath.Join(dir, "harness")
+	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+	// Otherwise-valid harness whose only defect is the too-new version
+	// declaration, so the failure can only come from the version check.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(harnessDir, "future.yaml"),
+		[]byte(`agent: agents/triage.md
+role: triage
+slug: future-schema
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+trigger: event.entity.kind == "work_item"
+schema_version: 2
+`), 0o644))
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	cfg.SetAgents([]config.AgentEntry{
+		{Name: "future", Source: "harness/future.yaml"},
+	})
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+	require.Error(t, err)
+	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "no agents could be loaded")
+	assert.Contains(t, err.Error(), "future")
+	assert.Contains(t, err.Error(), "load failed")
+	// The version rejection itself, carried through the parse funnel.
+	assert.Contains(t, err.Error(), "parsing harness YAML")
+	assert.Contains(t, err.Error(), "schema_version 2 is not supported by this version of fullsend")
+
+	annotation := buf.String()
+	assert.Contains(t, annotation, "::error::")
+	assert.Contains(t, annotation, "future")
+	assert.Contains(t, annotation, "schema_version 2 is not supported by this version of fullsend")
+}
+
 func TestMatchHarnesses_TriggerEvalFailureAnnotation(t *testing.T) {
 	buf := captureAnnotations(t)
 
@@ -610,4 +663,56 @@ skills:
 	out, err := ListTriggeredHarnesses(context.Background(), ".fullsend", dirCfg, nil)
 	require.NoError(t, err)
 	require.Len(t, out, 1)
+}
+
+// TestNewComposeOpts_ConfiguredGitHubHost pins that harness dispatch threads
+// the configured GitHub host into ComposeOpts, so a base skill directory on a
+// GitHub Enterprise Server host parses as raw content when LoadWithBase
+// fetches it (#9037).
+func TestNewComposeOpts_ConfiguredGitHubHost(t *testing.T) {
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	configDir := filepath.Join(t.TempDir(), ".fullsend")
+
+	t.Setenv(forge.GitHubServerURLEnv, "https://ghe.example.com")
+	opts := newComposeOpts(configDir, cfg, []string{"https://ghe.example.com/org/repo/raw/"}, fetch.DefaultPolicy)
+	assert.Equal(t, "https://ghe.example.com", opts.GitHubURL)
+	assert.Equal(t, filepath.Dir(configDir), opts.WorkspaceRoot)
+	assert.Equal(t, []string{"https://ghe.example.com/org/repo/raw/"}, opts.OrgAllowlist)
+	_, err := forge.ParseRawContentURLOnHost("https://ghe.example.com/org/repo/raw/abc123/skills/triage", opts.GitHubURL)
+	require.NoError(t, err)
+
+	t.Setenv(forge.GitHubServerURLEnv, "")
+	assert.Empty(t, newComposeOpts(configDir, cfg, nil, fetch.DefaultPolicy).GitHubURL)
+}
+
+// A block's trigger replaces a custom agent's; on a built-in agent name it is not evaluated.
+func TestListTriggeredHarnesses_HarnessBlockTrigger(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	const body = `agent: agents/triage.md
+role: triage
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "issue-ping.yaml"), []byte(body), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "triage.yaml"),
+		[]byte(body+`trigger: 'event.transition.kind == "closed"'`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+agents:
+  - source: harness/issue-ping.yaml
+    harness:
+      trigger: 'event.transition.kind == "opened"'
+  - source: harness/triage.yaml
+    harness:
+      trigger: 'event.transition.kind == "label_changed"'
+`), 0o644))
+
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, `event.transition.kind == "opened"`, out[0].Harness.Trigger)
+	assert.Equal(t, `event.transition.kind == "closed"`, out[1].Harness.Trigger, "triage keeps its harness file's trigger")
 }

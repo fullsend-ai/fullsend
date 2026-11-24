@@ -1,0 +1,306 @@
+name: behaviour-github-emulator
+
+# Behaviour scenarios against a GitHub emulator inside this one job: no
+# repository secrets, no environment, no OIDC to a real cloud. Every
+# credential (emulator admin token, App keys, mint) is made for the run.
+
+on:
+  pull_request:
+  # The merge queue needs every required check to report on its group, so
+  # requiring behaviour-github-emulator needs it here too.
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      # No defaults: an empty input falls back to the shards and DEFAULT_*.
+      features:
+        description: Space-separated feature paths under e2e/behaviour (empty runs the shards and playback)
+      workers:
+        description: Scenarios in parallel (slot pool size and godog concurrency; empty uses DEFAULT_WORKERS)
+      runners:
+        description: Real actions/runner processes on the emulator (empty uses DEFAULT_RUNNERS)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: behaviour-github-emulator-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The 85 behaviour scenarios in sixteen shards (e2e/behaviour/github-emulator/shards.txt),
+  # one VM each, balanced on measured scenario time: a shard takes about as
+  # long as its longest scenario chain, so wider shards cut wall time until
+  # each holds one long chain. Fewer scenarios per VM also need fewer
+  # runners. A 4-vCPU VM is CPU-bound above about two scenarios at once.
+  #
+  # base-dispatch, url-dispatch.feature:7 and skill-overrides fetch from
+  # raw.githubusercontent.com, which run-job.sh points at a public address on
+  # the VM's lo where the emulator answers, so they pass the same fetch guard
+  # production runs.
+  # applier-branch-namespace: the seeded fullsend-ai/agents main enforces it.
+  # fetch-allowlist-gate: the job runs this checkout's fullsend, which has the gate.
+  DEFAULT_CAPABILITIES: runner-secret-overlay-guard,applier-branch-namespace,fetch-allowlist-gate
+  # For a dispatch with explicit features; shards set their own in shards.txt.
+  DEFAULT_WORKERS: "2"
+  DEFAULT_RUNNERS: "4"
+  # A github-emulator release: its scripts/ci-stack.sh and
+  # scripts/ci-seed-mint-apps.py run the stack, so a bump changes what
+  # every scenario runs against. Bump on purpose, like an action pin.
+  EMULATOR_REPO: fullsend-ai/github-emulator
+  EMULATOR_REF: 504ed2280235330c80378bc242f37f8e97b7be91 # 2026.11.21
+
+jobs:
+  behaviour-github-emulator:
+    name: behaviour-github-emulator (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # A dispatch with explicit features runs them as one "custom" shard.
+        shard: ${{ fromJSON(inputs.features && '["custom"]' || '["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p"]') }}
+    steps:
+      - name: Checkout fullsend
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout github-emulator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.EMULATOR_REPO }}
+          ref: ${{ env.EMULATOR_REF }}
+          path: .emulator
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        with:
+          enable-cache: false
+
+      # The emulator's locked dependencies, installed with hashes, as its
+      # own smoke workflow does.
+      - name: Install emulator dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/emu-venv"
+          uv export -q --frozen --no-dev --no-emit-project --format requirements-txt --project .emulator -o "$RUNNER_TEMP/emu-requirements.txt"
+          uv pip install -q --python "$RUNNER_TEMP/emu-venv/bin/python" --require-hashes -r "$RUNNER_TEMP/emu-requirements.txt"
+
+      - name: Run behaviour features
+        env:
+          EMULATOR_DIR: ${{ github.workspace }}/.emulator
+          EMULATOR_PY: ${{ runner.temp }}/emu-venv/bin/python
+          STATE_DIR: ${{ runner.temp }}/bt-github-emulator
+          # Read-only job token, only so the emulator can fetch public
+          # github.com actions without the anonymous rate limit.
+          UPSTREAM_TOKEN: ${{ github.token }}
+          FEATURES: ${{ inputs.features }}
+          SHARD: ${{ matrix.shard }}
+          INPUT_WORKERS: ${{ inputs.workers }}
+          INPUT_RUNNERS: ${{ inputs.runners }}
+          SUITE_TIMEOUT: 30m
+          BEHAVIOUR_CAPABILITIES: ${{ env.DEFAULT_CAPABILITIES }}
+          # The run falls back to fullsend-ai/agents@main on the configured forge.
+          AGENTS_SEED: "1"
+        run: |
+          # A shard line is: <shard> <workers> <runners> <feature[:line]>...
+          WORKERS=$DEFAULT_WORKERS EMULATOR_RUNNERS=$DEFAULT_RUNNERS
+          if [ -z "$FEATURES" ]; then
+            read -r _ WORKERS EMULATOR_RUNNERS FEATURES < <(awk -v s="$SHARD" '$1 == s' e2e/behaviour/github-emulator/shards.txt) || true
+          fi
+          WORKERS=${INPUT_WORKERS:-$WORKERS} EMULATOR_RUNNERS=${INPUT_RUNNERS:-$EMULATOR_RUNNERS}
+          export EMULATOR_RUNNERS
+          [ -n "$FEATURES" ] || { echo "::error::no features for shard $SHARD"; exit 1; }
+          read -ra feats <<<"$FEATURES"
+          export BEHAVIOUR_POOL_SIZE="$WORKERS" GODOG_CONCURRENCY="$WORKERS"
+          e2e/behaviour/github-emulator/run-job.sh "${feats[@]}"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: behaviour-github-emulator-logs-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/bt-github-emulator/**/*.log
+            ${{ runner.temp }}/bt-github-emulator/phases.tsv
+            ${{ runner.temp }}/bt-github-emulator/emulator-profile.json
+            ${{ runner.temp }}/bt-github-emulator/bt-artifacts/
+            ${{ runner.temp }}/bt-github-emulator/openshell-logs/
+            !${{ runner.temp }}/bt-github-emulator/stack/runner-*/_work/**
+          if-no-files-found: warn
+
+  # The playback suite (-tags playback) on its own VM and stack, in parallel
+  # with the shards, so it adds no wall time. A dispatch with explicit
+  # features skips it.
+  behaviour-github-emulator-playback:
+    name: behaviour-github-emulator (playback)
+    if: ${{ !inputs.features }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout fullsend
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout github-emulator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.EMULATOR_REPO }}
+          ref: ${{ env.EMULATOR_REF }}
+          path: .emulator
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        with:
+          enable-cache: false
+
+      # The emulator's locked dependencies, installed with hashes, as its
+      # own smoke workflow does.
+      - name: Install emulator dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/emu-venv"
+          uv export -q --frozen --no-dev --no-emit-project --format requirements-txt --project .emulator -o "$RUNNER_TEMP/emu-requirements.txt"
+          uv pip install -q --python "$RUNNER_TEMP/emu-venv/bin/python" --require-hashes -r "$RUNNER_TEMP/emu-requirements.txt"
+
+      - name: Run the playback suite
+        env:
+          EMULATOR_DIR: ${{ github.workspace }}/.emulator
+          EMULATOR_PY: ${{ runner.temp }}/emu-venv/bin/python
+          STATE_DIR: ${{ runner.temp }}/bt-github-emulator
+          # Read-only job token, only so the emulator can fetch public
+          # github.com actions without the anonymous rate limit.
+          UPSTREAM_TOKEN: ${{ github.token }}
+          BT_SUITE: playback
+          # The code stage opens its pull request and then labels it
+          # ready-for-review: two review dispatches, of which the review
+          # job's cancel-in-progress group keeps one only if they overlap,
+          # as they do on GitHub-hosted runners. Four runners make them
+          # overlap here too.
+          EMULATOR_RUNNERS: "4"
+        run: e2e/behaviour/github-emulator/run-job.sh
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: behaviour-github-emulator-logs-playback
+          path: |
+            ${{ runner.temp }}/bt-github-emulator/**/*.log
+            ${{ runner.temp }}/bt-github-emulator/phases.tsv
+            ${{ runner.temp }}/bt-github-emulator/bt-artifacts/
+            ${{ runner.temp }}/bt-github-emulator/openshell-logs/
+            !${{ runner.temp }}/bt-github-emulator/stack/runner-*/_work/**
+          if-no-files-found: warn
+
+  # The agents repository's behaviour suite (BT_SUITE=agents) against this
+  # checkout and fullsend-ai/agents main, so a fullsend change that breaks
+  # the agents suite shows here before it merges. Not required: it is not in
+  # the result job's needs. Pull requests only; a dispatch with explicit
+  # features skips it.
+  behaviour-github-emulator-agents:
+    name: behaviour-github-emulator (agents)
+    if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.features) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout fullsend
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout agents
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fullsend-ai/agents
+          ref: main
+          path: .agents
+          # Full history: run-job.sh pushes this checkout into the emulator
+          # as fullsend-ai/agents main, and a shallow clone cannot be pushed.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout github-emulator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.EMULATOR_REPO }}
+          ref: ${{ env.EMULATOR_REF }}
+          path: .emulator
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        with:
+          enable-cache: false
+
+      # The emulator's locked dependencies, installed with hashes, as its
+      # own smoke workflow does.
+      - name: Install emulator dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/emu-venv"
+          uv export -q --frozen --no-dev --no-emit-project --format requirements-txt --project .emulator -o "$RUNNER_TEMP/emu-requirements.txt"
+          uv pip install -q --python "$RUNNER_TEMP/emu-venv/bin/python" --require-hashes -r "$RUNNER_TEMP/emu-requirements.txt"
+
+      - name: Run the agents suite
+        env:
+          EMULATOR_DIR: ${{ github.workspace }}/.emulator
+          EMULATOR_PY: ${{ runner.temp }}/emu-venv/bin/python
+          STATE_DIR: ${{ runner.temp }}/bt-github-emulator
+          # Read-only job token, only so the emulator can fetch public
+          # github.com actions without the anonymous rate limit.
+          UPSTREAM_TOKEN: ${{ github.token }}
+          BT_SUITE: agents
+          AGENTS_DIR: ${{ github.workspace }}/.agents
+          EMULATOR_RUNNERS: "12"
+          BEHAVIOUR_POOL_SIZE: "6"
+          GODOG_CONCURRENCY: "6"
+          SUITE_TIMEOUT: 45m
+          # Not review-skill-overrides: its custom-persona scenario needs a
+          # real model, so it stays in the agents repository's live job.
+          BEHAVIOUR_CAPABILITIES: applier-branch-namespace
+        run: e2e/behaviour/github-emulator/run-job.sh
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: behaviour-github-emulator-logs-agents
+          path: |
+            ${{ runner.temp }}/bt-github-emulator/**/*.log
+            ${{ runner.temp }}/bt-github-emulator/phases.tsv
+            ${{ runner.temp }}/bt-github-emulator/bt-artifacts/
+            ${{ runner.temp }}/bt-github-emulator/openshell-logs/
+            !${{ runner.temp }}/bt-github-emulator/stack/runner-*/_work/**
+          if-no-files-found: warn
+
+  # The one check to require: green only when every shard and playback passed.
+  behaviour-github-emulator-result:
+    name: behaviour-github-emulator
+    if: ${{ always() }}
+    needs: [behaviour-github-emulator, behaviour-github-emulator-playback]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: All shards passed
+        env:
+          SHARDS: ${{ needs.behaviour-github-emulator.result }}
+          PLAYBACK: ${{ needs.behaviour-github-emulator-playback.result }}
+        run: |
+          echo "shards: $SHARDS, playback: $PLAYBACK"
+          [ "$SHARDS" = success ] && { [ "$PLAYBACK" = success ] || [ "$PLAYBACK" = skipped ]; }

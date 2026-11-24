@@ -512,6 +512,7 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL=kept
 `
 
 func TestBuildRunCommand_GatewayEnvOwnership_OIDC(t *testing.T) {
+	requireSeedLock(t)
 	const sb = "fs-claude-gw-shell-oidc"
 	registerClaudeGateway(t, sb, false)
 	out, cfgDir, err := gatewayLaunch(t, sb, hostileGatewayEnv)
@@ -552,6 +553,7 @@ func TestBuildRunCommand_GatewayEnvOwnership_APIKey(t *testing.T) {
 // .env cannot make a route variable readonly: `readonly` is not part of the
 // .env grammar, so the line is ignored and the runner's values are exported.
 func TestBuildRunCommand_GatewayReadonlyIgnored(t *testing.T) {
+	requireSeedLock(t)
 	const sb = "fs-claude-gw-shell-ro"
 	registerClaudeGateway(t, sb, false)
 	for _, name := range []string{"ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
@@ -660,6 +662,7 @@ func TestClaudeGatewayAPIKeyPlaceholder(t *testing.T) {
 // for byte, even when it spans lines and holds single quotes (hook
 // commands quote their paths).
 func TestBuildRunCommand_GatewayInlineSettingsArgv(t *testing.T) {
+	requireSeedLock(t)
 	const sb = "fs-claude-gw-argv"
 	registerClaudeGateway(t, sb, false)
 	merged, err := mergeClaudeSettings([]byte("{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"python3 '/sandbox/hooks/it'\\\\''s.py'\"}]}]}}"), ClaudeRuntime{}.claudeGatewaySettings(sb))

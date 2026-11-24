@@ -188,7 +188,7 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 			if IsAgentExplicitlyDisabled(candidateAgents, name) {
 				continue
 			}
-		} else if !isBuiltinAgentName(name) {
+		} else if !IsBuiltinAgentName(name) {
 			// A custom (source-declared, non-built-in) agent that is
 			// entirely absent from the candidate was removed, not
 			// re-enabled. Built-in agents keep resolving through the
@@ -206,14 +206,14 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 		})
 	}
 
-	currentCI := current.IssueCreationConfig()
-	candidateCI := candidate.IssueCreationConfig()
-	if allowTargetsWidened(currentCI, candidateCI) {
-		if local == nil || local.CreateIssues == nil {
+	currentTracking := current.IssueTracking()
+	candidateTracking := candidate.IssueTracking()
+	if trackingWidened(currentTracking, candidateTracking) {
+		if local == nil || local.Tracker == nil {
 			out = append(out, SafetyRelaxation{
-				Key:       "create_issues.allow_targets",
-				Current:   formatAllowTargets(currentCI),
-				Candidate: formatAllowTargets(candidateCI),
+				Key:       trackingSafetyKey(currentTracking, candidateTracking),
+				Current:   formatTrackingTargets(currentTracking),
+				Candidate: formatTrackingTargets(candidateTracking),
 			})
 		}
 	}
@@ -245,6 +245,8 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 			Candidate: formatUnset(candidateGW.Audience),
 		})
 	}
+	out = append(out, artifactsRelaxations(current, candidate, local)...)
+	out = append(out, progressRelaxations(current, candidate, local)...)
 	return out
 }
 
@@ -318,11 +320,12 @@ func agentEntryPresent(agents []AgentEntry, name string) bool {
 	return false
 }
 
-// isBuiltinAgentName reports whether name is one of the built-in agents
-// fullsend dispatches by name (ValidAgentNames). Built-in agents keep
-// resolving through the agents-repo fallback even without a config entry,
-// so their absence from a candidate's agent list is not a removal.
-func isBuiltinAgentName(name string) bool {
+// IsBuiltinAgentName reports whether name is one of the built-in agents
+// fullsend dispatches by name (ValidAgentNames), whether or not its entry
+// has a source. Built-in agents keep resolving through the agents-repo
+// fallback even without a config entry, so their absence from a
+// candidate's agent list is not a removal.
+func IsBuiltinAgentName(name string) bool {
 	return slices.Contains(ValidAgentNames(), strings.ToLower(name))
 }
 
@@ -335,36 +338,6 @@ func localAgentExplicitlyEnabled(local []AgentEntry, name string) bool {
 		if strings.ToLower(local[i].DerivedName()) == lower {
 			return local[i].Enabled != nil && *local[i].Enabled
 		}
-	}
-	return false
-}
-
-// allowTargetsWidened reports whether candidate grants issue-creation access
-// current does not. Orgs and repos are compared by what they grant, not
-// list by list: a candidate repository whose owner is already covered by a
-// current org entry admits nothing new, so replacing an org with one of its
-// repositories is a narrowing.
-func allowTargetsWidened(current, candidate *CreateIssuesConfig) bool {
-	var currentOrgs, currentRepos, candidateOrgs, candidateRepos []string
-	if current != nil {
-		currentOrgs = current.AllowTargets.Orgs
-		currentRepos = current.AllowTargets.Repos
-	}
-	if candidate != nil {
-		candidateOrgs = candidate.AllowTargets.Orgs
-		candidateRepos = candidate.AllowTargets.Repos
-	}
-	if setWidened(currentOrgs, candidateOrgs) {
-		return true
-	}
-	for _, repo := range candidateRepos {
-		if slices.Contains(currentRepos, repo) {
-			continue
-		}
-		if owner, _, ok := strings.Cut(repo, "/"); ok && slices.Contains(currentOrgs, owner) {
-			continue
-		}
-		return true
 	}
 	return false
 }
@@ -384,11 +357,4 @@ func formatAllowlist(values []string) string {
 		return "deny-all"
 	}
 	return formatStringList(values)
-}
-
-func formatAllowTargets(ci *CreateIssuesConfig) string {
-	if ci == nil {
-		return "unset"
-	}
-	return "orgs=" + formatStringList(ci.AllowTargets.Orgs) + " repos=" + formatStringList(ci.AllowTargets.Repos)
 }

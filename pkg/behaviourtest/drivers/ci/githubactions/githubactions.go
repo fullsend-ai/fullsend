@@ -15,10 +15,15 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 )
 
+// pollInterval is how often a harness-run wait polls the run once it has
+// been detected. BEHAVIOUR_RUN_POLL_INTERVAL overrides it (a Go duration),
+// for a local forge where runs finish in seconds.
+var pollInterval = env.MustDuration("BEHAVIOUR_RUN_POLL_INTERVAL", 15*time.Second)
+
 const (
-	pollInterval = 15 * time.Second
 	// dispatchWait bounds how long WaitForHarnessAgent and friends wait
 	// for a harness run to settle. Raised from 12 to 20 minutes to give
 	// longer-running playback scenarios (which replay a full dummy-agent
@@ -121,9 +126,10 @@ func nextBackoff(current, max time.Duration) time.Duration {
 func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
 	workflowFile = filepath.Base(workflowFile)
 	var triageRun *forge.WorkflowRun
-	deadline := time.Now().Add(dispatchTimeout)
+	var listErrs pollErrors
+	deadline := d.now().Add(dispatchTimeout)
 	interval := dispatchPollInit
-	for time.Now().Before(deadline) {
+	for d.now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -131,6 +137,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		}
 		interval = nextBackoff(interval, dispatchPollMax)
 		runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+		listErrs.record(ctx, err)
 		if err != nil {
 			continue
 		}
@@ -143,10 +150,9 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		}
 	}
 	if triageRun == nil {
-		if event != "" {
-			return nil, fmt.Errorf("workflow %s (%s) was not dispatched", workflowFile, event)
-		}
-		return nil, fmt.Errorf("workflow %s was not dispatched", workflowFile)
+		// The poll-error tail tells a blind wait (every listing failed)
+		// apart from one that listed successfully and found no run.
+		return nil, &ci.NotDispatchedError{WorkflowFile: workflowFile, Event: event, Detail: listErrs.describe(nil, "polls")}
 	}
 
 	deadline = time.Now().Add(dispatchWait)
@@ -215,9 +221,27 @@ func selectSuccessfulWorkflowRun(runs []forge.WorkflowRun, triggerTime time.Time
 	return best
 }
 
+// createdBefore reports whether a run or artifact created at created is
+// earlier than the trigger. created_at has second precision, so the
+// trigger is truncated to whole seconds first: otherwise a run created in
+// the trigger's own second (trigger 21:56:29.4, created_at 21:56:29)
+// reads as created before it and is never matched (#9495).
+//
+// Every positive wait uses this. The truncation also lets a wait match a
+// run or artifact created up to one second before the trigger, the same
+// window steps that truncate ScenarioStart already accept (#7957); each
+// selector additionally filters on event, workflow, run name, artifact
+// name or agent job, and prefers the newest match. The harness run
+// listings also serve AssertNoHarnessAgentArtifact, which fails only on a
+// non-skipped job for the named agent. AssertNoWorkflow, whose only
+// filter is the workflow file, keeps the exact trigger time.
+func createdBefore(created, trigger time.Time) bool {
+	return created.Before(trigger.Truncate(time.Second))
+}
+
 func workflowRunMatches(run forge.WorkflowRun, triggerTime time.Time, event string) bool {
 	runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-	if parseErr != nil || runTime.Before(triggerTime) {
+	if parseErr != nil || createdBefore(runTime, triggerTime) {
 		return false
 	}
 	if event != "" && run.Event != event {
@@ -271,7 +295,7 @@ func selectCompletedSuccessRunByName(runs []forge.WorkflowRun, after time.Time, 
 			continue
 		}
 		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-		if parseErr != nil || runTime.Before(after) {
+		if parseErr != nil || createdBefore(runTime, after) {
 			continue
 		}
 		if run.Status != "completed" || run.Conclusion != "success" {
@@ -289,7 +313,7 @@ func selectCompletedSuccessRun(runs []forge.WorkflowRun, after time.Time) *forge
 	var best *forge.WorkflowRun
 	for _, run := range runs {
 		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-		if parseErr != nil || runTime.Before(after) {
+		if parseErr != nil || createdBefore(runTime, after) {
 			continue
 		}
 		if run.Status != "completed" || run.Conclusion != "success" {
@@ -321,6 +345,11 @@ func (d *Driver) AssertNoWorkflow(ctx context.Context, owner, repo, workflowFile
 			if parseErr != nil {
 				continue
 			}
+			// A negative check with no filter beyond the workflow file,
+			// so the exact trigger time is kept rather than createdBefore:
+			// truncating would fail on an unrelated run created earlier in
+			// the trigger's own second. The cost is that a run created in
+			// that same second after the trigger is not flagged either.
 			if !runTime.Before(after) {
 				return fmt.Errorf("unexpected workflow run %d for %s", run.ID, workflowFile)
 			}
@@ -339,21 +368,41 @@ func (d *Driver) ListRecentRuns(ctx context.Context, owner, repo string, limit i
 }
 
 func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error {
+	return d.downloadArtifactsFromRun(ctx, owner, repo, runID, artifactName, destDir, func(actual string) bool {
+		return actual == artifactName
+	})
+}
+
+func (d *Driver) DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent string, destDir string) error {
+	artifactName := "fullsend-" + agent
+	return d.downloadArtifactsFromRun(ctx, owner, repo, runID, artifactName, destDir, func(actual string) bool {
+		return agentArtifactNameMatches(actual, artifactName)
+	})
+}
+
+func (d *Driver) downloadArtifactsFromRun(ctx context.Context, owner, repo string, runID int, requestedName, destDir string, matches func(string) bool) error {
 	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
 	if err != nil {
 		return err
 	}
+	var found bool
 	for _, art := range artifacts {
-		if art.Name != artifactName {
+		if !matches(art.Name) {
 			continue
 		}
+		found = true
 		zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
 		if err != nil {
 			return err
 		}
-		return extractArtifactZip(art.Name, zipData, destDir)
+		if err := extractArtifactZip(art.Name, zipData, destDir); err != nil {
+			return err
+		}
 	}
-	return fmt.Errorf("artifact %q not found on workflow run %d", artifactName, runID)
+	if found {
+		return nil
+	}
+	return fmt.Errorf("artifact %q not found on workflow run %d", requestedName, runID)
 }
 
 func (d *Driver) DownloadArtifacts(ctx context.Context, owner, repo string, runID int, destDir string) error {
@@ -374,6 +423,19 @@ func (d *Driver) DownloadArtifacts(ctx context.Context, owner, repo string, runI
 }
 
 func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error {
+	return d.downloadArtifactAfter(ctx, owner, repo, artifactName, after, destDir, false, func(actual string) bool {
+		return actual == artifactName
+	})
+}
+
+func (d *Driver) DownloadAgentArtifactsAfter(ctx context.Context, owner, repo, agent string, after time.Time, destDir string) error {
+	artifactName := "fullsend-" + agent
+	return d.downloadArtifactAfter(ctx, owner, repo, artifactName, after, destDir, true, func(actual string) bool {
+		return agentArtifactNameMatches(actual, artifactName)
+	})
+}
+
+func (d *Driver) downloadArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string, waitForRun bool, matches func(string) bool) error {
 	deadline := time.Now().Add(artifactRunWait)
 	var lastNewestCreatedAt string
 	for time.Now().Before(deadline) {
@@ -392,12 +454,29 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 		}
 		lastNewestCreatedAt = newestCreatedAt
 
-		if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
-			zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
-			if err != nil {
-				return err
+		matching := repositoryArtifactsAfter(arts, after, matches)
+		if len(matching) > 0 {
+			// A repository can have several workflow runs after the same
+			// scenario start, and each run can publish the same matrix names.
+			// Use the repository listing (a single bounded page) only to pick
+			// the newest run. Then enumerate that run's artifacts through the
+			// paginated run listing, so a run with many artifacts is
+			// downloaded in full and older output cannot overwrite it.
+			runID := matching[0].WorkflowRunID
+			for _, art := range matching[1:] {
+				if art.WorkflowRunID > runID {
+					runID = art.WorkflowRunID
+				}
 			}
-			return extractArtifactZip(art.Name, zipData, destDir)
+			if waitForRun {
+				// Repeated-agent matrix jobs upload separate artifacts as
+				// they finish, so wait for the run to reach a terminal
+				// status before listing it, or a partial set is downloaded.
+				if err := d.waitForRunCompleted(ctx, owner, repo, runID, deadline); err != nil {
+					return err
+				}
+			}
+			return d.downloadArtifactsFromRun(ctx, owner, repo, runID, artifactName, destDir, matches)
 		}
 		select {
 		case <-ctx.Done():
@@ -406,6 +485,36 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 		}
 	}
 	return fmt.Errorf("artifact %q not found after %s", artifactName, after.Format(time.RFC3339))
+}
+
+// waitForRunCompleted polls the run until it is completed, the context ends,
+// or the deadline passes. If completion is not confirmed by the deadline it
+// returns a timeout error (wrapping the last run lookup error, if any), so the
+// caller never reports a possibly partial artifact set as complete.
+func (d *Driver) waitForRunCompleted(ctx context.Context, owner, repo string, runID int, deadline time.Time) error {
+	var lastErr error
+	lastStatus := ""
+	for time.Now().Before(deadline) {
+		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, runID)
+		if err == nil {
+			if run.Status == "completed" {
+				return nil
+			}
+			lastErr = nil
+			lastStatus = run.Status
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-d.timerAfter(artifactRunPoll):
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("workflow run %d did not complete before the artifact wait deadline: %w", runID, lastErr)
+	}
+	return fmt.Errorf("workflow run %d did not complete before the artifact wait deadline (last status %q)", runID, lastStatus)
 }
 
 func newestRepositoryArtifactCreatedAt(arts []forge.RepositoryArtifact) string {
@@ -421,11 +530,11 @@ func newestRepositoryArtifactCreatedAt(arts []forge.RepositoryArtifact) string {
 func selectRepositoryArtifactAfter(arts []forge.RepositoryArtifact, name string, after time.Time) *forge.RepositoryArtifact {
 	var best *forge.RepositoryArtifact
 	for _, art := range arts {
-		if art.Name != name {
+		if !agentArtifactNameMatches(art.Name, name) {
 			continue
 		}
 		artTime, parseErr := time.Parse(time.RFC3339, art.CreatedAt)
-		if parseErr != nil || artTime.Before(after) {
+		if parseErr != nil || createdBefore(artTime, after) {
 			continue
 		}
 		if best == nil || art.ID > best.ID {
@@ -435,6 +544,49 @@ func selectRepositoryArtifactAfter(arts []forge.RepositoryArtifact, name string,
 	}
 	return best
 }
+
+func repositoryArtifactsAfter(arts []forge.RepositoryArtifact, after time.Time, matches func(string) bool) []forge.RepositoryArtifact {
+	var matching []forge.RepositoryArtifact
+	for _, art := range arts {
+		if !matches(art.Name) {
+			continue
+		}
+		artTime, parseErr := time.Parse(time.RFC3339, art.CreatedAt)
+		if parseErr != nil || createdBefore(artTime, after) {
+			continue
+		}
+		matching = append(matching, art)
+	}
+	return matching
+}
+
+// agentArtifactNameMatches accepts the stable exact name and the readable
+// matrix suffix for the same logical agent. Agent names are restricted to
+// alphanumerics, underscores, and hyphens, so the dot before "matrix" cannot
+// be part of another agent's legacy name.
+func agentArtifactNameMatches(actual, requested string) bool {
+	const logicalPrefix = "fullsend-"
+	if !strings.HasPrefix(requested, logicalPrefix) {
+		return false
+	}
+	agent := strings.TrimPrefix(requested, logicalPrefix)
+	if !artifactAgentNamePattern.MatchString(agent) {
+		return false
+	}
+	if actual == requested {
+		return true
+	}
+	suffixPrefix := requested + ".matrix-"
+	if !strings.HasPrefix(actual, suffixPrefix) {
+		return false
+	}
+	return artifactMatrixIndexPattern.MatchString(strings.TrimPrefix(actual, suffixPrefix))
+}
+
+var (
+	artifactAgentNamePattern   = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	artifactMatrixIndexPattern = regexp.MustCompile(`^[0-9]+$`)
+)
 
 func extractArtifactZip(name string, zipData []byte, destDir string) error {
 	tmp, err := os.CreateTemp("", "behaviour-artifact-*.zip")
@@ -552,7 +704,7 @@ func (d *Driver) listHarnessRunsAfter(ctx context.Context, owner, repo string, a
 	var matched []forge.WorkflowRun
 	for _, run := range runs {
 		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-		if parseErr != nil || runTime.Before(after) {
+		if parseErr != nil || createdBefore(runTime, after) {
 			continue
 		}
 		matched = append(matched, run)
@@ -571,14 +723,17 @@ func (d *Driver) listHarnessRunsAfter(ctx context.Context, owner, repo string, a
 // and a later successful round is returned instead of the correct one
 // (#7996 review).
 func (d *Driver) listHarnessRunsAfterPaginated(ctx context.Context, owner, repo string, after time.Time) ([]forge.WorkflowRun, error) {
-	runs, err := d.Client.ListWorkflowRunsSince(ctx, owner, repo, harnessWorkflowFile, after)
+	// ListWorkflowRunsSince stops paginating at the first run created
+	// before since, so it gets the truncated trigger too, or a run created
+	// in the trigger's own second would end the listing.
+	runs, err := d.Client.ListWorkflowRunsSince(ctx, owner, repo, harnessWorkflowFile, after.Truncate(time.Second))
 	if err != nil {
 		return nil, err
 	}
 	var matched []forge.WorkflowRun
 	for _, run := range runs {
 		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-		if parseErr != nil || runTime.Before(after) {
+		if parseErr != nil || createdBefore(runTime, after) {
 			continue
 		}
 		matched = append(matched, run)
@@ -601,7 +756,7 @@ func formatArtifactDiagnostics(arts []forge.RepositoryArtifact, targetName strin
 	var matched int
 	var b strings.Builder
 	for _, art := range arts {
-		if art.Name != targetName {
+		if !agentArtifactNameMatches(art.Name, targetName) {
 			continue
 		}
 		matched++
@@ -610,7 +765,7 @@ func formatArtifactDiagnostics(arts []forge.RepositoryArtifact, targetName strin
 		switch {
 		case err != nil:
 			b.WriteString("(rejected: unparseable created_at)")
-		case artTime.Before(after):
+		case createdBefore(artTime, after):
 			fmt.Fprintf(&b, "(rejected: created before trigger time %s)", after.UTC().Format(time.RFC3339))
 		default:
 			b.WriteString("(eligible by trigger time; not explained by the listing — run lookup failed, run not completed or cancelled/skipped, or artifact appeared after the last poll; see the run diagnostics)")
@@ -781,12 +936,16 @@ func (p pollErrors) describe(current error, what string) string {
 
 // harnessTimeoutDiagnostics builds the diagnostic tail of a harness-wait
 // timeout error: the runs after the trigger time with the agent's job
-// state, the artifact-listing classification, and the errors recorded
-// during the wait. Lookups made here can fail the same way the polls
-// did (the token may still be rate limited), so each gets its own
-// lookupBudget inside the timeoutDiagnosticsBudget envelope, and a
-// lookup that is itself cut short reports the last poll error as the
-// headline rather than its own cutoff.
+// state, the artifact-listing classification, the errors recorded during
+// the wait, and finally the client's last-seen GitHub rate-limit state
+// when it tracks one (describeRateLimitState), so every wait site that
+// reports a timeout carries the quota it observed — including the
+// no-poll-failure timeouts that otherwise carry no quota information at
+// all. Lookups made here can fail the same way the polls did (the token
+// may still be rate limited), so each gets its own lookupBudget inside
+// the timeoutDiagnosticsBudget envelope, and a lookup that is itself cut
+// short reports the last poll error as the headline rather than its own
+// cutoff.
 func (d *Driver) harnessTimeoutDiagnostics(ctx context.Context, owner, repo, agent string, after time.Time, runsErrs, artifactErrs, lookupErrs pollErrors) string {
 	ctx, cancel := context.WithTimeout(ctx, timeoutDiagnosticsBudget)
 	defer cancel()
@@ -823,6 +982,12 @@ func (d *Driver) harnessTimeoutDiagnostics(ctx context.Context, owner, repo, age
 	if tail := lookupErrs.describe(nil, "lookups"); tail != "" {
 		b.WriteString("; run lookups" + tail)
 	}
+	// The rate-limit state is read outside the lookup-budget envelope:
+	// RateLimit() is in-memory client state, so it costs no API call and
+	// is still appended when every budgeted lookup above was cut short.
+	if line := d.describeRateLimitState(); line != "" {
+		b.WriteString("; " + line)
+	}
 	return b.String()
 }
 
@@ -833,6 +998,39 @@ func lastPollError(p pollErrors) string {
 		return ""
 	}
 	return fmt.Sprintf("; last poll error (%d of %d polls failed): %v", p.failed, p.calls, p.last)
+}
+
+// describeRateLimitState renders the polling client's last-seen GitHub
+// rate-limit state as the final section of a harness-wait timeout tail.
+// The client is consumed by type assertion — the same pattern as the slot
+// allocator's quota gate — because requiring the reporter in the driver's
+// constructor would break every other client and test fake for a
+// diagnostic-only need: a client that does not implement
+// forge.RateLimitReporter (the GitLab client, and the plain fakes) adds no
+// line and its timeout errors are unchanged, while a client that tracks
+// rate limits but has not seen the headers yet renders an explicit
+// unknown, matching the boundary-summary convention, so "tracks, nothing
+// observed" stays distinguishable from "does not track". The body reuses
+// RateLimit.String so timeout errors and lease-boundary summaries share
+// one format; only the observed-age clause is added here, omitted
+// defensively when the observation carries no timestamp. RateLimit() is
+// an in-memory read, so it is made outside the diagnostics lookup-budget
+// envelope and can neither be cut short nor spend the budget of a real
+// lookup.
+func (d *Driver) describeRateLimitState() string {
+	reporter, ok := d.Client.(forge.RateLimitReporter)
+	if !ok {
+		return ""
+	}
+	rl, seen := reporter.RateLimit()
+	if !seen {
+		return "github rate limit: unknown (no observation yet)"
+	}
+	line := "github rate limit: " + rl.String()
+	if !rl.Observed.IsZero() {
+		line += fmt.Sprintf(", observed %s ago", d.now().Sub(rl.Observed).Round(time.Second))
+	}
+	return line
 }
 
 // harnessJobSuffix returns the job name suffix used by the harness workflow
@@ -1090,8 +1288,8 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 	defer cancel()
 	artifactName := "fullsend-" + agent
 
-	// Quick-success: check for the agent's artifact (a completed
-	// harness job uploads fullsend-{agent}).
+	// Quick-success: check for the agent's artifact (a completed harness
+	// job uploads the legacy exact name or its readable matrix suffix).
 	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
 	artifactErrs.record(ctx, err)
 	if err == nil {
@@ -1102,7 +1300,7 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 				if candidate.Conclusion == "success" {
 					return candidate, true, nil
 				}
-				// The harness workflow uploads fullsend-{agent} with
+				// The harness workflow uploads the agent artifact with
 				// if: always(), so a dual-dispatch sibling — cancelled,
 				// skipped, or a genuine failure — can produce this
 				// artifact while a later run for the same agent is
@@ -1326,8 +1524,8 @@ func (d *Driver) harnessRoundPollOnce(ctx context.Context, remaining time.Durati
 // skipID, the one already selected as the highest-ID match — that was
 // created at or after after and belongs to a completed, successful
 // workflow run. selectRepositoryArtifactAfter only ever returns the single
-// highest-ID artifact for a given name, but the harness workflow uploads
-// fullsend-{agent} with if: always(), so a dual-dispatch sibling that
+// highest-ID artifact for a logical agent, but the harness workflow uploads
+// its artifact with if: always(), so a dual-dispatch sibling that
 // concludes failure, cancelled, or skipped can win that selection over an
 // already-succeeded run's own artifact whenever the non-success run
 // finishes uploading later (#7574). This scan finds that hidden success
@@ -1337,11 +1535,11 @@ func (d *Driver) harnessRoundPollOnce(ctx context.Context, remaining time.Durati
 // the max-ID selection on every poll and hide the success forever.
 func (d *Driver) harnessArtifactRunSuccess(ctx context.Context, owner, repo string, arts []forge.RepositoryArtifact, name string, after time.Time, skipID int, lookupErrs *pollErrors) *forge.WorkflowRun {
 	for _, art := range arts {
-		if art.Name != name || art.ID == skipID {
+		if !agentArtifactNameMatches(art.Name, name) || art.ID == skipID {
 			continue
 		}
 		artTime, parseErr := time.Parse(time.RFC3339, art.CreatedAt)
-		if parseErr != nil || artTime.Before(after) {
+		if parseErr != nil || createdBefore(artTime, after) {
 			continue
 		}
 		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
@@ -1427,8 +1625,8 @@ func (d *Driver) hasSupersedingAgentRun(ctx context.Context, owner, repo, agent 
 // the run completes successfully instead — callers use this to assert a
 // refuse-to-push (or similar fail-closed) path.
 //
-// Detection is artifact-first: the fullsend action uploads the
-// fullsend-<agent> artifact with `if: always()`, so it exists for failed
+// Detection is artifact-first: the fullsend action uploads the agent's
+// artifact with `if: always()`, so it exists for failed
 // runs too, and it is the only signal that works for both standard stage
 // jobs (named e.g. "Code"/"Fix") and custom-harness matrix jobs (named
 // "Harness run (<agent>)"). The job-name scan is a fallback for
@@ -1538,24 +1736,92 @@ func (d *Driver) failedHarnessPollOnce(ctx context.Context, remaining time.Durat
 // classified by its final conclusion instead of being counted while its
 // cancellation is still in progress.
 func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
-	deadline := time.Now().Add(dispatchWait)
+	deadline := d.now().Add(dispatchWait)
+	completedJobs := make(map[forge.WorkflowRun][]forge.WorkflowJob)
 	for {
-		count, pending, err := d.settleHarnessDispatchCount(ctx, owner, repo, agent, after)
+		count, pending, err := d.settleHarnessDispatchCount(ctx, owner, repo, agent, after, completedJobs)
 		if err != nil {
 			return 0, err
 		}
 		if pending == 0 {
 			return count, nil
 		}
-		if time.Now().After(deadline) {
-			return 0, fmt.Errorf("harness %q dispatch count did not settle: %d run(s) still pending after %s",
+		if d.now().After(deadline) {
+			msg := fmt.Sprintf("harness %q dispatch count did not settle: %d run(s) still pending after %s",
 				agent, pending, dispatchWait)
+			if line := d.describeRateLimitState(); line != "" {
+				msg += "; " + line
+			}
+			return 0, errors.New(msg)
 		}
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
-		case <-time.After(countSettlePoll):
+		case <-d.timerAfter(countSettlePoll):
 		}
+	}
+}
+
+// runUnstarted reports whether a workflow run is queued before any job
+// can run. Its jobs listing cannot classify a dispatch and can still 404
+// while the run sits in the queue.
+func runUnstarted(status string) bool {
+	switch status {
+	case "queued", "requested", "pending":
+		return true
+	}
+	return false
+}
+
+// jobsReadOutcome classifies a workflow run whose jobs listing could not
+// be read.
+type jobsReadOutcome int
+
+const (
+	// jobsSkipRun: the run cannot hold agent work yet, so the caller
+	// ignores it — no dispatch, no violation.
+	jobsSkipRun jobsReadOutcome = iota
+	// jobsRetryLater: the run may hold agent work but its listing is not
+	// readable yet. A settling caller keeps the run pending; a one-shot
+	// caller fails closed, because an unreadable listing is not evidence
+	// that no agent job ran.
+	jobsRetryLater
+	// jobsFatal: the listing error is unexpected and must fail the caller.
+	jobsFatal
+)
+
+// runRanNoJob reports whether a completed run ran no job: skipped (every
+// job's if: was false, e.g. the shim's run for a fork pull request) or
+// action_required (held for a maintainer's approval, e.g. a first-time
+// contributor's fork pull request on pull_request, #9221). Such a run holds
+// no agent work and no dispatch decision, and its job listing can 404.
+func runRanNoJob(r forge.WorkflowRun) bool {
+	return r.Status == "completed" && (r.Conclusion == "skipped" || r.Conclusion == "action_required")
+}
+
+// classifyJobsError is the only place that maps a run's status and a
+// jobs-listing error to a tolerance rule. The dispatch-count and
+// negative-assertion paths both route their listing errors through it
+// and must not grow status predicates of their own.
+//
+// A run that has not started cannot hold agent work, and its listing has
+// been observed to 404 on the first page before the run starts, so that
+// shape skips the run. A waiting run — one held on an environment
+// approval — can already hold a completed agent job, so its unreadable
+// listing is retry material, never evidence of absence. Any other error
+// is fatal; in particular a later-page 404 means page 1 was already
+// readable and may hold a completed agent job, so it is never tolerated.
+func classifyJobsError(status string, err error) jobsReadOutcome {
+	if !errors.Is(err, forge.ErrJobsListingNotFoundFirstPage) {
+		return jobsFatal
+	}
+	switch {
+	case runUnstarted(status):
+		return jobsSkipRun
+	case status == "waiting":
+		return jobsRetryLater
+	default:
+		return jobsFatal
 	}
 }
 
@@ -1576,21 +1842,51 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 // computing the matrix (#7957 review, third pass — mirrors
 // harnessRoundPollOnce's guard; cancelled static jobs added #7996 review;
 // success/failure built-in matches added #7996 review, second pass).
-func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time) (count, pending int, err error) {
-	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
+func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time, completedJobs map[forge.WorkflowRun][]forge.WorkflowJob) (count, pending int, err error) {
+	allRuns, err := d.listHarnessRunsAfterPaginated(ctx, owner, repo, after)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, r := range allRuns {
-		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
-		if parseErr != nil || runTime.Before(after) {
+		if runRanNoJob(r) {
 			continue
 		}
-		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
-		if err != nil {
-			return 0, 0, err
+		if runUnstarted(r.Status) {
+			// classifyJobsError would skip these runs anyway; skipping
+			// before the read also avoids a listing call that 404s while
+			// the run sits in the queue.
+			pending++
+			continue
+		}
+		jobs, cached := completedJobs[r]
+		if !cached {
+			jobs, err = d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
+			if err != nil {
+				// Settling, so both skippable and retryable runs stay
+				// pending rather than fail the count.
+				if outcome := classifyJobsError(r.Status, err); outcome == jobsSkipRun || outcome == jobsRetryLater {
+					pending++
+					continue
+				}
+				return 0, 0, err
+			}
 		}
 		hasJob, job := matchAgentJob(jobs, agent)
+		if !cached {
+			// Only a counted terminal match is decisive; missing jobs can still become visible.
+			cacheable := r.Status == "completed" && r.RunAttempt > 0 && hasJob &&
+				job.Conclusion != "" && !isConcurrencySuperseded(job.Conclusion)
+			// Reruns reuse IDs; only reuse completed jobs from the same known attempt.
+			for _, job := range jobs {
+				if job.Status != "completed" || job.RunAttempt != r.RunAttempt {
+					cacheable = false
+					break
+				}
+			}
+			if cacheable && completedJobs != nil {
+				completedJobs[r] = jobs
+			}
+		}
 		switch {
 		case hasJob && job.Status != "completed":
 			pending++
@@ -1648,6 +1944,9 @@ func (d *Driver) WaitForHarnessEmptyMatrix(ctx context.Context, owner, repo stri
 	if lastErr != nil {
 		msg += fmt.Sprintf(" (last lookup error: %v)", lastErr)
 	}
+	if line := d.describeRateLimitState(); line != "" {
+		msg += "; " + line
+	}
 	return nil, errors.New(msg)
 }
 
@@ -1671,9 +1970,9 @@ func (d *Driver) emptyMatrixPollOnce(ctx context.Context, remaining time.Duratio
 	pending := 0
 	for i := range runs {
 		r := runs[i]
-		// A skipped run ran no job, e.g. the shim's run for a bot comment,
-		// so it holds no dispatch decision.
-		if r.Status == "completed" && (r.Conclusion == "cancelled" || r.Conclusion == "skipped") {
+		// A skipped or approval-held run ran no job, e.g. the shim's run
+		// for a bot comment, so it holds no dispatch decision.
+		if (r.Status == "completed" && r.Conclusion == "cancelled") || runRanNoJob(r) {
 			continue
 		}
 		if r.Status != "completed" {
@@ -1749,18 +2048,23 @@ func isConcurrencySuperseded(conclusion string) bool {
 // than artifacts so that sibling runs for other agents are not mistaken
 // for evidence.
 func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, agent string, after time.Time) error {
-	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
+	allRuns, err := d.listHarnessRunsAfterPaginated(ctx, owner, repo, after)
 	if err != nil {
 		return err
 	}
 	for _, r := range allRuns {
-		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
-		if parseErr != nil || runTime.Before(after) {
+		if runRanNoJob(r) {
 			continue
 		}
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
-			return err
+			// One-shot, so only a run that cannot hold agent work yet is
+			// skipped: an unreadable listing is not evidence that no
+			// agent job ran, so retryable and fatal both fail closed.
+			if classifyJobsError(r.Status, err) != jobsSkipRun {
+				return err
+			}
+			continue
 		}
 		// Every matching job is inspected independently here, rather than
 		// through matchAgentJob's single "best" match: a job list can

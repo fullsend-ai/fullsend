@@ -76,11 +76,16 @@ type piAgentManifest struct {
 	SessionsDir string `json:"sessionsDir"`
 	// Extensions are the -e paths every child gets, in order: the provider
 	// extensions present in the image, then the hook adapter when security
-	// is enabled. Never this extension itself.
+	// is enabled. childArgs separately adds this extension in child-only mode
+	// when it must restore the inherited active-tool subset.
 	Extensions []string `json:"extensions"`
-	// ExtensionDigests is the sha256 (hex) of each Extensions entry that
-	// Bootstrap itself wrote under the runner-owned config dir. The
-	// extension re-hashes them before every dispatch; see
+	// DeclaredExtensions are the vetted harness plugins inherited by children.
+	// The dispatcher rechecks their tree hashes before every child launch.
+	DeclaredExtensions []piManifestExtension `json:"declaredExtensions,omitempty"`
+	MCPResourceTools   []string              `json:"mcpResourceTools"`
+	// ExtensionDigests holds sha256 (hex) digests for runner-written child
+	// extensions: always fullsend-agent.js, plus hook/repair adapters when used.
+	// The dispatcher re-hashes them before every dispatch; see
 	// piAgentExtensionDigests for why the vendored ones are absent.
 	ExtensionDigests map[string]string `json:"extensionDigests,omitempty"`
 	// GatewayConfigDigest is the sha256 (hex) of the inference-gateway.json
@@ -94,10 +99,10 @@ type piAgentManifest struct {
 	GatewayConfigDigest string `json:"gatewayConfigDigest,omitempty"`
 	// EditRepairExtension is the edit-repair extension's -e path (see
 	// pi_edit_repair.go), empty when the children's tool set has no edit.
-	// It is kept out of Extensions on purpose: the extension registers the
-	// edit tool, and a child launched with --no-builtin-tools (a persona
-	// declaring no tools) does not filter extension tools, so the Agent
-	// extension adds it only for a child whose --tools list names edit.
+	// Every child has an explicit --tools list that filters extension tools.
+	// Keeping edit-repair out of Extensions avoids loading an unused extension
+	// and registering edit unnecessarily: the dispatcher adds it only when
+	// the child's --tools list names edit.
 	EditRepairExtension string `json:"editRepairExtension,omitempty"`
 	// Models maps "default" (the agent's model) and the Claude aliases to
 	// pi model specs; the extension translates a child's `model` through
@@ -117,6 +122,7 @@ type piAgentManifest struct {
 	Thinking       string              `json:"thinking"`
 	// Tools is the built-in set a child gets (the parent's, minus
 	// Agent/Task); ExploreTools the read-only set for subagent_type Explore.
+	ToolMode       string   `json:"toolMode,omitempty"` // default or explicit (empty for older manifests)
 	Tools          []string `json:"tools"`
 	ExploreTools   []string `json:"exploreTools"`
 	MaxConcurrent  int      `json:"maxConcurrent"`
@@ -352,6 +358,13 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		if err != nil {
 			return err
 		}
+		block.DeclaredExtensions = extensions
+		block.MCPResourceTools = append([]string{}, piMCPResourceTools...)
+		if block.ExtensionDigests == nil {
+			block.ExtensionDigests = map[string]string{}
+		}
+		sum := sha256.Sum256(piAgentExtensionJS)
+		block.ExtensionDigests[cfg+"/"+piAgentExtensionFile] = hex.EncodeToString(sum[:])
 		manifest.Agent = block
 	}
 
@@ -510,7 +523,9 @@ const piNoSubagentNote = "\n## Runtime note\n\n" +
 
 // piAgentManifestFor builds the manifest block for fullsend-agent.js. tools
 // is the parent's --tools list (nil for the default set); children get the
-// built-ins from it minus Agent/Task.
+// selection minus Agent/Task. Bootstrap calls this only when Agent is enabled,
+// so explicit parent lists always contain Agent/Task before removal. A parent
+// whose translated list is empty has no dispatcher or child manifest.
 //
 // personas are the pre-discovered sub-agent personas (from discoverPersonas).
 // subagentsCfg is the merged agents[].subagents map from the config, driving
@@ -522,7 +537,9 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		return nil, err
 	}
 	childTools := []string{}
+	toolMode := "explicit"
 	if tools == nil {
+		toolMode = "default"
 		childTools = append(childTools, piDefaultTools...)
 	} else {
 		for _, t := range tools {
@@ -554,6 +571,7 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		ProviderModels:   piAgentProviderModels(gatewayIDs),
 		Thinking:         piAgentThinking(),
 		Tools:            childTools,
+		ToolMode:         toolMode,
 		ExploreTools:     append([]string{}, piExploreTools...),
 		MaxConcurrent:    piAgentMaxConcurrent,
 		TimeoutSeconds:   piAgentTimeoutSeconds,
@@ -682,11 +700,13 @@ func piApplyChildFallbacks(m *piAgentManifest, personas []piPersona, subagentsCf
 	}
 }
 
-// piAgentExtensionDigests records the sha256 of every child -e entry that
-// Bootstrap itself writes under the runner-owned config dir — the hook
-// adapter (the same bytes piHooksGuard checks before pi starts) and the
-// edit-repair extension (piEditRepairGuard's bytes). fullsend-agent.js
-// re-hashes them immediately before every dispatch: the launch guard
+// piAgentExtensionDigests records hook/repair digests. Bootstrap additionally
+// records fullsend-agent.js, whose child-only mode restores the active loadout.
+// Together they cover runner-written child -e files: the dispatcher itself,
+// the hook adapter (piHooksGuard's bytes) and the edit-repair extension
+// (piEditRepairGuard's bytes). The dispatcher digest is present even with
+// hooks off and no edit tool. fullsend-agent.js re-hashes all these files
+// immediately before every dispatch: the launch guard
 // fires once, and nothing else re-verifies the adapter afterwards, so a
 // parent with `write` could replace it mid-iteration and dispatch
 // children whose adapter runs no hooks and silently skips its own
@@ -756,11 +776,11 @@ func piAgentModels(defModel string, configAliases map[string]string) map[string]
 
 // piGoogleVertexModels are the model ids pi's built-in google-vertex
 // provider registers, verbatim from the catalog the pinned pi bundles
-// (@earendil-works/pi-ai 1.3.0, dist/providers/data/google-vertex.json).
+// (@earendil-works/pi-ai 1.6.0, dist/providers/data/google-vertex.json).
 // Re-check it on a pi bump, the way the Anthropic ids in pi_run.go are:
-// diff that data file, not the generated wrapper -- 0.85.0 added
-// gemini-3.8-flash and nothing else, and a missed entry means this table
-// rejects an id the running pi actually serves.
+// diff that data file, not the generated wrapper (0.85.0 changed only the
+// data file); a missed entry means this table rejects an id the running pi
+// actually serves.
 // internal/runtime/testdata/pi/check-vertex-catalog.sh does the diff
 // against whatever PI_VERSION the Containerfile pins.
 //
@@ -775,7 +795,6 @@ var piGoogleVertexModels = []string{
 	"gemini-2.5-pro",
 	"gemini-3-flash-preview",
 	"gemini-3.1-flash-lite",
-	"gemini-3.1-flash-lite-image",
 	"gemini-3.1-pro-preview",
 	"gemini-3.1-pro-preview-customtools",
 	"gemini-3.5-flash",
@@ -784,6 +803,10 @@ var piGoogleVertexModels = []string{
 	"gemini-3.7-flash",
 	"gemini-3.8-flash",
 	"gemini-4-argon",
+	"gemini-4-carbon",
+	"gemini-4-hydrogen",
+	"gemini-4-neon",
+	"gemini-robotics-er-2-preview",
 }
 
 // piXaiVertexModels are the model ids the vendored xai-vertex extension

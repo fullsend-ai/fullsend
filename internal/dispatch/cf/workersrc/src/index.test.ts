@@ -32,12 +32,19 @@ describe("mint worker bridge smoke", () => {
 
     const body = await resp.text();
     expect(body).toContain("ok");
+    // The Go handler's header must survive the Worker's header mapping.
+    expect(resp.headers.get("strict-transport-security")).toBe(
+      "max-age=31536000",
+    );
   });
 
   it("returns 404 for unknown paths", async () => {
     const resp = await exports.default.fetch("https://worker.test/nonexistent");
     // Go's ServeHTTP routes this; unmatched paths return 404.
     expect(resp.status).toBe(404);
+    expect(resp.headers.get("strict-transport-security")).toBe(
+      "max-age=31536000",
+    );
   });
 
   it("returns 405 for non-POST on /v1/token", async () => {
@@ -65,6 +72,10 @@ describe("mint worker rate limiting", () => {
     const res = await worker.fetch(req, limitedEnv, ctx);
     await waitOnExecutionContext(ctx);
     expect(res.status).toBe(429);
+    // Worker-generated error responses carry HSTS too.
+    expect(res.headers.get("strict-transport-security")).toBe(
+      "max-age=31536000",
+    );
     const body = (await res.json()) as { error?: string };
     expect(body.error).toBe("rate_limited");
   });
@@ -129,6 +140,9 @@ describe("mint worker rate limiting", () => {
     const res = await worker.fetch(req, env as Env, ctx);
     await waitOnExecutionContext(ctx);
     expect(res.status).toBe(400);
+    expect(res.headers.get("strict-transport-security")).toBe(
+      "max-age=31536000",
+    );
   });
 
   it("returns 429 rate_limited when the limiter denies the POST / token alias", async () => {

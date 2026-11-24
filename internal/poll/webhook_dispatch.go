@@ -224,7 +224,7 @@ func (p *Poller) dispatchWebhookEvents(ctx context.Context, slash bool, events [
 				anyDispatched = true
 				continue
 			}
-			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
+			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &we.Normalized); err != nil {
 				errs = append(errs, fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))
 				eventFailed = true
 				continue
@@ -282,6 +282,11 @@ func (p *Poller) dispatchWebhookEvents(ctx context.Context, slash bool, events [
 				delete(pendingClear, eventKey)
 			}
 		}
+		// The reaction tells the user the command was picked up. An
+		// event no stage of which dispatched — an over-budget refusal is
+		// permanent, with no pipeline and no reply — never reaches this
+		// point (the early continue above), so it never claims it
+		// (TestRunWebhook_TransportBudgetRefusalFailsClosed).
 		if isSlashCommandEvent(event) {
 			noteableType := "Issue"
 			if strings.HasPrefix(event.Type, "mr_") {

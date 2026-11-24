@@ -236,6 +236,12 @@ func validateValidationLoop(prefix string, vl *ValidationLoop, inheritScript boo
 // mutual exclusion with forge, CEL expression compilation, and
 // ForgeConfig field validation per entry.
 func (h *Harness) validateOverlays() error {
+	return h.validateOverlayEntries(h.ValidationLoop != nil && h.ValidationLoop.Script != "")
+}
+
+// validateOverlayEntries is validateOverlays with the caller saying whether
+// an overlay's validation loop may leave its script to the top-level one.
+func (h *Harness) validateOverlayEntries(inheritScript bool) error {
 	if len(h.Overlays) == 0 {
 		return nil
 	}
@@ -264,7 +270,6 @@ func (h *Harness) validateOverlays() error {
 			return fmt.Errorf("overlays[%d].when must evaluate to bool, got %v", i, ast.OutputType())
 		}
 		fc := entry.ForgeConfig
-		inheritScript := h.ValidationLoop != nil && h.ValidationLoop.Script != ""
 		if err := validateOverlayForgeConfigInherit(i, &fc, inheritScript); err != nil {
 			return err
 		}
@@ -345,12 +350,9 @@ func (h *Harness) ResolveForge(platform string) error {
 	if platform == "" || h.Forge == nil {
 		return nil
 	}
-	if !validForgeKeys[platform] {
-		return fmt.Errorf("forge platform %q is not valid (valid: %s)", platform, ForgeKeyList())
-	}
-	fc, ok := h.Forge[platform]
-	if !ok {
-		return fmt.Errorf("forge platform %q not configured (available: %s)", platform, forgeKeyList(h.Forge))
+	fc, err := h.forgeConfigFor(platform)
+	if err != nil {
+		return err
 	}
 	if fc != nil {
 		if err := mergeForgeConfig(h, fc); err != nil {
@@ -359,6 +361,19 @@ func (h *Harness) ResolveForge(platform string) error {
 	}
 	h.Forge = nil
 	return nil
+}
+
+// forgeConfigFor returns the forge: block for platform. The harness a run
+// uses must configure the platform it runs on.
+func (h *Harness) forgeConfigFor(platform string) (*ForgeConfig, error) {
+	if !validForgeKeys[platform] {
+		return nil, fmt.Errorf("forge platform %q is not valid (valid: %s)", platform, ForgeKeyList())
+	}
+	fc, ok := h.Forge[platform]
+	if !ok {
+		return nil, fmt.Errorf("forge platform %q not configured (available: %s)", platform, forgeKeyList(h.Forge))
+	}
+	return fc, nil
 }
 
 // mergeForgeConfig applies forge-specific overrides to the harness.
@@ -471,9 +486,6 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 	if v := pr.ConfigForge(); v != "" {
 		m["forge"] = v
 	}
-	if v := pr.ConfigTracker(); v != "" {
-		m["tracker"] = v
-	}
 	if v := pr.ConfigRuntime(); v != "" {
 		m["runtime"] = v
 	}
@@ -522,8 +534,9 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 		m["agents"] = anyAgents
 	}
 
-	// Security policies
-	if arr := pr.AllowedResources(); len(arr) > 0 {
+	// Security policies: the effective command-level allowlist, so
+	// overlay CEL sees the same list regardless of the call path.
+	if arr := config.EffectiveAllowedResources(pr); len(arr) > 0 {
 		anyArr := make([]any, len(arr))
 		for i, r := range arr {
 			anyArr[i] = r
@@ -531,26 +544,37 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 		m["allowed_remote_resources"] = anyArr
 	}
 
-	// Issue creation config
-	if ci := pr.IssueCreationConfig(); ci != nil {
-		ciMap := map[string]any{}
-		if len(ci.AllowTargets.Orgs) > 0 {
-			anyOrgs := make([]any, len(ci.AllowTargets.Orgs))
-			for i, o := range ci.AllowTargets.Orgs {
-				anyOrgs[i] = o
+	// Tracker config: the provider-discriminated tracker mapping. The
+	// selected provider's key is always present (so overlays can select on
+	// it, e.g. has(config.tracker) && has(config.tracker.jira)); its
+	// allowed_targets is present only when non-empty.
+	if t := pr.IssueTracking(); t != nil && t.Provider() != "" {
+		targets := map[string]any{}
+		addList := func(key string, values []string) {
+			if len(values) == 0 {
+				return
 			}
-			ciMap["allow_orgs"] = anyOrgs
-		}
-		if len(ci.AllowTargets.Repos) > 0 {
-			anyRepos := make([]any, len(ci.AllowTargets.Repos))
-			for i, r := range ci.AllowTargets.Repos {
-				anyRepos[i] = r
+			anyValues := make([]any, len(values))
+			for i, v := range values {
+				anyValues[i] = v
 			}
-			ciMap["allow_repos"] = anyRepos
+			targets[key] = anyValues
 		}
-		if len(ciMap) > 0 {
-			m["create_issues"] = ciMap
+		switch t.Provider() {
+		case config.TrackingProviderGitHub:
+			addList("orgs", t.GitHub.AllowedTargets.Orgs)
+			addList("repos", t.GitHub.AllowedTargets.Repos)
+		case config.TrackingProviderGitLab:
+			addList("groups", t.GitLab.AllowedTargets.Groups)
+			addList("repos", t.GitLab.AllowedTargets.Repos)
+		case config.TrackingProviderJira:
+			addList("projects", t.Jira.AllowedTargets.Projects)
 		}
+		provider := map[string]any{}
+		if len(targets) > 0 {
+			provider["allowed_targets"] = targets
+		}
+		m["tracker"] = map[string]any{t.Provider(): provider}
 	}
 
 	// Status notifications config

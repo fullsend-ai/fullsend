@@ -2,10 +2,54 @@ package ci
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+// ErrWorkflowNotDispatched marks any driver's WaitForWorkflow timeout
+// when no matching workflow run or pipeline appeared within the dispatch
+// window. A driver wraps it with %w; steps detect it with errors.Is
+// through any wraps they add and retry such a timeout once. Its text
+// completes the driver's own prefix, so the message still reads, for
+// example, "workflow <file> (<event>) was not dispatched" (GitHub
+// Actions) or "pipeline (<event>) was not dispatched" (GitLab CI). The
+// timeout stays scenario-classified: whether the run arrives late or
+// never is not yet established (#9469). The exception is a workflow that
+// the dispatch diagnostics find never ran in a repo installed fresh for
+// the scenario, which steps.CollectFailureLogs marks infrastructure
+// (#9779). The details the dispatch diagnostics use are carried only by
+// *NotDispatchedError.
+var ErrWorkflowNotDispatched = errors.New("was not dispatched")
+
+// NotDispatchedError is the GitHub Actions driver's WaitForWorkflow
+// timeout when no matching run appeared. It records the workflow file and
+// event that were waited for, so the failure diagnostics, which run only
+// for this type, can look for exactly that run. It unwraps to
+// ErrWorkflowNotDispatched.
+type NotDispatchedError struct {
+	// WorkflowFile is the base name of the workflow file, e.g.
+	// "fullsend.yaml".
+	WorkflowFile string
+	// Event is the triggering event waited for, or empty for any event.
+	Event string
+	// Detail is appended verbatim to the message, e.g. the poll-error
+	// summary " (failed on 3 of 40 polls ...)"; empty when every poll
+	// succeeded.
+	Detail string
+}
+
+func (e *NotDispatchedError) Error() string {
+	if e.Event != "" {
+		return fmt.Sprintf("workflow %s (%s) %v%s", e.WorkflowFile, e.Event, ErrWorkflowNotDispatched, e.Detail)
+	}
+	return fmt.Sprintf("workflow %s %v%s", e.WorkflowFile, ErrWorkflowNotDispatched, e.Detail)
+}
+
+// Unwrap lets errors.Is(err, ErrWorkflowNotDispatched) match.
+func (e *NotDispatchedError) Unwrap() error { return ErrWorkflowNotDispatched }
 
 // Driver abstracts CI workflow operations for behaviour tests.
 //
@@ -22,11 +66,20 @@ import (
 // buffers), it must synchronize access or be deep-copied per scenario
 // in World.Clone.
 type Driver interface {
+	// WaitForWorkflow waits for a run of workflowFile triggered by event
+	// (any event when empty) at or after the given time. A timeout with no
+	// matching run must wrap ErrWorkflowNotDispatched, so steps retry
+	// once with the clock-skew buffer. Only a *NotDispatchedError enables
+	// the dispatch diagnostics.
 	WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error)
 	FindCompletedWorkflowRun(ctx context.Context, owner, repo, workflowFile string, after time.Time) (*forge.WorkflowRun, error)
 	AssertNoWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time) error
 	GetRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 	DownloadArtifacts(ctx context.Context, owner, repo string, runID int, destDir string) error
+	// DownloadNamedArtifactFromRun and DownloadNamedArtifactAfter match the
+	// supplied physical artifact name exactly. Drivers that also implement
+	// AgentArtifactDownloader can select output by logical agent instead;
+	// see DownloadAgentArtifactsFromRun and DownloadAgentArtifactsAfter.
 	DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error
 	DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error
 	// WaitForHarnessAgent waits for the named agent's harness run to
@@ -85,4 +138,40 @@ type EmptyMatrixWaiter interface {
 	// such run, or an error when a run's dispatch job failed, a harness
 	// agent job ran, or no run settled before the wait budget elapsed.
 	WaitForHarnessEmptyMatrix(ctx context.Context, owner, repo string, after time.Time) (*forge.WorkflowRun, error)
+}
+
+// AgentArtifactDownloader is an optional extension of Driver for selecting
+// artifacts by logical agent rather than by exact physical artifact name.
+// A repeated agent can upload several platform-specific artifacts (for
+// example one per matrix entry), and an implementation downloads every
+// artifact that belongs to the agent. It is a separate interface so that
+// external Driver implementations keep compiling; callers use the package
+// helpers DownloadAgentArtifactsFromRun and DownloadAgentArtifactsAfter,
+// which fall back to the exact-name Driver methods ("fullsend-<agent>")
+// when a Driver does not implement it.
+type AgentArtifactDownloader interface {
+	DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent string, destDir string) error
+	DownloadAgentArtifactsAfter(ctx context.Context, owner, repo, agent string, after time.Time, destDir string) error
+}
+
+// DownloadAgentArtifactsFromRun downloads the artifacts of the logical agent
+// from the given run using d's AgentArtifactDownloader capability when
+// present, and otherwise falls back to d's exact-name download of
+// "fullsend-<agent>".
+func DownloadAgentArtifactsFromRun(ctx context.Context, d Driver, owner, repo string, runID int, agent, destDir string) error {
+	if dl, ok := d.(AgentArtifactDownloader); ok {
+		return dl.DownloadAgentArtifactsFromRun(ctx, owner, repo, runID, agent, destDir)
+	}
+	return d.DownloadNamedArtifactFromRun(ctx, owner, repo, runID, "fullsend-"+agent, destDir)
+}
+
+// DownloadAgentArtifactsAfter polls for the logical agent's artifacts created
+// at or after the given time using d's AgentArtifactDownloader capability
+// when present, and otherwise falls back to d's exact-name download of
+// "fullsend-<agent>".
+func DownloadAgentArtifactsAfter(ctx context.Context, d Driver, owner, repo, agent string, after time.Time, destDir string) error {
+	if dl, ok := d.(AgentArtifactDownloader); ok {
+		return dl.DownloadAgentArtifactsAfter(ctx, owner, repo, agent, after, destDir)
+	}
+	return d.DownloadNamedArtifactAfter(ctx, owner, repo, "fullsend-"+agent, after, destDir)
 }

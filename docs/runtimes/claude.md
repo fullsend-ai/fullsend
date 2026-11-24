@@ -10,6 +10,12 @@ fullsend run triage --model opus --effort high
 Choosing between runtimes is in [Agent runtimes](../runtimes.md). Selection, precedence and the
 config keys live there too.
 
+Background Workflow phase/agent changes and runtime lifecycle/status notices
+are displayed from Claude's structured event stream. See
+[live Workflow progress](#live-claude-workflow-progress)
+for the display behavior and its limits; it does not include full nested tool
+stdout/stderr.
+
 ## Models
 
 Pass an alias or a model id. fullsend resolves `opus`, `sonnet` and `haiku` itself and passes the
@@ -36,13 +42,51 @@ call. The one other supported route is the
 to `--model` and `--fallback-model`, and the alias has no built-in fallback chain. A repo that
 pinned the 5.5 ids here before they became the default can drop the pin to get the fallback. Syntax, rules
 and what the plan block shows are on the [pi page](pi.md#per-repo-alias-overrides) — it is the
-same block. It covers the run's own model only.
+same block. It covers the run's own model, and persona models when an `agents[].subagents` block
+is set (see [Per-persona models](#per-persona-models)).
 
-**Sub-agents.** Sub-agent `model:` frontmatter is resolved by Claude Code itself, with its own
-alias table for the pinned version. fullsend's defaults and fallback chain do not apply there, and
-fullsend does not set `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`: a pinned 5.5 id there would
-fail every sub-agent on a project that does not serve it. A sub-agent that needs a specific
-generation names the id.
+**Sub-agents.** Without an `agents[].subagents` block, sub-agent `model:` frontmatter is resolved
+by Claude Code itself, with its own alias table for the pinned version. fullsend's defaults and
+fallback chain do not apply there, and fullsend does not set
+`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`: a pinned 5.5 id there would fail every sub-agent on
+a project that does not serve it. A sub-agent that needs a specific generation names the id.
+
+### Per-persona models
+
+When the agent's `agents:` entry sets a `subagents:` block with at least
+one entry that is not `~`, the runner resolves skill personas itself ([ADR 0104](../ADRs/0104-per-persona-model-resolution.md)):
+
+- Each `sub-agents/*.md` persona in the agent's skills is registered as a Claude Code agent,
+  `$CLAUDE_CONFIG_DIR/agents/<persona>.md`, with `model:` set to the id the runner resolved. The
+  order is the one pi uses: `subagents.<persona>`, then the persona's frontmatter `model:`, then
+  `subagents.default`, then the parent's model (`model: inherit`). Aliases resolve as `--model`
+  does, so `models.aliases` and the built-in default ids apply.
+- A resolved model must be one this run can resolve to: an alias's id, a built-in fallback id, a
+  `models.aliases` target, or the parent's own model. On the
+  [inference gateway route](#inference-gateway-route) only the parent's gateway model (or
+  `inherit`) is accepted. A config key that names no persona, or a model outside that set, fails
+  Bootstrap. A persona the config does not name is warned about and left out instead.
+- When the agent declares `tools:`, a persona's tools are limited to the agent's: a persona that
+  declares none gets the agent's tools without `Agent`, and tools the agent does not have are
+  dropped. Tools are matched by exact name. The agent's `disallowedTools:` carry over to every
+  persona, whether or not the agent declares `tools:`, and are combined with the persona's own.
+  When the agent restricts `Agent(...)` (or `Task(...)`)
+  to named sub-agent types, a persona outside that list is not registered, since Claude Code would
+  refuse to dispatch it: Bootstrap fails if the config names it, and warns and leaves it out
+  otherwise.
+- A runtime note at the end of the agent definition lists the registered personas and tells the
+  orchestrator to dispatch by `subagent_type` and omit `model`. Claude Code's `Agent` tool still
+  lets a `model` argument override the persona's model.
+- `subagents.default` covers only personas that name no model. Children that name no persona
+  (`Explore`, `general-purpose`) keep Claude Code's own model resolution. When no persona is
+  registered for `default` to apply to (as on an agent such as `retro`), Bootstrap fails rather
+  than accept a setting that would do nothing.
+- An agent whose `tools:` leave out `Agent` and `Task` dispatches no sub-agents, so its whole
+  `subagents` block is ignored with a warning, as on pi: its keys and models are not validated.
+  `Agent()` or `Task()` with an empty list allows no sub-agent type, so no persona is registered
+  for it.
+
+Without the block, nothing changes: no persona files, no runtime note.
 
 ### When your project does not serve the model
 
@@ -275,6 +319,13 @@ pinned. On gateway runs the cleared variables are also pinned in the inline `--s
 non-gateway runs that block is read by Claude Code itself, after launch. On every route, the egress profile and the endpoint-bound placeholder are what keep the
 credential on its host.
 
+What the runner itself injects into the sandbox — for claude,
+`CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` on every
+run, plus `ANTHROPIC_BASE_URL` and a gateway credential variable when an
+inference gateway applies — and the keys it reserves from `env.sandbox` are
+published as generated, machine-checkable schemas: the
+[sandbox environment contract](../normative/sandbox-env/v1/README.md).
+
 **Sandbox hook settings come from the harness, not `.env`.** With sandbox
 hooks on, `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, `FULLSEND_EGRESS_ALLOWLIST`,
 `FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are taken from the harness
@@ -323,6 +374,110 @@ These are the places Claude Code differs from pi — useful when comparing a run
 - **The repo's own `.claude/settings.json` still auto-loads** from the working directory. fullsend's
   hook wiring is passed explicitly with `--settings` so it loads regardless, but repo-supplied hooks
   are a separate exposure to be aware of.
+
+## Live Claude Workflow progress
+
+When Claude Code emits background task and Workflow progress, `fullsend run`
+prints task identity, agent labels, attributed phases, state changes, and
+available tool names/context. For example:
+
+```console
+  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — running (attempt 1)
+  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — completed (attempt 1)
+  ⚙ Task wf-example / agent #2 (creator) [Create]: strategy-create — running (tool: Bash: python3 create.py) (attempt 1)
+```
+
+Unchanged snapshots and counter-only updates do not repeat the same display
+line. Text is sanitized, credential-redacted, and bounded before display or
+retention in the bounded display cache. Progress text uses Unicode cleanup:
+bidirectional overrides, invisible format characters and Unicode tags are
+removed, and compatibility characters are normalized. The CLI applies the
+same cleanup to credential literals before matching.
+A dedicated reconciler owns lifecycle and deduplication; the renderer prints
+its safe messages. Parser/`OnEvent` callbacks and captured stream bytes keep
+their original snapshot content.
+
+Concurrent tasks and agents retain
+separate identities. Task tool/status fields retain omitted values;
+explicit empty strings clear them. Pausing hides the last summary until the
+task resumes; a terminal state or new run clears it. Partial lifecycle
+patches retain known task labels and state; explicit starts can reset an
+identity. Late running snapshots do not reopen known terminal tasks or
+agents. Sparse agent snapshots retain known
+labels, phases and tool context. Error, blocked and cached metadata persists
+within a state; state changes clear omitted transient metadata. Explicit
+empty strings and false flags also clear their corresponding fields.
+
+Task visibility, terminal state and run watermarks are retained separately
+from agent display rows. New runs and terminal task states retire old agent
+rows. Tracking admits up to 1,024 task identities and 1,024 agents per task,
+with a shared 16,384-row threshold for admitting new agent rows. At a limit,
+new identities or agent rows are suppressed; tracked rows and task guards
+remain.
+Agent-row capacity becomes available when tasks finish or open new runs.
+Task-identity slots stay reserved for the renderer's lifetime.
+
+Run IDs follow the Agent SDK opening order; late frames from superseded
+runs are ignored, so they cannot steal later updates without a run ID.
+Visibility belongs to each run: promoting its first late run ID preserves
+its hidden classification, while a distinct named run does not inherit an
+older run's visibility. Hook names and event attribution survive sparse
+progress/completion messages for the same hook ID.
+
+Workflow agent wire states are only `start`, `progress`, `done` and `error`.
+A `start` record with `queuedAt` and no `startedAt` is queued; a record with
+`startedAt` is executing. Started agents display their one-based `attempt`
+when supplied. A retry start has an `attempt` greater than one; its display
+includes `attempt` and the supplied `lastAttemptReason`
+(`stalled`, `throttled` or `user-retry`). Later progress is running, with the
+attempt retained, and each new attempt is visible even when its label and
+tool are unchanged. `error` plus `skipped: true` is skipped, not failed.
+Older records without timing metadata retain the best-effort running display.
+These derived statuses do not assume extra values in the agent wire enum.
+
+The display handles these structured Claude events when the runtime emits
+them. Task progress shapes were checked against Claude Code 2.1.296 capture
+and the embedded 2.1.312 emitter/schema; this is version-bound compatibility,
+not a promise of a stable public protocol. In particular, `workflow_progress`
+(including `workflow_agent` metadata) and `system/task_summary` are
+**undocumented internal Claude Code extensions**, not public Agent SDK
+contracts in the inspected version. They may change or disappear without
+notice in any Claude patch release. Support is best-effort; unsupported
+shapes are ignored for display and raw events remain available for diagnosis.
+A newly recorded live 2.1.312 Workflow stream has not been qualified here.
+
+Workflow agents use their positive index as stable identity within a task/run.
+A late `agentId` is retained as display attribution, and learning it alone
+does not add another progress line. If the index is absent, the agent ID is
+the identity fallback.
+
+| Event | Console behavior |
+| --- | --- |
+| `task_started` | Task identity and description; ambient/hidden starts suppress subsequent progress while tracked. |
+| `task_progress` | Task description, last tool and progress summary; best-effort decoding of the undocumented internal `workflow_progress` agent metadata. |
+| `task_updated` | Pending, running, paused, completed, failed and killed states; description-only patches and bounded errors. |
+| `task_notification` | Completion, failure or stop, including a worker-restart cause when supplied; full result summary excluded. |
+| `task_summary` | Undocumented internal mid-turn summary; best-effort display, with null/empty values clearing deduplication silently. |
+| `background_tasks_changed` | Count of reported non-ambient background tasks; membership is not execution or completion evidence. |
+| `hook_started`, `hook_progress`, `hook_response` | Hook name/event, running/outcome and exit code; stdout/stderr/output excluded. Fullsend launches Claude without `--include-hook-events`, and the inspected Claude 2.1.312 producer emits only SessionStart and Setup hook events in that mode, so those are the only hook rows real runs produce; the decoder still renders other hook events if a future launch enables them. |
+| `permission_denied` | Tool/agent identity and bounded decision reason; tool-result body excluded. |
+| `status`, `session_state_changed` | Compaction, session state and action-required transitions; per-request status chatter excluded. |
+| `informational`, `notification` | Salient notices, suggestions, warnings and text notifications; unkeyed occurrences repeat, transcript-only info excluded. |
+| `rate_limit_event` | Warnings, rejection, supplied reset time and subsequent recovery; routine initial allowed status suppressed. |
+
+Declared `workflow_phase` records do not prove live advancement and are not
+rendered as phase starts. Internal `workflow_log` entries are filtered out
+of SDK progress by the inspected Claude 2.1.312 producer; Fullsend cannot
+display records absent from its input stream. This is not a stream of full
+nested tool stdout/stderr, prompts, result bodies or hook output. Unknown
+message kinds/states and malformed records are ignored for display; raw
+events remain in `output.jsonl` for diagnosis and future compatibility work.
+
+Task completion and session idle are distinct from the run's validated
+business result. Progress counters do not add to token/cost totals. The
+periodic `Agent running (...)` heartbeat still reports elapsed time rather
+than proving progress. The display is advisory, not a durable task registry;
+very large sessions can evict cached identity and deduplication state.
 
 ## Troubleshooting
 

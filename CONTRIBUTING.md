@@ -53,6 +53,9 @@ contribution.
   lines you changed. Tables, code blocks, headings, and long URLs are
   exceptions. See
   [Documentation § Line wrapping](docs/contributing/documentation.md#line-wrapping).
+- Every PR must pass the required `behaviour-github-emulator` check. To find
+  why it failed and re-run it, see
+  [Behaviour testing § On a pull request](docs/guides/dev/behaviour-testing.md#on-a-pull-request).
 - Keep PRs focused. One problem area or decision per PR is easier to review than a grab-bag.
 - If your change touches a problem doc, make sure the "Open questions" section still makes sense after your edit.
 
@@ -189,8 +192,8 @@ The [`filing-issues`](skills/filing-issues/SKILL.md) skill encodes this split fo
 
 ## Contributor ladder
 
-This project defines four contributor roles — Vouched, Triage, Write,
-and Maintainer — each granting additional capabilities. See
+This project defines five contributor roles — Vouched, Triage, Write,
+Maintainer, and Admin — each granting additional capabilities. See
 [LADDER.md](LADDER.md) for the full ladder and how to request each role.
 
 For the Maintainer role specifically, see

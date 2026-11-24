@@ -54,6 +54,7 @@ func reservedSandboxEnvDiagnostics(h *harness.Harness) []harness.Diagnostic {
 	sort.Strings(dropped)
 
 	return []harness.Diagnostic{{
+		Code:     lintCodeReservedSandboxEnv,
 		Severity: harness.SeverityWarning,
 		Field:    "env.sandbox",
 		Message: fmt.Sprintf("%d env.sandbox key(s) are reserved and will be dropped instead of exported "+

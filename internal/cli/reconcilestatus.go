@@ -9,7 +9,6 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -19,7 +18,7 @@ import (
 
 var reconcileMintToken = mintclient.MintToken
 var reconcileNewForgeClient = func(token string) forge.Client {
-	return gh.New(token)
+	return newGitHubLiveClient(token, "")
 }
 var reconcileOrphaned = statuscomment.ReconcileOrphaned
 
@@ -29,9 +28,10 @@ var reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
 	return tracker.NewForgeClient(fc)
 }
 
-// reconcileNewJiraTrackerClient creates a tracker.Client backed by Jira.
-// Extracted as a package-level var so tests can replace it.
-var reconcileNewJiraTrackerClient = newJiraTrackerClientFromEnv
+// reconcileNewJiraTrackerClient creates a tracker.Client backed by Jira
+// from the effective tracker config. Extracted as a package-level var so
+// tests can replace it.
+var reconcileNewJiraTrackerClient = newJiraTrackerClientFromConfig
 
 func newReconcileStatusCmd() *cobra.Command {
 	var (
@@ -124,8 +124,12 @@ finalized, this is a no-op.`,
 			}
 
 			if trackerSource == "jira" {
+				var tracking *config.TrackingConfig
+				if orgCfg != nil {
+					tracking = orgCfg.IssueTracking()
+				}
 				var jErr error
-				tc, jErr = reconcileNewJiraTrackerClient()
+				tc, jErr = reconcileNewJiraTrackerClient(tracking)
 				if jErr != nil {
 					return fmt.Errorf("creating Jira tracker client: %w", jErr)
 				}
@@ -238,7 +242,8 @@ func reconcileGitHubClient(cmd *cobra.Command, mintURL, role, repoName string, o
 }
 
 // newGitLabClientFromEnv creates a GitLab forge client from environment
-// variables (GITLAB_TOKEN, FULLSEND_GITLAB_URL or CI_SERVER_URL).
+// variables (GITLAB_TOKEN, and the first set of FULLSEND_GITLAB_URL,
+// GITLAB_API_URL and CI_SERVER_URL, via gl.ResolveBaseURL).
 // Unlike the GitHub path, no token format validation or CI log masking is
 // performed: GitLab uses pre-provisioned PATs (not minted tokens), and
 // GitLab CI auto-masks variables that have the "masked" flag set at the
@@ -250,13 +255,8 @@ func newGitLabClientFromEnv(errContext string) (forge.Client, error) {
 		return nil, fmt.Errorf("no GitLab token found: set GITLAB_TOKEN for %s", errContext)
 	}
 
-	baseURL := os.Getenv("FULLSEND_GITLAB_URL")
-	if baseURL == "" {
-		baseURL = os.Getenv("GITLAB_API_URL")
-	}
-	if baseURL == "" {
-		baseURL = os.Getenv("CI_SERVER_URL")
-	}
+	// Same URL rule as newForgeClient and the credential profile binding.
+	baseURL, _ := gl.ResolveBaseURL("")
 	var opts []gl.Option
 	if baseURL != "" {
 		opts = append(opts, gl.WithBaseURL(baseURL))

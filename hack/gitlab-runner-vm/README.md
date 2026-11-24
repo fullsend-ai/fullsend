@@ -548,10 +548,22 @@ accumulate until `podman pull` fails with `no space left on device`.
    pre-pulled `RUNNER_IMAGE` and OpenShell supervisor tag.
 2. Installs `~/.local/lib/fullsend/podman-prune.sh` and a user systemd
    timer (`fullsend-podman-prune.timer`, hourly, Nice=19) that skips
-   the run when a `runner-*` or `openshell-*` container is in-flight.
+   the run when a `runner-*`, `openshell-*`, or `openshell.managed` agent sandbox
+   container (`fs-*`) is in-flight.
 3. Invokes the same helper from `prepare.sh` (before the job image pull)
    and `cleanup.sh` (after the job container is gone) so a busy runner
    still reclaims space between jobs.
+
+### Configuration environment variables
+
+`podman-prune.sh` supports the following configuration environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `FULLSEND_PODMAN_LOW_DISK_KIB` | `10485760` (10 GiB) | Available disk space threshold on `/` in KiB. When free space drops below this threshold, the script bypasses the grace window and prunes stopped containers immediately with `until=0s`. Setting this to `0` or empty (`""`) disables low-disk checking; non-numeric values fall back cleanly to disabled. |
+| `FULLSEND_PODMAN_PRUNE_UNTIL` | `30m` | Grace period duration filter passed to `podman container prune --filter until=<val>`. Reclaims containers stopped for longer than this duration during normal runs. |
+| `FULLSEND_PODMAN_KEEP_IMAGES` | `~/.config/fullsend-gitlab-runner/keep-images` | Path to the file containing image references and digests protected from being removed during prune runs. |
+| `FULLSEND_PODMAN_PRUNE_EXTRA_KEEP` | (empty) | Space- or newline-separated list of additional image references or digests to protect from pruning for the current run (e.g. injected dynamically by `prepare.sh`). |
 
 To apply this to an already-provisioned VM, copy the updated
 `hack/gitlab-runner-vm/` files onto the VM and re-run `setup.sh` with
@@ -562,6 +574,98 @@ first timer tick:
 ```bash
 systemctl --user start fullsend-podman-prune.service
 ```
+
+## Repairing the Podman secret store
+
+OpenShell creates a Podman secret for every sandbox. Podman keeps its
+secret index in `secrets/secrets.json` and the secret data in
+`secrets/filedriver/secretsdata.json`, both under the storage root. If either
+file is empty or otherwise unreadable, secret commands fail with
+`unexpected end of JSON input`. An unreadable `secrets.json` breaks every
+`podman secret` command, including `podman secret ls`. An unreadable
+`secretsdata.json` breaks only `podman secret create` (the error is prefixed
+`creating secret <name>:`) while `podman secret ls` still succeeds. Either
+way every sandbox creation fails with
+`creating secret openshell-resolver-<uuid>: unexpected end of JSON input`,
+while jobs that never create a sandbox still pass (#9675).
+
+`prepare.sh` creates and removes a throwaway Podman secret before pulling the
+job image. If either step fails, the prepare stage exits with GitLab's
+system-failure code and logs
+`ERROR: Podman secret store is unusable on this runner VM`. GitLab then
+reports a runner system failure rather than a job script failure. The VM
+stays broken until it is repaired by hand:
+
+1. Drain the VM so no job is using Podman. First pause the runner in GitLab
+   (the runner's **Pause** toggle in the Admin or group/project CI/CD
+   settings, or `PUT /runners/:id` with `paused=true`) so it is not offered
+   new jobs. Pausing alone does not stop a job already assigned or running.
+   Then wait until both of these hold, checking again after a minute to
+   catch a job that was assigned just before the pause:
+
+   - No executor stage is running under gitlab-runner. A job still in its
+     prepare stage (image pull, gateway setup) has no container yet, so
+     this is the check that covers it:
+
+     ```bash
+     main_pid="$(systemctl show -p MainPID --value gitlab-runner)"
+     pgrep -P "${main_pid}" || echo "no executor stage running"
+     ```
+
+   - As the runner user (`systemctl show -p User gitlab-runner`),
+     `podman ps --format '{{.Names}}'` lists no `runner-*` or `openshell-*`
+     container.
+
+   Then stop the runner with `sudo systemctl stop gitlab-runner`. This is a
+   stop of an idle, paused runner. To drain a busy runner gracefully instead
+   (SIGQUIT, raised `shutdown_timeout`, hold file), see
+   [Daily Fedora package updates](#daily-fedora-package-updates).
+
+2. As the runner user, confirm the fault and find the files. Use the create
+   probe: `podman secret ls` alone passes when only `secretsdata.json` is
+   broken. Also check that the root disk is not full, since a write on a
+   full disk is one possible cause:
+
+   ```bash
+   podman secret ls
+   printf x | podman secret create fullsend-secret-probe -
+   podman secret rm fullsend-secret-probe
+   secrets_dir="$(podman info --format '{{.Store.GraphRoot}}')/secrets"
+   ls -l "${secrets_dir}/secrets.json" "${secrets_dir}/filedriver/secretsdata.json"
+   df -h /
+   ```
+
+   If the create fails with `unexpected end of JSON input`, the secret store
+   is broken; a zero-byte file in the `ls -l` output is the likely culprit.
+   If the disk is full, free space first (see
+   [Disk / image prune](#disk--image-prune)).
+
+3. Move the broken files aside. Podman creates new, empty ones on the next
+   secret command. Move both files so the index and the data stay
+   consistent. This discards every existing secret. The secrets OpenShell
+   creates are per sandbox, so nothing is needed from them once the VM is
+   drained.
+
+   ```bash
+   stamp="$(date +%Y%m%d%H%M%S)"
+   for f in "${secrets_dir}/secrets.json" "${secrets_dir}/filedriver/secretsdata.json"; do
+     [ -e "${f}" ] && mv "${f}" "${f}.broken-${stamp}"
+   done
+   ```
+
+4. Check that secrets can be listed, created, and removed again, then
+   restart the runner:
+
+   ```bash
+   podman secret ls
+   printf x | podman secret create fullsend-secret-probe -
+   podman secret rm fullsend-secret-probe
+   sudo systemctl start gitlab-runner
+   ```
+
+   Then unpause the runner in GitLab.
+
+Keep the `.broken-*` copies until you know why the files were emptied.
 
 ## Daily Fedora package updates
 
@@ -604,8 +708,12 @@ systemctl list-timers fullsend-os-update.timer
    started finish. It never uses `systemctl stop`. A hold file
    (`/var/lib/fullsend-gitlab-runner/os-update.hold`) together with the
    drop-in `gitlab-runner.service.d/os-update-hold.conf`
-   (`ConditionPathExists=!<hold file>`) keeps `Restart=always` from starting
-   the runner again. If the drain takes longer than 6 hours, the job is
+   (`ConditionPathExists=!<hold file>` and
+   `ExecCondition=/usr/bin/test ! -e <hold file>`) keeps `Restart=always`
+   from starting the runner again. systemd does not re-check unit conditions
+   for an automatic restart, so `ExecCondition=` is what blocks it. If the
+   runner comes back with a new process anyway, the script sends `SIGQUIT`
+   to that process too. If the drain takes longer than 6 hours, the job is
    left running, the hold is removed, and the update is deferred. Starting
    the unit again does not cancel a graceful shutdown already under way, so
    `shutdown_timeout` is raised to the drain cap plus

@@ -27,6 +27,15 @@ resolved from verified pre-admission facts and pinned before the harness's
 actor gate; the deprecated `forge:` block cannot set it. The other overlay
 rules remain current.
 
+*Amended by [ADR 0158](0158-overlays-may-grant-runtime-fetch-within-the-config-allowlist.md),
+which lets a matching overlay grant runtime fetch within the config-level
+allowlist.*
+
+*See also [ADR 0162](0162-agent-entries-may-carry-harness-overrides.md),
+the separate work on overriding harness settings without a custom harness:
+an `agents:` entry's `harness:` block is a harness layer built on the agent's
+harness, merged by the rules of `base:` composition.*
+
 <!-- ADRs are point-in-time records, but not fully frozen after acceptance.
      Minor annotations are welcome: cross-references to related ADRs, short
      notes linking to newer decisions, or clarifying remarks. However, do not

@@ -286,6 +286,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Action:          "opened",
 				IID:             mr.IID,
 				UpdatedAt:       mr.CreatedAt,
+				HeadSHA:         mr.SHA,
 				NoteAuthorID:    mr.Author.ID,
 				NoteAuthorLogin: mr.Author.Username,
 				IsBot:           mr.Author.Bot,
@@ -296,6 +297,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 
@@ -305,6 +307,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Type:            "mr_event",
 				IID:             mr.IID,
 				UpdatedAt:       mr.MergedAt,
+				HeadSHA:         mr.SHA,
 				NoteAuthorID:    mergedBy.ID,
 				NoteAuthorLogin: mergedBy.Username,
 				IsBot:           mergedBy.Bot,
@@ -315,6 +318,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 				MergedByLogin:   mergedBy.Username,
 			})
 		}
@@ -332,15 +336,12 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 		if mr.State == "closed" && mr.MergedAt.IsZero() &&
 			!mr.ClosedAt.IsZero() && mr.ClosedAt.After(since) {
 			// Attribute the close to closed_by only — never fall back to
-			// the MR author. The code agent opens MRs as the bot, so an
-			// author fallback would tag a human's close of a bot-authored
-			// MR as a bot event, and filterBotEvents would drop it and
-			// skip retro — exactly the human-rejects-the-agent's-work case
-			// #7322 promotes to reliable. When closed_by is absent the
-			// actor fields stay empty, so filterBotEvents treats the close
-			// as human (retro runs; retro is read-only, so erring toward
-			// running it is safe) and toNormalizedEvent falls back to the
-			// MR author to resolve the actor. A bot self-close
+			// the MR author. When closed_by is absent the actor fields stay
+			// empty; normalization fails closed and the poll observes the
+			// event without dispatching it or consuming the retry budget. The
+			// MR author is never substituted for the closer. This can skip a
+			// human close when GitLab omits closed_by, including the #7322
+			// human-rejects-agent case. A bot self-close
 			// (closeStaleScaffoldPRs) sets closed_by to the bot and is
 			// still filtered.
 			events = append(events, RoutableEvent{
@@ -348,6 +349,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Action:          "closed",
 				IID:             mr.IID,
 				UpdatedAt:       mr.ClosedAt,
+				HeadSHA:         mr.SHA,
 				NoteAuthorID:    mr.ClosedBy.ID,
 				NoteAuthorLogin: mr.ClosedBy.Username,
 				IsBot:           mr.ClosedBy.Bot,
@@ -358,6 +360,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 
@@ -397,6 +400,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 					TargetBranch:    mr.TargetBranch,
 					MRAuthorID:      mr.Author.ID,
 					MRAuthorLogin:   mr.Author.Username,
+					MRAssigneeIDs:   userIDs(mr.Assignees),
 				})
 			}
 		}
@@ -422,6 +426,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Type:            "mr_note",
 				IID:             mr.IID,
 				UpdatedAt:       note.CreatedAt,
+				HeadSHA:         mr.SHA,
 				NoteBody:        note.Body,
 				NoteID:          note.ID,
 				NoteAuthorID:    note.Author.ID,
@@ -434,6 +439,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 	}
@@ -496,7 +502,9 @@ func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, 
 			re.TargetBranch = mr.TargetBranch
 			re.MRAuthorID = mr.Author.ID
 			re.MRAuthorLogin = mr.Author.Username
+			re.MRAssigneeIDs = userIDs(mr.Assignees)
 			re.Labels = mr.Labels
+			re.HeadSHA = mr.SHA
 		}
 
 		events = append(events, re)
@@ -629,8 +637,9 @@ func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 		}
 		// Bot-authored MR opens must dispatch review — the code agent
 		// opens MRs as the project access token bot, matching GitHub's
-		// [bot] exception on pull_request_target.opened. Bot-authored
-		// closes and merges are both filtered: they are the enrolled
+		// [bot] exception on pull_request.opened /
+		// pull_request_target.opened. Bot-authored closes and merges
+		// are both filtered: they are the enrolled
 		// bot's own lifecycle actions (e.g. closeStaleScaffoldPRs
 		// closing the bot's own stale scaffold MRs) and must not spawn
 		// retro pipelines for the bot's own cleanup. A human close is

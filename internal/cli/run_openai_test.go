@@ -231,7 +231,7 @@ func TestEnsureOpenAIProvider_WIF(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "ambient-key-must-not-be-used")
 
 	pd := harness.ProviderDef{Name: "openai", Type: openAIProviderType, Credentials: map[string]string{"OPENAI_API_KEY": ""}}
-	h, err := ensureOpenAIProvider(context.Background(), pd, "fs-tri-0123456789abcdef", config.OpenAIWIFConfig{}, piBackend(), ui.New(io.Discard))
+	h, err := ensureOpenAIProvider(context.Background(), pd, "fs-tri-0123456789abcdef", config.OpenAIWIFConfig{}, piBackend(), ciVariableCredentialPolicy{}, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.Equal(t, "openai-0123456789ab", h.name)
 	assert.Equal(t, []string{"OPENAI_API_KEY"}, h.keys)
@@ -266,7 +266,7 @@ func TestEnsureOpenAIProvider_StaticGetsBoundedExpiry(t *testing.T) {
 
 	// No credential keys declared: the default key is used.
 	pd := harness.ProviderDef{Name: "openai", Type: openAIProviderType}
-	h, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(io.Discard))
+	h, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ciVariableCredentialPolicy{}, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.Equal(t, "openai-feedface", h.name)
 	assert.Equal(t, []string{"OPENAI_API_KEY"}, h.keys, "the default key when the definition declares none")
@@ -294,7 +294,7 @@ func TestEnsureOpenAIProvider_StoreFailureDeletesProvider(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "")
 
 	pd := harness.ProviderDef{Name: "openai", Type: openAIProviderType}
-	_, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(io.Discard))
+	_, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ciVariableCredentialPolicy{}, ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "storing credential")
 
@@ -316,7 +316,7 @@ func TestEnsureOpenAIProvider_StoreAndDeleteFailureExpiresCredential(t *testing.
 	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
 	t.Setenv("GITHUB_ACTIONS", "")
 	var buf strings.Builder
-	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ciVariableCredentialPolicy{}, ui.New(&buf))
 	require.Error(t, err)
 	lines := readArgLines(t, argsLog)
 	require.Len(t, lines, 4, "create, failed store, failed delete, expire: %q", lines)
@@ -332,7 +332,7 @@ func TestEnsureOpenAIProvider_StoreDeleteAndExpireFailureWarns(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
 	t.Setenv("GITHUB_ACTIONS", "")
 	var buf strings.Builder
-	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ciVariableCredentialPolicy{}, ui.New(&buf))
 	require.Error(t, err)
 	lines := readArgLines(t, argsLog)
 	for _, l := range lines {
@@ -347,7 +347,7 @@ func TestEnsureOpenAIProvider_NoCredentialFailsBeforeOpenshell(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	pd := harness.ProviderDef{Name: "openai", Type: openAIProviderType}
-	_, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(io.Discard))
+	_, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ciVariableCredentialPolicy{}, ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `provider "openai"`)
 	assert.Contains(t, err.Error(), "no OpenAI credential")
@@ -1520,7 +1520,7 @@ func TestEnsureOpenAIProvider_IgnoresExtraCredentialKeys(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "")
 	var buf strings.Builder
 	pd := harness.ProviderDef{Name: "openai", Type: openAIProviderType, Credentials: map[string]string{"OPENAI_API_KEY": "", "LD_PRELOAD": ""}}
-	h, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	h, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ciVariableCredentialPolicy{}, ui.New(&buf))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"OPENAI_API_KEY"}, h.keys, "the token is never copied under another key")
 	assert.Contains(t, buf.String(), "LD_PRELOAD")
@@ -1849,7 +1849,7 @@ func TestEnsureOpenAIProvider_RefusesUnredactableCredential(t *testing.T) {
 	}
 	t.Setenv("OPENAI_API_KEY", "short")
 	t.Setenv("GITHUB_ACTIONS", "")
-	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(io.Discard))
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ciVariableCredentialPolicy{}, ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "too short to redact")
 	_, statErr := os.Stat(argsLog)
@@ -2312,7 +2312,7 @@ func TestReseedOpenAIAuth_WaitsForSandboxLock(t *testing.T) {
 // TestEmbeddedOpenAIProfileBinaries pins the `binaries:` rules of the
 // profile the runner imports for every fullsend-openai provider. The rule
 // list is what the gateway will let open a connection to api.openai.com:
-// pi issues its requests from node, and codex's npm launcher spawns a
+// pi issues its requests from node, and codex's npm launcher execs a
 // per-platform native binary that makes them itself (#6920), so both names
 // must be there or that runtime's first model call is refused by the proxy
 // with nothing in the agent's log to explain it.
@@ -2366,7 +2366,7 @@ func TestEnsureOpenAIProvider_SeedComesFromTheSelectedBackend(t *testing.T) {
 			t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
 
 			pd := harness.ProviderDef{Name: "openai", Type: openAIProviderType}
-			h, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, tc.backend, ui.New(io.Discard))
+			h, err := ensureOpenAIProvider(context.Background(), pd, "fs-cod-feedface", config.OpenAIWIFConfig{}, tc.backend, ciVariableCredentialPolicy{}, ui.New(io.Discard))
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantFile, h.authFile)
 			if tc.wantSeed != "" {
@@ -2445,7 +2445,7 @@ func TestEnsureOpenAIProvider_CreateFailureStopsBeforeTheExpiry(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
 	t.Setenv("GITHUB_ACTIONS", "")
 	var buf strings.Builder
-	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ciVariableCredentialPolicy{}, ui.New(&buf))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `ensuring provider "openai-feedface"`)
 	for _, l := range readArgLines(t, argsLog) {

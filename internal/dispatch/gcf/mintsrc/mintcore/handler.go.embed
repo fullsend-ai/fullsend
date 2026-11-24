@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,15 @@ import (
 const maxRepos = 500
 
 const defaultForeignCacheTTL = 60 * time.Second
+
+// hstsHeaderValue is the Strict-Transport-Security value set on every
+// mint response: one year, scoped to the mint's own hostname. It omits
+// includeSubDomains and preload on purpose, so it never affects sibling
+// hostnames such as the public website. Browsers ignore the header on
+// plain-HTTP responses (RFC 6797 §8.1), so setting it unconditionally is
+// safe for load sites served without TLS. Keep it in sync with
+// HSTS_HEADER_VALUE in internal/dispatch/cf/workersrc/src/index.ts.
+const hstsHeaderValue = "max-age=31536000"
 
 type foreignCacheEntry struct {
 	allowlist []string
@@ -140,10 +150,18 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		workflowHostRepos["fullsend-ai/fullsend"] = true
 	}
 
+	githubBaseURL, err := githubAPIBaseURL()
+	if err != nil {
+		return nil, err
+	}
+	if err := checkIssuerMatchesAPI(oidcVerifier, githubBaseURL); err != nil {
+		return nil, err
+	}
+
 	h := &Handler{
 		pemAccessor:          pemAccessor,
 		oidcVerifier:         oidcVerifier,
-		githubBaseURL:        "https://api.github.com",
+		githubBaseURL:        githubBaseURL,
 		foreignCache:         make(map[string]foreignCacheEntry),
 		foreignInflight:      make(map[string]*foreignInflight),
 		foreignCacheTTL:      defaultForeignCacheTTL,
@@ -204,6 +222,9 @@ func (h *Handler) SetTracer(t *Tracer) {
 
 // ServeHTTP handles incoming token mint requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Set before routing so success, error and health responses all
+	// carry it.
+	w.Header().Set("Strict-Transport-Security", hstsHeaderValue)
 	if r.Method == http.MethodGet && r.URL.Path == "/health" {
 		h.handleHealth(w)
 		return
@@ -938,4 +959,74 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// defaultGitHubAPIBaseURL is github.com's REST API.
+const defaultGitHubAPIBaseURL = "https://api.github.com"
+
+// githubAPIBaseURL is the REST API the mint calls to mint installation
+// tokens and to check status callers. MINT_GITHUB_API_URL points it at
+// another GitHub API, such as GitHub Enterprise Server or an emulator in a
+// test. It is not GITHUB_API_URL: a mint started as a step of an Actions job
+// would otherwise inherit the job's API URL. The App JWT, installation tokens
+// and status callers' tokens are sent there, so the override must pass
+// CheckServiceBaseURL.
+func githubAPIBaseURL() (string, error) {
+	raw := strings.TrimSpace(mintEnv("MINT_GITHUB_API_URL"))
+	if raw == "" {
+		return defaultGitHubAPIBaseURL, nil
+	}
+	// Set but only slashes is an error, not the default.
+	v := strings.TrimRight(raw, "/")
+	if err := CheckServiceBaseURL("MINT_GITHUB_API_URL", v); err != nil {
+		return "", err
+	}
+	return v, nil
+}
+
+// githubActionsOIDCIssuer is GitHub Actions' github.com OIDC issuer. It is
+// declared here, not taken from sts_verifier.go, because handler.go also
+// builds for the Cloudflare Worker.
+const githubActionsOIDCIssuer = "https://token.actions.githubusercontent.com"
+
+// checkIssuerMatchesAPI refuses a GitHub API other than github.com's while
+// the verifier still trusts GitHub Actions' github.com issuer. That pair
+// would admit github.com workflows to mint tokens on another server, where
+// the same owner and repository names can belong to someone else. Every load
+// site builds its handler here, so the rule holds for each: the Cloudflare
+// Worker and GCF mints, whose issuer is fixed, cannot set MINT_GITHUB_API_URL
+// at all, and the standalone mint needs MINT_OIDC_ISSUER_URL with it.
+func checkIssuerMatchesAPI(verifier OIDCVerifier, apiBaseURL string) error {
+	if apiBaseURL == defaultGitHubAPIBaseURL {
+		return nil
+	}
+	if j, ok := verifier.(*JWKSVerifier); ok && j.issuerURL != githubActionsOIDCIssuer {
+		return nil
+	}
+	return errors.New("MINT_GITHUB_API_URL names a GitHub server other than github.com, but the mint trusts github.com's Actions issuer; set MINT_OIDC_ISSUER_URL to that server's issuer (standalone mint only)")
+}
+
+// CheckServiceBaseURL checks an operator-set base URL the mint trusts or
+// sends credentials to, such as the OIDC issuer or the GitHub API: https
+// with a host, or plain http only on localhost or 127.0.0.1 (the rule the
+// mint client applies to mint URLs), and no userinfo, query or fragment.
+// The error names the setting, not the value, which may carry userinfo.
+func CheckServiceBaseURL(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" || u.Hostname() == "" {
+		return fmt.Errorf("%s is not an absolute URL with a host", name)
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return fmt.Errorf("%s must not carry userinfo, a query or a fragment", name)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if h := u.Hostname(); h == "localhost" || h == "127.0.0.1" {
+			return nil
+		}
+		return fmt.Errorf("%s must use https; plain http is allowed only on localhost or 127.0.0.1", name)
+	}
+	return fmt.Errorf("%s must use https", name)
 }

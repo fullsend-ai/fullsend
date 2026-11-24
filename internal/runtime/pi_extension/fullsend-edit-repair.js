@@ -7,7 +7,7 @@
 // — or as an array whose items are JSON strings. pi's own preparation
 // repairs a well-formed stringified array and a bare edit object (a
 // JSON.parse with an empty catch), so both shapes fail validation with
-// `edits.0: must be object`
+// `edits.0: expected object, got string`
 // and the model has to redo the call: 46 times in one fullsend code-agent run
 // (fullsend#7231). Both shapes are reported upstream — earendil-works/pi#8521
 // and #8962 — and closed as not planned; the fix offered for the first,
@@ -19,9 +19,10 @@
 // adapter's PreToolUse input — with the prepared, validated arguments, so the
 // security hooks inspect exactly the edits that get applied.
 //
-// PiRuntime.Run loads it with -e only when the agent's tools include edit:
-// under --no-builtin-tools with no --tools list pi does not filter extension
-// tools, so loading it there would grant edit to an agent that has none.
+// Parent and child launches load it only when their selection includes edit.
+// The parent gate prevents a grant under --no-builtin-tools, which does not
+// filter extension tools. Children always use explicit --tools (even ''), so
+// their gate avoids loading an unused extension rather than enforcing access.
 //
 // Delete this file and its wiring once the pinned pi repairs both shapes
 // itself; see the note next to ARG PI_VERSION in images/sandbox/Containerfile.

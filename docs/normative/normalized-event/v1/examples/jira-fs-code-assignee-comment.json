@@ -1,0 +1,31 @@
+{
+  "repo": "acme/platform",
+  "entity": {
+    "kind": "work_item",
+    "id": 10077,
+    "key": "PROJ-456",
+    "url": "https://acme.atlassian.net/browse/PROJ-456"
+  },
+  "transition": {
+    "kind": "comment_added",
+    "comment": {
+      "command": "/fs-code",
+      "body": "/fs-code"
+    }
+  },
+  "actor": {
+    "id": "557058:assignee789",
+    "kind": "human",
+    "role": "write",
+    "is_entity_author": false,
+    "is_entity_assignee": true
+  },
+  "state": {
+    "labels": []
+  },
+  "source": {
+    "system": "jira",
+    "raw_type": "comment",
+    "raw_action": "created"
+  }
+}

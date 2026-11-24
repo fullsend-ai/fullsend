@@ -32,7 +32,7 @@ const (
 	StageMintWorkerName = "stage-mint"
 
 	// StageOrg is the GitHub org used for STAGE behaviour tests.
-	// Unlike the DEV pool orgs (halfsend-01 … halfsend-12), the STAGE
+	// Unlike the DEV pool orgs (halfsend-01 … halfsend-22), the STAGE
 	// driver uses a single org. Within this org, a repo pool is used
 	// just like in the DEV drivers.
 	StageOrg = "halfsend"
@@ -68,6 +68,9 @@ type stageMintConfig struct {
 // factory returns an error for any other layout.
 func NewRepoPoolCFMintStage(pool PoolConfig) (Driver, error) {
 	if err := pool.validate(); err != nil {
+		return nil, fmt.Errorf("stage cfmint factory: %w", err)
+	}
+	if err := requireGitHubAccess(); err != nil {
 		return nil, fmt.Errorf("stage cfmint factory: %w", err)
 	}
 	if orgs := pool.Layout.Orgs(); len(orgs) != 1 || orgs[0] != StageOrg {

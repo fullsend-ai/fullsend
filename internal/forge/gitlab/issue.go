@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -29,6 +30,7 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	}
 
 	var result struct {
+		ID     int64        `json:"id"`
 		IID    int          `json:"iid"`
 		Title  string       `json:"title"`
 		Desc   string       `json:"description"`
@@ -40,6 +42,7 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	}
 
 	return &forge.Issue{
+		ID:     result.ID,
 		Number: result.IID,
 		Title:  result.Title,
 		Body:   result.Desc,
@@ -58,6 +61,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 	}
 
 	var result struct {
+		ID     int64        `json:"id"`
 		IID    int          `json:"iid"`
 		Title  string       `json:"title"`
 		Desc   string       `json:"description"`
@@ -76,6 +80,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		state = "open"
 	}
 	return &forge.Issue{
+		ID:     result.ID,
 		Number: result.IID,
 		Title:  result.Title,
 		Body:   result.Desc,
@@ -107,6 +112,7 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 		}
 
 		var raw []struct {
+			ID     int64        `json:"id"`
 			IID    int          `json:"iid"`
 			Title  string       `json:"title"`
 			Desc   string       `json:"description"`
@@ -119,6 +125,7 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 
 		for _, item := range raw {
 			result = append(result, forge.Issue{
+				ID:     item.ID,
 				Number: item.IID,
 				Title:  item.Title,
 				Body:   item.Desc,
@@ -160,6 +167,25 @@ func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, num
 	})
 	if err != nil {
 		return fmt.Errorf("add labels to issue #%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// newLabelColor is the color EnsureLabel gives a label it creates. GitLab
+// requires a color on label creation.
+const newLabelColor = "#ededed"
+
+// EnsureLabel creates a project label. GitLab answers 409 Conflict when
+// the label exists; that is success.
+func (c *LiveClient) EnsureLabel(ctx context.Context, owner, repo, name string) error {
+	path := fmt.Sprintf("/projects/%s/labels", projectPath(owner, repo))
+	resp, err := c.post(ctx, path, map[string]string{"name": name, "color": newLabelColor})
+	if err != nil {
+		if errors.Is(err, forge.ErrAlreadyExists) {
+			return nil
+		}
+		return fmt.Errorf("create label %q: %w", name, err)
 	}
 	resp.Body.Close()
 	return nil
@@ -502,6 +528,16 @@ func (c *LiveClient) MinimizeComment(_ context.Context, _, _ string) error {
 // ListIssueReactions is not yet implemented for GitLab. See AddIssueReaction.
 func (c *LiveClient) ListIssueReactions(_ context.Context, _, _ string, _ int) ([]forge.Reaction, error) {
 	return nil, forge.ErrNotSupported
+}
+
+// ListIssueLabelEvents is not supported on GitLab (e2e gate is GitHub-only).
+func (c *LiveClient) ListIssueLabelEvents(_ context.Context, _, _ string, _ int) ([]forge.IssueLabelEvent, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// RemoveIssueLabel is not supported on GitLab (e2e gate is GitHub-only).
+func (c *LiveClient) RemoveIssueLabel(_ context.Context, _, _ string, _ int, _ string) error {
+	return forge.ErrNotSupported
 }
 
 // AddIssueReaction is not yet implemented for GitLab. GitLab has an

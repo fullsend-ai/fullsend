@@ -120,6 +120,6 @@ Feature: Harness CEL dispatch
       | description              | op           | args                                                    |
       | Prove review execution   | write_fixture| output/dispatch-review-ok.json, fixtures/dispatch/ok.json |
     When a pull request is opened
-    And a review comment is submitted on the pull request
+    And the write actor submits a review comment on the pull request
     Then the harness "review-ping" workflow completes successfully
     And the agent will succeed to Prove review execution

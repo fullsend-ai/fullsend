@@ -121,6 +121,77 @@ func TestMergeSpecInputsPreservesUserSettingsAndValidatesContract(t *testing.T) 
 	require.ErrorContains(t, err, "maximum is 20")
 }
 
+// previousContractRoot returns a root .gitlab-ci.yml merged by the current
+// contract, with resource_key's regex rewound to the given value — the
+// shape a root rendered by v0.52.0 (pre-#8924) has when regex is the old
+// fullsend definition.
+func previousContractRoot(t *testing.T, regex string) []byte {
+	t.Helper()
+	current, err := MergeGitLabCI([]byte("job: {script: echo keep}\n"))
+	require.NoError(t, err)
+	const newRegex = "^((issue|mr)-[0-9]+|jira-[A-Z][A-Z0-9_]+-[1-9][0-9]*)?$"
+	require.Equal(t, 1, strings.Count(string(current), newRegex), "merged root must declare the current resource_key regex once")
+	return []byte(strings.Replace(string(current), newRegex, regex, 1))
+}
+
+// TestMergeGitLabCIUpgradesPreviousContractInputs covers #9068: a root
+// rendered by an earlier release carries a fullsend-owned input whose
+// definition has since changed. The upgrade must replace it with the
+// current definition and converge, while a user-modified definition still
+// conflicts.
+func TestMergeGitLabCIUpgradesPreviousContractInputs(t *testing.T) {
+	current, err := MergeGitLabCI([]byte("job: {script: echo keep}\n"))
+	require.NoError(t, err)
+
+	old := previousContractRoot(t, "^((issue|mr)-[0-9]+)?$")
+	merged, err := MergeGitLabCI(old)
+	require.NoError(t, err)
+	assert.Equal(t, string(current), string(merged), "a previous-contract input must be replaced by the current definition")
+	again, err := MergeGitLabCI(merged)
+	require.NoError(t, err)
+	assert.Equal(t, string(merged), string(again), "the upgrade must be idempotent")
+
+	_, err = MergeGitLabCI(previousContractRoot(t, "^custom-[0-9]+$"))
+	require.ErrorContains(t, err, `existing input "resource_key" conflicts with the fullsend dispatch contract`)
+}
+
+func TestMergeSpecInputsKeepsAliasedPreviousContractInput(t *testing.T) {
+	fixture := "spec:\n  inputs:\n    resource_key: {default: '', regex: '^new$'}\n"
+	previous := "{default: '', regex: '^((issue|mr)-[0-9]+)?$'}"
+
+	existing := inputTestMapping(t, "spec:\n  inputs:\n    resource_key: "+previous+"\n")
+	require.NoError(t, mergeSpecInputs(existing, inputTestMapping(t, fixture)))
+	regex := findMappingValue(findMappingValue(findMappingValue(findMappingValue(existing, "spec"), "inputs"), "resource_key"), "regex")
+	require.NotNil(t, regex)
+	assert.Equal(t, "^new$", regex.Value)
+
+	aliased := inputTestMapping(t, "spec:\n  inputs:\n    resource_key: &rk "+previous+"\n  description: *rk\n")
+	err := mergeSpecInputs(aliased, inputTestMapping(t, fixture))
+	require.ErrorContains(t, err, "conflicts", "replacing an aliased input would orphan the alias")
+}
+
+func TestConvergeGitLabRootUpgradesPreviousContractInDryRun(t *testing.T) {
+	wrapper, err := scaffold.GitLabPerRepoFile(fullsendPipelineInclude)
+	require.NoError(t, err)
+	for _, dryRun := range []bool{true, false} {
+		fc := newFakeClientForBatch("acme/api")
+		fc.FileContents["acme/api/.gitlab-ci.yml"] = previousContractRoot(t, "^((issue|mr)-[0-9]+)?$")
+		fc.FileContents["acme/api/"+fullsendPipelineInclude] = wrapper
+		resolved := ResolvedConfig{Owner: "acme", Repo: "api", Forge: ForgeGitLab, ForgeConfig: ForgeConfig{Client: fc}}
+		files, actions := convergeGitLabRootCIFiles(context.Background(), resolved, ConvergeConfig{DryRun: dryRun}, noopProgress, nil)
+		for _, action := range actions {
+			assert.NotEqual(t, "error", action.Action, "dry run %v: %s", dryRun, action.Detail)
+		}
+		if dryRun {
+			assert.Empty(t, files)
+			continue
+		}
+		require.Len(t, files, 1)
+		assert.Contains(t, string(files[0].Content), "jira-[A-Z][A-Z0-9_]+")
+		assert.NotContains(t, string(files[0].Content), "^((issue|mr)-[0-9]+)?$")
+	}
+}
+
 func TestUnmergeGitLabCIKeepsUnrelatedHeaderAndBody(t *testing.T) {
 	cleaned, err := UnmergeGitLabCI([]byte(`spec:
   description: user-owned

@@ -2019,3 +2019,35 @@ func findingNames(fs []security.Finding) []string {
 	}
 	return names
 }
+
+func TestContentCollector_RecordsPiToolArguments(t *testing.T) {
+	tests := []struct {
+		name, tool, args, want string
+	}{
+		{"bash", "bash", `{"command":"ls","timeout":20}`, `{"command":"ls","timeout":20}`},
+		{"read", "read", `{"path":"/a","offset":1,"limit":2}`, `{"limit":2,"offset":1,"path":"/a"}`},
+		{"write keeps the path, not the body", "write", `{"path":"/a","content":"BODY"}`, `{"path":"/a"}`},
+		{"edit keeps the path, not the edits", "edit", `{"path":"/a","edits":[{"oldText":"BODY","newText":"BODY"}]}`, `{"path":"/a"}`},
+		{"grep", "grep", `{"pattern":"x","path":"/a","glob":"*.go","ignoreCase":true,"literal":false,"context":1,"limit":2}`,
+			`{"context":1,"glob":"*.go","ignoreCase":true,"limit":2,"literal":false,"path":"/a","pattern":"x"}`},
+		{"find", "find", `{"pattern":"x","path":"/a","limit":2}`, `{"limit":2,"path":"/a","pattern":"x"}`},
+		{"ls", "ls", `{"path":"/a","limit":2}`, `{"limit":2,"path":"/a"}`},
+		{"Agent keeps no prompt", "Agent", `{"prompt":"BODY","description":"d","subagent_type":"s","model":"m","run_in_background":false}`,
+			`{"description":"d","model":"m","subagent_type":"s"}`},
+		{"Task keeps no prompt", "Task", `{"prompt":"BODY","description":"d","subagent_type":"s"}`, `{"description":"d","subagent_type":"s"}`},
+		{"an extension tool records nothing", "mcp_lookup", `{"path":"/a"}`, ``},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newContentCollector(maxContentBytes)
+			got, truncated := c.toolArguments(tt.tool, tt.args)
+			assert.False(t, truncated)
+			if tt.want == "" {
+				assert.Empty(t, got)
+				return
+			}
+			assert.JSONEq(t, tt.want, string(got))
+			assert.NotContains(t, string(got), "BODY")
+		})
+	}
+}

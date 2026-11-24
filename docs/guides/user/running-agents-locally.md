@@ -18,8 +18,11 @@ Linux are supported with Podman as the container runtime.
 
 ## Download the fullsend CLI
 
-Download the latest release from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases).
-Pick the archive matching your platform:
+If you already have fullsend v0.55.0 or later, run
+[`fullsend self-update`](../../cli/self-update.md) to upgrade and skip to the
+verification step. Otherwise, download the latest release from
+[GitHub Releases](https://github.com/fullsend-ai/fullsend/releases) and pick
+the archive matching your platform:
 
 | Platform | Archive |
 |----------|---------|
@@ -47,10 +50,10 @@ fullsend --version
 ## Install OpenShell
 
 [OpenShell](https://github.com/NVIDIA/OpenShell) provides the sandbox runtime. There are multiple ways
-to install it, here we use one similar to how we download it on Fullsend. Use the version
+to install it, here we use one similar to how we download it on fullsend. Use the version
 fullsend is pinned to — the source of truth is
 [`.github/scripts/openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
-in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
+in the fullsend repo at your release tag (also printed on fullsend workflow runs).
 
 ```bash
 export OPENSHELL_VERSION=0.1.4  # check the pin file for the current version
@@ -160,7 +163,9 @@ with the credential kept out of the sandbox by an OpenShell provider. In CI the 
 identity ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)); on your
 machine there is no such identity, so use an API key from the same OpenAI project. Put it in an
 environment file, like the GCP settings above — never in the harness YAML and never under
-`env.sandbox` (the runner refuses to export it into the sandbox):
+`env.sandbox` (the runner refuses to export it into the sandbox; `OPENAI_API_KEY` is in the
+reserved set published by the [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md)):
 
 ```bash
 # fullsend-openai.env
@@ -207,6 +212,9 @@ First clone your target repository locally:
 git clone git@github:{org}/{target_repository} /tmp/target-repo
 ```
 
+The target may be a plain directory or a normal clone with a real root `.git`
+directory. See the [`--target-repo` requirements](../../cli/run.md#flags).
+
 Next clone the repository where the agent definitions live. The canonical
 source is `fullsend-ai/agents`. To learn more about custom agents visit
 [Configuring Agents](customizing-agents.md).
@@ -214,6 +222,45 @@ source is `fullsend-ai/agents`. To learn more about custom agents visit
 ```bash
 git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agents/
 ```
+
+If you created a service account key in
+[Get Google Cloud Platform credentials](#get-google-cloud-platform-credentials),
+it is a long-lived credential: `fullsend run` mounts it only on a `host_files`
+entry with `allow_durable: true` (see
+[`host_files[].allow_durable`](../../reference/harness-reference.md)). Add that
+to the key's mount in every cloned harness. Skip this step if you only use the
+OpenAI key.
+
+```bash
+perl -0pi -e 's{^(\s+)dest: /tmp/\.gcp-credentials\.json\n(?!\s+allow_durable:)}{$&$1allow_durable: true\n}mg' \
+  /tmp/fullsend-agents/harness/*.yaml
+grep -c 'allow_durable: true' /tmp/fullsend-agents/harness/*.yaml
+```
+
+Each harness should report `1`:
+
+```text
+/tmp/fullsend-agents/harness/code.yaml:1
+/tmp/fullsend-agents/harness/fix.yaml:1
+/tmp/fullsend-agents/harness/prioritize.yaml:1
+/tmp/fullsend-agents/harness/retro.yaml:1
+/tmp/fullsend-agents/harness/review.yaml:1
+/tmp/fullsend-agents/harness/scribe.yaml:1
+/tmp/fullsend-agents/harness/triage.yaml:1
+```
+
+Each run then prints a warning for the key:
+
+```text
+host file ... (dest /tmp/.gcp-credentials.json): service_account key (lifetime not controlled by this run)
+```
+
+If the harness also uses a provider that may write, such as `github`, the run prints a second
+warning before the sandbox starts, naming that provider. Both are expected with this setup and
+neither stops the run. See
+[durable credentials next to write-capable providers](../../reference/harness-reference.md#durable-credentials-next-to-write-capable-providers).
+
+Without this step, the run stops with `Host file credential validation failed`.
 
 ## Run default agents
 
@@ -364,13 +411,14 @@ you can tune resolution limits:
 | `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--max-depth` | 10 | Maximum dependency depth for transitive resolution (0 disables) |
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
-| `--offline` | false | Reject network fetches; only use cached remote resources |
+| `--offline` | false | Reject network fetches; only use cached remote resources. A Jira-sourced run, or a run that mints a Jira token, stops, because resolving the Jira API gateway address needs a network lookup |
 
 #### Lock files
 
 If a `lock.yaml` file exists in the fullsend directory, `fullsend run` uses it
 to skip re-resolution when the harness has not changed since the lock was
-generated. Generate or update a lock file with:
+generated. A `harness:` block on the agent's `config.yaml` entry counts as
+part of the harness. Generate or update a lock file with:
 
 ```bash
 fullsend lock code --fullsend-dir /path/to/.fullsend
@@ -394,10 +442,11 @@ dependencies is locked. If your agent's forge-specific files come only from a
 for example `--forge github`, so `fullsend lock` pins them. Without it, the run
 warns that the lock entry does not pin them.
 
-When the lock entry is current (harness SHA256 matches), dependencies are
-resolved from the local cache without network access. If the harness has changed
-or a cached artifact is missing, `fullsend run` falls back to normal network
-resolution and prints a warning suggesting you re-run `fullsend lock`.
+When the lock entry is current (the SHA256 of the harness and its `harness:`
+block matches), dependencies are resolved from the local cache without network
+access. If the harness or the block has changed, or a cached artifact is
+missing, `fullsend run` falls back to normal network resolution and prints a
+warning suggesting you re-run `fullsend lock`.
 
 A current lock entry also pins the files a URL `base:` (or an agent fetched from
 a URL) names by relative path: agent, policy, skills, skill file overrides,
@@ -444,7 +493,7 @@ fullsend run triage \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
 ```
 
-For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. Set the matching per-role secret (Poller/Analyst/Coder, or a registered custom role). A missing role secret fails closed and does not fall back to `FULLSEND_FORGE_TOKEN` or a directly-set `GITLAB_TOKEN`. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
+For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. Set the matching per-role secret (Poller/Analyst/Coder, or a registered custom role). A missing role secret fails closed and does not fall back to `FULLSEND_FORGE_TOKEN` or a directly-set `GITLAB_TOKEN`. Outside GitLab CI, `CI_SERVER_URL` is not set, so a local `--forge gitlab` run with the stock GitLab profiles must set `FULLSEND_GITLAB_URL` to the GitLab URL (for example `https://gitlab.example.com`); otherwise the run stops before setup. Each profile that issues `GITLAB_TOKEN` is limited to that host and port. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
 
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See [`status_notifications`](../../reference/config-reference.md#status_notifications).
@@ -837,6 +886,7 @@ Its layout:
   iteration-1/
     output/                  # Agent output files (agent-result.json, etc.)
     transcripts/             # Agent conversation transcripts (.jsonl)
+    agent-stderr.log         # Agent CLI stderr, at progress level quiet only
   metrics.json               # Behavioral metrics (tokens, cost, duration)
   security/
     findings.jsonl           # Security scan findings

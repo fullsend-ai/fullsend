@@ -37,14 +37,16 @@ func assertPacked(t *testing.T, layout PoolLayout, groups []mintGroup, maxBytes 
 	assert.Equal(t, layout.Orgs(), all)
 }
 
-func TestPlanMintGroups_DevPoolTwoMints(t *testing.T) {
-	layout := DevPoolLayout(DefaultPoolSize) // 12 orgs × 12 slots
+func TestPlanMintGroups_DevPoolFourMints(t *testing.T) {
+	layout := DevPoolLayout(DefaultPoolSize) // 22 orgs × 12 slots
 	groups, err := planMintGroups(layout, maxWorkerVarBytes)
 	require.NoError(t, err)
-	require.Len(t, groups, 2)
+	require.Len(t, groups, 4)
 	assertPacked(t, layout, groups, maxWorkerVarBytes)
 	assert.Equal(t, layout.Orgs()[:6], groups[0].orgs)
-	assert.Equal(t, layout.Orgs()[6:], groups[1].orgs)
+	assert.Equal(t, layout.Orgs()[6:12], groups[1].orgs)
+	assert.Equal(t, layout.Orgs()[12:18], groups[2].orgs)
+	assert.Equal(t, layout.Orgs()[18:], groups[3].orgs)
 	// The serialized sizes cited in #8681: six orgs fit, seven do not.
 	assert.Len(t, groups[0].workflowHostRepos, 4319)
 	assert.Len(t, groupWorkflowHostRepos(layout.Orgs()[:7], DefaultPoolSize), 5039)
@@ -56,12 +58,12 @@ func TestPlanMintGroups_NearByteLimit(t *testing.T) {
 
 	groups, err := planMintGroups(layout, six)
 	require.NoError(t, err)
-	assert.Equal(t, []int{6, 6}, groupSizes(groups), "a list exactly at the limit fits")
+	assert.Equal(t, []int{6, 6, 6, 4}, groupSizes(groups), "a list exactly at the limit fits")
 	assertPacked(t, layout, groups, six)
 
 	groups, err = planMintGroups(layout, six-1)
 	require.NoError(t, err)
-	assert.Equal(t, []int{5, 5, 2}, groupSizes(groups), "one byte over moves an org to the next mint")
+	assert.Equal(t, []int{5, 5, 5, 5, 2}, groupSizes(groups), "one byte over moves an org to the next mint")
 	assertPacked(t, layout, groups, six-1)
 }
 
@@ -79,8 +81,8 @@ func TestPlanMintGroups_RecomputedForPoolChanges(t *testing.T) {
 		layout PoolLayout
 		sizes  []int
 	}{
-		{"fewer slots per org", DevPoolLayout(6), []int{12}},
-		{"more slots per org", DevPoolLayout(20), []int{4, 4, 4}},
+		{"fewer slots per org", DevPoolLayout(6), []int{13, 9}},
+		{"more slots per org", DevPoolLayout(20), []int{4, 4, 4, 4, 4, 2}},
 		{"fewer orgs", PoolLayout{FirstOrgIndex: 1, OrgCount: 4, SlotsPerOrg: DefaultPoolSize}, []int{4}},
 		{"more orgs", PoolLayout{FirstOrgIndex: 1, OrgCount: 13, SlotsPerOrg: DefaultPoolSize}, []int{6, 6, 1}},
 		{"stage", StagePoolLayout(DefaultPoolSize), []int{1}},
@@ -118,7 +120,8 @@ func TestPlanCFMints_StatusGroupPickedOnce(t *testing.T) {
 	assert.Equal(t, 1, calls, "one status team per job")
 	assert.Equal(t, DevPoolLayout(DefaultPoolSize).Orgs(), offered, "eligible teams are the pool orgs'")
 	assert.Equal(t, "halfsend-10/mint-status", plan.statusGroup)
-	assert.Equal(t, [][]string{DevPoolLayout(DefaultPoolSize).Orgs()[:6], DevPoolLayout(DefaultPoolSize).Orgs()[6:]}, groupOrgs(plan.groups))
+	orgs := DevPoolLayout(DefaultPoolSize).Orgs()
+	assert.Equal(t, [][]string{orgs[:6], orgs[6:12], orgs[12:18], orgs[18:]}, groupOrgs(plan.groups))
 	assert.Equal(t, 0, plan.groupOf["halfsend-01"])
 	assert.Equal(t, 1, plan.groupOf["halfsend-12"])
 

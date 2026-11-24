@@ -58,15 +58,35 @@ type codexHookGroup struct {
 	Wired   bool   `json:"wired"`
 }
 
+// codexAgentToolNames are the codex multi-agent calls the adapter reports as
+// Agent: the V1 spawn and the control calls the spawn guard passes through
+// from the root (ADR 0126), and the V2 spawn and control calls ADR 0159
+// decision 3 maps the same way. send_message, followup_task and resume stay
+// unmapped, so an allowlist without their names blocks them even when the
+// guard cannot run. No mapped call has that backstop: an allowlist that
+// permits Agent passes them all and the spawn guard is their only name-level
+// check. The V1 spawn still sits under codex's agents.max_depth; the V2 spawn
+// does not (#9085); its backstop is that the runner starts a V2 parent's
+// children only on models off V2, which get no multi-agent tools
+// (codexV2ChildModelReason). codex joins namespace and name with no
+// separator (codex-rs/core/src/tools/registry.rs function_hook_tool_name);
+// only the default and multi_agent_v1 namespaces keep the bare spawn_agent.
+var codexAgentToolNames = []string{
+	"spawn_agent",
+	"multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input",
+	"collaborationspawn_agent", "collaborationwait_agent", "collaborationlist_agents", "collaborationinterrupt_agent",
+}
+
 // claudeToolForCodex is the adapter's translation table, mirrored into the
 // manifest for operators reading it. codex's shell tool is already called
-// `Bash`; `apply_patch` covers Claude's Write and Edit, and the canonical
-// name it reports is what the scripts see translated
-// (codex-rs/core/src/tools/hook_names.rs).
-var claudeToolForCodex = map[string]string{
-	"apply_patch": "Edit",
-	"spawn_agent": "Agent",
-}
+// `Bash`; `apply_patch` covers Claude's Write and Edit.
+var claudeToolForCodex = func() map[string]string {
+	m := map[string]string{"apply_patch": "Edit"}
+	for _, name := range codexAgentToolNames {
+		m[name] = "Agent"
+	}
+	return m
+}()
 
 func (r CodexRuntime) codexHooksDir() string { return r.ConfigDir() + "/hooks" }
 
@@ -90,18 +110,6 @@ func (r CodexRuntime) codexAuthScriptPath() string {
 func (r CodexRuntime) codexModelsCachePath() string {
 	return r.ConfigDir() + "/" + codexModelsCacheFile
 }
-
-// codexLastMessageFile is where --output-last-message writes the agent's final
-// message, under the runner-owned config dir.
-//
-// Deliberately not the workspace output directory: that is the agent's own
-// result location (FULLSEND_OUTPUT_DIR), the runner extracts everything there
-// as the run's output files, and nothing creates it up front — codex reported
-// `Failed to write last message file ... No such file or directory` in the
-// first end-to-end smoke. The final message is in the stream as an
-// agent_message either way; this file is a convenience for an operator
-// inspecting a kept sandbox, and ClearIterationArtifacts removes it.
-const codexLastMessageFile = "last-message.txt"
 
 // Bootstrap prepares the runner-owned codex config directory for one agent
 // run: the agent body as developer_instructions in config.toml, the auth
@@ -154,22 +162,31 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	if !ok || repoInput.RepoDir() == "" {
 		return fmt.Errorf("codex bootstrap: the target repository's sandbox path is required")
 	}
-	// ADR 0126 gate. Part one: tools include Agent and harness security is
-	// on. Part two needs the pinned CLI's catalog: codex must resolve the
-	// model Run will launch to collaboration V1, the only version whose spawn
-	// tool the guard admits (its entry selects V1, or carries no version and
-	// codex's multi_agent feature, on by default, supplies V1). A V2,
-	// unlisted or gateway/ parent keeps the multi-agent tools off and runs in
-	// one context, as an agent that does not delegate does.
+	// Delegation gate (ADR 0126, extended by ADR 0159). Part one: tools
+	// include Agent and harness security is on. Part two needs the pinned
+	// CLI's catalog: the gate takes the collaboration version from the entry
+	// of the model Run will launch, V1 when the entry selects V1 or carries
+	// no version (codex's multi_agent feature, on by default, supplies V1)
+	// and V2 when it selects V2. A V1 or V2 parent delegates: the gate reads
+	// the version, not the reason. A V2 child's result passes the PostToolUse
+	// chain at SubagentStop before codex delivers it (codexHooksJSON, ADR 0159
+	// decision 4), and a V2 parent delegates only while no child model selects
+	// V2 (codexV2ChildModelReason). Bootstrap passes the version on to the
+	// roles, the developer instructions and the config, which take their V2
+	// forms for a V2 parent. A disabled, unknown-version, unlisted or gateway/
+	// parent, and a V2 parent with a V2 child model, is declined with its own
+	// explanation, keeps the multi-agent tools off and runs in one context,
+	// as an agent that does not delegate does.
 	_, securityOn := input.(SandboxHooksBootstrap)
 	var catalog codexCatalog
-	delegating := false
+	delegating, collab := false, ""
 	if codexDelegates(def, securityOn) {
 		if catalog, err = codexPreflightCatalog(sandboxName); err != nil {
 			return err
 		}
 		var reason string
-		if delegating, reason = codexParentResolvesV1(catalog, input.ParentModel(), def.Model); !delegating {
+		collab, reason = codexParentCollabVersion(catalog, input.ParentModel(), def.Model)
+		if delegating = collab == "v1" || collab == "v2"; !delegating {
 			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
 		}
 	}
@@ -177,18 +194,24 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	var roles []codexRole
 	defaultSubagentModel, childEffort := "", ""
 	if delegating {
-		discovered, skipped := codexRoles(input.SkillDirs(), agentName)
+		discovered, skipped := codexRoles(input.SkillDirs(), agentName, collab)
 		roles, defaultSubagentModel, childEffort, err = resolveCodexChildModels(
 			discovered, skipped, input.AgentSubagents(), os.Getenv(codexSubagentModelEnv), input.Effort(), catalog)
 		if err != nil {
 			return err
 		}
+		if reason := codexV2ChildModelReason(catalog, roles, defaultSubagentModel); collab == "v2" && reason != "" {
+			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
+			delegating, roles = false, nil
+		}
 	}
 	// The gateway provider is rendered only when the runner registered an
 	// inference.gateway block for this sandbox (PrepareGatewayRun).
 	gatewayBaseURL := codexGatewayRunFor(sandboxName)
+	multiAgentV2 := delegating && collab == "v2"
 	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(),
-		codexDeveloperInstructions(agentName, def, roles), gatewayBaseURL, roles, defaultSubagentModel, childEffort)
+		codexDeveloperInstructions(agentName, def, roles, collab), gatewayBaseURL, roles, defaultSubagentModel, childEffort,
+		multiAgentV2)
 	if err != nil {
 		return err
 	}
@@ -284,7 +307,7 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		if err != nil {
 			return err
 		}
-		hooksJSON, notes, err := codexHooksJSON(cfg, python, hooks)
+		hooksJSON, notes, err := codexHooksJSON(cfg, python, hooks, multiAgentV2)
 		if err != nil {
 			return err
 		}
@@ -353,8 +376,10 @@ func codexExecOK(sandboxName, cmd, what string) error {
 // prompt and tool guidance — the same relationship pi's APPEND_SYSTEM.md has,
 // and a deliberate difference from Claude Code, where the body *is* the system
 // prompt. roles is the registered roster of a delegating agent; empty means
-// the agent runs in one context and gets codexNoSubagentNote.
-func codexDeveloperInstructions(agentName string, def *piAgentDef, roles []codexRole) string {
+// the agent runs in one context and gets codexNoSubagentNote. version is
+// the collaboration version the gate admitted, which picks the dispatch
+// note.
+func codexDeveloperInstructions(agentName string, def *piAgentDef, roles []codexRole, version string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Agent: %s\n\n", agentName)
 	if def.Description != "" {
@@ -366,7 +391,7 @@ func codexDeveloperInstructions(agentName string, def *piAgentDef, roles []codex
 	if len(roles) == 0 {
 		b.WriteString(codexNoSubagentNote)
 	} else {
-		b.WriteString(codexSubagentNote(roles))
+		b.WriteString(codexSubagentNote(roles, version))
 	}
 	return b.String()
 }
@@ -374,8 +399,9 @@ func codexDeveloperInstructions(agentName string, def *piAgentDef, roles []codex
 // codexNoSubagentNote makes the absence of a sub-agent roster explicit so
 // skills written for Claude Code's Agent tool (pr-review, retro) take their
 // single-context path deliberately instead of recording a failed dispatch.
-// Every agent the ADR 0126 gate declines gets it (tools without Agent,
-// security off, a V2 or unlisted parent); a delegating agent gets
+// Every agent the delegation gate declines gets it (tools without Agent,
+// security off, a disabled, unknown-version, unlisted or gateway/ parent, or
+// a V2 parent with a V2 child model); a delegating agent gets
 // codexSubagentNote.
 const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). No fullsend sub-agent " +
@@ -385,8 +411,15 @@ const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	codexChunkedReadNote
 
 // codexChunkedReadNote is the chunked-read rule for Codex's exec truncation
-// (10,000 tokens, head and tail, at 0.157.0). A single cat of a long SKILL.md
-// drops the middle with no retry (#7831). Lines are counted with awk's NR, not
+// (10,000 tokens, head and tail; verified at 0.157.0 and 0.166.0, the latter
+// live: a 200-line dense file rides whole, a larger one is cut in the middle
+// behind an "N tokens truncated" marker; at 0.170.0 the code-mode host cuts a
+// code_mode_only model such as gpt-5.6-luna at the same cap, with the same
+// marker). A single cat of a long SKILL.md
+// drops the middle with no retry (#7831). Reading in ranges is not enough on
+// its own: a parent that stopped after four ranges of a 1,457-line SKILL.md
+// missed the dispatch rules past line 800 (#9657), so the note also says to
+// read through the last line. Lines are counted with awk's NR, not
 // `wc -l`: `wc -l` counts newline characters, so a file whose last line has no
 // trailing newline reports one line too few and the last range would stop
 // short of it. codexNoSubagentNote and every role file (codexChildNote) end
@@ -397,29 +430,112 @@ const codexChunkedReadNote = "When reading a SKILL.md or other instruction file,
 	"then `sed -n '<start>,<end>p'` in contiguous ranges of at most 200 lines, one range per " +
 	"tool call, including a short final chunk so the last line is covered — do not round the " +
 	"line count down to a multiple of 200 (a 425-line file is three ranges: `1,200p`, " +
-	"`201,400p`, `401,425p`). Never combine files or ranges in one exec. Inspect the returned " +
+	"`201,400p`, `401,425p`). Read every range through the last line before acting on the file, " +
+	"and never stop early because the part already read seems enough. Never combine files or ranges in one exec. Inspect the returned " +
 	"output for a truncation warning before advancing; if a range is truncated, split it into " +
 	"smaller contiguous windows that together still cover its start through end — never skip " +
 	"the back half — and read those windows before moving on to the next range.\n"
 
+// codexWaitTimeoutMaxMS is the longest `wait_agent` timeout the runtime asks
+// of a parent. It is used twice: the dispatch note quotes it on V1 and V2,
+// and on V2 the config renders it as `max_wait_timeout_ms` in
+// `[features.multi_agent_v2]`, so Codex itself refuses a longer wait. V1 has
+// no such setting (its wait limits are constants in Codex, max 3600000), so
+// on V1 the note's rule is the only one. Codex accepts a wait of up to
+// 3600000 ms, longer than the review's 45-minute budget. In the Fedora review
+// on #6970 every wait passed 3600000, and the parent ran none of the skill's
+// time-budget checks between waits (#9657). 120000 is the cap the agents
+// repository's pr-review skill already gives its Codex roster.
+const codexWaitTimeoutMaxMS = 120000
+
+// codexDispatchFidelityNote is the paragraph both dispatch notes carry after
+// the denied-spawn sentence (#9657). Codex parents that exited cleanly still
+// departed from their skills: they skipped the time-budget checks before
+// each wait, left out a selected persona without saying so, dropped a part
+// of a persona's prompt, spawned `explore` where the agent definition said
+// to pass no agent_type, and overruled the findings a challenger kept. None
+// of these is enforced; the wait cap is, on V2 only, by Codex's own config
+// (codexWaitTimeoutMaxMS). The opening sentence does not say the skill's
+// dispatch steps stand as written: on V2 the agents repository's review
+// agent says the V2 note's rules replace the pr-review skill's V1-shaped
+// Codex lines.
+var codexDispatchFidelityNote = "Follow the dispatch steps your instructions give for this runtime; this " +
+	"paragraph adds to them. Run every check your instructions place before a spawn or a " +
+	"`wait_agent`, time-budget checks included, each time it comes up. Pass a `timeout_ms` of at " +
+	"most " + strconv.Itoa(codexWaitTimeoutMaxMS) + " on every `wait_agent`; if a wait is refused " +
+	"for its timeout, wait again with a shorter one instead of waiting longer. Spawn every " +
+	"sub-agent your instructions' selection rules pick; for each one that does not run, record " +
+	"it where your instructions say to record a sub-agent that did not run, and add no body to a " +
+	"time-budget failure result. Build each `message` from every part your instructions list " +
+	"for that sub-agent's prompt, flags included. Pass the `agent_type` your instructions name: " +
+	"where they say to pass no `agent_type`, omit it, even for a search or read-only task. Use " +
+	"each child's result the way your instructions say to, and do not overrule a result they " +
+	"tell you to keep with your own check.\n\n"
+
+// codexV2DispatchMarker is the sentence that marks a V2 note: it comes right
+// after "Sub-agents are native Codex children.", the sentence after the
+// roster sentence, so the agents repository's skills can tell the two
+// dispatch contracts apart on the sentences they key on.
+const codexV2DispatchMarker = "Dispatch follows collaboration V2."
+
 // codexSubagentNote is the dispatch bridge for a delegating agent (#6970,
-// ADR 0126): it maps the skills' "dispatch a sub-agent" onto codex's native
-// tools and states the policy the spawn guard enforces, so the parent passes
-// the arguments the guard admits and handles a denial without retrying. The
-// first two sentences and the denied-spawn sentence are what the agents
-// repository's pr-review skill will key on once its codex wording lands;
-// change them only together with that skill. roles is the registered
-// roster, sorted by name (codexRoles). The child contract is in every role
-// file (codexChildNote), not here.
-func codexSubagentNote(roles []codexRole) string {
+// ADR 0126, ADR 0159): it maps the skills' "dispatch a sub-agent" onto
+// codex's native tools and states the policy the spawn guard enforces, so
+// the parent passes the arguments the guard admits and handles a denial
+// without retrying. The first two sentences and the denied-spawn sentence
+// are what the agents repository's pr-review skill, review agent and retro
+// agent key on (fullsend-ai/agents#1849, fullsend-ai/agents#1971); change
+// them only together with those. roles is
+// the registered roster, sorted by name (codexRoles); version is the
+// collaboration version the gate admitted. The V2 note keeps the keyed
+// sentences, puts codexV2DispatchMarker right after its third sentence,
+// before the dispatch text, and carries V2's spawn arguments and control
+// calls (ADR 0159 decision 5). It quotes codexWithheldNotice, the result a
+// child whose final message the chain blocked is told to give instead. Both
+// notes end with codexDispatchFidelityNote, then codexChunkedReadNote. The
+// child contract is in every role file (codexChildNote, codexChildNoteV2),
+// not here.
+func codexSubagentNote(roles []codexRole, version string) string {
 	names := make([]string, len(roles))
 	for i, role := range roles {
 		names[i] = role.Name
 	}
-	return "\n## Runtime note\n\n" +
+	head := "\n## Runtime note\n\n" +
 		"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). " +
 		"Registered sub-agent roles: " + strings.Join(names, ", ") + ". " +
-		"Sub-agents are native Codex children. When a skill says to dispatch a sub-agent, call " +
+		"Sub-agents are native Codex children. "
+	const denied = "A denied spawn is final for that role: do not retry it, execute that sub-agent " +
+		"definition yourself with the same context package, and treat the output as that " +
+		"sub-agent's result.\n\n"
+	if version == "v2" {
+		return head + codexV2DispatchMarker + " " +
+			"When a skill says to dispatch a sub-agent, call `spawn_agent` with `task_name` set to a short " +
+			"name for the task, unique among the children you spawn (lowercase letters, digits and `_` " +
+			"only; `root` is reserved), " +
+			"`agent_type` set to a role listed above — the persona's name, or `explore` " +
+			"where the skill asks for an `Explore` pass (instruction-only; nothing enforces read-only on " +
+			"a child); for a task that names no persona, omit `agent_type` — and `message` carrying that " +
+			"sub-agent's whole context package: a child starts with nothing but that message. Pass " +
+			"`fork_turns: \"none\"` explicitly on every spawn, and never pass a `model`, `reasoning_effort` " +
+			"or `fork_context` argument: the runner has bound each role's model. Use only the roles " +
+			"listed above; `explorer` and `worker` are not registered and are denied. Spawn only the " +
+			"sub-agents the skill selected; a role being registered is not a reason to spawn it.\n\n" +
+			"`wait_agent` takes only `timeout_ms` and never a target. A child's result arrives as a " +
+			"message in your conversation, one per finished child, through the runner's checked delivery " +
+			"path, not in the wait's result. At most four children can run at once: a fifth spawn is " +
+			"refused while four are running, and Codex evicts an idle finished child when a new spawn " +
+			"needs its slot. There is no close or follow-up call: never resume, message or follow up a " +
+			"child. Interrupt a child that is over its budget with `interrupt_agent`. An interrupted " +
+			"child sends no result: report a coverage gap for that role. A child whose result reports " +
+			"an error is final for that role. A message whose payload is `" + codexWithheldNotice +
+			"`, ignoring whitespace around it, is a withheld result: report a coverage gap for " +
+			"that role, and never retry the spawn or read the child's raw rollout. " +
+			denied +
+			codexDispatchFidelityNote +
+			codexChunkedReadNote
+	}
+	return head +
+		"When a skill says to dispatch a sub-agent, call " +
 		"`spawn_agent` with `agent_type` set to a role listed above — the persona's name, or `explore` " +
 		"where the skill asks for an `Explore` pass (instruction-only; nothing enforces read-only on " +
 		"a child); for a task that names no persona, omit `agent_type` — and `message` carrying that " +
@@ -434,9 +550,8 @@ func codexSubagentNote(roles []codexRole) string {
 		"child you spawned and never resume one. A `wait_agent` that returns `timed_out: true` and " +
 		"no status has timed out, not failed: call it again. A child whose status is `errored` is " +
 		"final for that role. " +
-		"A denied spawn is final for that role: do not retry it, execute that sub-agent " +
-		"definition yourself with the same context package, and treat the output as that " +
-		"sub-agent's result.\n\n" +
+		denied +
+		codexDispatchFidelityNote +
 		codexChunkedReadNote
 }
 

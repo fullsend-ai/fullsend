@@ -29,10 +29,7 @@ func RegisteredAgents(cfg config.ConfigReader) ([]RegisteredAgent, error) {
 	if cfg == nil || reflect.ValueOf(cfg).IsNil() {
 		return nil, fmt.Errorf("config is required")
 	}
-	allowlist := cfg.AllowedResources()
-	if allowlist == nil {
-		allowlist = config.DefaultAllowedRemoteResources()
-	}
+	allowlist := config.EffectiveAllowedResources(cfg)
 	agents := cfg.AgentEntries()
 	if err := config.ValidateAgentEntries(agents, allowlist); err != nil {
 		return nil, err
@@ -45,9 +42,10 @@ func RegisteredAgents(cfg config.ConfigReader) ([]RegisteredAgent, error) {
 		if !entry.IsEnabled() {
 			continue
 		}
-		// An override-only entry tunes a built-in agent (runtime/model/
-		// effort) but registers no harness of its own: the built-in stage
-		// runs it, so it is not a custom harness to enumerate or lock.
+		// An override-only entry tunes a built-in agent (any setting
+		// HasSettings counts) but registers no harness of its own: the
+		// built-in stage runs it, so it is not a custom harness to
+		// enumerate or lock.
 		if entry.IsOverrideOnly() {
 			continue
 		}

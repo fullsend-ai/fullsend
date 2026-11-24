@@ -29,6 +29,9 @@ func runRouteStep(t *testing.T, stepName string, env, files map[string]string) r
 		path := filepath.Join(dir, rel)
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+		if rel == "bin/gh" {
+			require.NoError(t, os.Chmod(path, 0o755))
+		}
 	}
 	outPath := filepath.Join(t.TempDir(), "output")
 	summaryPath := filepath.Join(t.TempDir(), "summary")
@@ -38,7 +41,7 @@ func runRouteStep(t *testing.T, stepName string, env, files map[string]string) r
 	cmd := exec.Command("bash", "-c", script)
 	cmd.Dir = dir
 	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
+		"PATH=" + filepath.Join(dir, "bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"GITHUB_OUTPUT=" + outPath,
 		"GITHUB_STEP_SUMMARY=" + summaryPath,
 	}
@@ -91,7 +94,17 @@ var (
 	}
 	celRouteClosed = map[string]string{
 		"EVENT_NAME": "pull_request_target", "EVENT_ACTION": "closed",
-		"PR_USER_LOGIN": "someone",
+		"PR_USER_LOGIN": "someone", "EVENT_SENDER_LOGIN": "",
+	}
+	celRouteSameRepoClosed = map[string]string{
+		"EVENT_NAME": "pull_request", "EVENT_ACTION": "closed",
+		"PR_USER_LOGIN": "someone", "PR_HEAD_REPO": "acme/widgets", "PR_BASE_REPO": "acme/widgets",
+		"EVENT_SENDER_LOGIN": "",
+	}
+	celRouteSameRepoLabel = map[string]string{
+		"EVENT_NAME": "pull_request", "EVENT_ACTION": "labeled",
+		"TRIGGERING_LABEL": "ready-for-review", "PR_USER_LOGIN": "someone",
+		"PR_HEAD_REPO": "acme/widgets", "PR_BASE_REPO": "acme/widgets",
 	}
 	celRoutePRComment = map[string]string{
 		"EVENT_NAME": "issue_comment", "EVENT_ACTION": "created",
@@ -117,6 +130,7 @@ func finalizeEnv(bashStage, configOutcome, routeOutcome, decision string) map[st
 	return map[string]string{
 		"BASH_STAGE":          bashStage,
 		"BASH_TRIGGER_SOURCE": "",
+		"CLOSED_PULL_REQUEST": "false",
 		"ROUTE_AGENT":         "review",
 		"CEL_OPT_IN_OUTCOME":  "",
 		"CEL_CONFIG_OUTCOME":  configOutcome,
@@ -149,13 +163,15 @@ func TestRouteJob_NoReviewEntryIsByteIdentical(t *testing.T) {
 			"  - name: prioritize\n    model: sonnet\n",
 	}
 	for name, event := range map[string]map[string]string{
-		"review label":      celRouteReviewLabel,
-		"other label":       celRouteOtherLabel,
-		"closed":            celRouteClosed,
-		"PR comment":        celRoutePRComment,
-		"issue comment":     celRouteIssueComment,
-		"triage label":      celRouteTriageLabel,
-		"other issue label": celRouteIssueOtherLabel,
+		"review label":        celRouteReviewLabel,
+		"other label":         celRouteOtherLabel,
+		"closed":              celRouteClosed,
+		"pull_request closed": celRouteSameRepoClosed,
+		"pull_request label":  celRouteSameRepoLabel,
+		"PR comment":          celRoutePRComment,
+		"issue comment":       celRouteIssueComment,
+		"triage label":        celRouteTriageLabel,
+		"other issue label":   celRouteIssueOtherLabel,
 	} {
 		for cfgName, cfg := range configs {
 			t.Run(name+"/"+cfgName, func(t *testing.T) {
@@ -253,6 +269,14 @@ func TestCELRouteOptIn_EventGate(t *testing.T) {
 		{"review stage on an issue comment does not fit", "issue_comment", "false", "review", "created", "/fs-review", ""},
 		{"retro stage on an open PR event does not fit", "pull_request_target", "false", "retro", "opened", "", ""},
 		{"review stage on a closed PR does not fit", "pull_request_target", "false", "review", "closed", "", ""},
+		// pull_request (the shim trigger since #9221) selects like pull_request_target.
+		{"pull_request event with no bash stage", "pull_request", "false", "", "opened", "", "review"},
+		{"pull_request event routed to review", "pull_request", "false", "review", "synchronize", "", "review"},
+		{"pull_request event routed to another stage", "pull_request", "false", "fix", "opened", "", ""},
+		{"pull_request closed routed to retro", "pull_request", "false", "retro", "closed", "", "retro"},
+		{"pull_request closed with no bash stage", "pull_request", "false", "", "closed", "", "retro"},
+		{"retro stage on an open pull_request does not fit", "pull_request", "false", "retro", "opened", "", ""},
+		{"review stage on a closed pull_request does not fit", "pull_request", "false", "review", "closed", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,6 +334,52 @@ func TestFinalizeStage_KeepsTriggerSource(t *testing.T) {
 	assert.Equal(t, "alice", got.outputs["trigger_source"])
 }
 
+func TestBashRouteClosedPRRequiresWrite(t *testing.T) {
+	requireBash4(t)
+	const ghStub = `#!/usr/bin/env bash
+if [[ "${MOCK_PERMISSION_ERROR:-}" == "true" ]]; then
+  echo "permission lookup unavailable" >&2
+  exit 1
+fi
+printf '%s\n' "${MOCK_PERMISSION_ROLE:-none}"
+`
+	cases := []struct {
+		name      string
+		role      string
+		lookupErr bool
+		wantStage string
+	}{
+		{name: "write actor is authorized", role: "write", wantStage: "retro"},
+		{name: "admin actor is authorized", role: "admin", wantStage: "retro"},
+		{name: "triage actor is denied", role: "triage"},
+		{name: "read actor is denied", role: "read"},
+		{name: "actor with no permission is denied", role: "none"},
+		{name: "permission lookup failure is denied", lookupErr: true},
+	}
+	// pull_request is the shim trigger since #9221; a same-repo close
+	// follows the same write threshold as pull_request_target.
+	for _, event := range []string{"pull_request_target", "pull_request"} {
+		for _, tc := range cases {
+			t.Run(event+"/"+tc.name, func(t *testing.T) {
+				env := map[string]string{
+					"EVENT_NAME":           event,
+					"EVENT_ACTION":         "closed",
+					"EVENT_SENDER_LOGIN":   "closer",
+					"GITHUB_REPOSITORY":    "org/repo",
+					"PR_HEAD_REPO":         "org/repo",
+					"PR_BASE_REPO":         "org/repo",
+					"MOCK_PERMISSION_ROLE": tc.role,
+				}
+				if tc.lookupErr {
+					env["MOCK_PERMISSION_ERROR"] = "true"
+				}
+				got := runRouteStep(t, "Determine stage", env, map[string]string{"bin/gh": ghStub})
+				assert.Equal(t, tc.wantStage, got.outputs["stage"])
+			})
+		}
+	}
+}
+
 func TestFinalizeStage_CELRoute(t *testing.T) {
 	withOptIn := func(outcome string) map[string]string {
 		env := finalizeEnv("review", "", "", "")
@@ -319,6 +389,19 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 	retro := func(bashStage, decision string) map[string]string {
 		env := finalizeEnv(bashStage, "success", "success", decision)
 		env["ROUTE_AGENT"] = "retro"
+		env["CLOSED_PULL_REQUEST"] = "true"
+		return env
+	}
+	retroCommand := func(bashStage string) map[string]string {
+		env := finalizeEnv(bashStage, "success", "failure", "")
+		env["ROUTE_AGENT"] = "retro"
+		return env
+	}
+	retroSlashCommand := func(bashStage string) map[string]string {
+		env := finalizeEnv(bashStage, "success", "success", "run")
+		env["ROUTE_AGENT"] = "retro"
+		env["EVENT_NAME"] = "issue_comment"
+		env["COMMENT_BODY"] = "/fs-retro"
 		return env
 	}
 	withAgent := func(env map[string]string, agent string) map[string]string {
@@ -364,15 +447,15 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 			env:  finalizeEnv("review", "skipped", "skipped", ""), wantStage: "review", wantNoLog: "::",
 		},
 		{
-			name: "a failed evaluation keeps the bash stage and reports an error",
+			name: "a failed review evaluation keeps the bash stage and reports an error",
 			env:  finalizeEnv("review", "success", "failure", ""), wantStage: "review", wantLog: "::error::CEL route failed",
 		},
 		{
-			name: "a failed config checkout keeps the bash stage and reports an error",
+			name: "a failed review config checkout keeps the bash stage and reports an error",
 			env:  finalizeEnv("review", "failure", "", ""), wantStage: "review", wantLog: "::error::CEL route failed",
 		},
 		{
-			name: "a failed opt-in check keeps the bash stage and reports an error",
+			name: "a failed review opt-in check keeps the bash stage and reports an error",
 			env:  withOptIn("failure"), wantStage: "review", wantLog: "::error::CEL route opt-in check failed",
 		},
 		{
@@ -387,16 +470,58 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 			wantLog: "::notice::CEL route (retro): bash=retro cel=skip",
 		},
 		{
-			name: "retro run keeps a /fs-retro bash stage",
+			name: "authorized close keeps retro when CEL trigger matches",
 			env:  retro("retro", "run"), wantStage: "retro", wantSummary: "retro_route=cel",
 		},
 		{
-			name: "retro run sets the stage where bash chose nothing",
-			env:  retro("", "run"), wantStage: "retro", wantSummary: "retro_route=cel",
+			name: "retro run cannot promote an empty bash stage for a closed PR",
+			env:  retro("", "run"), wantStage: "", wantSummary: "retro_route=cel",
+			wantLog: "CEL retro run denied because the Bash route did not authorize retro",
+		},
+		{
+			name: "retro command run cannot promote a Bash-denied slash command",
+			env:  retroSlashCommand(""), wantStage: "", wantSummary: "retro_route=cel",
+			wantLog: "CEL retro run denied because the Bash route did not authorize retro",
 		},
 		{
 			name: "retro bash decision keeps the bash stage",
 			env:  retro("retro", "bash"), wantStage: "retro", wantSummary: "retro_route=bash",
+		},
+		{
+			name: "closed PR with no CEL route candidate keeps the authorized bash stage",
+			env: func() map[string]string {
+				env := finalizeEnv("retro", "skipped", "skipped", "")
+				env["CLOSED_PULL_REQUEST"] = "true"
+				return env
+			}(), wantStage: "retro",
+		},
+		{
+			name: "closed PR with CEL evaluation failure drops the bash fallback",
+			env: func() map[string]string {
+				env := retro("retro", "")
+				env["CEL_ROUTE_OUTCOME"] = "failure"
+				return env
+			}(), wantStage: "", wantLog: "CEL routing failed for a closed pull request; skipping retro",
+		},
+		{
+			name: "closed PR with CEL config failure drops the bash fallback",
+			env: func() map[string]string {
+				env := retro("retro", "")
+				env["CEL_CONFIG_OUTCOME"] = "failure"
+				return env
+			}(), wantStage: "", wantLog: "CEL routing failed for a closed pull request; skipping retro",
+		},
+		{
+			name: "closed PR with CEL opt-in failure drops the bash fallback",
+			env: func() map[string]string {
+				env := withOptIn("failure")
+				env["CLOSED_PULL_REQUEST"] = "true"
+				return env
+			}(), wantStage: "", wantLog: "CEL routing failed for a closed pull request; skipping retro",
+		},
+		{
+			name: "failed on-demand retro CEL route keeps its authorized bash stage",
+			env:  retroCommand("retro"), wantStage: "retro", wantLog: "CEL route failed; keeping the bash stage",
 		},
 		{
 			name: "run sets triage where bash chose nothing",
@@ -477,7 +602,8 @@ func TestCELRouteStepsGatedAndIsolated(t *testing.T) {
 		assert.True(t, step.ContinueOnError, "step %q must continue on error", step.Name)
 		switch step.ID {
 		case "cel-opt-in":
-			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' || github.event_name == 'issues' }}", step.If)
+			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' }}", step.If,
+				"CEL routing covers same-repo pull_request events and never a fork or Dependabot PR on pull_request (#9221)")
 		case "cel-config":
 			assert.Equal(t, "steps.cel-opt-in.outputs.opt_in == 'true'", step.If)
 		default:
@@ -525,7 +651,8 @@ func TestEvaluateCELRouteStep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			bin := filepath.Join(dir, "bin")
+			runnerTemp := filepath.Join(dir, "runner-temp")
+			bin := filepath.Join(runnerTemp, "fullsend")
 			require.NoError(t, os.MkdirAll(bin, 0o755))
 			stub := "#!/bin/sh\nprintf '%s\\n' '" + tc.cliOutput + "'\nexit " + map[bool]string{true: "1", false: "0"}[tc.cliExit != 0] + "\n"
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(stub), 0o755))
@@ -535,7 +662,8 @@ func TestEvaluateCELRouteStep(t *testing.T) {
 			cmd := exec.Command("bash", "-c", script)
 			cmd.Dir = dir
 			cmd.Env = []string{
-				"PATH=" + bin + ":" + os.Getenv("PATH"),
+				"PATH=" + os.Getenv("PATH"),
+				"RUNNER_TEMP=" + runnerTemp,
 				"GITHUB_OUTPUT=" + outPath,
 				"EVENT_ACTION=opened",
 				"ROUTE_AGENT=review",
@@ -553,6 +681,98 @@ func TestEvaluateCELRouteStep(t *testing.T) {
 			assert.Equal(t, tc.wantOutput, string(got))
 		})
 	}
+}
+
+func runReviewDedupWorkflowStep(t *testing.T, stepName, decision string, exitCode int, withBinary bool) routeStepRun {
+	t.Helper()
+	script := extractReusableDispatchStepScript(t, "route", stepName)
+	dir := t.TempDir()
+	runnerTemp := filepath.Join(dir, "runner-temp")
+	outputPath := filepath.Join(dir, "output")
+	summaryPath := filepath.Join(dir, "summary")
+	require.NoError(t, os.WriteFile(outputPath, nil, 0o644))
+	require.NoError(t, os.WriteFile(summaryPath, nil, 0o644))
+	if withBinary {
+		bin := filepath.Join(runnerTemp, "fullsend-review-dedup", "fullsend")
+		require.NoError(t, os.MkdirAll(filepath.Dir(bin), 0o755))
+		stub := "#!/bin/sh\nprintf '%s\\n' \"$DEDUP_DECISION\"\nexit \"${DEDUP_EXIT:-0}\"\n"
+		require.NoError(t, os.WriteFile(bin, []byte(stub), 0o755))
+	}
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"RUNNER_TEMP=" + runnerTemp,
+		"GITHUB_OUTPUT=" + outputPath,
+		"GITHUB_STEP_SUMMARY=" + summaryPath,
+		"DEDUP_DECISION=" + decision,
+		"DEDUP_EXIT=" + strconv.Itoa(exitCode),
+		"GH_TOKEN=test-token",
+		"REVIEW_TOKEN=test-token",
+		"SOURCE_REPO=owner/repo",
+		"PR_NUMBER=1",
+		"FULLSEND_APP_SET=fullsend-ai",
+		"REVIEW_APP_CLIENT_ID=client",
+	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s failed:\n%s", stepName, out)
+	contents, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	outputs := map[string]string{}
+	for _, line := range strings.Split(strings.TrimRight(string(contents), "\n"), "\n") {
+		if key, value, ok := strings.Cut(line, "="); ok {
+			outputs[key] = value
+		}
+	}
+	return routeStepRun{outputs: outputs, stdout: string(out)}
+}
+
+func TestReviewDedupWorkflowGlue(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "defaults_root: .fullsend/.defaults")
+	assert.Contains(t, string(content), "run: ln -s .fullsend/.defaults .defaults")
+
+	t.Run("check unchanged review diff", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			decision   string
+			exitCode   int
+			withBinary bool
+			want       map[string]string
+			wantLog    string
+		}{
+			{name: "skip", decision: "skip=true\nprior_url=https://example.test/review", withBinary: true, want: map[string]string{"skip": "true", "prior_url": "https://example.test/review"}},
+			{name: "full review", decision: "skip=false", withBinary: true, want: map[string]string{"skip": "false"}},
+			{name: "cli failure", decision: "skip=false", exitCode: 1, withBinary: true, want: map[string]string{"skip": "false"}, wantLog: "Review deduplication CLI failed"},
+			{name: "missing binary", want: map[string]string{"skip": "false"}, wantLog: "Review deduplication CLI unavailable"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				got := runReviewDedupWorkflowStep(t, "Check unchanged review diff", tc.decision, tc.exitCode, tc.withBinary)
+				assert.Equal(t, tc.want, got.outputs)
+				if tc.wantLog != "" {
+					assert.Contains(t, got.stdout, tc.wantLog)
+				}
+			})
+		}
+	})
+
+	t.Run("publish gate", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			decision string
+			want     string
+		}{
+			{name: "published", decision: "skipped=true", want: "true"},
+			{name: "not published", decision: "skipped=false", want: "false"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := runReviewDedupWorkflowStep(t, "Publish review skip note", tc.decision, 0, true)
+				assert.Equal(t, tc.want, got.outputs["skipped"])
+			})
+		}
+	})
 }
 
 // TestValidateAgentsConfigStep_AcceptsOverrideOnlySettings runs the route
@@ -574,24 +794,76 @@ func TestValidateAgentsConfigStep_AcceptsOverrideOnlySettings(t *testing.T) {
 		{"unquoted boolean trigger", "agents:\n  - name: review\n    trigger: false\n", false},
 		{"blank trigger", "agents:\n  - name: review\n    trigger: \"  \"\n", true},
 		{"empty trigger", "agents:\n  - name: review\n    trigger: \"\"\n", true},
+		{"harness block only", "agents:\n  - name: review\n    harness:\n      timeout_minutes: 30\n", false},
+		{"harness block as an alias", "agents:\n  - name: code\n    harness: &blk\n      timeout_minutes: 90\n  - name: fix\n    harness: *blk\n", false},
+		{"empty harness block", "agents:\n  - name: review\n    harness: {}\n", true},
+		{"null harness block", "agents:\n  - name: review\n    harness: ~\n", true},
+		{"name only beside a bad merge key", "x: &s hello\nother:\n  <<: *s\nagents:\n  - name: review\n", true},
+	}
+	run := func(t *testing.T, base, config string) (string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), []byte(config), 0o644))
+		if base != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.base.yaml"), []byte(base), 0o644))
+		}
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Dir = dir
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), []byte(tc.config), 0o644))
-			cmd := exec.Command("bash", "-c", script)
-			cmd.Dir = dir
-			cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-			out, err := cmd.CombinedOutput()
+			out, err := run(t, "", tc.config)
 			if tc.wantErr {
 				require.Error(t, err, "%s", out)
-				assert.Contains(t, string(out), "without a source field")
+				assert.Contains(t, out, "without a source field")
 				return
 			}
 			require.NoError(t, err, "%s", out)
 		})
 	}
+
+	// The config.base.yaml entry of the same name completes a name-only entry, as the Go keyed merge does.
+	nameOnly := "agents:\n  - name: lint\n"
+	layered := []struct {
+		name    string
+		base    string
+		config  string
+		wantErr bool
+	}{
+		{"base block", "agents:\n  - name: lint\n    harness:\n      timeout_minutes: 30\n", nameOnly, false},
+		{"base source as a string", "agents:\n  - harness/lint.yaml\n", nameOnly, false},
+		{"base source in a map", "agents:\n  - source: https://example.com/harness/Lint.yaml#sha256=abc\n", nameOnly, false},
+		{"base turns the agent off", "agents:\n  - name: lint\n    enabled: false\n", nameOnly, false},
+		{"base turns the agent off, entry turns it on", "agents:\n  - name: lint\n    enabled: false\n", "agents:\n  - name: lint\n    enabled: true\n", true},
+		{"base has no such agent", "agents:\n  - name: other\n    model: opus\n", nameOnly, true},
+	}
+	for _, tc := range layered {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := run(t, tc.base, tc.config)
+			if tc.wantErr {
+				require.Error(t, err, "%s", out)
+				assert.Contains(t, out, "without a source field")
+				return
+			}
+			require.NoError(t, err, "%s", out)
+		})
+	}
+
+	// A yq failure is reported; fullsend run validates the entries again.
+	t.Run("a bad merge key in an entry is reported", func(t *testing.T) {
+		out, err := run(t, "", "x: &s hello\nagents:\n  - name: review\n    model: opus\n    <<: *s\n")
+		require.NoError(t, err, "%s", out)
+		assert.Contains(t, out, "::warning::yq failed checking agent entries")
+	})
+	t.Run("an unreadable config.base.yaml is reported", func(t *testing.T) {
+		out, err := run(t, "agents:\n  - name: lint\n    model: *nope\n", nameOnly)
+		require.NoError(t, err, "%s", out)
+		assert.Contains(t, out, "::warning::yq failed reading agent entries from config.base.yaml")
+	})
 }
 
 // TestCELRouteSanitizerCopiesMatch keeps the gha_text copies in the CEL

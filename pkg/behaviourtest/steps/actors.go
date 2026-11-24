@@ -32,11 +32,26 @@ func registerActorSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the issue$`, func(ctx context.Context, actor, body string) (context.Context, error) {
 		return ctx, whenActorPostsComment(world.FromContext(ctx), actor, body)
 	})
+	sc.Step(`^the (`+actorAlternation+`) labels the issue "([^"]+)"$`, func(ctx context.Context, actor, label string) (context.Context, error) {
+		return ctx, whenActorLabelsIssue(world.FromContext(ctx), actor, label)
+	})
+	sc.Step(`^the label "([^"]+)" exists$`, func(ctx context.Context, label string) (context.Context, error) {
+		return ctx, givenLabelExists(world.FromContext(ctx), label)
+	})
+	sc.Step(`^the (`+actorAlternation+`) submits a review comment on the pull request$`, func(ctx context.Context, actor string) (context.Context, error) {
+		return ctx, whenActorSubmitsReviewComment(world.FromContext(ctx), actor)
+	})
 	sc.Step(actorOpensPullRequestPattern, func(ctx context.Context, actor, linked string) (context.Context, error) {
 		return ctx, whenActorOpensPullRequest(world.FromContext(ctx), actor, linked != "")
 	})
+	sc.Step(`^the write actor closes the pull request$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenActorClosesPullRequest(world.FromContext(ctx), actorWrite)
+	})
 	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the pull request$`, func(ctx context.Context, actor, body string) (context.Context, error) {
 		return ctx, whenActorPostsPRComment(world.FromContext(ctx), actor, body)
+	})
+	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the fork pull request$`, func(ctx context.Context, actor, body string) (context.Context, error) {
+		return ctx, whenActorPostsForkPRComment(world.FromContext(ctx), actor, body)
 	})
 	sc.Step(`^the comment "([^"]+)" on the issue is authored by the (`+actorAlternation+`)$`, func(ctx context.Context, body, actor string) (context.Context, error) {
 		return ctx, thenIssueCommentAuthoredBy(world.FromContext(ctx), body, actor)
@@ -99,10 +114,79 @@ func whenActorPostsComment(w *world.World, actor, body string) error {
 	if w.IssueNumber == 0 {
 		return fmt.Errorf("no issue created")
 	}
-	w.ScenarioStart = time.Now()
+	// Run created_at has second precision (#7957).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
 	_, err = actorSCM.AddComment(context.Background(),
 		w.RepoOwner, w.RepoName, w.IssueNumber, body)
 	return err
+}
+
+// whenActorLabelsIssue adds label to the scenario's issue as the named
+// test actor. It leaves ScenarioStart alone when a trigger already set
+// it, so a comment and a label by the same actor count as one window
+// of harness dispatches. The label needs triage access, so the outsider's
+// attempt fails.
+func whenActorLabelsIssue(w *world.World, actor, label string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+	if w.IssueNumber == 0 {
+		return fmt.Errorf("no issue created")
+	}
+	if w.ScenarioStart.IsZero() {
+		w.ScenarioStart = time.Now().Truncate(time.Second)
+	}
+	return actorSCM.AddIssueLabels(context.Background(),
+		w.RepoOwner, w.RepoName, w.IssueNumber, label)
+}
+
+// givenLabelExists creates label in the repository, so an actor without
+// the right to create labels (the triage actor) can still apply it. The
+// e2e installation identity creates it through the forge's label API.
+// Creating it fires no issue event, so no workflow run starts that the
+// scenario's later steps could count (#9350). A label left by an
+// earlier scenario in a reused repository is not an error.
+func givenLabelExists(w *world.World, label string) error {
+	if err := ensureScenarioRepo(w); err != nil {
+		return err
+	}
+	if err := w.SCM.EnsureLabel(context.Background(), w.RepoOwner, w.RepoName, label); err != nil {
+		return fmt.Errorf("creating label %q: %w", label, err)
+	}
+	return nil
+}
+
+// whenActorSubmitsReviewComment submits a COMMENT review on the scenario's
+// pull request as the named test actor. The review event's sender is then
+// a human with that actor's repository role: the e2e installation
+// identity is an unregistered bot, whose reviews the bot-role lookup
+// denies before CEL (ADR 0107).
+func whenActorSubmitsReviewComment(w *world.World, actor string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+	if w.PRNumber == 0 {
+		return fmt.Errorf("no pull request opened")
+	}
+	// Run created_at has second precision (#7957).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
+	return actorSCM.SubmitPullRequestReview(context.Background(),
+		w.RepoOwner, w.RepoName, w.PRNumber, "COMMENT")
+}
+
+// whenActorClosesPullRequest closes the scenario PR using the named actor's PAT.
+func whenActorClosesPullRequest(w *world.World, actor string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+	if w.PRNumber == 0 {
+		return fmt.Errorf("no pull request opened")
+	}
+	w.ScenarioStart = time.Now().Truncate(time.Second)
+	return actorSCM.CloseIssue(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber)
 }
 
 // whenActorOpensPullRequest opens a pull request as the named test actor,
@@ -150,6 +234,25 @@ func whenActorPostsPRComment(w *world.World, actor, body string) error {
 	w.ScenarioStart = time.Now().Truncate(time.Second)
 	_, err = actorSCM.AddComment(context.Background(),
 		w.RepoOwner, w.RepoName, w.PRNumber, body)
+	return err
+}
+
+// whenActorPostsForkPRComment posts body on the scenario's fork pull request
+// as the named test actor. Fork pull request events no longer dispatch on
+// pull_request (#9221); a maintainer's slash command on the pull request is
+// the way to run an agent on one.
+func whenActorPostsForkPRComment(w *world.World, actor, body string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+	if w.ForkPRNumber == 0 {
+		return fmt.Errorf("no fork pull request opened")
+	}
+	// Run created_at has second precision (#7957).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
+	_, err = actorSCM.AddComment(context.Background(),
+		w.RepoOwner, w.RepoName, w.ForkPRNumber, body)
 	return err
 }
 

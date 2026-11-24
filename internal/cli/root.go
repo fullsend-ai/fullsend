@@ -89,15 +89,18 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newScanCmd())
 	cmd.AddCommand(newReposCmd())
 	cmd.AddCommand(newPostReviewCmd())
+	cmd.AddCommand(newReviewDedupCmd())
 	cmd.AddCommand(newFetchReviewThreadsCmd())
 	cmd.AddCommand(newIssuesCmd())
 	cmd.AddCommand(newPostCommentCmd())
 	cmd.AddCommand(newReconcileStatusCmd())
 	cmd.AddCommand(newPollCmd())
 	cmd.AddCommand(newEvalMeasureCmd())
+	cmd.AddCommand(newPrepareArtifactsCmd())
 	cmd.AddCommand(newResolveMRSourceCmd())
 	cmd.AddCommand(newCheckProtectedBranchCmd())
 	cmd.AddCommand(newLintCmd())
+	cmd.AddCommand(newSelfUpdateCmd())
 	return cmd
 }
 

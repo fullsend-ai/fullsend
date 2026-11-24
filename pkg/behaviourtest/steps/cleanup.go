@@ -129,6 +129,12 @@ func CleanupScenario(w *world.World) {
 	}); err != nil {
 		worldLogf(w, "behaviour cleanup: delete inference gateway api-key secret: %v", err)
 	}
+	// --- Runner secrets cleanup ---
+	if err := guardedCleanupRetry(w, "delete runner secrets secret", func() error {
+		return deleteRunnerSecretsSecret(w)
+	}); err != nil {
+		worldLogf(w, "behaviour cleanup: delete runner secrets secret: %v", err)
+	}
 
 	// --- Issue / PR cleanup ---
 	if w.IssueNumber > 0 {

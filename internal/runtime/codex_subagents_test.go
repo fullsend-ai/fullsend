@@ -64,7 +64,7 @@ var codexChildFixtures = map[string]string{
 
 // codexRootRolloutHead is the first line of collab_spawn.ndjson's root
 // rollout: a session_meta record with no parent.
-const codexRootRolloutHead = `{"timestamp":"2026-09-29T15:46:30.000Z","type":"session_meta","payload":{"id":"` + codexRootThreadID + `","cwd":"/sandbox/workspace/repo","originator":"codex_exec","cli_version":"0.159.3"}}` + "\n"
+const codexRootRolloutHead = `{"timestamp":"2026-09-29T15:46:30.000Z","type":"session_meta","payload":{"id":"` + codexRootThreadID + `","cwd":"/sandbox/workspace/repo","originator":"codex_exec","cli_version":"0.166.0"}}` + "\n"
 
 // writeCodexChildRollouts lays the child fixtures out as codex would under a
 // sessions directory (YYYY/MM/DD/rollout-<start>-<thread id>.jsonl), beside
@@ -388,7 +388,7 @@ if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
-    *"exec --json"*) [ "${FULLSEND_TEST_CODEX_DROP:-}" = 1 ] && echo "2026-10-22T16:00:00Z  WARN codex_app_server::in_process: ` + codexDroppedNotification + `" >&2; [ "${FULLSEND_TEST_CODEX_BACKFILL_FAIL:-}" = 1 ] && echo "2026-10-22T16:00:01Z  WARN codex_exec: ` + codexBackfillFailed + ` for turn completion: boom" >&2; cat '` + streamFixture + `'; [ "${FULLSEND_TEST_CODEX_EXIT:-}" = killed ] && kill -9 $$; exit "${FULLSEND_TEST_CODEX_EXIT:-0}" ;;
+    *"exec --json"*) [ "${FULLSEND_TEST_CODEX_DROP:-}" = 1 ] && echo "2026-10-22T16:00:00Z  WARN codex_app_server::in_process: ` + codexDroppedNotification + `" >&2; [ "${FULLSEND_TEST_CODEX_BACKFILL_FAIL:-}" = 1 ] && echo "2026-10-22T16:00:01Z  WARN codex_exec: ` + codexBackfillFailedMarkers[0] + `: boom" >&2; cat '` + streamFixture + `'; [ "${FULLSEND_TEST_CODEX_EXIT:-}" = killed ] && kill -9 $$; exit "${FULLSEND_TEST_CODEX_EXIT:-0}" ;;
     *` + codexChildRolloutsMarker + `*)
       if [ "${FULLSEND_TEST_ROLLOUTS_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the rollouts read" >&2; exit 1; fi
       sh -c "$(printf '%s' "$last" | sed 's#` + CodexRuntime{}.codexSessionsDir() + `#` + sessionsDir + `#g')"; exit $? ;;
@@ -837,7 +837,7 @@ func TestCodexRun_DelegatingWithoutSpawnHasParentEntry(t *testing.T) {
 
 	assert.Equal(t, 0, exit)
 	assert.Equal(t, map[string]ModelUsage{
-		"gpt-5.6-luna": {Requests: 1, InputTokens: 12, OutputTokens: 284, CacheCreationInputTokens: 11087, CacheReadInputTokens: 32508},
+		"gpt-5.6-luna": {Requests: 1, InputTokens: 28665, OutputTokens: 271, CacheCreationInputTokens: 0, CacheReadInputTokens: 50048},
 	}, metrics.PerModelUsage, "the numbers TestApplyCodexMetrics pins for basic_run.ndjson")
 	assertCodexUsageSumsToTotals(t, metrics)
 	assert.NotContains(t, log, codexChildUsageMarker, "no id, no sandbox command")
@@ -1148,7 +1148,6 @@ func TestCodexRuntime_ClearIterationArtifacts_KeepsTheFindingsLog(t *testing.T) 
 		filepath.Join(ws, ".security", "findings.jsonl"),
 		filepath.Join(ws, "output", "result.txt"),
 		filepath.Join(cfg, "sessions", "2026", "10", "22", "rollout-x.jsonl"),
-		filepath.Join(cfg, codexLastMessageFile),
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
 		require.NoError(t, os.WriteFile(p, []byte("x\n"), 0o600))
@@ -1158,7 +1157,6 @@ func TestCodexRuntime_ClearIterationArtifacts_KeepsTheFindingsLog(t *testing.T) 
 	assert.FileExists(t, filepath.Join(ws, ".security", "findings.jsonl"), "the admissions of earlier iterations stay")
 	assert.NoFileExists(t, filepath.Join(ws, "output", "result.txt"))
 	assert.NoFileExists(t, filepath.Join(cfg, "sessions", "2026", "10", "22", "rollout-x.jsonl"), "the iteration's rollouts go")
-	assert.NoFileExists(t, filepath.Join(cfg, codexLastMessageFile))
 }
 
 func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
@@ -1175,10 +1173,18 @@ func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
 	}
 	assert.Equal(t, 2, d.Dropped, "one per line, however the writes split it")
 	assert.Equal(t, whole, sink.String(), "every byte still reaches the runner's stderr")
-	_, err := d.Write([]byte("WARN codex_exec: " + codexBackfillFailed + " for turn completion: boom\n"))
-	require.NoError(t, err)
-	assert.Equal(t, 1, d.BackfillFailed)
+	// Every backfill marker counts: the paginated thread's three (a failed
+	// page, a looping cursor, an incomplete item) and the legacy-mode
+	// thread's read.
+	for _, m := range codexBackfillFailedMarkers {
+		_, err := d.Write([]byte("WARN codex_exec: " + m + ": boom\n"))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, len(codexBackfillFailedMarkers), d.BackfillFailed)
 	assert.Equal(t, 2, d.Dropped)
+	_, err := d.Write([]byte("WARN codex_exec: thread/items/list returned a page\n"))
+	require.NoError(t, err)
+	assert.Equal(t, len(codexBackfillFailedMarkers), d.BackfillFailed, "a thread/items/list line that is not a failure does not count")
 
 	last := &codexStderrDrops{w: &sink}
 	_, err = last.Write([]byte("WARN " + codexDroppedNotification))
@@ -1218,7 +1224,7 @@ func TestCodexRun_DroppedNotificationInTheDebugLog(t *testing.T) {
 	seedCodexManifest(t, storeDir, r, nil)
 	sessions := writeCodexChildRollouts(t)
 	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(sessions), codexDebugLogFile),
-		[]byte("WARN codex_app_server::in_process: "+codexDroppedNotification+"\nWARN codex_exec: "+codexBackfillFailed+" for turn completion: boom\n"), 0o600))
+		[]byte("WARN codex_app_server::in_process: "+codexDroppedNotification+"\nWARN codex_exec: "+codexBackfillFailedMarkers[1]+"\n"), 0o600))
 	fakeOpenshellCodexChildren(t, logPath, storeDir, filepath.Join("testdata", "codex", "basic_run.ndjson"), sessions)
 
 	params := codexChildrenRunParams
@@ -1306,6 +1312,18 @@ func codexRolloutLine(id, parent string) string {
 		extra = `,"parent_thread_id":"` + parent + `","agent_role":"default"`
 	}
 	return `{"timestamp":"2026-09-29T15:46:31.000Z","type":"session_meta","payload":{"id":"` + id + `","cwd":"/sandbox/workspace/repo"` + extra + `,"base_instructions":{"text":"quoted \"parent_thread_id\":\"` + codexRootThreadID + `\" stays inert"}}}` + "\n"
+}
+
+// codexV2RolloutLine is the session_meta first line of a collaboration V2
+// child at 0.166.0, modelled on a harness capture with synthetic ids: the
+// parent is named at the top level and again under
+// source.subagent.thread_spawn, beside the spawn's depth and agent_path.
+func codexV2RolloutLine(id, parent string) string {
+	return `{"timestamp":"2026-11-03T10:00:00.000Z","type":"session_meta","payload":{"session_id":"` + parent + `","id":"` + id + `",` +
+		`"parent_thread_id":"` + parent + `","timestamp":"2026-11-03T10:00:00.000Z","cwd":"/sandbox/workspace/repo",` +
+		`"originator":"codex_exec","cli_version":"0.166.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + parent + `",` +
+		`"depth":1,"agent_path":"/root/child","agent_role":"default"}}},"thread_source":"subagent","agent_role":"default",` +
+		`"multi_agent_version":"v2"}}` + "\n"
 }
 
 // writeCodexRollout writes one more rollout under sessions/<day>.
@@ -1442,7 +1460,8 @@ func TestCountCodexChildRollouts_NameKnownParentNeedsTheStream(t *testing.T) {
 // per file, a quoted key inside a string inert, an empty, undecodable or
 // unreadable first line, or a session_meta line cut before its parent, known
 // by its file name's thread id, an unclosed line that names its parent read
-// by content, a revert's second
+// by content, a V2 child's head, which names its parent twice, counted
+// once, a revert's second
 // file of a thread counted once, a name that carries no thread id read by
 // content, a missing directory empty, and a find that cannot read a directory
 // exits 3.
@@ -1452,17 +1471,19 @@ func TestCodexChildRolloutsReadCommand_UnderSh(t *testing.T) {
 		torn, empty, spaced = "01a06300-0000-7000-8000-0000000000ee", "01a06300-0000-7000-8000-0000000000e1", "01a06300-0000-7000-8000-0000000000e2"
 		locked, revert      = "01a06300-0000-7000-8000-0000000000e3", "01a06300-0000-7000-8000-0000000000e4"
 		cutMeta, unclosed   = "01a06300-0000-7000-8000-0000000000e5", "01a06300-0000-7000-8000-0000000000e6"
+		v2Child             = "01a06300-0000-7000-8000-0000000000e7"
 	)
 	sessions := writeCodexChildRollouts(t)
 	writeCodexRollout(t, sessions, "2026/09/29", codexChildSameModelID, codexRolloutLine(codexChildSameModelID, codexRootThreadID))
 	writeCodexRollout(t, sessions, "2026/09/30", codexChildOtherModelID, codexRolloutLine(codexChildOtherModelID, codexRootThreadID))
+	writeCodexRollout(t, sessions, "2026/11/03", v2Child, codexV2RolloutLine(v2Child, codexRootThreadID))
 	writeCodexRollout(t, sessions, "2026/09/30", torn, "not json\n")
 	writeCodexRollout(t, sessions, "2026/09/30", empty, "")
 	writeCodexRollout(t, sessions, "2026/09/30", codexChildSameModelID+"_"+revert, "")
 	writeCodexRollout(t, sessions, "2026/09/30", spaced+" copy", codexRolloutLine(spaced, codexRootThreadID))
 	writeCodexRollout(t, sessions, "2026/09/30", cutMeta, `{"timestamp":"2026-09-29T15:46:31.000Z","type":"session_meta","payload":{"id":"`+cutMeta+`"`)
 	writeCodexRollout(t, sessions, "2026/09/30", unclosed, strings.TrimSuffix(codexRolloutLine(unclosed, codexRootThreadID), "\n"))
-	want := []string{codexChildSameModelID, codexChildOtherModelID, torn, empty, spaced, cutMeta, unclosed}
+	want := []string{codexChildSameModelID, codexChildOtherModelID, v2Child, torn, empty, spaced, cutMeta, unclosed}
 	if os.Geteuid() != 0 {
 		writeCodexRollout(t, sessions, "2026/09/30", locked, codexRolloutLine(locked, ""))
 		lockedPath := filepath.Join(sessions, "2026/09/30", "rollout-2026-09-29T15-46-40-"+locked+".jsonl")
@@ -1474,7 +1495,7 @@ func TestCodexChildRolloutsReadCommand_UnderSh(t *testing.T) {
 	require.NoError(t, err)
 	n, ids, err := countCodexChildRollouts(parseCodexRolloutHeads(out), codexRootThreadID, nil)
 	require.NoError(t, err)
-	assert.Equal(t, len(want), n, "two children across two date directories, the cut, empty and unreadable files by name, the spaced name by content, the revert's file once; the root is not counted")
+	assert.Equal(t, len(want), n, "three children across three date directories, the V2 one once, though its head names its parent twice, the cut, empty and unreadable files by name, the spaced name by content, the revert's file once; the root is not counted")
 	assert.ElementsMatch(t, want, ids)
 
 	out, err = exec.Command("/bin/sh", "-c", codexChildRolloutsReadCommand(filepath.Join(t.TempDir(), "missing"))).Output()

@@ -130,15 +130,21 @@ func (o ManagedConfig) Clone() ManagedConfig {
 	return ManagedConfig{cfg: clonePerRepo(o.cfg)}
 }
 
-// WithCreateIssuesRepos returns a copy of o whose create_issues allowlist
-// permits exactly the given repositories. It is how repos install records
-// the upstream cross-repo permissions on a manifest entry (#8218, #8504).
-// The receiver is not modified.
-func (o ManagedConfig) WithCreateIssuesRepos(repos []string) ManagedConfig {
+// WithIssueTracking returns a copy of o whose tracking mapping is a copy
+// of t. It is how repos install records the upstream cross-repo
+// permissions on a manifest entry (#8218, #8504). The receiver is not
+// modified.
+func (o ManagedConfig) WithIssueTracking(t *TrackingConfig) ManagedConfig {
 	cp := o.clone()
-	cp.CreateIssues = &CreateIssuesConfig{
-		AllowTargets: AllowTargets{Repos: cloneStringSlice(repos)},
-	}
+	cp.Tracker = cloneTracking(t)
+	return ManagedConfig{cfg: cp}
+}
+
+// WithTraceContext returns a copy of o whose trace_context block is a deep
+// copy of tc; nil removes the block. The receiver is not modified.
+func (o ManagedConfig) WithTraceContext(tc *TraceContextConfig) ManagedConfig {
+	cp := o.clone()
+	cp.TraceContextBlock = cloneTraceContext(tc)
 	return ManagedConfig{cfg: cp}
 }
 
@@ -209,9 +215,25 @@ func decodeManagedConfig(n *yaml.Node) (*perRepoConfig, error) {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		keyNode := node.Content[i]
 		key := keyNode.Value
-		if !known[key] {
+		if key == "create_issues" {
+			// The removed key gets an actionable migration message
+			// instead of the generic unknown-field error.
+			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
+				fmt.Sprintf("unknown field %q: %s", key, errLegacyCreateIssues)))
+		} else if !known[key] {
 			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
 				fmt.Sprintf("unknown field %q", key)))
+		}
+		// TrackingConfig has a custom UnmarshalYAML (it rejects the legacy
+		// scalar form), so the strict decode below does not see its nested
+		// keys. Decode the mapping strictly here so a misspelled
+		// allowed_targets key is not silently dropped.
+		if key == "tracker" {
+			if v := resolveAlias(node.Content[i+1]); v.Kind == yaml.MappingNode {
+				if err := decodeKnownFields(v, &trackingPlain{}); err != nil {
+					fieldErrs = append(fieldErrs, managedFieldError(keyNode, fmt.Sprintf("tracker: %v", err)))
+				}
+			}
 		}
 		// AgentEntry has a custom UnmarshalYAML (string-or-mapping), so
 		// decodeKnownFields' dec.KnownFields(true) below never sees these
@@ -320,12 +342,17 @@ type DeclaredInfrastructure struct {
 	// token audience and the service account it impersonates.
 	InferenceWIFAudience    string
 	InferenceServiceAccount string
+	// InferenceGateway is the layered inference.gateway block (trimmed).
+	// It is zero when no layer declares one; a partial block is returned
+	// as declared so callers can report what is missing.
+	InferenceGateway InferenceGatewayConfig
 }
 
-// DeclaredInfrastructureValues returns the mint URL and Vertex inference
-// values declared by overlay (which wins) or by baseYAML. baseYAML may be
-// empty. Code defaults are deliberately not consulted, so callers can tell
-// a declared value from an inherited default.
+// DeclaredInfrastructureValues returns the mint URL, Vertex inference and
+// inference gateway values declared by overlay (which wins) or by
+// baseYAML. baseYAML may be empty. Code defaults are deliberately not
+// consulted, so callers can tell a declared value from an inherited
+// default.
 func DeclaredInfrastructureValues(overlay PerRepoConfigWriter, baseYAML []byte) (DeclaredInfrastructure, error) {
 	layered := clonePerRepo(asPerRepo(overlay))
 	if layered == nil {
@@ -347,6 +374,7 @@ func DeclaredInfrastructureValues(overlay PerRepoConfigWriter, baseYAML []byte) 
 		InferenceWIFProvider:    layered.ConfigInferenceWIFProvider(),
 		InferenceWIFAudience:    layered.ConfigInferenceWIFAudience(),
 		InferenceServiceAccount: layered.ConfigInferenceServiceAccount(),
+		InferenceGateway:        layered.ConfigInferenceGateway().Trimmed(),
 	}, nil
 }
 
@@ -368,7 +396,6 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	out := &perRepoConfig{
 		Version: src.Version,
 		Forge:   src.Forge,
-		Tracker: src.Tracker,
 		Runtime: src.Runtime,
 		MintURL: src.MintURL,
 		parent:  &perRepoDefaults{},
@@ -390,14 +417,8 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	if src.AllowedRemoteResources != nil {
 		out.AllowedRemoteResources = cloneStringSlice(src.AllowedRemoteResources)
 	}
-	if src.CreateIssues != nil {
-		cp := *src.CreateIssues
-		cp.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), src.CreateIssues.AllowTargets.Orgs...),
-			Repos: append([]string(nil), src.CreateIssues.AllowTargets.Repos...),
-		}
-		out.CreateIssues = &cp
-	}
+	out.Tracker = cloneTracking(src.Tracker)
+	out.legacyCreateIssues = src.legacyCreateIssues
 	if src.Authorization != nil {
 		out.Authorization = cloneAuthorizationSlice(src.Authorization)
 	}
@@ -424,6 +445,37 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 		}
 		out.Models = m
 	}
+	out.Artifacts = cloneArtifacts(src.Artifacts)
+	out.Progress = cloneProgress(src.Progress)
+	out.TraceContextBlock = cloneTraceContext(src.TraceContextBlock)
+	out.Connections = cloneSecretConnections(src.Connections)
+	out.Secrets = cloneSecretSources(src.Secrets)
+	return out
+}
+
+// cloneSecretConnections copies a connections mapping, preserving nil.
+func cloneSecretConnections(in map[string]SecretConnection) map[string]SecretConnection {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]SecretConnection, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// cloneSecretSources copies a secrets mapping, including each entry's
+// vault_secrets list, preserving nil.
+func cloneSecretSources(in map[string]SecretSource) map[string]SecretSource {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]SecretSource, len(in))
+	for k, v := range in {
+		v.VaultSecrets = cloneStringSlice(v.VaultSecrets)
+		out[k] = v
+	}
 	return out
 }
 
@@ -433,9 +485,6 @@ func applyManagedLayer(out, child *perRepoConfig) {
 	}
 	if child.Forge != "" {
 		out.Forge = child.Forge
-	}
-	if child.Tracker != "" {
-		out.Tracker = child.Tracker
 	}
 	if child.KillSwitch != nil {
 		v := *child.KillSwitch
@@ -463,13 +512,11 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		}
 		out.AllowedRemoteResources = cloneStringSlice(tmp.AllowedResources())
 	}
-	if child.CreateIssues != nil {
-		cp := *child.CreateIssues
-		cp.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), child.CreateIssues.AllowTargets.Orgs...),
-			Repos: append([]string(nil), child.CreateIssues.AllowTargets.Repos...),
-		}
-		out.CreateIssues = &cp
+	if child.Tracker != nil {
+		out.Tracker = cloneTracking(child.Tracker)
+	}
+	if child.legacyCreateIssues {
+		out.legacyCreateIssues = true
 	}
 	if child.Authorization != nil {
 		out.Authorization = cloneAuthorizationSlice(child.Authorization)
@@ -534,6 +581,35 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		}
 		for k, v := range child.Models.Aliases {
 			out.Models.Aliases[k] = v
+		}
+	}
+	if !child.Artifacts.IsZero() {
+		out.Artifacts = mergeArtifacts(out.Artifacts, child.Artifacts)
+	}
+	if !child.Progress.IsZero() {
+		out.Progress = mergeProgress(out.Progress, child.Progress)
+	}
+	// A child block replaces the parent's whole block: the keys and the
+	// installation ID belong together.
+	if child.TraceContextBlock != nil {
+		out.TraceContextBlock = cloneTraceContext(child.TraceContextBlock)
+	}
+	// Connections and secrets merge by name; a more-specific layer replaces
+	// a whole entry, matching ConfigConnections and ConfigSecrets.
+	if len(child.Connections) > 0 {
+		if out.Connections == nil {
+			out.Connections = make(map[string]SecretConnection, len(child.Connections))
+		}
+		for k, v := range child.Connections {
+			out.Connections[k] = v
+		}
+	}
+	if len(child.Secrets) > 0 {
+		if out.Secrets == nil {
+			out.Secrets = make(map[string]SecretSource, len(child.Secrets))
+		}
+		for k, v := range cloneSecretSources(child.Secrets) {
+			out.Secrets[k] = v
 		}
 	}
 }
@@ -603,6 +679,8 @@ func cloneAgentEntries(in []AgentEntry) []AgentEntry {
 			}
 			out[i].Subagents = m
 		}
+		out[i].Harness = a.Harness.clone()
+		out[i].inheritedHarness = cloneAgentHarnesses(a.inheritedHarness)
 	}
 	return out
 }

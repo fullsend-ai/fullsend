@@ -620,7 +620,7 @@ Scorecard, or the Baseline plugin for the Privateer tool listed in Gemara's
 README, run checks themselves.
 
 **Relevance to fullsend:** A public lab used Gemara artifacts and one
-Baseline requirement to gate auto-merge for Fullsend-reviewed PRs. The lab
+Baseline requirement to gate auto-merge for fullsend-reviewed PRs. The lab
 supplied the evidence adapters, trust boundaries, and merge path itself. See
 [the Gemara auto-merge spike](spikes/2026-10-24-gemara-auto-merge.md) for
 findings, limitations, and sources. Fullsend has not selected Gemara or any

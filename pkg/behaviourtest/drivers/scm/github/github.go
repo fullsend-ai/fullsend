@@ -34,6 +34,10 @@ func (d *Driver) AddIssueLabels(ctx context.Context, owner, repo string, number 
 	return d.Client.AddIssueLabels(ctx, owner, repo, number, labels...)
 }
 
+func (d *Driver) EnsureLabel(ctx context.Context, owner, repo, name string) error {
+	return d.Client.EnsureLabel(ctx, owner, repo, name)
+}
+
 func (d *Driver) AddComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
 	return d.Client.CreateIssueComment(ctx, owner, repo, number, body)
 }

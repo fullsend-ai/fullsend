@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -543,7 +544,9 @@ func TestCreateFork(t *testing.T) {
 	})
 
 	t.Run("returns error on API failure", func(t *testing.T) {
+		requests := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]any{
 				"message": "Repository access blocked",
@@ -555,6 +558,83 @@ func TestCreateFork(t *testing.T) {
 		_, _, err := client.CreateFork(context.Background(), "upstream", "repo")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create fork")
+		assert.Equal(t, 1, requests, "a 403 that is not a rate limit must not be retried")
+	})
+
+	t.Run("retries submitted-too-quickly 403", func(t *testing.T) {
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			assert.Equal(t, "POST", r.Method)
+			assert.Equal(t, "/repos/upstream/repo/forks", r.URL.Path)
+			if requests == 1 {
+				// GitHub's content-creation throttle: no Retry-After
+				// header and no "rate limit" wording.
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]any{"message": "was submitted too quickly"})
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{
+				"name":  "repo",
+				"owner": map[string]any{"login": "contributor"},
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		forkOwner, forkRepo, err := client.CreateFork(context.Background(), "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "contributor", forkOwner)
+		assert.Equal(t, "repo", forkRepo)
+		assert.Equal(t, 2, requests)
+	})
+
+	t.Run("retries submitted-too-quickly 403 with Retry-After", func(t *testing.T) {
+		requests := 0
+		var waits []time.Duration
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			if requests == 1 {
+				w.Header().Set("Retry-After", "7")
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]any{"message": "was submitted too quickly"})
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{
+				"name":  "repo",
+				"owner": map[string]any{"login": "contributor"},
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv).WithAfterFunc(func(d time.Duration) <-chan time.Time {
+			waits = append(waits, d)
+			return noWaitAfter(d)
+		})
+		_, _, err := client.CreateFork(context.Background(), "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, 2, requests)
+		assert.Equal(t, []time.Duration{7 * time.Second}, waits, "Retry-After must be honoured")
+	})
+
+	t.Run("persistent submitted-too-quickly 403 stops at attempt cap", func(t *testing.T) {
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{"message": "was submitted too quickly"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, _, err := client.CreateFork(context.Background(), "upstream", "repo")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create fork")
+		assert.True(t, IsRateLimitError(err))
+		assert.False(t, forge.IsForbidden(err))
+		assert.Equal(t, maxRetries, requests)
 	})
 }
 
@@ -998,8 +1078,10 @@ func TestGetPullRequestInfo(t *testing.T) {
 			},
 			"base": map[string]any{
 				"ref":  "main",
+				"sha":  "base-sha",
 				"repo": map[string]any{"full_name": "owner/repo"},
 			},
+			"changed_files": 3,
 		})
 	}))
 	defer srv.Close()
@@ -1010,6 +1092,10 @@ func TestGetPullRequestInfo(t *testing.T) {
 	assert.Equal(t, 42, info.Number)
 	assert.Equal(t, "feature", info.HeadRef)
 	assert.False(t, info.IsFork)
+	assert.Equal(t, "deadbeef", info.HeadSHA)
+	assert.Equal(t, "main", info.BaseRef)
+	assert.Equal(t, "base-sha", info.BaseSHA)
+	assert.Equal(t, 3, info.ChangedFiles)
 }
 
 func TestCreateChangeProposal(t *testing.T) {
@@ -1056,6 +1142,57 @@ func TestCreateChangeProposal_Forbidden(t *testing.T) {
 	assert.True(t, forge.IsForbidden(err), "CreateChangeProposal 403 should wrap ErrForbidden")
 }
 
+func TestCreateCrossRepoChangeProposal_FullWidthID(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, jsonID string
+		want         int64
+	}{
+		{"number", "9007199254740993", 9007199254740993},
+		{"string", `"9007199254740993"`, 9007199254740993},
+		{"max int64", `"9223372036854775807"`, 9223372036854775807},
+		{"null unresolved", "null", 0},
+		{"missing unresolved", "", 0},
+		{"overflow", `"9223372036854775808"`, 0},
+		{"negative", "-1", 0},
+		{"zero", "0", 0},
+		{"fractional", "1.5", 0},
+		{"nonnumeric", `"bad"`, 0},
+		{"boolean", "true", 0},
+		{"object", `{}`, 0},
+		{"array", `[]`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			getCalls, calls := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/"):
+					getCalls++
+					json.NewEncoder(w).Encode(map[string]string{"node_id": "NODE_repo"})
+				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+					calls++
+					id := ""
+					if tc.jsonID != "" {
+						id = `"fullDatabaseId":` + tc.jsonID + ","
+					}
+					fmt.Fprintf(w, `{"data":{"createPullRequest":{"pullRequest":{%s"number":99,"title":"title","url":"https://github.com/org/repo/pull/99"}}}}`, id)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			cp, err := newTestClient(t, srv).CreateCrossRepoChangeProposal(context.Background(), "org", "repo", "org", "fork", "title", "body", "feature", "main")
+			assert.Equal(t, 2, getCalls)
+			assert.Equal(t, 1, calls)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cp.ID)
+			assert.Equal(t, 99, cp.Number)
+			assert.Equal(t, "title", cp.Title)
+			assert.Equal(t, "https://github.com/org/repo/pull/99", cp.URL)
+		})
+	}
+}
+
 func TestCreateCrossRepoChangeProposal(t *testing.T) {
 	t.Run("same-org fork uses GraphQL", func(t *testing.T) {
 		var getRepoCalls []string
@@ -1075,6 +1212,8 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 				var body map[string]any
 				json.NewDecoder(r.Body).Decode(&body)
 
+				assert.Contains(t, body["query"], "fullDatabaseId")
+				assert.NotContains(t, body["query"], "\n\t\t\t\tdatabaseId")
 				vars, _ := body["variables"].(map[string]any)
 				input, _ := vars["input"].(map[string]any)
 				assert.Equal(t, "NODE_org_repo", input["repositoryId"])
@@ -1088,9 +1227,10 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 					"data": map[string]any{
 						"createPullRequest": map[string]any{
 							"pullRequest": map[string]any{
-								"number": 99,
-								"title":  "PR title",
-								"url":    "https://github.com/org/repo/pull/99",
+								"fullDatabaseId": "9007199254740993",
+								"number":         99,
+								"title":          "PR title",
+								"url":            "https://github.com/org/repo/pull/99",
 							},
 						},
 					},
@@ -1111,6 +1251,7 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 		assert.True(t, graphqlCalled, "should use GraphQL createPullRequest")
 		require.Len(t, getRepoCalls, 2, "should fetch node IDs for both repos")
 		assert.Equal(t, 99, cp.Number)
+		assert.Equal(t, int64(9007199254740993), cp.ID, "BigInt must survive without float64 rounding")
 		assert.Equal(t, "PR title", cp.Title)
 		assert.Equal(t, "https://github.com/org/repo/pull/99", cp.URL)
 	})
@@ -2265,6 +2406,58 @@ func TestIsStaleTreeSHAError(t *testing.T) {
 	}
 }
 
+func TestIsTransientTreeError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name:   "stale tree SHA",
+			apiErr: &APIError{StatusCode: 422, Message: "Tree SHA does not exist"},
+			want:   true,
+		},
+		{
+			name:   "blob not yet visible",
+			apiErr: &APIError{StatusCode: 422, Message: "tree.sha 62d317f8a1b2c3d4e5f60718293a4b5c6d7e8f90 is not a valid blob"},
+			want:   true,
+		},
+		{
+			name: "blob not yet visible in error detail",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors:     []APIErrorDetail{{Message: "tree.sha 3daff95c is not a valid blob"}},
+			},
+			want: true,
+		},
+		{
+			name:   "GitHub-side request timeout",
+			apiErr: &APIError{StatusCode: 422, Message: "Sorry, your request timed out. It's likely that your input was too large to process."},
+			want:   true,
+		},
+		{
+			name: "validation failure",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors:     []APIErrorDetail{{Message: "tree.mode is not a valid mode"}},
+			},
+			want: false,
+		},
+		{
+			name:   "unrelated 422",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isTransientTreeError(tt.apiErr))
+		})
+	}
+}
+
 func TestIsAlreadyExistsError(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -2630,6 +2823,37 @@ func TestWithoutAmbiguousRetry_DoesNotRetryServerError(t *testing.T) {
 	err = client.DeleteRepo(context.Background(), "org", "repo")
 	require.Error(t, err)
 	assert.Equal(t, int32(maxRetries), attempts.Load())
+}
+
+// TestServerErrorGiveUpMessages pins the wording of do()'s two 5xx
+// give-up errors. The behaviour harness builds its `github setup`
+// server-error signature from these prefixes and the "github api:
+// <status> " rendering (pkg/behaviourtest/drivers/install/common).
+func TestServerErrorGiveUpMessages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	client := newTestClient(t, srv)
+
+	tests := []struct {
+		name   string
+		ctx    context.Context
+		prefix string
+	}{
+		{"retries used up", context.Background(), RetryGiveUpPrefix},
+		{"not retried", forge.WithoutAmbiguousRetry(context.Background()), ServerErrorNotRetriedPrefix},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := client.DeleteRepo(tt.ctx, "org", "repo")
+			var apiErr *APIError
+			require.ErrorAs(t, err, &apiErr)
+			assert.Equal(t, http.StatusInternalServerError, apiErr.StatusCode)
+			assert.True(t, strings.HasPrefix(apiErr.Message, tt.prefix), "message %q", apiErr.Message)
+			assert.Contains(t, err.Error(), "github api: 500 "+tt.prefix)
+		})
+	}
 }
 
 func TestWithoutAmbiguousRetry_DoesNotRetryTimeout(t *testing.T) {
@@ -3363,6 +3587,19 @@ func TestIsRetryable_PrimaryRateLimitAs403(t *testing.T) {
 	assert.True(t, retryable, "403 with 'API rate limit exceeded' should be retryable")
 }
 
+func TestIsRetryable_SubmittedTooQuickly403(t *testing.T) {
+	// GitHub's content-creation throttle (e.g. on fork creation) is a 403
+	// with neither a Retry-After header nor "rate limit" in the body.
+	body := `{"message":"was submitted too quickly"}`
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	retryable, _ := isRetryable(resp)
+	assert.True(t, retryable, "403 with 'was submitted too quickly' should be retryable")
+}
+
 func TestIsRateLimitError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -3377,6 +3614,11 @@ func TestIsRateLimitError(t *testing.T) {
 		{
 			name:     "secondary rate limit as 403",
 			err:      &APIError{StatusCode: 403, Message: "You have exceeded a secondary rate limit"},
+			expected: true,
+		},
+		{
+			name:     "content-creation throttle as 403",
+			err:      &APIError{StatusCode: 403, Message: "was submitted too quickly"},
 			expected: true,
 		},
 		{
@@ -3408,6 +3650,43 @@ func TestIsRateLimitError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.expected, IsRateLimitError(tt.err))
+		})
+	}
+}
+
+func TestIsServerError(t *testing.T) {
+	t.Parallel()
+
+	serverGraphQL := &graphQLError{Message: "Something went wrong while executing your query on 2026-11-13T17:32:20Z. Please include `04B1:1E1739:4F83F3:FCF283:6AF7499B` when reporting this issue."}
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "500 internal server error", err: &APIError{StatusCode: 500, Message: "boom"}, want: true},
+		{name: "502 bad gateway", err: &APIError{StatusCode: 502, Message: "Bad Gateway"}, want: true},
+		{name: "504 gateway timeout", err: &APIError{StatusCode: 504, Message: "Gateway Timeout"}, want: true},
+		{name: "505 not in transient range", err: &APIError{StatusCode: 505, Message: "HTTP Version Not Supported"}, want: false},
+		{name: "500 with context cause", err: &APIError{StatusCode: 500, Message: "boom", cause: context.DeadlineExceeded}, want: false},
+		{name: "429 rate limit", err: &APIError{StatusCode: 429, Message: "too many requests"}, want: false},
+		{name: "404 not found", err: &APIError{StatusCode: 404, Message: "Not Found"}, want: false},
+		{name: "nil APIError", err: (*APIError)(nil), want: false},
+		{name: "graphql generic server error", err: serverGraphQL, want: true},
+		{name: "graphql generic server error with leading space", err: &graphQLError{Message: " " + serverGraphQL.Message}, want: true},
+		{name: "graphql typed error with server message", err: &graphQLError{Type: "INTERNAL", Message: serverGraphQL.Message}, want: false},
+		{name: "graphql forbidden", err: &graphQLError{Type: "FORBIDDEN", Message: "Resource not accessible by integration"}, want: false},
+		{name: "graphql stale head", err: &graphQLError{Type: "STALE_DATA", Message: "Expected branch to point to \"abc123\" but it did not."}, want: false},
+		{name: "graphql untyped other message", err: &graphQLError{Message: "Could not resolve to a Repository"}, want: false},
+		{name: "nil graphQLError", err: (*graphQLError)(nil), want: false},
+		{name: "wrapped 502 is not unwrapped", err: fmt.Errorf("get repo: %w", &APIError{StatusCode: 502}), want: false},
+		{name: "wrapped graphql server error is not unwrapped", err: fmt.Errorf("create commit on branch: %w", serverGraphQL), want: false},
+		{name: "plain error", err: errors.New("network error"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, IsServerError(tt.err))
 		})
 	}
 }
@@ -4614,6 +4893,7 @@ func TestGetIssue(t *testing.T) {
 			"labels":       []map[string]string{{"name": "ready-to-code"}},
 			"state":        "closed",
 			"state_reason": "not_planned",
+			"created_at":   "2026-11-14T00:05:58Z",
 		})
 	}))
 	defer srv.Close()
@@ -4625,6 +4905,7 @@ func TestGetIssue(t *testing.T) {
 	assert.Equal(t, []string{"ready-to-code"}, issue.Labels)
 	assert.Equal(t, "closed", issue.State)
 	assert.Equal(t, "not_planned", issue.StateReason)
+	assert.Equal(t, "2026-11-14T00:05:58Z", issue.CreatedAt)
 }
 
 func TestListRecentWorkflowRuns(t *testing.T) {
@@ -4636,7 +4917,7 @@ func TestListRecentWorkflowRuns(t *testing.T) {
 				{
 					"id": 99, "name": "Triage Agent", "event": "issue_comment",
 					"status": "completed", "conclusion": "success", "html_url": "https://example/run/99",
-					"created_at": "2024-01-01T00:00:00Z",
+					"created_at": "2024-01-01T00:00:00Z", "path": ".github/workflows/triage.yml",
 				},
 			},
 		})
@@ -4649,6 +4930,7 @@ func TestListRecentWorkflowRuns(t *testing.T) {
 	require.Len(t, runs, 1)
 	assert.Equal(t, "Triage Agent", runs[0].Name)
 	assert.Equal(t, "issue_comment", runs[0].Event)
+	assert.Equal(t, ".github/workflows/triage.yml", runs[0].Path)
 }
 
 func TestListWorkflowRuns_IncludesEvent(t *testing.T) {
@@ -5025,6 +5307,134 @@ func TestGetWorkflowRunLogs_CompleteHasNoTruncationMarkers(t *testing.T) {
 	assert.NotContains(t, logs, "truncated")
 }
 
+// TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote verifies that a skipped
+// job, which has no log, is listed without a log request, so its 404 does
+// not read as a fetch that failed.
+func TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 2,
+				"jobs": []map[string]any{
+					{"id": 1, "name": "build", "status": "completed", "conclusion": "failure"},
+					{"id": 2, "name": "deploy", "status": "completed", "conclusion": "skipped"},
+				},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			_, _ = w.Write([]byte("build log"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "=== deploy (job 2) [completed/skipped] ===")
+	assert.Contains(t, logs, "build log")
+	assert.NotContains(t, logs, "[logs unavailable:")
+}
+
+// TestGetWorkflowRunLogs_FetchErrorIsMarked verifies that a job whose log
+// request fails at the transport level is reported with the shared
+// failed-to-fetch note, so callers can tell the snapshot is incomplete.
+func TestGetWorkflowRunLogs_FetchErrorIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 1,
+				"jobs":        []map[string]any{{"id": 1, "name": "build", "status": "completed", "conclusion": "failure"}},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			// Kill the connection mid-request so c.do itself errors.
+			hj, ok := w.(http.Hijacker)
+			if !assert.True(t, ok) {
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if !assert.NoError(t, err) {
+				return
+			}
+			conn.Close()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "[failed to fetch logs:")
+}
+
+// TestGetWorkflowRunLogs_UnavailableIsMarked verifies that a job log
+// endpoint answering non-200 is reported with the shared
+// logs-unavailable note rather than an empty log.
+func TestGetWorkflowRunLogs_UnavailableIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 1,
+				"jobs":        []map[string]any{{"id": 1, "name": "build", "status": "completed", "conclusion": "failure"}},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "[logs unavailable: HTTP 404]")
+}
+
+// TestGetWorkflowRunLogs_ReadErrorIsMarked verifies that a job log body
+// that cannot be read in full is reported with the shared
+// failed-to-read note, so callers can tell the snapshot is incomplete.
+func TestGetWorkflowRunLogs_ReadErrorIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 1,
+				"jobs":        []map[string]any{{"id": 1, "name": "build", "status": "completed", "conclusion": "failure"}},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			// Promise more body than is written, then close, so the
+			// client's read fails (the TestGetCached_ReadErrorNamesPath
+			// pattern).
+			w.Header().Set("Content-Length", "1000")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("partial log"))
+			hj, ok := w.(http.Hijacker)
+			if !assert.True(t, ok) {
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if !assert.NoError(t, err) {
+				return
+			}
+			conn.Close()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "[failed to read logs:")
+}
+
 // TestListWorkflowRunJobs_EscapesPathComponents is a regression test
 // (#7996 review): owner and repo were interpolated into the request URL
 // without escaping, so a delimiter-containing value (e.g. "#") could alter
@@ -5057,6 +5467,104 @@ func TestListWorkflowRunJobs_APIError(t *testing.T) {
 	client := newTestClient(t, srv)
 	_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
 	require.Error(t, err)
+}
+
+func TestListWorkflowRunJobs_NotFound(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		status   int
+		failures int
+	}{
+		{name: "404 is not presumed transient", status: http.StatusNotFound, failures: 1},
+		{name: "persistent 404 fails immediately", status: http.StatusNotFound, failures: 5},
+		{name: "permission failure is not retried", status: http.StatusForbidden, failures: 5},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
+				assert.Equal(t, "1", r.URL.Query().Get("page"))
+				if calls <= tt.failures {
+					w.WriteHeader(tt.status)
+					return
+				}
+				_, _ = io.WriteString(w, `{"jobs":[{"id":1,"name":"dispatch / Fix","status":"completed","conclusion":"success"}]}`)
+			}))
+			defer srv.Close()
+
+			waits := 0
+			client := newTestClient(t, srv).WithAfterFunc(func(time.Duration) <-chan time.Time {
+				waits++
+				ch := make(chan time.Time, 1)
+				ch <- time.Now()
+				return ch
+			})
+			jobs, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+			assert.Equal(t, 1, calls)
+			assert.Zero(t, waits, "jobs errors must not add retry delays")
+			require.Error(t, err)
+			assert.Nil(t, jobs)
+			assert.Contains(t, err.Error(), "org/repo")
+			assert.Contains(t, err.Error(), "run 42")
+			assert.Contains(t, err.Error(), "page 1")
+			var apiErr *APIError
+			require.ErrorAs(t, err, &apiErr)
+			assert.Equal(t, tt.status, apiErr.StatusCode)
+			assert.Equal(t, tt.status == http.StatusNotFound, forge.IsNotFound(err))
+			if tt.status == http.StatusNotFound {
+				assert.ErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+			} else {
+				assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+			}
+		})
+	}
+}
+
+// TestListWorkflowRunJobs_LaterPageNotFoundDoesNotCarrySentinel is a
+// regression test: a 404 on a later pagination page means the listing was
+// partially readable — page 1 may already hold jobs — so it must not carry
+// ErrJobsListingNotFoundFirstPage, which callers tolerate only when the run
+// status independently shows the run has not started.
+func TestListWorkflowRunJobs_LaterPageNotFoundDoesNotCarrySentinel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "1":
+			jobs := make([]map[string]any, 100) // full page forces page 2
+			for i := range jobs {
+				jobs[i] = map[string]any{"id": i + 1, "name": "dispatch / Harness run (fix)", "status": "completed", "conclusion": "success"}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.Nil(t, jobs)
+	assert.True(t, forge.IsNotFound(err), "the 404 stays classified as not found")
+	assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage, "a partially readable listing never carries the sentinel")
+	assert.Contains(t, err.Error(), "page 2")
+}
+
+func TestListWorkflowRunJobs_CancelledContext(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := newTestClient(t, srv)
+
+	jobs, err := client.ListWorkflowRunJobs(ctx, "org", "repo", 42)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, jobs)
+	assert.Zero(t, calls)
 }
 
 // TestListWorkflowRunJobs_PaginatesBeyondFirstPage is a regression test
@@ -5108,6 +5616,37 @@ func TestListWorkflowRunJobs_PaginatesBeyondFirstPage(t *testing.T) {
 	assert.Len(t, pageRequests, 2, "pagination must stop once a short page is seen")
 }
 
+func TestListWorkflowRunJobs_MissingPageFailsWithoutPartialResults(t *testing.T) {
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
+		if page == "1" {
+			jobs := make([]forge.WorkflowJob, 100)
+			for i := range jobs {
+				jobs[i].ID = i + 1
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
+			return
+		}
+		assert.Equal(t, "2", page)
+		if len(pages) == 2 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"jobs":[{"id":101,"name":"dispatch / Fix"}]}`)
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+	assert.Contains(t, err.Error(), "org/repo run 42 page 2")
+	assert.Equal(t, []string{"1", "2"}, pages)
+	assert.Nil(t, jobs, "an incomplete listing must not look like absence of an agent")
+}
+
 // TestListWorkflowRunJobs_PaginationExceeded guards the maxPages safety
 // valve: if every page is full, pagination must stop with an error instead
 // of looping indefinitely.
@@ -5148,6 +5687,33 @@ func TestListWorkflowRunArtifacts(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, arts, 1)
 	assert.Equal(t, 5, arts[0].ID)
+}
+
+func TestListWorkflowRunArtifactsPaginates(t *testing.T) {
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs/42/artifacts", r.URL.Path)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		n := 100
+		if page == "2" {
+			n = 3
+		}
+		arts := make([]map[string]any, n)
+		for i := range arts {
+			arts[i] = map[string]any{"id": len(pages)*1000 + i, "name": fmt.Sprintf("fullsend-p%s-%d", page, i)}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"artifacts": arts})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	arts, err := client.ListWorkflowRunArtifacts(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1", "2"}, pages)
+	require.Len(t, arts, 103)
+	assert.Equal(t, "fullsend-p2-2", arts[102].Name)
 }
 
 func TestListRepositoryArtifacts(t *testing.T) {
@@ -5196,6 +5762,59 @@ func TestAddIssueLabels_Empty(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	require.NoError(t, client.AddIssueLabels(context.Background(), "org", "repo", 7))
+}
+
+func TestEnsureLabel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/repos/org/repo/labels", r.URL.Path)
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, map[string]string{"name": "do-it", "color": "ededed"}, body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"name":"do-it"}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	require.NoError(t, client.EnsureLabel(context.Background(), "org", "repo", "do-it"))
+}
+
+func TestEnsureLabel_AlreadyExists(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"Label","code":"already_exists","field":"name"}]}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	require.NoError(t, client.EnsureLabel(context.Background(), "org", "repo", "do-it"))
+}
+
+func TestEnsureLabel_Errors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"other validation error", http.StatusUnprocessableEntity, `{"message":"Validation Failed","errors":[{"resource":"Label","code":"invalid","field":"color"}]}`},
+		{"not found", http.StatusNotFound, `{"message":"Not Found"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			err := client.EnsureLabel(context.Background(), "org", "repo", "do-it")
+			require.ErrorContains(t, err, `create label "do-it"`)
+		})
+	}
 }
 
 func TestDownloadWorkflowRunArtifact(t *testing.T) {
@@ -5384,6 +6003,161 @@ func TestCommitFiles_StaleTreeSHAOnCommitRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, committed)
 	assert.Equal(t, 2, commitPostCount)
+}
+
+// transientTree422Messages are the transient 422 bodies GitHub returns from
+// the create-tree endpoint that CommitFiles retries from scratch.
+var transientTree422Messages = map[string]map[string]any{
+	"blob not yet visible": {
+		"message": "tree.sha 62d317f8a1b2c3d4e5f60718293a4b5c6d7e8f90 is not a valid blob",
+	},
+	"request timed out": {
+		"message": "Sorry, your request timed out. It's likely that your input was too large to process.",
+	},
+}
+
+// transientTreeServer serves the Git Data commit path, answering the first
+// failTreePosts POST /git/trees calls with body and 422.
+func transientTreeServer(t *testing.T, body map[string]any, failTreePosts int, treePosts *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/commits/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			*treePosts++
+			if *treePosts <= failTreePosts {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				json.NewEncoder(w).Encode(body)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+}
+
+func TestCommitFiles_TransientTree422Retry(t *testing.T) {
+	for name, body := range transientTree422Messages {
+		t.Run(name, func(t *testing.T) {
+			treePosts := 0
+			srv := transientTreeServer(t, body, 1, &treePosts)
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+				// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+				{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+			})
+			require.NoError(t, err)
+			assert.True(t, committed)
+			assert.Equal(t, 2, treePosts)
+		})
+	}
+}
+
+func TestCommitFiles_TransientTree422Exhausted(t *testing.T) {
+	for name, body := range transientTree422Messages {
+		t.Run(name, func(t *testing.T) {
+			treePosts := 0
+			srv := transientTreeServer(t, body, 1000, &treePosts)
+			defer srv.Close()
+
+			after, delays := recordingAfter()
+			client := New("test-token").WithBaseURL(srv.URL).WithAfterFunc(after)
+			_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+				// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+				{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "create tree: ")
+			assert.Equal(t, 3, treePosts, "bounded at three attempts")
+
+			// The delay between attempts grows: 100-500ms, then 200-1000ms.
+			got := delays()
+			if assert.Len(t, got, 2) {
+				assert.GreaterOrEqual(t, got[0], 100*time.Millisecond)
+				assert.Less(t, got[0], 500*time.Millisecond)
+				assert.GreaterOrEqual(t, got[1], 200*time.Millisecond)
+				assert.Less(t, got[1], 1000*time.Millisecond)
+			}
+		})
+	}
+}
+
+func TestCommitFiles_TransientCommit422Retry(t *testing.T) {
+	commitPosts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/commits/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			commitPosts++
+			if commitPosts == 1 {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				json.NewEncoder(w).Encode(transientTree422Messages["request timed out"])
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 2, commitPosts)
+}
+
+func TestCommitFiles_ValidationTree422NotRetried(t *testing.T) {
+	treePosts := 0
+	srv := transientTreeServer(t, map[string]any{
+		"message": "Validation Failed",
+		"errors":  []map[string]string{{"message": "tree.mode is not a valid mode"}},
+	}, 1000, &treePosts)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+	})
+	require.Error(t, err)
+	assert.False(t, forge.IsNonFastForward(err))
+	assert.Equal(t, 1, treePosts)
 }
 
 func TestCommitFiles_NonFastForward(t *testing.T) {
@@ -6019,6 +6793,32 @@ func TestCreateForkInOrg(t *testing.T) {
 		_, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create fork")
+	})
+
+	t.Run("retries submitted-too-quickly 403", func(t *testing.T) {
+		posts := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+				return
+			}
+			posts++
+			if posts == 1 {
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]any{"message": "was submitted too quickly"})
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{"name": "my-fork"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		forkRepo, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "my-fork", forkRepo)
+		assert.Equal(t, 2, posts)
 	})
 }
 
@@ -7242,4 +8042,302 @@ func TestGetRepoVariableInfo(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetIssuePullRequestMarker(t *testing.T) {
+	for _, tt := range []struct {
+		name, payload string
+		want          bool
+	}{
+		{"issue", `{"number":1,"state":"open"}`, false},
+		{"null", `{"number":1,"state":"open","pull_request":null}`, false},
+		{"pull request", `{"number":1,"state":"open","pull_request":{"url":"https://api.github.com/repos/o/r/pulls/1"}}`, true},
+		{"empty marker", `{"number":1,"state":"closed","pull_request":{}}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/repos/o/r/issues/1", r.URL.Path)
+				_, _ = w.Write([]byte(tt.payload))
+			}))
+			defer srv.Close()
+			issue, err := newTestClient(t, srv).GetIssue(context.Background(), "o", "r", 1)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, issue.IsPullRequest)
+		})
+	}
+}
+
+func TestGetRawFileContentAtRef_RawMediaType(t *testing.T) {
+	var gotAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/repos/acme/widgets/contents/harness/triage.yaml", r.URL.Path)
+		require.Equal(t, "deadbeef", r.URL.Query().Get("ref"))
+		gotAccept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("role: triage\n"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, "application/vnd.github.raw", gotAccept,
+		"the raw media type is requested so files over the 1 MiB JSON limit are served")
+	assert.Equal(t, "role: triage\n", string(data))
+}
+
+func TestGetRawFileContentAtRef_JSONFallback(t *testing.T) {
+	// A server that ignores the raw media type and answers with the JSON
+	// representation (the GitHub API-compatible emulators do) still works.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":     "file",
+			"content":  base64.StdEncoding.EncodeToString([]byte("role: triage\n")),
+			"encoding": "base64",
+			"size":     len("role: triage\n"),
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, "role: triage\n", string(data))
+}
+
+func TestGetRawFileContentAtRef_EmptyContentForNonEmptyFileFails(t *testing.T) {
+	// The over-1-MiB JSON representation: GitHub returns encoding "none"
+	// and empty content. That must fail explicitly, not decode to empty
+	// bytes that then get cached as an empty file.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":     "file",
+			"content":  "",
+			"encoding": "none",
+			"size":     2 << 20,
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "big.bin", "deadbeef")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "raw media type")
+	assert.Contains(t, err.Error(), "encoding \"none\"")
+}
+
+func TestGetRawFileContentAtRef_RawJSONFileIsNotAnEnvelope(t *testing.T) {
+	// With the raw media type requested, a JSON Content-Type can also be a
+	// raw JSON file served with its own type. It must be returned as the
+	// file's bytes, not decoded as a (field-less) contents envelope that
+	// silently yields empty content.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"labels":["bug","documentation"],"count":2}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "config/labels.json", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, `{"labels":["bug","documentation"],"count":2}`, string(data))
+}
+
+func TestGetRawFileContentAtRef_JSONWithCommonKeysIsNotAnEnvelope(t *testing.T) {
+	// A top-level "type" or "size" key is common in ordinary JSON files
+	// (JSON schemas say "type":"object"; manifests carry sizes). With the
+	// raw media type requested such a file can be served as
+	// application/json; it must be returned verbatim, not decoded as a
+	// contents envelope that silently yields empty content.
+	body := `{"type":"object","properties":{"labels":{"type":"array"}},"size":3}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "schemas/labels.schema.json", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, body, string(data))
+}
+
+func TestGetRawFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
+	// A server that ignores the raw media type answers a directory with a
+	// JSON array of entries, and a symlink or submodule with an object of
+	// that type and no content. Those must error, as they did before the
+	// raw media type, not come back as the file's bytes. Any other JSON
+	// body — arrays that are not entry listings, objects that are not
+	// type "file" envelopes — is a raw JSON file and returned verbatim.
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name:    "directory listing",
+			body:    `[{"type":"file","name":"a.md","path":"skills/a.md","sha":"abc"},{"type":"dir","name":"checks","path":"skills/checks","sha":"def"}]`,
+			wantErr: "is a directory",
+		},
+		{
+			name:    "symlink object",
+			body:    `{"type":"symlink","target":"../other","size":8,"name":"link","path":"skills/link","sha":"abc"}`,
+			wantErr: "is a symlink",
+		},
+		{
+			name:    "submodule object",
+			body:    `{"type":"submodule","submodule_git_url":"https://github.com/o/r.git","size":0,"name":"sub","path":"sub","sha":"abc"}`,
+			wantErr: "is a submodule",
+		},
+		{
+			name: "raw JSON file with an encoding key",
+			body: `{"encoding":"utf-8","labels":["bug"]}`,
+		},
+		{
+			name: "raw JSON file with encoding and content keys",
+			body: `{"encoding":"base64","content":"aGVsbG8=","note":"not a contents entry"}`,
+		},
+		{
+			name: "raw JSON array file",
+			body: `["bug","documentation"]`,
+		},
+		{
+			name: "raw JSON array of objects that are not entries",
+			body: `[{"type":"object","path":"x"}]`,
+		},
+		{
+			name: "empty raw JSON array file",
+			body: `[]`,
+		},
+		{
+			name: "raw JSON object typed as a dir without path and sha",
+			body: `{"type":"dir","name":"docs"}`,
+		},
+		{
+			name: "raw JSON array-like text that is not JSON",
+			body: `[not json`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "skills/x", "deadbeef")
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Nil(t, data)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.body, string(data))
+		})
+	}
+}
+
+func TestSameOriginRedirect(t *testing.T) {
+	req := func(t *testing.T, raw string) *http.Request {
+		t.Helper()
+		r, err := http.NewRequest(http.MethodGet, raw, nil)
+		require.NoError(t, err)
+		return r
+	}
+	const from = "https://ghe.example.com/api/v3/repos/o/r/contents/a"
+	tests := []struct {
+		name string
+		to   string
+		ok   bool
+	}{
+		{name: "same origin, other path", to: "https://ghe.example.com/api/v3/repos/o/renamed/contents/a", ok: true},
+		{name: "host in another case", to: "https://GHE.Example.com/api/v3/x", ok: true},
+		{name: "explicit default port", to: "https://ghe.example.com:443/api/v3/x", ok: true},
+		{name: "another host", to: "https://evil.example.net/api/v3/x"},
+		{name: "subdomain", to: "https://cdn.ghe.example.com/x"},
+		{name: "parent domain", to: "https://example.com/x"},
+		{name: "http downgrade", to: "http://ghe.example.com/api/v3/x"},
+		{name: "other port", to: "https://ghe.example.com:8443/api/v3/x"},
+		{name: "internal address", to: "https://169.254.169.254/latest/meta-data"},
+		{name: "loopback IP literal", to: "https://127.0.0.1/api/v3/x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := sameOriginRedirect(req(t, tt.to), []*http.Request{req(t, from)})
+			if tt.ok {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not the same origin")
+		})
+	}
+
+	t.Run("each hop is checked", func(t *testing.T) {
+		via := []*http.Request{req(t, from), req(t, "https://ghe.example.com/api/v3/hop")}
+		assert.Error(t, sameOriginRedirect(req(t, "https://evil.example.net/x"), via))
+	})
+	t.Run("hop limit", func(t *testing.T) {
+		via := make([]*http.Request, maxSameOriginRedirects)
+		for i := range via {
+			via[i] = req(t, from)
+		}
+		assert.ErrorContains(t, sameOriginRedirect(req(t, from), via), "stopped after")
+	})
+}
+
+// TestWithSameOriginRedirects checks the policy on a live client: a
+// same-origin redirect (GitHub's renamed-repository 301) is followed with
+// the token, while a redirect to another host is refused before any request
+// reaches it, so the token never leaves the configured host.
+func TestWithSameOriginRedirects(t *testing.T) {
+	var otherHits []string
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otherHits = append(otherHits, r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, "stolen")
+	}))
+	defer other.Close()
+	otherURL, err := url.Parse(other.URL)
+	require.NoError(t, err)
+
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		switch {
+		case strings.Contains(r.URL.Path, "/repos/o/old/"):
+			http.Redirect(w, r, strings.Replace(r.URL.RequestURI(), "/repos/o/old/", "/repos/o/new/", 1), http.StatusMovedPermanently)
+		case strings.Contains(r.URL.Path, "/repos/o/away/"):
+			// Same port, another host name: Go would keep the token on a
+			// same-host or subdomain hop, never on this one, but it must
+			// be refused outright either way.
+			http.Redirect(w, r, "http://localhost:"+otherURL.Port()+"/x", http.StatusFound)
+		default:
+			w.Header().Set("Content-Type", "application/vnd.github.raw")
+			_, _ = io.WriteString(w, "content")
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv).WithSameOriginRedirects()
+
+	data, err := client.GetRawFileContentAtRef(context.Background(), "o", "old", "a.md", "main")
+	require.NoError(t, err)
+	assert.Equal(t, "content", string(data))
+	assert.Equal(t, []string{"Bearer test-token", "Bearer test-token"}, auth)
+
+	_, err = client.GetRawFileContentAtRef(context.Background(), "o", "away", "a.md", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not the same origin")
+	assert.Empty(t, otherHits, "a cross-origin redirect target must get no request")
+
+	// Without the policy the same redirect is followed (Go's default).
+	plain := newTestClient(t, srv)
+	_, err = plain.GetRawFileContentAtRef(context.Background(), "o", "away", "a.md", "main")
+	require.NoError(t, err)
+	assert.Len(t, otherHits, 1)
 }

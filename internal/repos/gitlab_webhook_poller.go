@@ -740,7 +740,9 @@ func recordPollerReplacementDistribution(ctx context.Context, client forge.Clien
 }
 
 // restorePollerDeveloper sets the Poller back to Developer, retrying the
-// update once, and verifies the effective access level. It runs on a
+// update once, and verifies the effective access level, re-reading it with
+// bounded backoff because GitLab can briefly report the previous level after
+// accepting the update. It runs on a
 // bounded context detached from ctx's cancellation so a canceled operation
 // cannot leave the Poller above Developer.
 func restorePollerDeveloper(ctx context.Context, client forge.Client, to GitLabTriggerOwner, owner, repo string, uid int64) error {
@@ -756,7 +758,9 @@ func restorePollerDeveloper(ctx context.Context, client forge.Client, to GitLabT
 	if setErr != nil {
 		setErr = safeAPIError("updating the Poller membership to Developer", setErr)
 	}
-	level, err := client.GetProjectMemberAccessLevel(ctx, owner, repo, uid)
+	level, err := awaitGitLabAccessLevel(ctx, forge.GitLabAccessLevelDeveloper, func(c context.Context) (int, error) {
+		return client.GetProjectMemberAccessLevel(c, owner, repo, uid)
+	})
 	if err != nil {
 		return errors.Join(setErr, safeAPIError("verifying effective access", err))
 	}

@@ -148,7 +148,8 @@ The repository's existing infrastructure provides all the coordination needed:
 - **Forge events and scheduled entity discovery** identify entities whose
   harness predicates should be evaluated. Each predicate can inspect the
   resolved entity and an optional prompting event
-  ([ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md)).
+  ([ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md); entity contract:
+  [Normalized entity v1](../normative/normalized-entity/v1/README.md)).
   [ADR 0147](../ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
   lets those checks acquire entity data progressively when the result is not
   yet known. [ADR 0148](../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
@@ -176,6 +177,12 @@ This principle aligns with what Yegge's Gas City project calls "Zero Framework C
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) is the useful contrast case. It uses an event-driven FastAPI/Redis/LangGraph worker and durable checkpoints to move work forward, which is operationally sensible, but it also centralizes workflow truth and treats Jira labels/comments as approval signals. Fullsend can borrow the event-driven resume mechanics without moving merge authority or intent authorization out of repository-visible controls.
 
 [OpenAI Symphony](../landscape.md#openai-symphony) is the other useful contrast: a long-running central daemon that owns scheduling state, candidate selection, and retry. Where Gas City puts a controller on the path but forbids it from containing judgment, Symphony's orchestrator visibly contains it (priority sort, blocker rules, reconciliation). Fullsend can borrow Symphony's workspace safety invariants and continuation-turn semantics without adopting the daemon.
+
+Cross-host scheduling and partial external writes need deterministic recovery
+without adding a coordinator agent; see
+[durable work recovery](durable-work-recovery.md).
+[ADR 0165](../ADRs/0165-recover-work-through-repository-owned-operation-journals.md)
+chooses repository-owned operation journals; implementation remains open.
 
 ### How agents communicate
 

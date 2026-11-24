@@ -47,13 +47,18 @@ Each enabled `agents:` entry is resolved and composed through the same machinery
   directory. Run that online run with the same forge (`--forge` or CI auto-detection)
   as the offline run; otherwise the forge-specific files are not cached and the
   offline run fails.
-- Harnesses are composed with `base:` chains, CEL-guarded overlays, and the forge
-  section for the effective platform, so diagnostics see the harness as it would
-  execute. Without a platform (`--forge` omitted, none in config, no CI env), the forge
-  section is left unconsumed and its fields are linted in place.
+- Harnesses are composed with `base:` chains, CEL-guarded overlays, the forge
+  section for the effective platform, and the `harness:` block of the agent's
+  `agents:` entry, so diagnostics see the harness as it would execute. Without a
+  platform (`--forge` omitted, none in config, no CI env), the forge section is left
+  unconsumed and its fields are linted in place.
 
-Diagnostics for an override-only entry come from the upstream harness, not from your
-`config.yaml`, so you cannot fix them in this repository.
+Diagnostics for an override-only entry come from the upstream harness, so you cannot
+fix them in this repository. The entry's `harness:` block is the exception. A
+diagnostic on a field that the block sets comes from your `config.yaml`. It
+carries the same field label as one from the upstream harness, so compare the
+field with your block. A diagnostic that names the block or a `harness.` field
+always comes from the block.
 
 Disabled agents (`enabled: false`) are skipped. Overlay `when` expressions evaluate
 against an empty event with `runtime.forge` and `config` available, like other CLI
@@ -118,6 +123,7 @@ prefix per level (`base.env.runner`, `base.overlays[<n>].…`).
 |-------|----------|---------|
 | `runner_env` | warning | `runner_env` is deprecated; use `env.runner` instead ([ADR 0055](../ADRs/0055-unified-env-var-delivery.md)) |
 | `env.sandbox` | warning | `env.sandbox` coexists with a `host_files` entry delivering `.env.d/` files; `env.sandbox` values take precedence on key collision |
+| `env.sandbox` | warning | One or more `env.sandbox` keys are reserved (runner infrastructure names or the sandbox credential deny-list, matched case-insensitively) and will be dropped instead of exported into the sandbox; the message names every dropped key. `fullsend run` and `fullsend lock` report the same warning. Because it is a warning, `--strict` fails on it |
 | `allowed_remote_resources` | warning | `allowed_remote_resources` is declared without `allow_runtime_fetch: true`; the implicit runtime fetch service start is deprecated — add `allow_runtime_fetch: true` to silence it |
 | `forge` | warning | `forge` is deprecated; use overlays with CEL `when` expressions instead ([ADR 0088](../ADRs/0088-cel-guarded-overlays.md)) |
 | `validation_loop.preflight_check` | error | The value looks like a bare script path (for example `scripts/common-preflight.sh`) rather than a self-contained command; `preflight_check` runs verbatim as a `sh -c` command on the host and is never fetched or resolved like `pre_script`/`post_script` — if a fetched harness script was intended, use `pre_script`; otherwise inline the command (for example `python3 -c 'import jsonschema'`) |
@@ -134,7 +140,7 @@ single document. Exit codes and what is linted are unchanged.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "success": true,
   "summary": {
     "errors": 0,
@@ -142,6 +148,7 @@ single document. Exit codes and what is linted are unchanged.
   },
   "diagnostics": [
     {
+      "code": "github-issue-url-deprecated",
       "agent": "my-agent",
       "severity": "warning",
       "field": "env.runner",
@@ -153,14 +160,57 @@ single document. Exit codes and what is linted are unchanged.
 
 | Field | Meaning |
 |-------|---------|
-| `schema_version` | Document version. `1` is the current schema |
+| `schema_version` | Document version. `2` is the current schema |
 | `success` | `true` when the process would exit 0 |
 | `summary.errors` | Count of error-severity items in `diagnostics` |
 | `summary.warnings` | Count of warning-severity items in `diagnostics` |
+| `diagnostics[].code` | Stable lowercase kebab-case identifier for the rule or failure class. Independent of `message`. Not an enum |
 | `diagnostics` | One object per finding. Harness lint diagnostics include `field`. Config-level diagnostics use `agent` `"config"`. A harness that fails to resolve, load, or validate is an error-severity item with an empty `field` |
 
-A missing `config.yaml`, an unreadable config file, or an invalid
-`--format` value still fails before a document is written.
+The document matches [`lint.schema.json`](lint.schema.json). Consumers can
+validate stdout against that file. The schema sets `additionalProperties`
+to `false`, so unknown fields are errors. Adding, removing, or renaming a
+field, or changing a type or enum, is an incompatible change: bump
+`schema_version` and update the schema in the same change. Do not add
+fields under version `2`. New diagnostic `code` values may appear without
+a bump; the schema does not enumerate them.
+
+### Schema versions
+
+| Version | Change |
+|---------|--------|
+| `1` | Initial JSON report ([#8995](https://github.com/fullsend-ai/fullsend/pull/8995), [#9066](https://github.com/fullsend-ai/fullsend/pull/9066)). No `code`. |
+| `2` | Required `diagnostics[].code`. |
+
+Older binaries still emit `schema_version` 1 with no `code`. Consumers
+should switch on `schema_version` and validate against the schema that
+ships with that CLI version. This repository's `lint.schema.json`
+describes the current version only.
+
+Text output is unchanged: `<agent>: <severity>: <field>: <message>`.
+Codes appear only in `--format json`.
+
+| Code | When |
+|------|------|
+| `runner-env-deprecated` | `runner_env` is set |
+| `sandbox-host-files-collision` | `env.sandbox` overlaps a `.env.d/` `host_files` entry |
+| `allowed-remote-implicit-fetch` | `allowed_remote_resources` without `allow_runtime_fetch: true` |
+| `forge-deprecated` | a `forge:` block was present before composition |
+| `trigger-invalid` | `trigger` fails CEL validation |
+| `preflight-check-path` | `preflight_check` looks like a bare script path |
+| `github-issue-url-deprecated` | `GITHUB_ISSUE_URL` is set or referenced |
+| `block-drops-runtime-fetch` | an `agents:` entry's `harness:` block leaves out a runtime fetch field that a layer below it sets, unless the block sets `allow_runtime_fetch: false` |
+| `block-drops-ci-variable-credential` | an `agents:` entry's `harness:` block leaves out `allow_ci_variable_credential` when a layer below it sets it to `true`, unless the block sets it to `false`; not reported when the forge is known and is not GitLab |
+| `block-trigger-ignored` | an `agents:` entry's `harness:` block sets `trigger` on a built-in agent |
+| `reserved-sandbox-env` | `env.sandbox` keys the sandbox will drop |
+| `config-invalid` | `config.yaml` semantic validation failed, including an invalid `forge:` |
+| `agents-siblings-invalid` | scoped lint: other agents' `agents[]` entries are invalid |
+| `agent-unavailable` | scoped lint: the named agent is missing, disabled, or invalid |
+| `harness-failed` | resolving, loading, or validating a harness failed |
+
+A missing `config.yaml`, an unreadable config file, an invalid `--forge`
+flag, or an invalid `--format` value still fails before a document is
+written.
 
 ## Exit codes
 
@@ -183,3 +233,4 @@ together at the end.
 - [Checking a trigger before you merge](../guides/user/cel-triggers-reference.md#checking-a-trigger-before-you-merge) for passing and failing `trigger` examples and a CI job
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) for harness and `config.yaml` layout
 - [CLI internals](../guides/dev/cli-internals.md) for the full command tree
+- [lint JSON schema](lint.schema.json) for `--format json`

@@ -12,11 +12,11 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
+| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude and pi runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors),
 including up to one `execute_tool` span per id-bearing tool call under each
-`agent` span (Claude Code today; pi and codex emit no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
+`agent` span (Claude Code and pi; codex emits no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
 capped at 1,024 per iteration.
 Level 3 adds the agent's conversation content to spans — enabled by one
 environment variable, exactly like Level 2's endpoint.
@@ -100,10 +100,11 @@ members included, masked a URL's userinfo, query or fragment in them,
 stripped an escape sequence or tag characters from them, or could not
 judge them at all (invalid UTF-8 or the replacement character): the parser cut the summary out of them before anything scanned it,
 so the secret could be there as a beginning. Where a runtime reports a summary and no
-arguments (pi, codex, OpenCode), its parser has already run the patterns
-over the summary and, for pi and codex, cut it: a value that straddles a
+arguments (codex, OpenCode), its parser has already run the patterns
+over the summary and, for codex, cut it: a value that straddles a
 cut stays in part, and one a pattern recognised stays as that pattern's
-mask. The agent runtime's own
+mask. The same holds for the result text the pi parser appends to a failed
+call's summary. The agent runtime's own
 content-logging variables (`OTEL_LOG_USER_PROMPTS`,
 `OTEL_LOG_ASSISTANT_RESPONSES`, etc.) are never set.
 
@@ -120,10 +121,13 @@ off. An unrecognized value disables capture; telemetry never fails a run.
 and `arguments`), and tool results — including any sub-agent activity,
 unattributed — as the `gen_ai.output.messages` span attribute: a JSON
 string following the
-[GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
-with a `finish_reason` of `stop` or `error`. Tool arguments, tool results, and the `id` that correlates a result with its call, are captured
-only when the runtime's stream provides them: Claude runs do; the pi and
-codex parsers emit none of the three yet
+[GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions-genai/blob/371eb36a5258cfef7d80328755d5ef65251c2145/model/gen-ai/gen-ai-output-messages.json)
+with a `finish_reason` of `stop` or `error`. The schema at that commit marks
+`finish_reason` as deprecated and no longer requires it; fullsend still
+emits it. Tool arguments, tool results, and the `id` that correlates a
+result with its call, are captured
+only when the runtime's stream provides them: Claude and pi runs do; the
+codex parser emits none of the three yet
 ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)).
 `arguments` holds the members of the call's input that name what was
 called, listed by tool, each redacted as text: `Bash` — `command`,
@@ -133,8 +137,12 @@ called, listed by tool, each redacted as text: `Bash` — `command`,
 `Grep` — `pattern`, `path`, `glob`, `type`, `output_mode`, `context`,
 `head_limit`, `multiline`, `-A`, `-B`, `-C`, `-i`, `-n`; `Glob` —
 `pattern`, `path`; `WebFetch` — `url`; `Agent` — `description`, `model`,
-`subagent_type`; `Skill` — `skill`. Nothing else of the input is
-recorded: a file body, an edit, a prompt, a notebook source, a todo list,
+`subagent_type`; `Skill` — `skill`. pi's tools have their own names:
+`bash` — `command`, `timeout`; `read` — `path`, `offset`, `limit`; `write`
+and `edit` — `path`; `grep` — `pattern`, `path`, `glob`, `ignoreCase`,
+`literal`, `context`, `limit`; `find` — `pattern`, `path`, `limit`; `ls` —
+`path`, `limit`; its `Agent` and `Task` — as `Agent` above. Nothing else of
+the input is recorded: a file body, an edit, a prompt, a notebook source, a todo list,
 any member whose value is an object or an array, and the whole input of
 a tool not listed here (every `mcp__` tool among them) are dropped —
 scanned first, so a secret in them still counts, but neither charged nor
@@ -179,7 +187,7 @@ On a retry iteration under `validation_loop.feedback_mode: append`, the
 prompt the runner composed — its fixed framing around the previous
 iteration's validation output — is recorded as `gen_ai.input.messages`: one
 `user` message with one text part, following the
-[GenAI input-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-input-messages.json).
+[GenAI input-messages schema](https://github.com/open-telemetry/semantic-conventions-genai/blob/371eb36a5258cfef7d80328755d5ef65251c2145/model/gen-ai/gen-ai-input-messages.json).
 The attribute is absent on the first iteration and on a retry without
 feedback, which send the runtime's fixed default prompt.
 
@@ -230,11 +238,12 @@ counts toward the 255,000 bytes. A tool result whose stream line
 exceeds the parser's 1 MiB bound is kept as an empty, marked
 `tool_call_response` part — the call was answered, its content is lost and
 its `is_error` unknown — provided the line shows the call id within its
-first 1 MiB, where Claude Code normally writes it (ahead of the content; an
+first 1 MiB, where Claude Code and pi normally write it (ahead of the content; an
 id serialized after the content is not recovered, and that call closes
 `unanswered`). Two cases are absent rather than truncated: any other stream
 line beyond 1 MiB is skipped whole by the parser, and results whose content is entirely non-text (for example
-images) produce no part. A result that mixed text with non-text blocks keeps
+images), or a pi result with no content list, produce no part unless the call
+failed. A result that mixed text with non-text blocks keeps
 its text and is marked `fullsend.truncated`; a failed call with empty
 output survives as a `tool_call_response` part carrying `is_error`. The SDK's span attribute length cap is
 lifted while capture is on; an explicit
@@ -282,8 +291,9 @@ run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 ```
 
 `execute_tool` spans are named `execute_tool <tool name>`. One starts when
-the runtime reports a tool call (its arguments complete) and ends when it
-reports the result — both are runner-side receipt times, which trail the
+the runtime reports a tool call (on Claude Code, when its arguments are
+complete; on pi, when `tool_execution_start` was read) and ends when it
+reports the result — both are runner-side times, which trail the
 sandbox by the pipe latency and the parser's decode of the line, stamped after the
 console renderer's output for the call (it prints nothing for a result) and
 before that event's Level 3 content processing. Events are handled one at a
@@ -299,7 +309,7 @@ receipt, marked `fullsend.tool.result_oversized` with no status and no
 `error.type` — the tool answered, and whether it failed was never decoded; a
 result whose call was never reported (its stream line was skipped) is a
 near-zero-duration span marked `fullsend.tool.unmatched`. Runtimes whose parsers
-emit no call ids (pi, codex) produce no `execute_tool` spans, and neither
+emit no call ids (codex) produce no `execute_tool` spans, and neither
 do server-side tools, whose result never arrives as a `tool_result`. Tool
 names and call ids get the redaction span content gets (runner environment
 and provider-only values, Unicode normalization, secret redaction, then
@@ -335,9 +345,10 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `gen_ai.tool.call.id` | `toolu_01…` | `execute_tool` (absent when the id carried a security finding — a tainted id is dropped, never substituted, so it cannot collide with another call's) |
 | `gen_ai.system` / `gen_ai.provider.name` | `anthropic` / `anthropic-vertex` | `agent` (serving endpoint of the model used on this span — varies by runtime; `system` is the pre-v1.37 name — both keys are emitted with the same value so EM-001 and modern backends agree. Not the runtime name: `fullsend.runtime` is the harness.) |
 | `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
-| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` (`input_tokens` includes the two cache counters, per the GenAI convention — see [Persisted token fields](#persisted-token-fields)) |
+| `gen_ai.usage.reasoning.output_tokens` | `4096` | `agent` (only when non-zero; a breakdown of `output_tokens` — see [Persisted token fields](#persisted-token-fields)) |
 
-Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate Fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
+Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
 
 The `agent` span's provider identity reflects only the parent run's serving endpoint. When a Pi run dispatches subagents on different vendors, their usage is folded into the same span's token/cost totals without its own provider attribution — a mixed-vendor Pi run can attach multi-provider usage to a span identified by a single provider.
 
@@ -351,11 +362,28 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 > must switch to `fullsend.runtime == "pi"` to identify Pi-originated spans,
 > or update their provider allowlist to include the resolved values above.
 
+> **Breaking change — input tokens:** `gen_ai.usage.input_tokens` on
+> `agent` spans used to be uncached input. It now includes the cache-read
+> and cache-creation counts, as the GenAI convention defines it. Consumers
+> that added the two cache attributes to it must stop doing so on spans
+> that carry `fullsend.usage.input_includes_cache`. See
+> [Persisted token fields](#persisted-token-fields).
+
+> **Breaking change — Codex and OpenCode output tokens:** `agent` spans from
+> the Codex and OpenCode runtimes used to report
+> `gen_ai.usage.output_tokens` without reasoning tokens. They now include
+> reasoning, and `gen_ai.usage.reasoning.output_tokens` is a breakdown of
+> that count. Consumers that added reasoning to output for those runtimes
+> must stop doing so on spans that carry the new key. Claude and pi spans
+> already counted reasoning inside output and do not change. See
+> [Persisted token fields](#persisted-token-fields).
+
 ### Fullsend-specific attributes
 
 | Attribute | Present on | Description |
 |-----------|------------|-------------|
 | `fullsend.runtime` | `agent` | Harness identity (`claude`, `pi`, …), distinct from `gen_ai.system` (the serving endpoint) |
+| `fullsend.usage.input_includes_cache` | `agent` | Emitted with `gen_ai.usage.input_tokens`, always `true`. Marks that count as including the two cache counters. Spans written before that change carry the count without it (see [Persisted token fields](#persisted-token-fields)) |
 | `fullsend.work_item_id` | `run` | Work item identity (e.g. `owner/repo#123`); primary cross-run correlation key |
 | `fullsend.agent` | `run` | Agent name |
 | `fullsend.cost_usd` | `run` (aggregated), `agent` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)) |
@@ -378,6 +406,59 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 | `fullsend.tool.unmatched` | `execute_tool` | Present (`true`) when a result arrived for a call the stream never reported; the span has near-zero duration |
 | `fullsend.tool.result_oversized` | `execute_tool` | Present (`true`) when the result's stream line exceeded the parser's 1 MiB bound: the call was answered but nothing of the result was decoded, so the span has no status and no `error.type` |
 | `fullsend.tool_spans.dropped` | `agent` | Present when the iteration hit the 1,024-span cap and at least one id-bearing call was refused a span: the number of `tool_use` events with a usable id that arrived past the cap, each counted once whatever its result later does; a result with no open span past the cap is not counted |
+
+### Forge and CI attributes
+
+Set on the root `run` span when they apply, and omitted (never empty) when
+they do not. Names follow the OpenTelemetry
+[VCS](https://opentelemetry.io/docs/specs/semconv/registry/attributes/vcs/)
+and
+[CICD](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/)
+semantic conventions. Repository, change and refs come from the normalized
+event, which GitHub and GitLab dispatch both deliver. Coverage still differs
+by source:
+
+- **GitHub:** pull request events and comments on pull requests carry
+  `head_sha`, so runs about a change record its head revision.
+- **GitLab:** the poller sets `head_sha` on every merge request event and on
+  comments on merge requests, so runs about a change record its head revision.
+  For a push to the source branch, it is the pushed head. For any other event,
+  it is the merge request's current head commit. If the poller cannot read the
+  merge request, `head_sha` is left unset and `vcs.ref.head.revision` is
+  omitted. The `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` fallback applies only when
+  fullsend runs inside your own merged-results pipeline; the agent pipelines
+  the poller creates are not merge request pipelines, so it is unset there.
+- **Jira:** `vcs.repository.url.full` is not recorded, since the work item's
+  URL is on the Jira host. `vcs.provider.name` comes from the forge the run
+  targets.
+
+A run without a normalized event (for example a local run with no
+`--event-file`) records only `vcs.provider.name`, the pipeline run, and a head
+revision from the environment.
+
+Inputs, in order of precedence:
+
+- **Head revision:** the normalized event's
+  `state.change_proposal.head_sha`, then `PR_HEAD_SHA`, then
+  `pull_request.head.sha` in the event at `GITHUB_EVENT_PATH` (GitHub), or
+  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` (GitLab). Values that are not a 40- or
+  64-character hex SHA are dropped.
+- **Pipeline run:** on GitHub Actions (`GITHUB_ACTIONS=true`),
+  `GITHUB_RUN_ID`, with the URL from `--run-url` or else
+  `GITHUB_SERVER_URL/GITHUB_REPOSITORY/actions/runs/GITHUB_RUN_ID`. On GitLab
+  CI (`GITLAB_CI=true`), `CI_PIPELINE_ID`, with the URL from `--run-url` or
+  else `CI_PIPELINE_URL`.
+
+| Attribute | Present on | Description |
+|-----------|------------|-------------|
+| `vcs.provider.name` | `run` | Code-hosting forge: `github` or `gitlab` |
+| `vcs.repository.url.full` | `run` | Target repository URL (e.g. `https://github.com/owner/repo`), without credentials. Taken from the work item's URL up to the repository path, so a GitLab install served under a relative URL keeps its prefix |
+| `vcs.change.id` | `run` | Pull request or merge request number, when the run is about one |
+| `vcs.ref.head.name` | `run` | Head branch of that change |
+| `vcs.ref.base.name` | `run` | Base branch of that change |
+| `vcs.ref.head.revision` | `run` | Head commit SHA of that change. Never `GITHUB_SHA` or `CI_COMMIT_SHA`, which name a merge or base commit on pull request and merged-results pipelines |
+| `cicd.pipeline.run.id` | `run` | CI run executing fullsend: `GITHUB_RUN_ID` on GitHub Actions, `CI_PIPELINE_ID` on GitLab CI. This can be a different repository or forge from the target |
+| `cicd.pipeline.run.url.full` | `run` | URL of that CI run: `--run-url` when given, otherwise built from the CI environment |
 
 ### Common attributes
 
@@ -422,9 +503,9 @@ tokens, output tokens, cache-creation tokens, cache-read tokens, and
 reasoning tokens. Fullsend has no visibility into the provider's pricing
 breakdown; it accepts the reported total.
 
-Token counts (including `cache_creation_input_tokens` and
-`cache_read_input_tokens`) are recorded as separate telemetry attributes.
-They are not inputs to any fullsend-side cost calculation.
+Fullsend records token counts as telemetry attributes, with cache creation
+and cache read as counters of their own. They are not inputs to any
+fullsend-side cost calculation.
 
 ### Cross-iteration aggregation
 
@@ -472,9 +553,13 @@ for how to apply list-price rates to the persisted token fields.
 Tracing backends may display their own cost estimates alongside
 `fullsend.cost_usd`. These are independent calculations:
 
-- **MLflow** estimates cost from token counts against its internal model
-  table. This estimate excludes cache-creation and cache-read token
-  pricing, which can dominate agent-run cost. See
+- **MLflow** (3.12 and later) estimates cost from the span's token counts,
+  including the cache-creation and cache-read counters. It prices them
+  through litellm when the server has it installed and through MLflow's
+  own model table otherwise. The result is still an estimate. It prices
+  all of a span's usage at the rates of the single model the span names,
+  and older MLflow and litellm versions handle the cache counters
+  differently. See
   [Tracing with MLflow — Cost column caveat](../user/tracing-with-mlflow.md#cost-column-caveat).
 - Other LLM-aware backends may apply similar token-based estimates.
 
@@ -511,36 +596,87 @@ the process dies before an `agent` span ends, the file may lack that span.
 
 | Kind | `agent` span attribute | `metrics.json` `token_usage` |
 |------|------------------------|------------------------------|
-| Uncached input | `gen_ai.usage.input_tokens` | `input` |
-| Output | `gen_ai.usage.output_tokens` | `output` |
+| Total input (uncached + cache creation + cache read) | `gen_ai.usage.input_tokens` | — (sum `input`, `cache_creation`, and `cache_read`) |
+| Uncached input | — (`input_tokens` minus the two cache attributes, on spans that carry `fullsend.usage.input_includes_cache`) | `input` |
+| Output | `gen_ai.usage.output_tokens` (includes reasoning) | `output` (excludes reasoning on Codex and OpenCode) |
 | Cache creation | `gen_ai.usage.cache_creation.input_tokens` | `cache_creation` |
 | Cache read | `gen_ai.usage.cache_read.input_tokens` | `cache_read` |
-| Reasoning | `gen_ai.usage.reasoning_tokens` | `reasoning` |
+| Reasoning | `gen_ai.usage.reasoning.output_tokens`, `gen_ai.usage.reasoning_tokens` (deprecated) | `reasoning` |
 
-The first four span attributes are emitted even when zero. The reasoning
-attribute is omitted when zero; `metrics.json` always serializes
+Fullsend emits the input, output and two cache attributes even when zero.
+The reasoning attributes are omitted when zero; `metrics.json` always serializes
 `token_usage.reasoning`, including `0`. Treat a missing reasoning attribute
-on a Fullsend `agent` span as zero recorded reasoning, not proof that the
+on a fullsend `agent` span as zero recorded reasoning, not proof that the
 provider consumed none.
 
-For Claude, pi, and Codex, input is uncached input: cache creation and cache
-read are separate counters. The reasoning rule depends on the runtime:
+> **Deprecated:** `gen_ai.usage.reasoning_tokens` is deprecated. Use
+> `gen_ai.usage.reasoning.output_tokens` instead.
+> Both keys carry the same value. Fullsend emits the deprecated key through
+> the first release that has the new key, and a later release removes it;
+> the removal is part of
+> [#9386](https://github.com/fullsend-ai/fullsend/issues/9386). Fall back to
+> the deprecated key only for `run-telemetry.jsonl` files written before
+> the new key existed. While both keys are present, a backend that keeps
+> unrecognized `gen_ai.usage.*` attributes as extra counters can count
+> reasoning twice in its totals.
+
+On `agent` spans, `gen_ai.usage.input_tokens` follows the
+[GenAI semantic convention](https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/model/gen-ai/registry.yaml#L192-L214):
+it includes cached tokens, so it is uncached input plus cache creation plus
+cache read. `metrics.json` `token_usage.input` is uncached input only; cache
+creation and cache read are separate counters there.
+
+A span written with this rule also carries
+`fullsend.usage.input_includes_cache` set to `true`. To price uncached
+input from such a span, subtract both cache attributes from `input_tokens`.
+A span that has `gen_ai.usage.input_tokens` but no marker was written by a
+build that predates the change, and its `input_tokens` is uncached input.
+Do not subtract the cache attributes there: the result is wrong and can be
+negative. Test for the marker, not for `service.version`. A build from
+source reports `dev` or a `git describe` string there, which is a bare
+commit id on a shallow clone. The version therefore does not say which
+rule a span follows.
+
+On `agent` spans, `gen_ai.usage.output_tokens` includes reasoning tokens on
+every runtime, and `gen_ai.usage.reasoning.output_tokens` is a breakdown of
+that count. This follows the
+[GenAI semantic convention](https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/model/gen-ai/registry.yaml#L221-L226).
+Do not add reasoning to span output. The one exception is a span written
+before the new key existed: it carries only the deprecated key, and on
+Codex and OpenCode its output excludes reasoning, as in `metrics.json`.
+
+`metrics.json` input is uncached input on all four runtimes, by different
+routes. Claude Code and pi report input and the cache counters as separate
+fields, and fullsend passes them through. Codex reports an input count
+that includes the cached parts, and fullsend subtracts them. The pinned
+OpenCode `1.19.1`
+[subtracts the cache counters from input](https://github.com/anomalyco/opencode/blob/v1.19.1/packages/opencode/src/session/session.ts#L361-L370)
+before fullsend reads it.
+
+`metrics.json` keeps the output and reasoning counters as each parser
+records them, so there the reasoning rule depends on the runtime:
 
 - **Codex:** Fullsend subtracts reasoning from the wire output count.
-  Persisted output and reasoning are disjoint, so add a reasoning term
-  whenever recorded reasoning is non-zero, including interrupted runs.
+  `token_usage.output` and `token_usage.reasoning` are disjoint, so add a
+  reasoning term whenever recorded reasoning is non-zero, including
+  interrupted runs. The `agent` span adds reasoning back into
+  `gen_ai.usage.output_tokens`.
 - **Claude:** Reasoning is a breakdown of output. Do not add it again.
   An interrupted iteration may lack the final reasoning count even when
   streamed output counts were captured.
-- **pi:** The pinned pi `1.3.0`
-  [usage schema](https://github.com/earendil-works/pi/blob/v1.3.0/packages/ai/src/types.ts#L451-L463)
+- **pi:** The pinned pi `1.6.0`
+  [usage schema](https://github.com/earendil-works/pi/blob/v1.6.0/packages/ai/src/types.ts#L467-L479)
   defines reasoning as a subset of output. Fullsend passes those fields
   through, so do not add reasoning again. Recheck the schema when pricing
   artifacts from a different pi version; sibling JSON fields and synthetic
   fixture totals alone do not establish whether counters overlap.
-- **OpenCode:** Fullsend passes its wire counters through. Verify the
-  provider/version's output, reasoning, and cache semantics before using
-  either formula; this guide does not establish their overlap.
+- **OpenCode:** The pinned OpenCode `1.19.1`
+  [subtracts reasoning from output](https://github.com/anomalyco/opencode/blob/v1.19.1/packages/opencode/src/session/session.ts#L371-L372)
+  before fullsend reads it, and fullsend passes its counters through. As
+  with Codex, `token_usage.output` excludes reasoning, so add a reasoning
+  term, and the `agent` span adds reasoning back into
+  `gen_ai.usage.output_tokens`. Input and the cache counters are disjoint,
+  as described above. Recheck when the pinned version changes.
 
 Codex and pi synthesize final usage from counters observed before an
 interruption. A completed turn or assistant message can report zero
@@ -549,63 +685,78 @@ reasoning; completion alone does not imply non-zero reasoning.
 ### Worked example
 
 Extract the relevant attributes from each `agent` span in the local OTLP
-JSONL file (see [Output file format](#output-file-format)):
+JSONL file (see [Output file format](#output-file-format)). The filter
+normalizes two fields, so old and new files read the same way. `input` is
+uncached input: on a span that carries
+`fullsend.usage.input_includes_cache` it is `gen_ai.usage.input_tokens`
+minus the two cache attributes, and on an older span, which has no such
+attribute, it is `gen_ai.usage.input_tokens` unchanged. `output` includes
+reasoning: for a Codex or OpenCode span written before
+`gen_ai.usage.reasoning.output_tokens` existed, the filter adds reasoning
+back:
 
 ```bash
 jq -c '
   .resourceSpans[]?.scopeSpans[]?.spans[]?
   | select(.name == "agent")
   | .attributes
-  | map({key: .key, value: (.value.intValue // .value.doubleValue // .value.stringValue)})
+  | map({key: .key, value: (.value.intValue // .value.doubleValue // .value.stringValue // .value.boolValue)})
   | from_entries
+  | (.["gen_ai.usage.cache_creation.input_tokens"] | tonumber) as $cache_creation
+  | (.["gen_ai.usage.cache_read.input_tokens"] | tonumber) as $cache_read
+  | (.["fullsend.usage.input_includes_cache"] == true) as $input_includes_cache
+  | ((.["gen_ai.usage.reasoning.output_tokens"] // .["gen_ai.usage.reasoning_tokens"] // 0) | tonumber) as $reasoning
+  | (has("gen_ai.usage.reasoning.output_tokens") | not) as $before_new_key
+  | (.["fullsend.runtime"] == "codex" or .["fullsend.runtime"] == "opencode") as $kept_reasoning_out
   | {
       runtime: .["fullsend.runtime"],
       model: .["gen_ai.request.model"],
-      input: (.["gen_ai.usage.input_tokens"] | tonumber),
-      output: (.["gen_ai.usage.output_tokens"] | tonumber),
-      cache_creation: (.["gen_ai.usage.cache_creation.input_tokens"] | tonumber),
-      cache_read: (.["gen_ai.usage.cache_read.input_tokens"] | tonumber),
-      reasoning: ((.["gen_ai.usage.reasoning_tokens"] // 0) | tonumber)
+      input: ((.["gen_ai.usage.input_tokens"] | tonumber)
+              - (if $input_includes_cache then $cache_creation + $cache_read else 0 end)),
+      output: ((.["gen_ai.usage.output_tokens"] | tonumber)
+               + (if $before_new_key and $kept_reasoning_out then $reasoning else 0 end)),
+      cache_creation: $cache_creation,
+      cache_read: $cache_read,
+      reasoning: $reasoning
     }
 ' run-telemetry.jsonl
 ```
 
 One extracted iteration could look like this (a projection of a span,
-not the raw OTLP envelope):
+not the raw OTLP envelope; the span itself carries
+`gen_ai.usage.input_tokens` = 751000):
 
 ```json
 {
   "runtime": "codex",
   "model": "example-model",
   "input": 1000,
-  "output": 500,
+  "output": 700,
   "cache_creation": 150000,
   "cache_read": 600000,
   "reasoning": 200
 }
 ```
 
-Using hypothetical list-price rates of $2.00 / $10.00 / $2.50 / $0.20 /
-$10.00 per million tokens (uncached input / output / cache creation / cache
-read / reasoning):
+Using hypothetical list-price rates of $2.00 / $10.00 / $2.50 / $0.20 per
+million tokens (uncached input / output / cache creation / cache read):
 
 ```text
 cost = 1000/1e6 * 2.00
-     + 500/1e6 * 10.00
+     + 700/1e6 * 10.00
      + 150000/1e6 * 2.50
      + 600000/1e6 * 0.20
-     + 200/1e6 * 10.00
-     = 0.002 + 0.005 + 0.375 + 0.120 + 0.002
+     = 0.002 + 0.007 + 0.375 + 0.120
      = $0.504
 ```
 
-The fifth term applies because this is Codex with non-zero reasoning.
-For Claude or the pinned pi version, output already includes reasoning:
-use the first four terms when reasoning has the same rate as other output.
-If the provider prices that subset differently, split output into
-`output - reasoning` and `reasoning` and price each once.
+Reasoning has no term of its own, because `output` already includes it on
+every runtime. If the provider prices reasoning differently from other
+output, split output into `output - reasoning` and `reasoning` and price
+each once. When you price from `metrics.json` instead, add a reasoning term
+for Codex and OpenCode, as described above.
 
-Pricing only uncached input and output would give $0.007 and miss the
+Pricing only uncached input and output would give $0.009 and miss the
 cache tokens that dominate this example. Substitute the rates and cache
 retention tiers from your provider's published list prices; these numbers
 are illustrative. The result is a list-price estimate and will differ from
@@ -616,7 +767,9 @@ also charge the root `run` span or add `metrics.json` totals: that counts
 the same usage twice. An iteration can include multiple models or providers
 through fallback and sub-agents, so a single span's model label may not be
 enough. Use the [per-model usage breakdown](../../cli/run.md#per-model-usage)
-where available. It has no per-model reasoning counter, so mixed-model
+where available. Its `output_tokens` come from `metrics.json`, not from the
+span: on Codex they exclude reasoning, so add the run-level `reasoning`
+count. It has no per-model reasoning counter, so mixed-model
 Codex reasoning cannot be priced exactly at different model rates from
 that breakdown alone. Missing attribution or usage makes the result an
 estimate, not a complete billing record.
@@ -633,7 +786,7 @@ Non-finite float values (NaN, Infinity) are encoded as proto3 JSON strings
 The file is written synchronously per span. Spans are flushed to disk as
 they complete; the file is the forensic record for crashed runs. Every
 `execute_tool` span is one such line, so a tool-heavy iteration (a hundred
-or more id-bearing calls — Claude Code today) adds up to that many, capped
+or more id-bearing calls — Claude Code and pi) adds up to that many, capped
 at 1,024.
 
 ## Cross-run trace correlation
@@ -663,6 +816,10 @@ GitHub webhooks do not support custom trace headers.
 
 Within a single work item, `fullsend.work_item_id` on the root `run` span
 is the correlation key for filtering related traces in a backend.
+
+For durable work-item continuity, see
+[ADR 0154](../../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)
+and the [Trace Context Reference](../../reference/trace-context.md).
 
 ## Operational behavior
 

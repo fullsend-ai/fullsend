@@ -28,6 +28,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -425,6 +426,10 @@ func setInheritedScriptSecrets(t *testing.T) {
 	t.Setenv("JIRA_TOKEN", "process-jira-token")
 	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
 	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "process-jira-client-id")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "process-jira-client-secret")
 }
 
 func envHasKey(env []string, key string) bool {
@@ -451,6 +456,10 @@ func TestChildScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
 		"JIRA_TOKEN",
 		"JIRA_USER_EMAIL",
+		"FULLSEND_JIRA_TOKEN",
+		"FULLSEND_JIRA_EMAIL",
+		"FULLSEND_JIRA_CLIENT_ID",
+		"FULLSEND_JIRA_CLIENT_SECRET",
 	} {
 		assert.False(t, envHasKey(env, key), "%s must not be inherited by child scripts", key)
 	}
@@ -461,6 +470,7 @@ func TestChildScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
 
 	// The parent process keeps them for its own Jira client and exporter.
 	assert.Equal(t, "process-jira-token", os.Getenv("JIRA_TOKEN"))
+	assert.Equal(t, "process-scoped-jira-token", os.Getenv("FULLSEND_JIRA_TOKEN"))
 	assert.Equal(t, "Authorization=Bearer%20traces", os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"))
 }
 
@@ -470,12 +480,16 @@ func TestChildScriptEnv_KeepsDeclaredNamedSecrets(t *testing.T) {
 	setInheritedScriptSecrets(t)
 
 	env := childScriptEnv(map[string]string{
-		"JIRA_TOKEN":      "process-jira-token",
-		"JIRA_USER_EMAIL": "bot@example.com",
+		"JIRA_TOKEN":          "process-jira-token",
+		"JIRA_USER_EMAIL":     "bot@example.com",
+		"FULLSEND_JIRA_TOKEN": "process-scoped-jira-token",
+		"FULLSEND_JIRA_EMAIL": "scoped-bot@example.com",
 	}, "")
 
 	assert.Equal(t, "process-jira-token", envLast(env, "JIRA_TOKEN"), "declared JIRA_TOKEN must reach the script")
 	assert.Equal(t, "bot@example.com", envLast(env, "JIRA_USER_EMAIL"), "declared JIRA_USER_EMAIL must reach the script")
+	assert.Equal(t, "process-scoped-jira-token", envLast(env, "FULLSEND_JIRA_TOKEN"), "declared FULLSEND_JIRA_TOKEN must reach the script")
+	assert.Equal(t, "scoped-bot@example.com", envLast(env, "FULLSEND_JIRA_EMAIL"), "declared FULLSEND_JIRA_EMAIL must reach the script")
 	assert.False(t, envHasKey(env, "OTEL_EXPORTER_OTLP_HEADERS"), "undeclared OTLP headers must still be stripped")
 }
 
@@ -570,6 +584,10 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 	for key, want := range map[string]bool{
 		"JIRA_TOKEN":                        true,
 		"JIRA_USER_EMAIL":                   true,
+		"FULLSEND_JIRA_TOKEN":               true,
+		"FULLSEND_JIRA_EMAIL":               true,
+		"FULLSEND_JIRA_CLIENT_ID":           true,
+		"FULLSEND_JIRA_CLIENT_SECRET":       true,
 		"OTEL_EXPORTER_OTLP_HEADERS":        true,
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS": true,
 		"OTEL_EXPORTER_OTLP_LOGS_HEADERS":   true,
@@ -581,6 +599,187 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 	} {
 		assert.Equal(t, want, isInheritedScriptDenyKey(key), key)
 	}
+}
+
+// TestProviderDefinitionsCannotExpandJiraSecrets verifies that provider
+// definitions may not expand the Jira repository secrets in config values
+// (argv), and may expand only FULLSEND_JIRA_TOKEN in credential values
+// (child environment): the token reaches the provider proxy so the jira-ro
+// provider can read it (#9411), while the email and the OAuth 2.0 client
+// credentials stay host-script-only (#9079).
+func TestProviderDefinitionsCannotExpandJiraSecrets(t *testing.T) {
+	const token, email = "jira-secret-token-9f8e7d", "jira-bot-secret@example.com"
+	const clientID, clientSecret = "jira-client-id-4c3b2a", "jira-client-secret-1a2b3c"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+	t.Setenv("FULLSEND_JIRA_EMAIL", email)
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", clientID)
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", clientSecret)
+	t.Setenv("HARMLESS_PROVIDER_VALUE", "harmless-ok")
+
+	binDir := t.TempDir()
+	argsLog := filepath.Join(binDir, "args.log")
+	envLog := filepath.Join(binDir, "env.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(argsLog) +
+		"\nprintf '%s|%s|%s|%s|%s\\n' \"${JIRA_TOKEN-<unset>}\" \"${JIRA_CRED2-<unset>}\" \"${JIRA_CRED3-<unset>}\" \"${JIRA_CRED4-<unset>}\" \"${OTHER-<unset>}\" >> " +
+		shellQuoteForTest(envLog) + "\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := sandbox.EnsureProvider(context.Background(), "jira-probe", "custom",
+		map[string]string{
+			"JIRA_TOKEN": "${FULLSEND_JIRA_TOKEN}",
+			"JIRA_CRED2": "${FULLSEND_JIRA_EMAIL}",
+			"JIRA_CRED3": "${FULLSEND_JIRA_CLIENT_ID}",
+			"JIRA_CRED4": "${FULLSEND_JIRA_CLIENT_SECRET}",
+			"OTHER":      "${HARMLESS_PROVIDER_VALUE}",
+		},
+		map[string]string{
+			"TOKEN_URL":  "https://x/${FULLSEND_JIRA_TOKEN}",
+			"EMAIL_URL":  "https://x/${FULLSEND_JIRA_EMAIL}",
+			"CLIENT_URL": "https://x/${FULLSEND_JIRA_CLIENT_ID}/${FULLSEND_JIRA_CLIENT_SECRET}",
+		}, false)
+	require.NoError(t, err)
+
+	args, err := os.ReadFile(argsLog)
+	require.NoError(t, err)
+	for _, secret := range []string{token, email, clientID, clientSecret} {
+		assert.NotContains(t, string(args), secret, "provider argv must never carry a Jira secret")
+	}
+	assert.Contains(t, string(args), "TOKEN_URL=https://x/", "a config value expands the token empty")
+
+	env, err := os.ReadFile(envLog)
+	require.NoError(t, err)
+	assert.Equal(t, token+"|<unset>|<unset>|<unset>|harmless-ok\n", string(env),
+		"only FULLSEND_JIRA_TOKEN expands in a credential value; the others expand empty")
+}
+
+// TestJiraTokenRefusedAtSandboxSites verifies that allowing
+// FULLSEND_JIRA_TOKEN in provider credential values (#9411) does not let it
+// reach the sandbox: env.sandbox values, expanded host_files content and
+// FULLSEND_OUTPUT_FILE still expand it empty, and the runtime redactor still
+// masks its value.
+func TestJiraTokenRefusedAtSandboxSites(t *testing.T) {
+	const token = "jira-secret-token-sandbox-5e6f"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+
+	assert.Equal(t, "x--y", expandSandboxEnvValue("x-${FULLSEND_JIRA_TOKEN}-y", harnessEnvExpand), "env.sandbox")
+	assert.NotContains(t, shellSafeExpandEnv("export JIRA_TOKEN=\"${FULLSEND_JIRA_TOKEN}\"\n"), token, "host_files content")
+	assert.Equal(t, "out-.json", expandRunnerEntry("FULLSEND_OUTPUT_FILE", "out-${FULLSEND_JIRA_TOKEN}.json", harnessEnvExpand),
+		"FULLSEND_OUTPUT_FILE")
+
+	assert.NotContains(t, redactFeedback("leaked "+token, nil), token, "the runtime redactor masks the token")
+	assert.Contains(t, security.RuntimeSecrets(), token)
+}
+
+// TestHarnessEnvLookup_OptionalJiraEmail verifies that a harness may declare
+// FULLSEND_JIRA_EMAIL in env.runner on a run without that secret: the
+// service-account mode has no email, and the reference must not fail
+// validation (#9079). The token stays required.
+func TestHarnessEnvLookup_OptionalJiraEmail(t *testing.T) {
+	h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{
+		"FULLSEND_JIRA_TOKEN": "${FULLSEND_JIRA_TOKEN}",
+		"FULLSEND_JIRA_EMAIL": "${FULLSEND_JIRA_EMAIL}",
+	}}}
+
+	t.Setenv("FULLSEND_JIRA_TOKEN", "scoped-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "bot@example.com")
+	v, ok := harnessEnvLookup("FULLSEND_JIRA_EMAIL")
+	assert.True(t, ok)
+	assert.Equal(t, "bot@example.com", v)
+
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_EMAIL"))
+	v, ok = harnessEnvLookup("FULLSEND_JIRA_EMAIL")
+	assert.True(t, ok, "an unset FULLSEND_JIRA_EMAIL must still resolve")
+	assert.Empty(t, v)
+	require.NoError(t, h.ValidateRunnerEnvWith(harnessEnvLookup))
+
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_TOKEN"))
+	_, ok = harnessEnvLookup("FULLSEND_JIRA_TOKEN")
+	assert.False(t, ok, "FULLSEND_JIRA_TOKEN is not optional")
+	err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is not set")
+	assert.NotContains(t, err.Error(), "FULLSEND_JIRA_EMAIL")
+}
+
+// TestDropEmptyOptionalRunnerEnv verifies that an empty FULLSEND_JIRA_EMAIL
+// is omitted from the effective runner env, so scripts see it absent rather
+// than empty, while a set email and other empty keys are kept (#9079).
+func TestDropEmptyOptionalRunnerEnv(t *testing.T) {
+	for _, empty := range []string{"", "  \n"} {
+		env := map[string]string{"FULLSEND_JIRA_EMAIL": empty, "FULLSEND_JIRA_TOKEN": "tok", "OTHER": ""}
+		dropEmptyOptionalRunnerEnv(env)
+		assert.NotContains(t, env, "FULLSEND_JIRA_EMAIL")
+		assert.Equal(t, map[string]string{"FULLSEND_JIRA_TOKEN": "tok", "OTHER": ""}, env)
+	}
+
+	env := map[string]string{"FULLSEND_JIRA_EMAIL": "bot@example.com"}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Equal(t, "bot@example.com", env["FULLSEND_JIRA_EMAIL"])
+
+	env = map[string]string{}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Empty(t, env)
+}
+
+// TestHarnessEnvLookup_OAuthClientCredentials verifies that a harness may
+// declare both Jira credential types in env.runner: the OAuth 2.0 client
+// credentials resolve when unset, and FULLSEND_JIRA_TOKEN resolves when
+// unset on a deployment that uses the client credentials instead (#9176).
+func TestHarnessEnvLookup_OAuthClientCredentials(t *testing.T) {
+	h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{
+		"FULLSEND_JIRA_TOKEN":         "${FULLSEND_JIRA_TOKEN}",
+		"FULLSEND_JIRA_EMAIL":         "${FULLSEND_JIRA_EMAIL}",
+		"FULLSEND_JIRA_CLIENT_ID":     "${FULLSEND_JIRA_CLIENT_ID}",
+		"FULLSEND_JIRA_CLIENT_SECRET": "${FULLSEND_JIRA_CLIENT_SECRET}",
+	}}}
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		t.Setenv(key, "")
+		require.NoError(t, os.Unsetenv(key))
+	}
+
+	// Token deployment: the client credentials are optional.
+	t.Setenv("FULLSEND_JIRA_TOKEN", "scoped-token")
+	for _, key := range []string{"FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		v, ok := harnessEnvLookup(key)
+		assert.True(t, ok, "an unset %s must still resolve", key)
+		assert.Empty(t, v)
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(harnessEnvLookup))
+
+	// OAuth deployment: the token is optional.
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_TOKEN"))
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "client-id")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "client-secret")
+	v, ok := harnessEnvLookup("FULLSEND_JIRA_TOKEN")
+	assert.True(t, ok, "FULLSEND_JIRA_TOKEN is optional with client credentials")
+	assert.Empty(t, v)
+	v, ok = harnessEnvLookup("FULLSEND_JIRA_CLIENT_SECRET")
+	assert.True(t, ok)
+	assert.Equal(t, "client-secret", v)
+	require.NoError(t, h.ValidateRunnerEnvWith(harnessEnvLookup))
+
+	// Neither: the token is required again.
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_CLIENT_ID"))
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_CLIENT_SECRET"))
+	_, ok = harnessEnvLookup("FULLSEND_JIRA_TOKEN")
+	assert.False(t, ok)
+}
+
+// TestDropEmptyOptionalRunnerEnv_OAuth verifies that empty OAuth client
+// credentials are omitted, and an empty FULLSEND_JIRA_TOKEN is omitted on a
+// deployment that uses the client credentials (#9176).
+func TestDropEmptyOptionalRunnerEnv_OAuth(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "")
+	env := map[string]string{"FULLSEND_JIRA_CLIENT_ID": "", "FULLSEND_JIRA_CLIENT_SECRET": " ", "FULLSEND_JIRA_TOKEN": ""}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Equal(t, map[string]string{"FULLSEND_JIRA_TOKEN": ""}, env, "the token is not optional without client credentials")
+
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "client-id")
+	env = map[string]string{"FULLSEND_JIRA_CLIENT_ID": "client-id", "FULLSEND_JIRA_TOKEN": ""}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Equal(t, map[string]string{"FULLSEND_JIRA_CLIENT_ID": "client-id"}, env)
 }
 
 func TestAgentSpanStartAttrs(t *testing.T) {
@@ -627,16 +826,121 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic"))
 	assert.Contains(t, a, attribute.String("gen_ai.request.model", "claude-opus-4-6"))
 	assert.Contains(t, a, attribute.String("fullsend.runtime", "claude"))
-	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
+	// input_tokens includes cached tokens: 11 + 109938 + 38832.
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 148781))
+	assert.Contains(t, a, attribute.Bool("fullsend.usage.input_includes_cache", true))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 1505))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", 38832))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", 109938))
 	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
 	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 11))
 
-	// reasoning_tokens should be absent when zero.
-	assert.NotContains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 0),
-		"reasoning_tokens attribute should be omitted when zero")
+	// Both reasoning keys should be absent when zero.
+	for _, kv := range a {
+		assert.NotEqual(t, "gen_ai.usage.reasoning.output_tokens", string(kv.Key),
+			"reasoning.output_tokens attribute should be omitted when zero")
+		assert.NotEqual(t, "gen_ai.usage.reasoning_tokens", string(kv.Key),
+			"reasoning_tokens attribute should be omitted when zero")
+	}
+}
+
+// TestAgentSpanEndAttrs_InputTokensIncludeCache pins gen_ai.usage.input_tokens
+// to the GenAI semconv meaning (cached tokens included). Backends that price
+// from the convention subtract the cache counters back out; emitting uncached
+// input there made MLflow report negative costs (#9532).
+func TestAgentSpanEndAttrs_InputTokensIncludeCache(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		input, cacheRead, cacheWrite int
+		wantInput                    int
+	}{
+		// Token counts from the first trace reported in #9532.
+		{name: "reported trace", input: 229, cacheRead: 4899982, cacheWrite: 909507, wantInput: 5809718},
+		{name: "no cache tokens", input: 500, wantInput: 500},
+		{name: "cache read only", input: 10, cacheRead: 2000, wantInput: 2010},
+		{name: "cache creation only", input: 10, cacheWrite: 3000, wantInput: 3010},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := agentruntime.RunMetrics{
+				Model:                    "claude-opus-4-6",
+				InputTokens:              tc.input,
+				OutputTokens:             118001,
+				CacheReadInputTokens:     tc.cacheRead,
+				CacheCreationInputTokens: tc.cacheWrite,
+			}
+			a := agentSpanEndAttrs(1, 0, "anthropic", "claude", &m)
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", tc.wantInput))
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 118001))
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", tc.cacheRead))
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", tc.cacheWrite))
+			// The marker is unconditional: a span with no cache tokens is
+			// still a span written with the inclusive rule.
+			assert.Contains(t, a, attribute.Bool("fullsend.usage.input_includes_cache", true))
+			// Building the attributes must not change the input count they
+			// read.
+			assert.Equal(t, tc.input, m.InputTokens)
+		})
+	}
+}
+
+// TestAgentSpan_InputMarkerReachesFileSink reads an agent span back from
+// run-telemetry.jsonl. The tracing guide's jq example decides whether to
+// subtract the cache counters by testing for the marker attribute, so the
+// marker has to be present in the file, next to the inclusive input count.
+func TestAgentSpan_InputMarkerReachesFileSink(t *testing.T) {
+	t.Setenv("OTEL_SDK_DISABLED", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+
+	dir := t.TempDir()
+	tracer, cleanup := telemetry.Setup(dir, "test")
+	_, span := tracer.Start(context.Background(), "agent")
+	m := &agentruntime.RunMetrics{
+		Model:                    "example-model",
+		InputTokens:              1000,
+		CacheCreationInputTokens: 150000,
+		CacheReadInputTokens:     600000,
+	}
+	finalizeAgentSpan(span, nil, 1, 0, "anthropic", "claude", m, "", nil)
+	cleanup(context.Background())
+
+	raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
+	require.NoError(t, err)
+
+	type otlpLine struct {
+		ResourceSpans []struct {
+			ScopeSpans []struct {
+				Spans []struct {
+					Name       string `json:"name"`
+					Attributes []struct {
+						Key   string         `json:"key"`
+						Value map[string]any `json:"value"`
+					} `json:"attributes"`
+				} `json:"spans"`
+			} `json:"scopeSpans"`
+		} `json:"resourceSpans"`
+	}
+	values := map[string]map[string]any{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var decoded otlpLine
+		require.NoError(t, json.Unmarshal([]byte(line), &decoded), "each line is one OTLP TracesData message")
+		for _, rs := range decoded.ResourceSpans {
+			for _, ss := range rs.ScopeSpans {
+				for _, s := range ss.Spans {
+					if s.Name != "agent" {
+						continue
+					}
+					for _, a := range s.Attributes {
+						values[a.Key] = a.Value
+					}
+				}
+			}
+		}
+	}
+	assert.Equal(t, map[string]any{"boolValue": true}, values["fullsend.usage.input_includes_cache"])
+	assert.Equal(t, map[string]any{"intValue": "751000"}, values["gen_ai.usage.input_tokens"])
+	assert.Equal(t, map[string]any{"intValue": "150000"}, values["gen_ai.usage.cache_creation.input_tokens"])
+	assert.Equal(t, map[string]any{"intValue": "600000"}, values["gen_ai.usage.cache_read.input_tokens"])
 }
 
 func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
@@ -648,8 +952,65 @@ func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
 
 	a := agentSpanEndAttrs(1, 0, "anthropic", "claude", &m)
 	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic"))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning.output_tokens", 42),
+		"semconv reasoning.output_tokens attribute should be present when non-zero")
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 42),
-		"reasoning_tokens attribute should be present when non-zero")
+		"deprecated reasoning_tokens attribute should be emitted alongside until it is removed")
+}
+
+// TestAgentSpanEndAttrs_OutputIncludesReasoning pins what the span does with
+// each runtime's counters so that gen_ai.usage.reasoning.output_tokens is a
+// subset of gen_ai.usage.output_tokens (#9386). Codex and OpenCode metrics
+// keep reasoning out of output, so the span adds it back. Claude Code and pi
+// metrics already count reasoning inside output, so the span passes their
+// output through unchanged; nothing here checks those two parsers.
+func TestAgentSpanEndAttrs_OutputIncludesReasoning(t *testing.T) {
+	intAttrs := func(kvs []attribute.KeyValue) map[attribute.Key]int64 {
+		out := map[attribute.Key]int64{}
+		for _, kv := range kvs {
+			if kv.Value.Type() == attribute.INT64 {
+				out[kv.Key] = kv.Value.AsInt64()
+			}
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		runtime    string
+		output     int
+		reasoning  int
+		wantOutput int64
+	}{
+		{runtime: "claude", output: 500, reasoning: 200, wantOutput: 500},
+		{runtime: "pi", output: 500, reasoning: 200, wantOutput: 500},
+		{runtime: "codex", output: 500, reasoning: 200, wantOutput: 700},
+		{runtime: "opencode", output: 500, reasoning: 200, wantOutput: 700},
+		// Reasoning larger than the visible output: a backend that subtracts
+		// the reasoning key from output must not be left with a negative.
+		{runtime: "codex", output: 100, reasoning: 5000, wantOutput: 5100},
+	} {
+		t.Run(fmt.Sprintf("%s/%d+%d", tc.runtime, tc.output, tc.reasoning), func(t *testing.T) {
+			m := agentruntime.RunMetrics{OutputTokens: tc.output, ReasoningTokens: tc.reasoning}
+			got := intAttrs(agentSpanEndAttrs(1, 0, "provider", tc.runtime, &m))
+
+			assert.Equal(t, tc.wantOutput, got["gen_ai.usage.output_tokens"])
+			assert.Equal(t, int64(tc.reasoning), got["gen_ai.usage.reasoning.output_tokens"])
+			assert.Equal(t, int64(tc.reasoning), got["gen_ai.usage.reasoning_tokens"])
+			if agentruntime.OutputExcludesReasoning(tc.runtime) {
+				assert.LessOrEqual(t, got["gen_ai.usage.reasoning.output_tokens"], got["gen_ai.usage.output_tokens"],
+					"once the span adds reasoning back, the reasoning key is a subset of output")
+			}
+			assert.Equal(t, tc.output, m.OutputTokens, "the metrics passed in must not be modified")
+		})
+	}
+
+	t.Run("codex without reasoning", func(t *testing.T) {
+		m := agentruntime.RunMetrics{OutputTokens: 500}
+		got := intAttrs(agentSpanEndAttrs(1, 0, "provider", "codex", &m))
+		assert.Equal(t, int64(500), got["gen_ai.usage.output_tokens"])
+		assert.NotContains(t, got, attribute.Key("gen_ai.usage.reasoning.output_tokens"))
+		assert.NotContains(t, got, attribute.Key("gen_ai.usage.reasoning_tokens"))
+	})
 }
 
 func TestAgentSpanEndAttrs_IdentityTuple(t *testing.T) {
@@ -1135,6 +1496,21 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		assert.Equal(t, codes.Ok, s.Status.Code)
 		_, hasMarker := attrsOf(s)["fullsend.transcript_error"]
 		assert.False(t, hasMarker, "no transcript marker on clean iterations")
+	})
+
+	t.Run("reasoning keys and inclusive output land on the span", func(t *testing.T) {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+		m := &agentruntime.RunMetrics{Model: "example-model", OutputTokens: 500, ReasoningTokens: 200}
+		finalizeAgentSpan(span, nil, 1, 0, "openai", "codex", m, "", nil)
+		ended := rec.Ended()
+		require.Len(t, ended, 1)
+		attrs := attrsOf(tracetest.SpanStubFromReadOnlySpan(ended[0]))
+		assert.Equal(t, int64(700), attrs["gen_ai.usage.output_tokens"].AsInt64(),
+			"codex output on the span includes reasoning")
+		assert.Equal(t, int64(200), attrs["gen_ai.usage.reasoning.output_tokens"].AsInt64())
+		assert.Equal(t, int64(200), attrs["gen_ai.usage.reasoning_tokens"].AsInt64())
 	})
 
 	t.Run("invalid UTF-8 in the model attribute is repaired", func(t *testing.T) {
@@ -1748,6 +2124,65 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, content, string(escaped[1:len(escaped)-1]),
 		"the full content JSON must appear byte-intact in the file sink")
+}
+
+// TestAgentSpan_ReasoningKeysReachFileSink drives the real telemetry.Setup
+// file exporter and reads run-telemetry.jsonl back: an agent span with
+// reasoning tokens must carry both reasoning keys there, next to an output
+// count that includes them. It is the closest a unit test gets to the
+// "real run shows both keys" check in #9386.
+func TestAgentSpan_ReasoningKeysReachFileSink(t *testing.T) {
+	t.Setenv("OTEL_SDK_DISABLED", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+
+	dir := t.TempDir()
+	tracer, cleanup := telemetry.Setup(dir, "test")
+	_, span := tracer.Start(context.Background(), "agent")
+	m := &agentruntime.RunMetrics{Model: "example-model", OutputTokens: 500, ReasoningTokens: 200}
+	finalizeAgentSpan(span, nil, 1, 0, "openai", "codex", m, "", nil)
+	cleanup(context.Background())
+
+	raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
+	require.NoError(t, err)
+
+	type otlpLine struct {
+		ResourceSpans []struct {
+			ScopeSpans []struct {
+				Spans []struct {
+					Name       string `json:"name"`
+					Attributes []struct {
+						Key   string `json:"key"`
+						Value struct {
+							IntValue string `json:"intValue"`
+						} `json:"value"`
+					} `json:"attributes"`
+				} `json:"spans"`
+			} `json:"scopeSpans"`
+		} `json:"resourceSpans"`
+	}
+	ints := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var decoded otlpLine
+		require.NoError(t, json.Unmarshal([]byte(line), &decoded), "each line is one OTLP TracesData message")
+		for _, rs := range decoded.ResourceSpans {
+			for _, ss := range rs.ScopeSpans {
+				for _, s := range ss.Spans {
+					if s.Name != "agent" {
+						continue
+					}
+					for _, a := range s.Attributes {
+						if a.Value.IntValue != "" {
+							ints[a.Key] = a.Value.IntValue
+						}
+					}
+				}
+			}
+		}
+	}
+	assert.Equal(t, "700", ints["gen_ai.usage.output_tokens"])
+	assert.Equal(t, "200", ints["gen_ai.usage.reasoning.output_tokens"])
+	assert.Equal(t, "200", ints["gen_ai.usage.reasoning_tokens"])
 }
 
 // TestContentCapture_GateOffProducesNoContent is the negative control: with

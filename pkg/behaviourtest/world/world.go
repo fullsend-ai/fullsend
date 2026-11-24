@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
@@ -41,6 +42,11 @@ type World struct {
 	// summary and to scope the repository's runs to this scenario.
 	ScenarioName  string
 	ScenarioBegin time.Time
+
+	// ScenarioURI is the scenario's feature file as godog names it,
+	// set by the Before hook. Failure records carry it so a retried
+	// run can rerun only the failed scenarios.
+	ScenarioURI string
 
 	// SavedLogRunIDs records the workflow runs whose logs have already
 	// been written under BEHAVIOUR_ARTIFACT_DIR during the scenario, so
@@ -107,6 +113,13 @@ type World struct {
 	// slot with it. Empty when the driver leases by repo name only.
 	LeasedRepoOrg string
 
+	// RepoFreshlyInstalled is true when fullsend was installed into the
+	// leased repository for this scenario (install.RepoLease.FreshInstall),
+	// so the scenario sends the repository's first events. A
+	// not-dispatched failure whose workflow never ran there is classified
+	// infrastructure (#9779).
+	RepoFreshlyInstalled bool
+
 	// LeaseOwned reports whether the repository under the leased slot's
 	// name is still this scenario's lease (install.LeaseVerifier). The
 	// After hook sets it before scenario cleanup, which consults it before
@@ -146,6 +159,16 @@ type World struct {
 	// (like other driver fields) and safe for concurrent use.
 	// Nil when no driver is configured.
 	Driver install.Driver
+
+	// Failures records classified suite failures — infrastructure vs
+	// scenario — for the whole run. It is initialized once on the
+	// template World (newTemplateWorld) so both suite runners get one
+	// recorder per run, and shared by reference through Clone (a
+	// shallow copy): every scenario clone appends to the same recorder.
+	// Scenarios run concurrently, so the recorder is mutex-protected;
+	// its methods are nil-receiver-safe, so hand-built Worlds without a
+	// recorder keep working.
+	Failures *behaviourfail.Recorder
 
 	// OutsiderSCM is an SCM driver authenticated as fstest-outsider, a
 	// GitHub User with no collaborator access. Used by the OWNERS
@@ -228,6 +251,25 @@ type World struct {
 	// CleanupScenario deletes it before the leased repo is deallocated.
 	GatewayAPIKeySecretSet bool
 
+	// RunnerSecretsSecretSet records that this scenario set the enrolled
+	// repo's FULLSEND_GITHUB_RUNNER_SECRETS secret (ADR 0136).
+	// CleanupScenario deletes it before the leased repo is deallocated.
+	RunnerSecretsSecretSet bool
+
+	// VaultServer is the feature-scoped OpenBao server the scenario's
+	// Vault steps use (ADR 0155). It is shared by the feature's
+	// scenarios and stopped at job cleanup, not by CleanupScenario.
+	VaultServer install.VaultServer
+	// VaultScenarioID prefixes the scenario's synthetic secret paths on
+	// the shared server, so scenarios never read each other's secrets.
+	VaultScenarioID string
+	// VaultSecrets maps a secret name to the synthetic value and KV v2
+	// read path the scenario stored, and VaultOverrideValues to the
+	// value an untrusted override pointed at. The values are registered
+	// with the redactor; steps compare their fingerprints only.
+	VaultSecrets        map[string]VaultSecret
+	VaultOverrideValues map[string]string
+
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
 	// CleanupScenario removes both.
@@ -237,6 +279,26 @@ type World struct {
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State
 	JiraConfigDir  string // temp dir holding .fullsend/ layout for the poller
+
+	// JiraPollerLog is the standard-logger output captured during the last
+	// "the Jira poller runs" step. The poller reports validation skips
+	// there, not in the dispatch output, so a Then step can tell a
+	// validation skip from any other reason an event produced no dispatch.
+	JiraPollerLog string
+
+	// JiraPollCLIOutput and JiraPollCLIExitCode record the last
+	// `fullsend poll --input-driver jira-poll` run by the Jira poll CLI step;
+	// JiraPollCLIOutputPath is the --output path that run was given.
+	JiraPollCLIOutput     string
+	JiraPollCLIExitCode   int
+	JiraPollCLIOutputPath string
+
+	// JiraTransport holds the GitLab-target transport-bounds scenario
+	// state (steps/jirapoll_transport.go): the local harnesses registered
+	// for the production CEL matcher, the target project, and the agent
+	// pipelines the fake GitLab transport recorded. Set by the "the Jira
+	// poller dispatches to the GitLab project" step; nil otherwise.
+	JiraTransport *JiraTransportState
 
 	// PlaybackEntries accumulates the ordered list of canned-result
 	// directories a playback scenario will serve, built up by "a <agent>
@@ -301,6 +363,38 @@ type World struct {
 	// repositories it lists; the probe's shim branch is tracked in
 	// CreatedBranches.
 	BotRoleProbe *BotRoleProbe
+}
+
+// JiraTransportState is the GitLab-target transport-bounds scenario state
+// (steps/jirapoll_transport.go). The scenarios run the real Jira poller
+// against the mock Jira server with the production CEL matcher over local
+// harness files, and dispatch through the real GitLab dispatch door
+// (poll.Poller.DispatchJiraEvent) onto a fake GitLab API that records the
+// agent pipelines it is asked to create.
+type JiraTransportState struct {
+	// Project is the GitLab project path the poller dispatches to.
+	Project string
+	// Harnesses are the local harnesses registered in the scenario's
+	// .fullsend config, one per "a local harness" step.
+	Harnesses []JiraTransportHarness
+	// Pipelines records every agent pipeline the dispatch door asked the
+	// GitLab API to create, in order.
+	Pipelines []JiraTransportPipeline
+}
+
+// JiraTransportHarness is one local harness registered for a Jira
+// transport scenario: its agent name, role, and CEL trigger.
+type JiraTransportHarness struct {
+	Name    string
+	Role    string
+	Trigger string
+}
+
+// JiraTransportPipeline is one agent pipeline creation the fake GitLab
+// transport recorded: the stage and the RESOURCE_KEY the dispatch carried.
+type JiraTransportPipeline struct {
+	Stage       string
+	ResourceKey string
 }
 
 // MintStatus is the state of one CLI mint status scenario: the mint
@@ -479,14 +573,21 @@ type MintProbeResult struct {
 	RepositorySelection string            `json:"repository_selection,omitempty"`
 	GrantedRepos        []string          `json:"granted_repos,omitempty"`
 	GrantedPermissions  map[string]string `json:"granted_permissions,omitempty"`
+
+	// TokenHSTS and HealthHSTS are the Strict-Transport-Security values
+	// of the mint's /v1/token and /health responses, empty when the
+	// header or the response is missing.
+	TokenHSTS  string `json:"hsts_token,omitempty"`
+	HealthHSTS string `json:"hsts_health,omitempty"`
 }
 
 // Clone creates a shallow copy of w. Drivers and shared state (SCM,
-// CI, Driver) are shared by reference — this is safe because the
-// production implementations are immutable wrappers:
+// CI, Driver, Failures) are shared by reference — this is safe because
+// the shared types are safe for concurrent use:
 //   - scm/github.Driver holds only a forge.Client (concurrent-safe).
 //   - ci/githubactions.Driver holds a forge.Client and an immutable Token.
 //   - install.Driver is concurrent-safe by contract.
+//   - behaviourfail.Recorder is mutex-protected.
 //
 // Race tests in each driver package (TestConcurrentAccess,
 // TestConcurrentStateAccess) verify the real types under -race with
@@ -513,4 +614,11 @@ const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"
 // BT is per-repo only; config always lives under .fullsend/.
 func (w *World) BehaviourScriptPath() string {
 	return filepath.Join(".fullsend", BehaviourScriptRepoPath)
+}
+
+// VaultSecret is one synthetic secret a Vault scenario stored: the value
+// a consumer should receive and the KV v2 path it was written to.
+type VaultSecret struct {
+	Value string
+	Path  string
 }

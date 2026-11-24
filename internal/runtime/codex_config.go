@@ -84,8 +84,8 @@ const codexAuthTimeoutMS = 5000
 //
 // `[projects."<repo>"] trust_level = "untrusted"` pins the target repo's trust
 // decision, so its own `.codex/` layer (settings, hooks, instructions) never
-// loads. It has to be stated: codex records a trust level for a git checkout
-// it starts in when none is set, and "none" is not the same as untrusted.
+// loads. It has to be stated: "none" is not the same as untrusted, and codex
+// skips a project's own AGENTS.md only for an explicit untrusted entry.
 // This is the codex equivalent of pi's defaultProjectTrust "never".
 //
 // Deliberately absent:
@@ -118,12 +118,29 @@ const codexAuthTimeoutMS = 5000
 // agent (ADR 0126) `enabled = true` with the roster, depth one, four open
 // children and the run-level child model. `[features] multi_agent = false`
 // is not enough to turn the tools off: the model's catalog entry overrides
-// it (verified on 0.157.0, 0.158.0 and 0.159.3).
+// it (verified on 0.157.0, 0.158.0 and 0.159.3; the resolution order is
+// unchanged through 0.170.0).
 //
-// `[features] multi_agent_v2 = false` states codex's default so that the
-// `[agents]` table decides: codex checks this feature first, and when it is
-// on the V2 collaboration tools come back for every model (verified on
-// 0.159.3). On its own the key removes nothing.
+// The `[features.multi_agent_v2]` table decides the collaboration protocol
+// of the run and of every child, whatever its model: codex checks this
+// feature before `[agents] enabled`. When it is on, the root gets the V2
+// tools whatever its model (verified on 0.159.3, unchanged through 0.170.0) and
+// a child gets them only when its own model selects V2 in the catalog
+// (collab_tools_enabled, 0.170.0). `enabled = false` is codex's default,
+// the same as the scalar `[features] multi_agent_v2 = false`, stated so
+// that the `[agents]` table decides. `enabled = true`, for an admitted V2
+// parent with a roster (ADR 0159 decision 1), brings
+// `disable_direct_message = true` (no send_message or followup_task) and
+// `expose_spawn_agent_model_overrides = false` (no model or
+// reasoning_effort in the spawn schema) with it, and `max_wait_timeout_ms`
+// (codexWaitTimeoutMaxMS, #9657), which sets the max in the V2 wait's schema
+// and makes the V2 wait refuse a longer `timeout_ms`, and only then: the
+// table is `deny_unknown_fields` (MultiAgentV2ConfigToml), so a bump that
+// drops any of the keys would otherwise refuse every run's config, V1 and
+// single-context ones included. V1 has no such setting (its wait limits are
+// constants in codex), so on V1 the dispatch note's rule is the only one.
+// `max_concurrent_threads_per_session` is never rendered here: codex derives the V2 cap from the `[agents]` key
+// plus one for the root, so `[agents]` at 4 already yields four children.
 //
 // `[model_providers.fullsend-gateway]` is rendered only when an
 // inference.gateway block applies (codex_gateway.go): a second runner-owned
@@ -160,7 +177,12 @@ enabled = false
 
 [features]
 plugins = false
-multi_agent_v2 = false
+
+[features.multi_agent_v2]
+enabled = {{ .MultiAgentV2 }}{{ if .MultiAgentV2 }}
+disable_direct_message = true
+max_wait_timeout_ms = {{ .WaitTimeoutMaxMS }}
+expose_spawn_agent_model_overrides = false{{ end }}
 
 {{ .AgentsBlock }}
 
@@ -203,7 +225,13 @@ type codexConfigData struct {
 	AuthCommand           string
 	ProjectKey            string
 	// AgentsBlock arrives rendered by codexAgentsBlock, its strings quoted.
-	AgentsBlock       string
+	AgentsBlock string
+	// MultiAgentV2 turns the collaboration V2 table on, with its
+	// restriction keys; false renders the table at codex's default.
+	MultiAgentV2 bool
+	// WaitTimeoutMaxMS is the V2 wait's `max_wait_timeout_ms`, rendered only
+	// when MultiAgentV2 is on (codexWaitTimeoutMaxMS).
+	WaitTimeoutMaxMS  int
 	RefreshIntervalMS int
 	TimeoutMS         int
 	// GatewayProviderID, GatewayBaseURL and GatewayAuthCommand render the
@@ -221,10 +249,16 @@ type codexConfigData struct {
 // fullsend-gateway provider's base_url (codexGatewayBaseURL), or "" when no
 // inference.gateway block applies. roles is the roster Bootstrap registers
 // for a delegating agent (empty otherwise) and defaultSubagentModel the
-// run-level child model it resolved with them.
-func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string, roles []codexRole, defaultSubagentModel, childEffort string) ([]byte, error) {
+// run-level child model it resolved with them. multiAgentV2 is true for a
+// parent admitted on collaboration V2, which needs the roster: the table
+// overrides `[agents] enabled = false`, so V2 without a roster would give
+// the multi-agent tools to an agent that runs in one context.
+func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string, roles []codexRole, defaultSubagentModel, childEffort string, multiAgentV2 bool) ([]byte, error) {
 	if repoDir == "" {
 		return nil, fmt.Errorf("rendering codex %s: the target repository path is required", codexConfigFile)
+	}
+	if multiAgentV2 && len(roles) == 0 {
+		return nil, fmt.Errorf("rendering codex %s: collaboration V2 needs a registered roster", codexConfigFile)
 	}
 	data := codexConfigData{
 		DefaultProviderID:     codexProviderID,
@@ -234,6 +268,8 @@ func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL
 		AuthCommand:           codexTOMLString(configDir + "/" + codexAuthScriptFile),
 		ProjectKey:            codexTOMLKey(repoDir),
 		AgentsBlock:           codexAgentsBlock(configDir, roles, defaultSubagentModel, childEffort),
+		MultiAgentV2:          multiAgentV2,
+		WaitTimeoutMaxMS:      codexWaitTimeoutMaxMS,
 		RefreshIntervalMS:     codexAuthRefreshIntervalMS,
 		TimeoutMS:             codexAuthTimeoutMS,
 	}
@@ -382,11 +418,17 @@ type codexHookEntry struct {
 	Timeout int    `json:"timeout,omitempty"`
 }
 
+// codexAgentMatcher is the exact alternation (no regex characters, see
+// codexMatcherFor) that selects every call the adapter reports as Agent.
+var codexAgentMatcher = strings.Join(codexAgentToolNames, "|")
+
 // codexToolMatcher maps a Claude Code tool name from security.HookGroup.Tools
 // onto the matcher token codex selects handlers with. codex's canonical hook
 // tool names are `Bash`, `apply_patch` and `spawn_agent`
-// (codex-rs/core/src/tools/hook_names.rs); an empty string means codex has no
-// such tool.
+// (codex-rs/core/src/tools/hook_names.rs) plus the namespaced multi-agent
+// calls in codexAgentToolNames (codex-rs/core/src/tools/registry.rs
+// function_hook_tool_name, codex-rs/core/src/tools/mod.rs flat_tool_name);
+// an empty string means codex has no such tool.
 //
 // `Write` and `Edit` would in fact also select apply_patch, which carries them
 // as matcher aliases, but the file says what it means and the payload's
@@ -399,8 +441,8 @@ var codexToolMatcher = map[string]string{
 	"Write":     "apply_patch",
 	"Edit":      "apply_patch",
 	"MultiEdit": "apply_patch",
-	"Agent":     "spawn_agent",
-	"Task":      "spawn_agent",
+	"Agent":     codexAgentMatcher,
+	"Task":      codexAgentMatcher,
 	"Read":      "",
 	"Glob":      "",
 	"Grep":      "",
@@ -462,13 +504,45 @@ const codexSpawnGuardMatcher = "^(multi_agent_v1|collaboration)|(spawn|resume)_a
 // in place of a hook-script phase.
 const codexSpawnGuardMode = "SpawnGuard"
 
+// codexSubagentStopEvent is the codex hook event and adapter phase of the
+// child-result gate (ADR 0159 decision 4), which codexHooksJSON renders for
+// a run that delegates from a V2 parent. Codex runs it in a thread-spawned
+// child with last_assistant_message, the text that becomes the child's
+// result, before the parent is notified; a block (exit 2 with a reason)
+// makes the child continue with the reason as its prompt instead of
+// finishing (codex-rs/hooks/src/events/stop.rs, core/src/session/turn.rs,
+// rust-v0.170.0).
+const codexSubagentStopEvent = "SubagentStop"
+
+// codexWithheldNotice is the adapter's WITHHELD_NOTICE: a SubagentStop block
+// tells the child to reply with exactly this, so it is the result the parent
+// receives in place of a flagged one. The V2 runtime note quotes it, and the
+// V2 review and retro rules in the agents repository must list this exact
+// text as a final result with no content: a change here needs the same
+// change there.
+const codexWithheldNotice = "RESULT WITHHELD BY FULLSEND"
+
+// codexGroupCoversAgent reports whether a hook group's tools include a
+// sub-agent's result on the other runtimes: every tool, or Agent/Task.
+func codexGroupCoversAgent(tools []string) bool {
+	for _, t := range tools {
+		if t == security.AllTools || t == "Agent" || t == "Task" {
+			return true
+		}
+	}
+	return false
+}
+
 // codexHooksJSON renders $CODEX_HOME/hooks.json from the runtime-neutral
 // security.HookPlan, and returns the notes Bootstrap prints for tools that
 // have no codex counterpart.
 //
 // The spawn guard first, then one handler per plan group, so the group's
 // scripts still run in plan order inside one process — the ordering the
-// PostToolUse chain depends on.
+// PostToolUse chain depends on. multiAgentV2 is true for a run that
+// delegates from a V2 parent: a PostToolUse group that covers Agent then
+// also gets a SubagentStop handler with the same scripts
+// (codexSubagentStopEvent).
 //
 // python is the absolute interpreter path Bootstrap resolved, rendered with
 // `-I`: codex spawns a hook through the shell it inherits, *after* the
@@ -484,7 +558,7 @@ const codexSpawnGuardMode = "SpawnGuard"
 // well — a shell tool result is `success` regardless of exit code
 // (codex-rs/core/src/tools/context.rs ExecCommandToolOutput). pi maps the
 // phase onto nothing for the same reason.
-func codexHooksJSON(configDir, python string, hooks security.SandboxHookConfig) ([]byte, []string, error) {
+func codexHooksJSON(configDir, python string, hooks security.SandboxHookConfig, multiAgentV2 bool) ([]byte, []string, error) {
 	cfg := codexHooksConfig{
 		Description: "fullsend sandbox tool hooks (generated; see docs/contributing/runtime-implementation.md)",
 		Hooks:       map[string][]codexHookMatcherSet{},
@@ -532,6 +606,19 @@ func codexHooksJSON(configDir, python string, hooks security.SandboxHookConfig) 
 				Timeout: security.HookTimeoutSeconds,
 			}},
 		})
+		// The child-result gate: the PostToolUse scripts that cover Agent
+		// also run on SubagentStop, in the child, on the final message that
+		// would become the child's result.
+		if multiAgentV2 && g.Phase == security.HookPhasePostToolUse && codexGroupCoversAgent(g.Tools) {
+			cfg.Hooks[codexSubagentStopEvent] = append(cfg.Hooks[codexSubagentStopEvent], codexHookMatcherSet{
+				Hooks: []codexHookEntry{{
+					Type: "command",
+					Command: strings.Join(append(
+						[]string{python, "-I", adapter, codexSubagentStopEvent}, g.Scripts...), " "),
+					Timeout: security.HookTimeoutSeconds,
+				}},
+			})
+		}
 	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
