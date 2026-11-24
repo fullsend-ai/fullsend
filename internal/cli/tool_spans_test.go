@@ -752,6 +752,23 @@ func TestToolSpanTracker_CodexUnfinishedItemEndsUnanswered(t *testing.T) {
 	assert.Equal(t, codes.Error, spans[0].Status.Code)
 }
 
+func TestToolSpanTracker_CodexOversizedEndIsAnsweredNotDropped(t *testing.T) {
+	tr, rec, _ := toolSpanFixture(t)
+	big := strings.Repeat("x", 1024*1024)
+	wire := `{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"cat big.log","aggregated_output":"","exit_code":null,"status":"in_progress"}}` + "\n" +
+		`{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat big.log","aggregated_output":"` + big + `","exit_code":0,"status":"completed"}}` + "\n"
+	_, err := agentruntime.ParseCodexStream(strings.NewReader(wire), tr.Handle)
+	require.NoError(t, err)
+	assert.Zero(t, tr.Finish())
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.Equal(t, "execute_tool Bash", spans[0].Name)
+	assert.Contains(t, spans[0].Attributes, attribute.Bool("fullsend.tool.result_oversized", true))
+	assert.NotContains(t, toolSpanAttrs(spans[0]), attribute.Key("error.type"))
+	assert.Equal(t, codes.Unset, spans[0].Status.Code)
+}
+
 func TestToolSpanTracker_PiOversizedEndIsAnsweredNotUnanswered(t *testing.T) {
 	tr, rec, _ := toolSpanFixture(t)
 	big := strings.Repeat("x", 1024*1024+10)

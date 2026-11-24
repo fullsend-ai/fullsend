@@ -4,8 +4,8 @@ import "time"
 
 // streamBufSize is the bufio.Reader buffer size used by every NDJSON stream
 // parser (Claude, pi, codex, OpenCode). Lines exceeding this size are
-// skipped; the Claude and pi parsers still report an oversized result line's
-// call id (ToolResultEvent.Oversized).
+// skipped; the Claude, pi and codex parsers still report an oversized result
+// line's call id (ToolResultEvent.Oversized).
 const streamBufSize = 1024 * 1024 // 1 MiB
 
 // AgentEvent is the normalized event interface for runtime-agnostic rendering.

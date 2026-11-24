@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -172,6 +173,20 @@ type codexItemHeader struct {
 	// Status is in_progress|completed|failed (declined too, for a
 	// command); web_search has none.
 	Status string `json:"status"`
+}
+
+// codexOversizedEndRe matches the start of an item.completed line as codex
+// writes it (ThreadEvent's tag, then ThreadItem's id ahead of its flattened
+// details), so the item's id survives in the prefix the parser keeps when the
+// whole line exceeds streamBufSize.
+var codexOversizedEndRe = regexp.MustCompile(`^\{"type":"item\.completed","item":\{"id":"([^"\\]{1,256})"`)
+
+// codexStartedItem is what item.started leaves for the matching
+// item.completed: when the parser read it, and the item it carried, which is
+// all that names the call when the completed line is too long to decode.
+type codexStartedItem struct {
+	at   time.Time
+	item json.RawMessage
 }
 
 // decodeCodexItemHeader reads an item's header, taking its ID from the
@@ -582,6 +597,13 @@ func ParseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 //     (an interrupted collab_tool_call), gets no item.completed and so no
 //     call at all.
 //
+//   - An item.completed line over streamBufSize is not decoded. codex keeps
+//     up to 1 MiB of a command's output or an MCP result (rust-v0.170.0), so
+//     one verbose call is enough. Such a call is reported from its
+//     item.started, with its result lost (ToolResultEvent.Oversized), as on
+//     Claude and pi. One with no item.started read, and any other line that
+//     long, is skipped.
+//
 //   - A file_change item lists several paths and is reported as one call
 //     per path, so each call's id is the item id suffixed "#<index>": one
 //     id per call keeps the Level 3 tool_call and tool_call_response parts
@@ -647,19 +669,21 @@ func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.T
 		onEvent(delta)
 	}
 
-	// started holds, by item id, when the parser read each item.started whose
-	// item.completed has not arrived yet.
-	started := map[string]time.Time{}
+	// started holds, by item id, each item.started whose item.completed has
+	// not arrived yet.
+	started := map[string]codexStartedItem{}
 
 	// handleItem maps one completed thread item onto AgentEvents. Unknown item
 	// types are skipped: codex adds them faster than fullsend pins move, and a
-	// new tool kind must not abort the stream.
-	handleItem := func(raw json.RawMessage) {
+	// new tool kind must not abort the stream. oversized means the completed
+	// line exceeded streamBufSize, so raw is the item as it started: the
+	// result is reported lost and isError unknown.
+	handleItem := func(raw json.RawMessage, oversized bool) {
 		head, jsonErr := decodeCodexItemHeader(raw)
 		if jsonErr != nil {
 			return
 		}
-		startedAt := started[head.ID]
+		startedAt := started[head.ID].at
 		delete(started, head.ID)
 		// call reports one tool call: its ToolUseEvent, then its
 		// ToolResultEvent. An item with no id gets no result, so its call
@@ -669,6 +693,10 @@ func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.T
 		call := func(id string, use ToolUseEvent, result string, isError, partial bool) {
 			use.ID, use.StartedAt = id, startedAt
 			onEvent(use)
+			if oversized && id != "" {
+				onEvent(ToolResultEvent{ID: id, Oversized: true})
+				return
+			}
 			if id != "" && !unfinished {
 				onEvent(ToolResultEvent{ID: id, Result: result, IsError: isError, Partial: partial})
 			}
@@ -841,9 +869,21 @@ func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.T
 			return threadID, readErr
 		}
 		// Skip lines exceeding the buffer (same pattern as the other parsers).
+		// An item.completed line is not skipped silently: its retained prefix
+		// carries the item id, so a call that started is reported as answered
+		// with its result lost (ToolResultEvent.Oversized), as on Claude and
+		// pi, rather than dropped with its line.
 		if isPrefix {
+			// Copied out now: the next ReadLine reuses the buffer line points into.
+			var lostID string
+			if m := codexOversizedEndRe.FindSubmatch(line); m != nil {
+				lostID = string(m[1])
+			}
 			for isPrefix && readErr == nil {
 				_, isPrefix, readErr = br.ReadLine()
+			}
+			if start, ok := started[lostID]; ok {
+				handleItem(start.item, true)
 			}
 			continue
 		}
@@ -927,12 +967,14 @@ func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.T
 			if json.Unmarshal(line, &evt) != nil || len(evt.Item) == 0 {
 				continue
 			}
-			handleItem(evt.Item)
+			handleItem(evt.Item, false)
 
 		case "item.started":
 			// No AgentEvent for a tool starting: the matching item.completed
 			// carries the same item in full. Its start instant is kept for
-			// the call's StartedAt; a repeated item.started keeps the first.
+			// the call's StartedAt, and the item itself in case the completed
+			// line is too long to decode; a repeated item.started keeps the
+			// first.
 			var evt codexItemEvent
 			if json.Unmarshal(line, &evt) != nil || len(evt.Item) == 0 {
 				continue
@@ -942,7 +984,7 @@ func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.T
 				continue
 			}
 			if _, ok := started[head.ID]; !ok {
-				started[head.ID] = now()
+				started[head.ID] = codexStartedItem{at: now(), item: evt.Item}
 			}
 
 		case "item.updated":

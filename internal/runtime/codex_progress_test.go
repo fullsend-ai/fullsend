@@ -577,6 +577,106 @@ func TestParseCodexStream_OverlongLineIsSkipped(t *testing.T) {
 	assert.False(t, codexOnlyResult(t, events).IsError)
 }
 
+// codex keeps up to 1 MiB of a call's output (rust-v0.170.0), so one verbose
+// call makes an item.completed line past streamBufSize. The call must still
+// be counted and answered, from what its item.started carried.
+func TestParseCodexStream_OversizedCompletedLineAnswersTheCall(t *testing.T) {
+	t.Parallel()
+
+	big := strings.Repeat("x", streamBufSize)
+	cmdStart := `{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc 'cat big.log'","aggregated_output":"","exit_code":null,"status":"in_progress"}}`
+	cmdEnd := `{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc 'cat big.log'","aggregated_output":"` + big + `","exit_code":1,"status":"failed"}}`
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	parse := func(t *testing.T, stream string) []AgentEvent {
+		t.Helper()
+		var events []AgentEvent
+		_, err := parseCodexStreamAt(strings.NewReader(stream), func(evt AgentEvent) {
+			events = append(events, evt)
+		}, func() time.Time { return t0 })
+		require.NoError(t, err)
+		return events
+	}
+
+	t.Run("command", func(t *testing.T) {
+		t.Parallel()
+		uses, results := codexToolPairs(t, parse(t, cmdStart+"\n"+cmdEnd+"\n"))
+		require.Len(t, uses, 1)
+		assert.Equal(t, "item_1", uses[0].ID)
+		assert.Equal(t, "Bash", uses[0].Name)
+		assert.Contains(t, uses[0].Summary, "cat big.log")
+		assert.NotContains(t, uses[0].Summary, "failed", "the exit status was never decoded")
+		assert.JSONEq(t, `{"command":"/bin/bash -lc 'cat big.log'"}`, uses[0].Arguments)
+		assert.Equal(t, t0, uses[0].StartedAt)
+		assert.Equal(t, []ToolResultEvent{{ID: "item_1", Oversized: true}}, results,
+			"status lies past the prefix, so no verdict is reported")
+	})
+
+	t.Run("mcp call", func(t *testing.T) {
+		t.Parallel()
+		start := `{"type":"item.started","item":{"id":"item_2","type":"mcp_tool_call","server":"stub","tool":"dump","arguments":{"n":1},"result":null,"error":null,"status":"in_progress"}}`
+		end := `{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"stub","tool":"dump","arguments":{"n":1},"result":{"content":[{"type":"text","text":"` + big + `"}],"structured_content":null},"error":null,"status":"completed"}}`
+		uses, results := codexToolPairs(t, parse(t, start+"\n"+end+"\n"))
+		assert.Equal(t, []ToolUseEvent{{
+			ID:        "item_2",
+			Name:      codexMcpToolName("stub", "dump"),
+			Arguments: `{"n":1}`,
+			StartedAt: t0,
+		}}, uses)
+		assert.Equal(t, []ToolResultEvent{{ID: "item_2", Oversized: true}}, results)
+	})
+
+	t.Run("multi-path patch", func(t *testing.T) {
+		t.Parallel()
+		changes := `"changes":[{"path":"a.go","kind":"add"},{"path":"b.go","kind":"update"}]`
+		start := `{"type":"item.started","item":{"id":"item_3","type":"file_change",` + changes + `,"status":"in_progress"}}`
+		end := `{"type":"item.completed","item":{"id":"item_3","type":"file_change",` + changes + `,"pad":"` + big + `","status":"completed"}}`
+		_, results := codexToolPairs(t, parse(t, start+"\n"+end+"\n"))
+		assert.Equal(t, []ToolResultEvent{
+			{ID: "item_3#0", Oversized: true},
+			{ID: "item_3#1", Oversized: true},
+		}, results)
+	})
+
+	t.Run("last line, no newline", func(t *testing.T) {
+		t.Parallel()
+		for name, end := range map[string]string{
+			"short remainder":       cmdEnd,
+			"exact buffer multiple": cmdEnd + strings.Repeat(" ", 2*streamBufSize-len(cmdEnd)),
+		} {
+			_, results := codexToolPairs(t, parse(t, cmdStart+"\n"+end))
+			assert.Equal(t, []ToolResultEvent{{ID: "item_1", Oversized: true}}, results, name)
+		}
+	})
+
+	t.Run("the stream carries on, and the call is reported once", func(t *testing.T) {
+		t.Parallel()
+		next := `{"type":"item.completed","item":{"id":"item_4","type":"command_execution","command":"ls","aggregated_output":"a\n","exit_code":0,"status":"completed"}}`
+		_, results := codexToolPairs(t, parse(t, cmdStart+"\n"+cmdEnd+"\n"+cmdEnd+"\n"+next+"\n"))
+		assert.Equal(t, []ToolResultEvent{
+			{ID: "item_1", Oversized: true},
+			{ID: "item_4", Result: "a\n"},
+		}, results)
+	})
+
+	for name, stream := range map[string]string{
+		"no item.started": cmdEnd,
+		"another item's completed line": cmdStart + "\n" +
+			`{"type":"item.completed","item":{"id":"item_9","type":"agent_message","text":"` + big + `"}}`,
+		"an item.updated line": cmdStart + "\n" +
+			strings.Replace(cmdEnd, "item.completed", "item.updated", 1),
+		"id not where codex writes it": cmdStart + "\n" +
+			strings.Replace(strings.Replace(cmdEnd, `"id":"item_1",`, "", 1), `"status":"failed"`, `"status":"failed","id":"item_1"`, 1),
+	} {
+		t.Run("skipped: "+name, func(t *testing.T) {
+			t.Parallel()
+			events := parse(t, stream+"\n")
+			assert.Empty(t, codexEventsOfType[ToolUseEvent](events))
+			assert.Empty(t, codexEventsOfType[ToolResultEvent](events))
+			assert.Empty(t, codexEventsOfType[TextEvent](events))
+		})
+	}
+}
+
 // --- tool call ids, arguments and results (#7414) ---------------------------
 
 // codexToolPairs collects the ToolUseEvent/ToolResultEvent stream of a parse
