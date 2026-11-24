@@ -1,5 +1,5 @@
 ---
-title: "176. Layered repository resolution"
+title: "176. Repository resolution"
 status: Proposed
 relates_to:
   - agent-architecture
@@ -11,7 +11,7 @@ topics:
   - skills
 ---
 
-# 176. Layered repository resolution
+# 176. Repository resolution
 
 Date: 2026-11-23
 Ticket: [AISDLC-547](https://redhat.atlassian.net/browse/AISDLC-547)
