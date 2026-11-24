@@ -83,8 +83,8 @@ jobs:
       # safe-settings 3.0.0's environments plugin discards its NopCommands,
       # so FULL_SYNC_NOP cannot report environment drift. Compute the diff
       # here, read-only, so dry runs have something trustworthy to review.
-      # Compares environment names and deployment branch policies (the only
-      # attributes settings.yml manages).
+      # Compares every attribute the environments plugin reconciles, with
+      # omitted config fields treated as the plugin's defaults.
       - name: Report environment drift
         working-directory: ${{ env.SAFE_SETTINGS_CODE_DIR }}
         env:
@@ -100,10 +100,27 @@ jobs:
           const ORG = "fullsend-ai";
           const REPO = "fullsend";
 
-          function policyOf(names, protectedBranches) {
+          // Canonical view of one environment, covering every attribute the
+          // safe-settings environments plugin reconciles. Omitted config
+          // fields use the same defaults the plugin applies (getChanged).
+          function canonical(env) {
+            const rule = (env.protection_rules || []).find(r => r.type === "wait_timer");
+            const reviewers = (env.protection_rules || []).find(r => r.type === "required_reviewers");
+            const pol = env.deployment_branch_policy;
             return JSON.stringify({
-              protected_branches: !!protectedBranches,
-              custom: names.slice().sort()
+              wait_timer: (env.wait_timer !== undefined ? env.wait_timer : (rule || {}).wait_timer) || 0,
+              prevent_self_review: !!(env.prevent_self_review !== undefined ? env.prevent_self_review : (reviewers || {}).prevent_self_review),
+              reviewers: (env.reviewers || (reviewers || {}).reviewers || []).map(r => ({ id: r.id, type: r.type })).sort((a, b) => a.id - b.id),
+              variables: (env.variables || []).map(v => ({ name: v.name.toLowerCase(), value: v.value })).sort((a, b) => a.name.localeCompare(b.name)),
+              deployment_protection_rules: (env.deployment_protection_rules || []).map(r => ({ app_id: r.app_id })).sort((a, b) => a.app_id - b.app_id),
+              deployment_branch_policy: pol === null || pol === undefined
+                ? null
+                : {
+                    protected_branches: !!pol.protected_branches,
+                    custom_branch_policies: (pol.custom_branch_policies || [])
+                      .map(p => typeof p === "string" ? { name: p, type: "branch" } : { name: p.name, type: p.type })
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                  }
             });
           }
 
@@ -126,8 +143,18 @@ jobs:
                   "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment-branch-policies",
                   { owner: ORG, repo: REPO, environment_name: env.name }
                 );
-                env._custom = pols.map(p => p.name);
+                env.deployment_branch_policy.custom_branch_policies = pols.map(p => ({ name: p.name, type: p.type }));
               }
+              env.variables = await octokit.paginate(
+                "GET /repos/{owner}/{repo}/environments/{environment_name}/variables",
+                { owner: ORG, repo: REPO, environment_name: env.name, per_page: 100 },
+                r => Array.isArray(r.data) ? r.data : (r.data.variables || [])
+              );
+              const dpr = await octokit.request(
+                "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment_protection_rules",
+                { owner: ORG, repo: REPO, environment_name: env.name }
+              );
+              env.deployment_protection_rules = dpr.data.custom_deployment_protection_rules.map(r => ({ app_id: r.app.id }));
             }
 
             const lines = [];
@@ -138,13 +165,13 @@ jobs:
             for (const d of desired) {
               const l = live.find(e => e.name === d.name);
               if (!l) continue;
-              const want = d.deployment_branch_policy
-                ? policyOf((d.deployment_branch_policy.custom_branch_policies || []).map(p => typeof p === "string" ? p : p.name), d.deployment_branch_policy.protected_branches)
-                : null;
-              const have = l.deployment_branch_policy
-                ? policyOf(l._custom || [], l.deployment_branch_policy.protected_branches)
-                : null;
-              if (want !== have) lines.push(`  update ${d.name}: branch policy differs (live ${have}, config ${want})`);
+              const want = canonical(d);
+              const have = canonical(l);
+              if (want !== have) {
+                lines.push(`  update ${d.name}: differs`);
+                lines.push(`    live:  ${have}`);
+                lines.push(`    config: ${want}`);
+              }
             }
             if (lines.length === 0) {
               console.log("Environment drift: none");
