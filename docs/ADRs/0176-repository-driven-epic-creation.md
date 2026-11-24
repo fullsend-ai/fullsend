@@ -163,9 +163,9 @@ resolution logic does not change. RHAI is one configuration of sources
 fed into generic resolution logic. Other workloads declare their own
 sources without code changes in the resolver.
 
-#### Future: architecture context skills (from Nov 17 tech review)
+#### Future: architecture context skills
 
-Ralph proposed that agents should not reference the architecture context
+Agents should not reference the architecture context
 repository directly. Instead, each workload would declare which skills
 to load from its architecture source. The skills would provide
 interpretation guidance: which files to read, what the structure means,
@@ -175,7 +175,7 @@ implementation reads the architecture context directly.
 The direction: Phase 2 would read the pre-loaded architecture context
 using interpretation guidance from the workload's declared skills,
 rather than hardcoding how to read a specific source. This would also
-address the scaling concern from the Nov 17 review — workloads that
+address the scaling concern — workloads that
 cannot afford to maintain a static architecture-context repo at scale
 could provide skills that work differently.
 
@@ -304,7 +304,7 @@ flag. The flag controls whether the resolver runs before decomposition:
   then decomposition splits along repo boundaries (Steps 3–5). Epics
   carry the resolved repository URL.
 
-The flag is a CI variable in GitLab (Nov 17 tech review discussion).
+The flag is a CI variable in GitLab.
 It has a global default for all pipeline runs but can be overridden
 per pipeline run — for example, to test resolution on a single
 strategy without enabling it for all runs. It is not per-repo or
@@ -317,7 +317,7 @@ Resolution should be seamless to the end user — the system figures out
 the right repo without the user knowing how. But fully seamless
 resolution (no maintained mappings, the LLM figures everything out at
 runtime) requires the LLM to scan potentially hundreds of repos to
-make a decision — Ella raised this in the Nov 17 review: the OpenShift
+make a decision — the OpenShift
 organization alone has ~800 repos. That is expensive, slow, and less
 reliable.
 
@@ -361,8 +361,7 @@ model is not one-size-fits-all.
 - **Trust deterministic mapping without verification** — rejected: both
   the component assigned to the Jira issue and the mappings themselves
   are human-maintained and can be wrong or stale. Even a single-repo
-  match needs verification against architecture context. The tech review
-  confirmed this risk.
+  match needs verification against architecture context.
 
 - **Three layers with LLM guess as fallback** — rejected: if the LLM
   with full architecture context (Phase 2) cannot resolve, a second
