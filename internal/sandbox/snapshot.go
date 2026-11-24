@@ -297,7 +297,7 @@ func captureTrustedConfig(cwd, worktreeRoot string, configPaths ...string) ([]co
 				// precedence: a later empty override clears an earlier
 				// setting instead of being dropped for it.
 				single[key] = record.value
-			case remoteTrackingKey(key), branchTrackingKey(key), submoduleActivationKey(key), submoduleActivePathspecKey(key):
+			case remoteTrackingKey(key), branchTrackingKey(key), submoduleActivationKey(key), submoduleActivePathspecKey(key), httpCAKey(key):
 				value := record.value
 				if value != "" && (strings.HasSuffix(key, ".url") || strings.HasSuffix(key, ".pushurl")) {
 					if isExecutableTransport(value) {
@@ -424,6 +424,21 @@ func branchTrackingKey(key string) bool {
 // and before URL presence, so it must round-trip for activation to hold.
 func submoduleActivePathspecKey(key string) bool {
 	return key == "submodule.active"
+}
+
+// httpCAKey matches http.<url>.sslCAInfo and .sslCAPath, the certificate
+// authority settings CI runners write for private-CA instances. They are
+// non-executable host file paths, restored verbatim.
+func httpCAKey(key string) bool {
+	if !strings.HasPrefix(key, "http.") {
+		return false
+	}
+	for _, suffix := range []string{".sslcainfo", ".sslcapath"} {
+		if strings.HasSuffix(key, suffix) && len(key) > len("http.")+len(suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // urlResetKey matches the multi-valued destination lists whose empty entries

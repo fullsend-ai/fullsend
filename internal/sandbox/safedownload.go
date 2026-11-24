@@ -581,15 +581,20 @@ func owningCheckout(gitfile, absLocal string) (string, error) {
 // resolveGitfileDir returns the git directory a gitfile redirects to: the
 // realpath Git's own resolution computes, with every symlink already
 // resolved. The capture scan and the download walk share it so both agree
-// on where a gitfile points. cwd must be outside any untrusted tree.
+// on where a gitfile points. Deterministic content failures are wrapped in
+// ErrRepositoryRejected; a Git timeout is returned unwrapped so the
+// caller's retry loop can retry it. cwd must be outside any untrusted tree.
 func resolveGitfileDir(cwd, gitfile string) (string, error) {
 	out, err := runBoundedGit(cwd, "", nil, "rev-parse", "--resolve-git-dir", gitfile)
 	if err != nil {
-		return "", fmt.Errorf("gitfile %s is not a valid gitdir redirect: %w", gitfile, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("resolving gitfile %s: %w", gitfile, err)
+		}
+		return "", rejectRepository(fmt.Errorf("gitfile %s is not a valid gitdir redirect: %w", gitfile, err))
 	}
 	resolved, err := filepath.EvalSymlinks(strings.TrimSuffix(string(out), "\n"))
 	if err != nil {
-		return "", fmt.Errorf("gitfile %s target is not reachable: %w", gitfile, err)
+		return "", rejectRepository(fmt.Errorf("gitfile %s target is not reachable: %w", gitfile, err))
 	}
 	return resolved, nil
 }
@@ -614,7 +619,11 @@ func headExposesGitDir(path string, excluded func(dir string) bool) (bool, error
 func validateNestedGitFile(gitfile, absLocal string, gitDirs map[string]bool) error {
 	resolved, err := resolveGitfileDir(filepath.Dir(absLocal), gitfile)
 	if err != nil {
-		return rejectRepository(err)
+		// Not wrapped in ErrRepositoryRejected: a Git timeout or start
+		// failure is transient and should be retried, while an invalid
+		// gitfile is deterministic — the caller's retry loop treats
+		// non-rejected errors as retryable, which is correct for both.
+		return err
 	}
 	owning, err := owningCheckout(gitfile, absLocal)
 	if err != nil {

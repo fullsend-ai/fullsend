@@ -2735,6 +2735,26 @@ func TestSafeDownload_SameFileCaseVariantTrustedStore(t *testing.T) {
 	assert.DirExists(t, filepath.Join(localDir, ".git", "modules", "dep"))
 }
 
+// TestSafeDownload_PreservesHTTPCASettings proves http.<url>.sslCAInfo and
+// .sslCAPath round-trip: CI runners write them for private-CA instances,
+// and dropping them breaks TLS verification on the host after publication.
+func TestSafeDownload_PreservesHTTPCASettings(t *testing.T) {
+	r := newGitRepo(t)
+	r.commitFile("f.txt", "x")
+	r.git("config", "http.https://gitlab.example.invalid/.sslCAInfo", "/etc/ssl/certs/private-ca.crt")
+	r.git("config", "http.https://other.example.invalid/.sslCAPath", "/etc/ssl/certs/private-ca-dir")
+	before := r.git("config", "--get-regexp", "^http\\..*\\.sslCA")
+
+	snapshot, err := CaptureRepositorySnapshot(r.dir)
+	require.NoError(t, err)
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, snapshot))
+	after, err := runGit(t, localDir, gitTestEnv(t.TempDir()), "config", "--get-regexp", "^http\\..*\\.sslCA")
+	require.NoError(t, err, after)
+	assert.Equal(t, before, after, "the CA settings must round-trip verbatim")
+}
+
 // TestSanitizeDownload_RejectsDownloadedPartialClone proves a partial clone
 // the agent created with remote-form promisor keys — no extension marker —
 // is rejected during the config rebuild, not stripped and published with

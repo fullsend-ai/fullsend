@@ -51,24 +51,30 @@ through their in-tree gitfiles. A plain directory that already contains a
 nested Git checkout is rejected. So is a checkout containing a nested `.git`
 directory of its own (a vendored clone or an unabsorbed embedded repository),
 and any Git-shaped subdirectory — one holding `HEAD` plus `objects` and
-`refs`, such as a committed `testdata/x.git` fixture: absorb the clone as a registered submodule, or keep the fixture
-outside the downloaded target tree — anything Git-shaped inside the returned
-tree is rejected, so a fixture extracted in the sandbox must be removed
-before the repository is returned. Destinations naming the `ext` transport helper are rejected, and
-so is a shallow submodule initialization inside the sandbox: a module store
-that returns a shallow boundary the host never captured fails the download.
-Fullsend validates the target after the
+`refs`, such as a committed `testdata/x.git` fixture: absorb the clone as a
+registered submodule, or keep the fixture outside the downloaded target
+tree — a Git-shaped directory the target carries at upload is rejected
+before the run, and a bare-shaped directory the sandbox creates is rejected
+at download; a fixture extracted in the sandbox must be removed before the
+repository is returned. Destinations naming the `ext` transport helper are
+rejected, and so is a shallow submodule initialization inside the sandbox: a
+module store that returns a shallow boundary the host never captured fails
+the download. Fullsend validates the target after the
 pre-script and before upload, and sanitizes and validates the returned tree
 before publication; a plain directory may come back as a plain directory or a
 valid checkout, while a checkout must come back as a checkout. Fullsend
 discards downloaded Git configuration and restores selected settings from the
 host checkout, including identity, remote destinations, submodule activation,
-and sparse-checkout settings. Settings outside the restored list, including
-`filter.lfs.*` and `core.sshCommand`, are discarded; an LFS checkout therefore
-comes back with its filters unset. Partial clones are rejected in both their
-forms, as is a relative local submodule destination that does not resolve on
-the host; re-apply dropped settings such as LFS filters in a post-script if a
-workflow needs them. To migrate a rejected layout, replace a linked-worktree
+sparse-checkout settings, and the `http.<url>.sslCAInfo` and `.sslCAPath`
+certificate authority paths CI runners write for private-CA instances.
+Settings outside the restored list, including `filter.lfs.*` and
+`core.sshCommand`, are discarded; an LFS checkout therefore comes back with
+its filters unset. Partial clones are rejected in both their forms, as is a
+relative local submodule destination in the target checkout that does not
+resolve on the host (a relative destination in a module store's own config
+is rejected regardless); re-apply dropped settings such as LFS filters in a
+post-script if a workflow needs them. To migrate a rejected layout, replace a
+linked-worktree
 target with a fresh normal checkout of the same commit — commit or stash its
 local changes first, since `git worktree remove` deletes a worktree rather
 than converting it — use absolute submodule URLs, and replace a bare or

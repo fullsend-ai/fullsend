@@ -779,7 +779,9 @@ checkout and restores them after download: the commit identity, the
 working-copy hints (including the sparse-checkout booleans), every remote's
 fetch and push destinations and push settings, branch tracking, submodule
 activation (`submodule.<name>.url` and `.active`, whose destinations are
-checked like remote destinations), and the repository storage format. Remote
+checked like remote destinations), the `http.<url>.sslCAInfo` and
+`.sslCAPath` certificate authority paths CI runners write for private-CA
+instances, and the repository storage format. Remote
 and push destinations are restored in their original order, so push behaviour
 is not silently changed. A relative local destination in the target checkout
 is restored as the absolute target it named on the host; a relative local
