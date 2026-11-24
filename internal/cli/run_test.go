@@ -3686,6 +3686,9 @@ func TestPostScriptEnv_IncludesOutputSchema(t *testing.T) {
 }
 
 func TestPostScriptEnv_NoSchemaAppendedWhenEmpty(t *testing.T) {
+	// postScriptEnv starts from the process environment, and fullsend run
+	// exports FULLSEND_OUTPUT_SCHEMA into agent sandboxes.
+	unsetEnvForTest(t, "FULLSEND_OUTPUT_SCHEMA")
 	h := &harness.Harness{
 		RunnerEnv: map[string]string{"FOO": "bar"},
 		ValidationLoop: &harness.ValidationLoop{
@@ -3700,6 +3703,8 @@ func TestPostScriptEnv_NoSchemaAppendedWhenEmpty(t *testing.T) {
 }
 
 func TestPostScriptEnv_NoSchemaAppendedWhenNoValidationLoop(t *testing.T) {
+	// See TestPostScriptEnv_NoSchemaAppendedWhenEmpty.
+	unsetEnvForTest(t, "FULLSEND_OUTPUT_SCHEMA")
 	h := &harness.Harness{
 		RunnerEnv: map[string]string{"FOO": "bar"},
 	}
