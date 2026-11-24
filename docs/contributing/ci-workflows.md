@@ -189,6 +189,14 @@ When all five components are present, any code the PR author controls can read a
 
 **ADR-0009 and the shim distinction:** ADR-0009 documents why `pull_request_target` was safe for the shim workflow — the shim never checks out PR code, so components 2–3 are absent. The shim has since moved to `pull_request` for same-repo PRs ([ADR 0164](../ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md)); `reusable-dispatch.yml` still accepts `pull_request_target` from shims that have not upgraded. This safety reasoning does **not** transfer to jobs that check out and execute PR-head code (e.g., the behaviour and playback jobs in `e2e.yml`).
 
+**`workflow_run` and the fork PR stub:** `workflow_run` has the same component 1 as `pull_request_target`: the triggered workflow runs from the default branch with secrets, after a run that a fork controls. The shim's `workflow_run` trigger on the `fullsend-fork-pr.yaml` stub stays safe only while components 2 and 3 stay absent:
+
+- never download the triggering run's artifacts or read its logs or run name, and never check out its head SHA;
+- treat the run's `head_repository`, `head_branch`, `head_sha`, `path` and `created_at` as lookup metadata a fork can influence, not as provenance; look the PR up through the API and re-check its head repository id and head SHA;
+- authorize the actor the API reports (PR author, labeler, closer) before any token mint.
+
+A `branches:` filter (github/gh-aw's CTR-021 check) does not help here: for a fork PR the run's `head_branch` is a name the fork chose.
+
 ### Credential blast radius
 
 Not all credentials carry the same risk on exfiltration:

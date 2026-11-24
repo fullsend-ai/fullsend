@@ -1031,12 +1031,14 @@ What it does:
 
    | Event | Runs | Who must be authorized |
    |---|---|---|
-   | Opened, pushed to, marked ready | Review | The PR author: triage access or higher, or an OWNERS approver or reviewer |
-   | Labeled `ready-for-review` | Review | Whoever added the label (adding labels needs triage access) |
+   | Opened, pushed to, marked ready | Review | The PR author: triage access or higher, or an OWNERS approver or reviewer. A bot author is checked the same way (on a same-repo PR a bot author is trusted) |
+   | Labeled `ready-for-review` | Review of the commit that was the PR head when the label was added, while the label stays on the PR | Whoever added the label (adding labels needs triage access) |
    | Closed or merged | Retro | Whoever closed or merged it: write access |
 
 An outside contributor's fork PR is therefore still not reviewed until
-someone authorized labels it or comments `/fs-review`.
+someone authorized labels it or comments `/fs-review`. A push after the
+label is checked against the PR author, so to review a newer commit of an
+outside contributor's PR, label it again or comment `/fs-review`.
 
 The shim never runs the fork's code or reads anything the fork's run
 produced: the fork controls its own copy of `fullsend-fork-pr.yaml`. It
@@ -1044,7 +1046,8 @@ skips a run when:
 
 - the run did not succeed, or came from another workflow file;
 - the PR has new commits since the run (the newer push has its own run);
-- the label or close happened more than five minutes before the run.
+- the label or close happened more than five minutes before the run (the
+  run log shows a warning, so a missed retro is visible).
 
 If your repository requires approval for fork PR workflows (**Settings →
 Actions → General**), the review starts after a maintainer approves the
