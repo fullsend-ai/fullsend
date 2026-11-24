@@ -103,23 +103,38 @@ jobs:
           // Canonical view of one environment, covering every attribute the
           // safe-settings environments plugin reconciles. Omitted config
           // fields use the same defaults the plugin applies (getChanged).
+          // Config reviewers are {id, type}; the live API nests the ID under
+          // protection_rules[].reviewers[].reviewer. Normalize both to {id, type}.
+          function canonicalReviewers(list) {
+            return (list || [])
+              .map(r => ({ id: r.reviewer ? r.reviewer.id : r.id, type: r.type }))
+              .filter(r => r.id !== undefined)
+              .sort((a, b) => a.id - b.id);
+          }
           function canonical(env) {
             const rule = (env.protection_rules || []).find(r => r.type === "wait_timer");
             const reviewers = (env.protection_rules || []).find(r => r.type === "required_reviewers");
             const pol = env.deployment_branch_policy;
+            // Config policies are either plain strings or {type, names: [...]};
+            // expand both forms into one {name, type} per policy.
+            const policies = (pol && pol.custom_branch_policies || []).flatMap(p =>
+              typeof p === "string"
+                ? [{ name: p, type: "branch" }]
+                : (p.names || [p.name]).map(n => ({ name: n, type: p.type }))
+            );
             return JSON.stringify({
               wait_timer: (env.wait_timer !== undefined ? env.wait_timer : (rule || {}).wait_timer) || 0,
               prevent_self_review: !!(env.prevent_self_review !== undefined ? env.prevent_self_review : (reviewers || {}).prevent_self_review),
-              reviewers: (env.reviewers || (reviewers || {}).reviewers || []).map(r => ({ id: r.id, type: r.type })).sort((a, b) => a.id - b.id),
+              reviewers: canonicalReviewers(env.reviewers || (reviewers || {}).reviewers),
               variables: (env.variables || []).map(v => ({ name: v.name.toLowerCase(), value: v.value })).sort((a, b) => a.name.localeCompare(b.name)),
               deployment_protection_rules: (env.deployment_protection_rules || []).map(r => ({ app_id: r.app_id })).sort((a, b) => a.app_id - b.app_id),
               deployment_branch_policy: pol === null || pol === undefined
                 ? null
                 : {
                     protected_branches: !!pol.protected_branches,
-                    custom_branch_policies: (pol.custom_branch_policies || [])
-                      .map(p => typeof p === "string" ? { name: p, type: "branch" } : { name: p.name, type: p.type })
-                      .sort((a, b) => a.name.localeCompare(b.name))
+                    custom_branch_policies: policies
+                      .filter(p => p.name !== undefined)
+                      .sort((a, b) => String(a.name).localeCompare(String(b.name)))
                   }
             });
           }
@@ -169,8 +184,17 @@ jobs:
               const have = canonical(l);
               if (want !== have) {
                 lines.push(`  update ${d.name}: differs`);
-                lines.push(`    live:  ${have}`);
-                lines.push(`    config: ${want}`);
+                // Log only variable names that changed; values may not be
+                // meant for public Actions logs.
+                const wantVars = new Map(JSON.parse(want).variables.map(v => [v.name, v.value]));
+                const haveVars = new Map(JSON.parse(have).variables.map(v => [v.name, v.value]));
+                const varChanges = [];
+                for (const n of new Set([...wantVars.keys(), ...haveVars.keys()])) {
+                  if (!haveVars.has(n)) varChanges.push(`+${n}`);
+                  else if (!wantVars.has(n)) varChanges.push(`-${n}`);
+                  else if (wantVars.get(n) !== haveVars.get(n)) varChanges.push(`~${n}`);
+                }
+                if (varChanges.length) lines.push(`    variables: ${varChanges.join(", ")}`);
               }
             }
             if (lines.length === 0) {
