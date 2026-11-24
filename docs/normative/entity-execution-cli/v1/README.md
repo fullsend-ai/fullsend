@@ -22,15 +22,14 @@ under [ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md) and
 
 This contract uses these contracts and does not redefine them:
 
-- Source declarations, slot bindings, provider query languages, and the
-  `native` selector come from ADR 0079 and entity-source configuration v1 in
-  [PR #9199](https://github.com/fullsend-ai/fullsend/pull/9199). This document
-  was written against that pull request's open draft. Reconcile it with the
-  merged text before the first implementation is enabled.
-- Discovery planning, coverage, and retry come from
-  [ADR 0149](../../../ADRs/0149-coalesce-entity-source-discovery-queries.md) and
-  the discovery/query protocol in
-  [#9586](https://github.com/fullsend-ai/fullsend/issues/9586).
+- Source declarations, slot bindings, provider query languages, the `native`
+  selector, execution readiness, and the cutover rule come from
+  [ADR 0079](../../../ADRs/0079-bind-entity-execution-through-named-sources.md)
+  and
+  [Entity-source configuration v1](../../entity-source-configuration/v1/README.md).
+- Discovery planning, pass outcomes, coverage, and retry come from
+  [ADR 0149](../../../ADRs/0149-coalesce-entity-source-discovery-queries.md)
+  and [Entity discovery v1](../../entity-discovery/v1/README.md).
 - CEL-visible fields come from
   [Normalized entity v1](../../normalized-entity/v1/README.md). Model-facing
   fields come from
@@ -71,10 +70,13 @@ The enabled GitHub pairs apply only to a source that meets both conditions:
   github.com or a GitHub Enterprise endpoint set through
   `connections.github.base_url`.
 - The source's repository scope is the target code repository, which is the
-  repository whose configuration the run uses.
+  repository whose configuration the run uses. This is the default scope of a
+  source on the provider-default connection. An explicit `repositories` list
+  that names another repository is outside the first scope.
 
 The adapter MUST also verify that the deployed host supports the advanced
-search mode that entity-source configuration v1 requires. A source with
+search mode that entity-source configuration v1 requires, and MUST NOT fall
+back to legacy search semantics. A source with
 another repository scope, another GitHub connection, or a host without that
 search mode is outside the first scope.
 
@@ -168,7 +170,11 @@ another:
 | `selected` | Membership and CEL are proven true and admission passes | At most one cycle per check | Follows ADR 0144 |
 
 An `unsupported` result is never an empty discovery result or a false CEL
-result. A command reports it before it reads entity data or creates a sandbox.
+result. Entity discovery v1 pass outcomes map onto these classes without
+change. A discovery plan the adapter cannot build is `unsupported`. An
+`incomplete` or `failed` pass is never reported as complete-empty, and work it
+did not cover stays `unresolved`. Absence from discovery results is never
+`not_eligible`. A command reports it before it reads entity data or creates a sandbox.
 Its diagnostic MUST name the provider, kind, source, and the reason, such as
 "provider/kind not enabled", "repository scope outside the target repository",
 or "adapter unavailable". A usage error for an incompatible flag combination
@@ -186,6 +192,10 @@ A run is bound when it has exactly one binding input:
   - `--entity <id>` takes a canonical Normalized entity v1 ID.
   - `--entity-source <name> --entity-number <n>` takes an effective source
     name, `native`, or the matching provider name, plus the entity number.
+    The selector resolves as it does for `fullsend issues --entity-source` in
+    entity-source configuration v1. A direct lookup does not run the source's
+    discovery query. The query still decides source membership in the check
+    below.
 
 The harness's effective `entity_kinds.source` supplies the kind. An `--entity`
 ID with another kind is a usage error. A source whose scope contains several
@@ -199,7 +209,9 @@ run.
 
 With an explicit entity, the first CEL check uses `event == null`. Eventless
 admission requires trusted invocation provenance and effective platform
-policy. With an event input, the run first authorizes the event. It then binds
+policy. A one-cycle run for a known entity needs no discovery pass and no
+discovery readiness evidence. It still rechecks current source membership
+before the sandbox starts. With an event input, the run first authorizes the event. It then binds
 the entity that the event identifies. The first check uses both `entity` and
 `event`.
 
@@ -244,7 +256,8 @@ binding.
 Each `fullsend poll` invocation runs exactly one input driver, as it does
 today. Entity discovery is a new driver, `--input-driver entity-sources`.
 It enumerates the effective `source` bindings of enabled agents through the
-ADR 0149 coordinator. It routes each `selected` candidate to the entity-bound
+ADR 0149 coordinator, following Entity discovery v1. A source with
+`discovery: false` is not enumerated. It still admits event-backed candidates. It routes each `selected` candidate to the entity-bound
 `fullsend run` path. It does not fabricate a normalized event. Each dispatch
 descriptor carries the canonical entity ID and a reference to the trusted
 execution plan, with no event.
@@ -259,6 +272,12 @@ entity-source harness become event-backed candidates through #9585. The
 ADR 0106 key (harness, target repository, canonical entity) serializes runs
 that the event path and the discovery path both start. Handled state belongs
 in harness CEL or the pre-script, as ADR 0144 requires.
+
+Each discovery pass emits the host-side pass report that Entity discovery v1
+defines. An execution adapter MAY use that report as the discovery readiness
+evidence that entity-source configuration v1 requires before a resident
+eventless run. Reports carry canonical identities only, with no credentials
+or entity content.
 
 For the GitHub target, `entity-sources` uses `--output` and `--target-repo`
 with the same meanings as the `jira-poll` GitHub target. #9588 defines the
