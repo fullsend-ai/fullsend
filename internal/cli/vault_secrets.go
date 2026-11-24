@@ -18,6 +18,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/inference/actionsoidc"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/vaultsecrets"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // vaultIDTokenEnv names the GitLab CI ID token a Vault connection
@@ -82,6 +84,7 @@ func resolveVaultRunnerSecrets(ctx context.Context, cfg config.ConfigReader, for
 	if err != nil {
 		return nil, fmt.Errorf("Vault resolution for %s: %w", strings.Join(names, ", "), err)
 	}
+	ctx = vaultTraceContext(ctx)
 	resolver := vaultsecrets.Resolver{
 		Repo:       repo,
 		Token:      vaultTokenSource(platform),
@@ -92,6 +95,23 @@ func resolveVaultRunnerSecrets(ctx context.Context, cfg config.ConfigReader, for
 		return nil, fmt.Errorf("Vault resolution: %w", err)
 	}
 	return values, nil
+}
+
+// vaultTraceContext returns ctx carrying the run's inbound W3C trace
+// context, so the Vault client sends it as traceparent and tracestate.
+// Vault resolution runs before the run's own tracer starts (the OTLP
+// headers it resolves configure that tracer), so the inbound TRACEPARENT
+// and TRACESTATE are what identify the run's trace at that point. A
+// context that already carries a valid span context is returned
+// unchanged; a missing or malformed TRACEPARENT adds nothing.
+func vaultTraceContext(ctx context.Context) context.Context {
+	if trace.SpanContextFromContext(ctx).IsValid() {
+		return ctx
+	}
+	return propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{
+		"traceparent": vaultEnvFn("TRACEPARENT"),
+		"tracestate":  vaultEnvFn("TRACESTATE"),
+	})
 }
 
 // vaultSelectedSources returns, sorted by name, the secrets whose

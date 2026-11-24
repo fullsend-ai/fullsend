@@ -108,7 +108,7 @@ jobs:
           # Safe here: trusted config under .fullsend/ is read; the vendored or
           # workflow-pinned mint URL resolver may run later with id-token scope.
           # Credentials are not persisted.
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -117,7 +117,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -161,7 +161,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .workflow-mint-resolver
           fetch-depth: 1
           persist-credentials: false
@@ -191,6 +191,16 @@ jobs:
         with:
           source_repo: ${{ inputs.source_repo }}
 
+      - name: Mint prioritize status token
+        id: app-token
+        continue-on-error: true
+        if: ${{ (fromJSON(inputs.event_payload)._normalized_event.source.system || 'github') == 'github' && inputs.source_repo != github.repository }}
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: prioritize
+          repos: ${{ steps.repo-parts.outputs.name }}
+          mint_url: ${{ steps.resolve-mint.outputs.mint_url }}
+
       - name: Prepare GCP credentials for an explicit CLI override
         if: env.FULLSEND_LEGACY_GCP_SETUP == 'true'
         uses: ./.defaults/.github/actions/setup-gcp
@@ -215,6 +225,7 @@ jobs:
         run: mkdir -p target-repo
 
       - name: Run prioritize agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
@@ -245,8 +256,54 @@ jobs:
           jira-client-id: ${{ fromJSON(inputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
           jira-client-secret: ${{ fromJSON(inputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           fullsend-dir: .fullsend
+          github_token: ${{ github.token }}
+          failure-token: ${{ steps.app-token.outputs.token || github.token }}
           mint-url: ${{ steps.resolve-mint.outputs.mint_url }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          failure-repo: ${{ inputs.source_repo }}
+          failure-number: ${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
+          source-system: ${{ fromJSON(inputs.event_payload)._normalized_event.source.system || 'github' }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Report prioritize launch failure
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(inputs.event_payload)._normalized_event.source.system || 'github') == 'github' && (inputs.source_repo == github.repository || steps.app-token.outcome == 'success') }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ inputs.source_repo }}
+          NUMBER: ${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="prioritize"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          if [[ "${MINT_OUTCOME}" == "failure" && "${REPOSITORY}" != "${GITHUB_REPOSITORY}" ]]; then
+            FULLSEND_FAILURE_CATEGORY="token mint"
+          else
+            FULLSEND_FAILURE_CATEGORY="workflow setup"
+          fi
+          export FULLSEND_FAILURE_CATEGORY
+          bash "${script}"
+
+      - name: Warn when cross-repository failure cannot be reported
+        if: ${{ always() && steps.run-agent.outcome == 'skipped' && (fromJSON(inputs.event_payload)._normalized_event.source.system || 'github') == 'github' && inputs.source_repo != github.repository && steps.app-token.outcome != 'success' }}
+        run: echo "::warning::Prioritize startup failure could not be reported because no token authorized for the target repository was available"

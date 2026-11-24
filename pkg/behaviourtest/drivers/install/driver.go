@@ -51,6 +51,12 @@ type PoolConfig struct {
 	GCPProjectID string
 	// Logf is the suite logger.
 	Logf func(string, ...any)
+	// PrivateOrgs reports that no other suite runner leases the pool's
+	// orgs (a GitHub emulator started for this suite). The shared
+	// e2e-lock bridge to legacy runners (orglock.go) is then left out:
+	// with no legacy runner to keep out, its admission window only drains
+	// every worker once the lock is 15 minutes old.
+	PrivateOrgs bool
 }
 
 func (p PoolConfig) validate() error {
@@ -95,6 +101,12 @@ type RepoLease struct {
 	// workflow host of the mint group serving the lease's org. Nil when
 	// the driver does not configure the mint's workflow hosts.
 	MintWorkflowHostRepos []string
+
+	// FreshInstall is true when the allocation installed fullsend into a
+	// repository it had just created, so no event has reached the
+	// repository's workflows yet. The behaviour suite classifies a first
+	// event that starts no run there as infrastructure (#9779).
+	FreshInstall bool
 }
 
 // LeaseDriver is a Driver that leases slots across pool orgs. Callers

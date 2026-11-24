@@ -282,6 +282,19 @@ github:
 	assert.Contains(t, err.Error(), "mint_url must be a valid HTTPS URL")
 }
 
+func TestValidateDeclaredMintURL_LoopbackHTTP(t *testing.T) {
+	require.NoError(t, validateDeclaredMintURL("http://127.0.0.1:18502"))
+	require.NoError(t, validateDeclaredMintURL("http://localhost:18502"))
+
+	err := validateDeclaredMintURL("http://10.0.0.1:18502")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint_url must be a valid HTTPS URL, or http on localhost/127.0.0.1")
+
+	err = validateDeclaredMintURL("http://user@127.0.0.1:18502")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint_url must not contain userinfo")
+}
+
 func TestValidate_ConfigOverlayAcceptsMintURLWithPath(t *testing.T) {
 	input := `
 version: 1

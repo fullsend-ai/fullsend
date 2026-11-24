@@ -75,6 +75,8 @@ func TestWaitForHarnessEmptyMatrix_IgnoresSkippedRuns(t *testing.T) {
 	client := emptyMatrixClient(
 		[]forge.WorkflowRun{
 			{ID: 10, Status: "completed", Conclusion: "skipped", CreatedAt: "2026-01-02T00:00:00Z"},
+			// Held for approval: no jobs, so no listing entry (#9221).
+			{ID: 15, Status: "completed", Conclusion: "action_required", CreatedAt: "2026-01-02T00:00:30Z"},
 			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:01:00Z"},
 		},
 		map[int][]forge.WorkflowJob{

@@ -76,6 +76,11 @@ func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallCo
 	switch {
 	case result.Deferred != "":
 		printer.StepInfo(fmt.Sprintf("[%s] GitLab trigger account deferred: %s. Polling stays the dispatch path", repoFullName, result.Deferred))
+		// The dispatch gate is not reached on this path, but its unrelated-work
+		// scan needs neither the account nor the activation, and the managed
+		// polling schedules keep running on the protected default branch, so
+		// its findings are still reported (#9708).
+		reportGitLabDeferredDispatchExtraWork(ctx, client, printer, owner, repo, info.DefaultBranch)
 		return reconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, printer, repoFullName, false)
 	case result.Ready:
 		printer.StepDone(fmt.Sprintf("[%s] GitLab trigger account ready (the dispatch route stays inactive until it is activated separately)", repoFullName))
@@ -393,6 +398,31 @@ func reportGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, a
 	gate := repos.CheckGitLabTriggerDispatchGate(ctx, client, api, owner, repo, branch, manifest)
 	printGitLabTriggerDispatchGate(printer, owner+"/"+repo, gate)
 	return gate
+}
+
+// reportGitLabDeferredDispatchExtraWork runs the dispatch gate's unrelated-work
+// scan (repos.GitLabDispatchExtraWorkProblems) when the trigger account
+// deferred and the gate itself is not reached, and prints each finding as a
+// warning (#9708). Without it, a project whose scheduled poll pipelines run
+// its own build and test jobs with the protected default branch's variables
+// would see a clean install. It changes nothing: activation and schedule
+// ownership are decided elsewhere, and polling stays the dispatch path. A scan
+// that cannot complete is reported the same way and does not fail the install.
+// Findings embed repository text, so each one is sanitized for display.
+func reportGitLabDeferredDispatchExtraWork(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, branch string) {
+	repoFullName := scaffold.SanitizeDisplayText(owner + "/" + repo)
+	problems, err := repos.GitLabDispatchExtraWorkProblems(ctx, client, owner, repo, branch)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("[%s] Could not verify that unrelated CI jobs are excluded from Fullsend's scheduled, trigger and agent child pipelines: %s", repoFullName, scaffold.SanitizeDisplayText(err.Error())))
+		return
+	}
+	if len(problems) == 0 {
+		return
+	}
+	printer.StepWarn(fmt.Sprintf("[%s] Unrelated CI work would run in Fullsend pipelines on the protected default branch, including the managed polling schedules that run on the current dispatch path. Polling stays the dispatch path; these findings also defer trigger dispatch activation. Findings:", repoFullName))
+	for _, problem := range problems {
+		printer.StepWarn(fmt.Sprintf("[%s]   - %s", repoFullName, scaffold.SanitizeDisplayText(problem)))
+	}
 }
 
 // printGitLabTriggerDispatchGate prints a dispatch-gate result. Each deferred

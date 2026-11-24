@@ -36,18 +36,27 @@ LOCK_FILE="${FULLSEND_PODMAN_PRUNE_LOCK_FILE:-${HOME}/.local/state/fullsend-gitl
 # window is milliseconds; 30m is well above that and still reclaims images
 # held by killed-job containers that cleanup.sh never saw.
 CONTAINER_UNTIL="${FULLSEND_PODMAN_PRUNE_UNTIL:-30m}"
+# When free space on / falls below this threshold, bypass the CONTAINER_UNTIL
+# grace window to reclaim stopped containers and unreferenced images immediately.
+LOW_DISK_THRESHOLD_KIB="${FULLSEND_PODMAN_LOW_DISK_KIB-10485760}" # 10 GiB
 
 log() { echo "==> $*"; }
 
-# True when a runner-* / openshell-* container is not already stopped.
+# True when a runner-* / openshell-* / fs-* container is not already stopped.
 # Created-but-not-started counts as in-flight: prepare.sh writes the
 # container then starts it, and container prune would delete it in between.
 job_in_flight() {
-  local name state
-  while IFS='|' read -r name state; do
+  local name state labels
+  while IFS='|' read -r name state labels; do
     [ -n "${name}" ] || continue
     case "${name}" in
       runner-*|openshell-*) ;;
+      fs-*)
+        case "${labels:-}" in
+          *openshell.managed=true*|*openshell.managed:true*) ;;
+          *) continue ;;
+        esac
+        ;;
       *) continue ;;
     esac
     state=$(printf '%s' "${state}" | tr '[:upper:]' '[:lower:]')
@@ -58,7 +67,7 @@ job_in_flight() {
         return 0
         ;;
     esac
-  done < <(podman ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null || true)
+  done < <(podman ps -a --format '{{.Names}}|{{.State}}|{{.Labels}}' 2>/dev/null || true)
   return 1
 }
 
@@ -189,6 +198,14 @@ fi
 
 if job_in_flight; then
   exit 0
+fi
+
+if [ -n "${LOW_DISK_THRESHOLD_KIB}" ] && [ "${LOW_DISK_THRESHOLD_KIB}" -gt 0 ] 2>/dev/null; then
+  free_kib=$(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}' || true)
+  if [ -n "${free_kib}" ] && [ "${free_kib}" -lt "${LOW_DISK_THRESHOLD_KIB}" ] 2>/dev/null; then
+    log "low disk space on / (${free_kib} KiB < ${LOW_DISK_THRESHOLD_KIB} KiB) — bypassing ${CONTAINER_UNTIL} grace window for aggressive reclamation"
+    CONTAINER_UNTIL="0s"
+  fi
 fi
 
 log "pruning stopped containers older than ${CONTAINER_UNTIL}"

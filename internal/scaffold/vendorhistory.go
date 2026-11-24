@@ -18,6 +18,7 @@ var historicalVendoredInfraPaths = []string{
 	".github/scripts/check-fix-eligibility-test.sh",
 	".github/scripts/redact-behaviour-artifacts-test.sh",
 	".github/scripts/redact-behaviour-artifacts.sh",
+	".github/scripts/review-diff-hash.sh",
 }
 
 // historicalVendoredLayeredPaths are paths, relative to

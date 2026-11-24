@@ -296,6 +296,9 @@ func newComposedDriver(pool PoolConfig, setup orgSetupFunc) (*composedDriver, er
 	if err != nil {
 		return nil, fmt.Errorf("composed driver: %w", err)
 	}
+	if pool.PrivateOrgs {
+		alloc.orgLock = nil
+	}
 	return &composedDriver{
 		alloc:       alloc,
 		creds:       creds,
@@ -579,6 +582,9 @@ func (d *composedDriver) provision(ctx context.Context, slot Slot) (_ RepoLease,
 
 		MintStatusGroup:       env.statusGroup,
 		MintWorkflowHostRepos: env.workflowHostRepos,
+
+		// The claim created the slot repo and EnsureRepo installed it.
+		FreshInstall: true,
 	}, env, nil
 }
 
