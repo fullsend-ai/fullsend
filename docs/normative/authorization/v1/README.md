@@ -347,7 +347,11 @@ A closed pull request may trigger retro only when the closing actor meets the
 standard write-level permission threshold and, for a `pull_request` close, the
 pull request comes from the same repository (head repository id equals the
 base repository id). A fork pull request close on `pull_request` does not
-dispatch retro; a write-authorized user can run `/fs-retro`. The bash dispatch path checks the
+dispatch retro. On GitHub the close reaches retro through the fork pull
+request stub's `workflow_run` instead, where the closer (`merged_by`, else
+the latest `closed` issue event actor, for a close at most five minutes
+before the stub run) must meet the same threshold; a write-authorized user
+can also run `/fs-retro`. The bash dispatch path checks the
 event sender's repository permission; the GitHub CEL route applies a fixed
 write floor before the ordinary event and harness authorization gates. A
 custom retro harness role cannot lower this floor. Merge-queue merges follow

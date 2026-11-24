@@ -350,9 +350,15 @@ to CEL:
 | `trigger` on the `review` entry | The trigger |
 | A `review` entry with `source:` whose harness sets or inherits `trigger:` | The dispatch workflow, as before |
 
-Neither path routes fork or Dependabot pull request events on `pull_request`;
-review on those pull requests starts from a `/fs-review` comment (see
+Neither path routes Dependabot pull request events on `pull_request`; review
+on those pull requests starts from a `/fs-review` comment (see
 [Required upgrade](../getting-started/repo-management.md#required-upgrade-shim-moves-from-pull_request_target-to-pull_request)).
+On GitHub, fork pull request events reach both paths through the managed
+`fullsend-fork-pr.yaml` workflow (see
+[Fork pull requests](../getting-started/repo-management.md#fork-pull-requests)).
+The trigger then sees the pull request event rebuilt from the API: the
+action (`opened`, `synchronize`, `ready_for_review`, `labeled` or `closed`)
+and, as the actor, the pull request author, the labeler or the closer.
 
 A harness `trigger:` field never changes when a built-in agent runs, whether
 your own harness writes it, inherits it through `base:`, or the entry's
@@ -376,7 +382,7 @@ the dispatch workflow's built-in rules:
 | Pull request opened or pushed by a bot without a registered fullsend role | Reviewed | Not reviewed |
 | Pull request pushed by the fix agent | Reviewed | Not reviewed until [#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, so the review → fix → re-review loop stops |
 | Who is checked when a pull request is opened, pushed to or marked ready | The pull request author | The user who sent the event |
-| A push by a user with triage access or higher to an outside contributor's fork pull request | Not reviewed (the pull request author is checked; with the `pull_request` shim, fork PR events are not routed at all) | Not reviewed with the `pull_request` shim (fork PR events are not routed). Reviewed only by a shim still on `pull_request_target` |
+| A push by a user with triage access or higher to an outside contributor's fork pull request | Not reviewed (the pull request author is checked) | The actor is the pull request author, since the fork's event is rebuilt from the API: not reviewed unless the trigger ignores the actor's role |
 
 > [!WARNING]
 > Opt in only after
@@ -419,7 +425,7 @@ the review entry is disabled.
 
 By default, the dispatch workflow starts the retro agent when a
 same-repository pull request is closed, merged or not, and on a `/fs-retro`
-comment on an issue or a pull request (a fork pull request needs the comment). To decide it yourself, give the `retro` entry in
+comment on an issue or a pull request (on GitHub a fork pull request also gets it on close, through `fullsend-fork-pr.yaml`). To decide it yourself, give the `retro` entry in
 `.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
 job; the trigger only decides whether that job starts. What opts a repository
 in, and how to check the decision, work as for review: see
@@ -455,8 +461,8 @@ and a bot's `/fs-retro` comment never starts a retro.
 
 A trigger decides which events start a retro, not who may start one:
 
-- **Closing a pull request:** applies to same-repository pull requests (fork
-  pull requests get no automatic retro on close; comment `/fs-retro`). The
+- **Closing a pull request:** applies to same-repository pull requests, and
+  on GitHub to fork pull requests through `fullsend-fork-pr.yaml`. The
   closing actor needs write access. If the
   permission lookup or CEL routing fails, the close event does not start retro.
   A custom retro harness role cannot lower this write requirement.
