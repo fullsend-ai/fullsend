@@ -11,6 +11,8 @@ import (
 // jiraOAuthWorkflowFixture stands in for a reusable workflow that declares
 // the Jira OAuth client credential secrets. jiraPreOAuthWorkflowFixture is
 // a pre-OAuth workflow that exists but lacks those declarations.
+// jiraAuthListsWorkflowFixture also declares the jira authorization list
+// secrets, like the current release.
 const (
 	jiraOAuthWorkflowFixture = `name: Jira poll
 on:
@@ -28,6 +30,15 @@ on:
   workflow_call:
     secrets:
       FULLSEND_JIRA_TOKEN:
+        required: false
+`
+	jiraAuthListsWorkflowFixture = jiraOAuthWorkflowFixture + `      FULLSEND_JIRA_WRITE_GROUPS:
+        required: false
+      FULLSEND_JIRA_WRITE_ACCOUNTS:
+        required: false
+      FULLSEND_JIRA_TRIAGE_GROUPS:
+        required: false
+      FULLSEND_JIRA_TRIAGE_ACCOUNTS:
         required: false
 `
 )
@@ -68,7 +79,7 @@ func newFakeClientForBatch(repos ...string) *forge.FakeClient {
 	}
 	// v1.0.0 is the current-release fixture for tests that enable GitHub
 	// Jira polling. Older pins intentionally lack this file in the fixture.
-	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@v1.0.0"] = []byte(jiraOAuthWorkflowFixture)
+	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@v1.0.0"] = []byte(jiraAuthListsWorkflowFixture)
 	// A GitHub OpenAI install that cannot fetch its explicit pin's scaffold
 	// fails closed, so the default test pin serves the embedded per-repo
 	// shim and thin callers, which forward the key and match what the

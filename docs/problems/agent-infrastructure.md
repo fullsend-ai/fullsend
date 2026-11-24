@@ -133,6 +133,11 @@ implementation and operational acceptance remain open.
 
 ## Open questions
 
+- How can agents and separate processes avoid repeatedly spending GitHub API
+  quota on the same entities? (Shared HTTP caching through ghproxy and
+  permission-equivalent read-only mint tokens decided in
+  [ADR 0071](../ADRs/0071-share-github-api-cache-with-read-only-mint-tokens.md);
+  deployment ownership and cache storage remain implementation work.)
 - What is the right level of isolation per agent (process, container, microVM, separate cluster)?
 - How do we provide agents with “resources to do their work” (clone, tools,
   APIs) without over-privileging them or creating a single high-value target?
@@ -161,6 +166,11 @@ implementation and operational acceptance remain open.
   agent resource access remains open.
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).
+- How do CI wiring and recurring discovery support entity-bound resident runs
+  without introducing a separate agent coordinator? The design direction is
+  decided in [ADR 0079](../ADRs/0079-bind-entity-execution-through-named-sources.md):
+  shared binding/admission in fullsend, execution in CI, and verified discovery
+  readiness under ADR 0144. Required contracts, adapters, and rollout remain open.
 - How do we compare 3rd party vs internal vs build-our-own on concrete criteria: cost, time to first agent, compliance, and alignment with our security and coordination model?
 - Who in the org would own and operate agent infrastructure, and how does that align with existing platform or CI ownership? [ADR 0123](../ADRs/0123-tenant-configuration-from-repos-yaml.md) establishes the existing `repos.yaml` v1 format for tenant configuration in a possible centralized offering; the source of truth, service, operational ownership, and infrastructure remain open.
 - For cluster-hosted agents, how do we preserve an acceptable inner loop (fast local or sandboxed tests) without granting dangerous privilege, and how do we avoid paying for idle capacity while work waits on humans? (The poll/run process lifecycle and bound-run idle exit are decided in [ADR 0144](../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md); capacity policy and the inner loop remain open.)

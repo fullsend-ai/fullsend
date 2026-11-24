@@ -48,6 +48,22 @@ func (c liveForgejoFiles) GetFile(ctx context.Context, owner, repo, path string)
 	return &repos.ForgejoFile{Content: f.Content, SHA: f.SHA}, nil
 }
 
+func (c liveForgejoFiles) GetFileAt(ctx context.Context, owner, repo, path, ref string) (*repos.ForgejoFile, error) {
+	f, err := c.LiveClient.GetFileAt(ctx, owner, repo, path, ref)
+	if err != nil {
+		return nil, err
+	}
+	return &repos.ForgejoFile{Content: f.Content, SHA: f.SHA}, nil
+}
+
+func (c liveForgejoFiles) ChangeFiles(ctx context.Context, owner, repo, message string, changes []repos.ForgejoFileChange) (string, error) {
+	out := make([]forgejo.FileChange, 0, len(changes))
+	for _, ch := range changes {
+		out = append(out, forgejo.FileChange{Operation: ch.Operation, Path: ch.Path, Content: ch.Content, SHA: ch.SHA})
+	}
+	return c.LiveClient.ChangeFiles(ctx, owner, repo, message, out)
+}
+
 // newForgejoLifecycle returns the Forgejo repository lifecycle for m.
 func newForgejoLifecycle(m *repos.Manifest, dryRun bool, hooks *forgejoTestHooks) *repos.ForgejoLifecycle {
 	lc := &repos.ForgejoLifecycle{
@@ -142,7 +158,9 @@ func runForgejoUninstall(opts *reposUninstallConfig, printer *ui.Printer, manife
 		results, err := run()
 		printForgejoResults(os.Stdout, results)
 		for i, r := range results {
-			if r.Err == nil {
+			// A repository whose workflow files were left in place still
+			// calls the host, so it must stay declared as a dependent.
+			if r.Err == nil && !r.WorkflowsKept {
 				removable = append(removable, targets[i])
 			}
 		}

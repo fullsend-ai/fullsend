@@ -32,6 +32,11 @@ const ForgejoSelectorPrefix = ForgeForgejo + ":"
 // API credentials are never stored here: each alias reads its token from
 // the environment variable ForgejoTokenEnvVar returns, or from an OAuth
 // token cached in the operating-system keyring.
+//
+// A repository entry with workflow_host: true is the instance's
+// Fullsend-managed workflow host (see ForgejoRepoEntry). Non-vendored
+// repositories on that instance call the reusable workflows published
+// there; a repository that resolves vendor: true carries its own copy.
 type ForgejoConfig struct {
 	Instances []ForgejoInstance `yaml:"instances"`
 }
@@ -63,6 +68,16 @@ type ForgejoOAuthConfig struct {
 // ForgejoRepoEntry is one repository declared on a Forgejo instance.
 type ForgejoRepoEntry struct {
 	Name string `yaml:"name"`
+	// WorkflowHost marks the instance's Fullsend-managed workflow-host
+	// repository. repos install publishes the versioned Fullsend workflow
+	// bundle to it, and every non-vendored repository on the same
+	// instance pins its shim to the published bundle. An instance has at
+	// most one workflow host.
+	WorkflowHost bool `yaml:"workflow_host,omitempty"`
+	// Vendor overrides defaults.vendor for this repository. A vendored
+	// repository receives its own copy of the workflow bundle and needs
+	// no workflow host.
+	Vendor *bool `yaml:"vendor,omitempty"`
 }
 
 // ForgejoTarget is a declared Forgejo repository selected for an operation.
@@ -130,6 +145,7 @@ func (c *ForgejoConfig) validate() error {
 			return fmt.Errorf("%s.oauth.client_id %q must be the client ID of a public OAuth application registered on the instance (letters, digits, '.', '_', '~' or '-')", field, inst.OAuth.ClientID)
 		}
 		seen := make(map[string]bool)
+		host := ""
 		for j, r := range inst.Repos {
 			rfield := fmt.Sprintf("%s.repos[%d].name", field, j)
 			owner, repo, ok := splitForgejoPath(r.Name)
@@ -141,6 +157,16 @@ func (c *ForgejoConfig) validate() error {
 				return fmt.Errorf("%s %q is declared more than once on instance %q", rfield, r.Name, inst.Alias)
 			}
 			seen[k] = true
+			if !r.WorkflowHost {
+				continue
+			}
+			if host != "" {
+				return fmt.Errorf("%s.repos[%d].workflow_host: instance %q declares more than one workflow host (%q and %q)", field, j, inst.Alias, host, r.Name)
+			}
+			host = r.Name
+			if r.Vendor != nil && *r.Vendor {
+				return fmt.Errorf("%s.repos[%d]: workflow host %q cannot set vendor: true", field, j, r.Name)
+			}
 		}
 	}
 	return nil

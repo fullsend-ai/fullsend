@@ -482,6 +482,17 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 
 **Decided:**
 
+- Shared GitHub reads: optional ghproxy routing through the usual layered
+  configuration will let agents and processes reuse HTTP responses, backed
+  by a mint cache of tokens whose granted permissions are exclusively
+  read-only. Cache keys use the effective permission set within an exact host,
+  target organization, repository scope, and mint trust domain; equivalent
+  roles may share a token
+  after independent authorization, with the actual issuer recorded separately
+  from the requesting role. Write tokens stay unshared
+  ([ADR 0071](ADRs/0071-share-github-api-cache-with-read-only-mint-tokens.md)).
+  Decided, not yet implemented.
+
 - Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for operations providers cannot handle — long-running operations, sandbox capability gaps, credentials in request bodies, response transformation, and multi-step atomic operations (see [ADR 0046](ADRs/0046-host-side-api-server-design.md)), (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)). OpenAI inference on the pi runtime is the first tier-2 use: the runner exchanges the job's GitHub OIDC token for a short-lived OpenAI access token and hands it to a run-scoped OpenShell provider, so no OpenAI credential enters the sandbox ([ADR 0092](ADRs/0092-openai-wif-credential-delivery.md)); the codex runtime reuses that provider and follows its refreshes by re-reading a runner-seeded token file through codex's `auth.command`, since its process environment cannot carry a placeholder that survives a refresh ([ADR 0099](ADRs/0099-codex-agent-runtime.md)).
 - Inference gateway route: a committed `inference.gateway` block in `.fullsend/config.yaml` names an LLM gateway (`url` and `audience`) that trusts the forge's OIDC issuer directly. The route is runtime-neutral: the credential is re-seeded through a route-aware seeder (the OpenAI seeder generalised, with independent handoffs when a run uses both routes), and each runtime keeps the gateway URL runner-owned. pi, codex and Claude Code use it, and on each the `gateway/` model prefix opts a model in: pi through the pi-inference-gateway extension, codex through a runner-owned `fullsend-gateway` provider in its digest-guarded `config.toml`, on the Responses API only, and Claude Code through a runner-owned `ANTHROPIC_BASE_URL`, cleared and re-exported after `.env`, with its credential from an `apiKeyHelper` that re-reads the re-seeded token file. The runner seeds the job's OIDC token, fetched with the gateway's audience, into a run-scoped OpenShell provider as an endpoint-bound placeholder and re-seeds it before `exp`, scheduled from each token's own `exp` and `iat`. The gateway holds the upstream provider key, so the forge stores no reusable provider key. The route is selected per model by provider prefix, with no precedence order against WIF or the static key: `openai/` and other providers keep their routes, one run can mix them, and a gateway that fails never falls back. The runner owns the route only when a complete block applies; without one, the plugin-carried setup for local runs is unchanged. On pi the route is a separate `gateway` provider served by pi-inference-gateway, with a runner-rendered, digest-guarded model list taken from inline `models` or a validated `models_file` ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)). The block's `auth` field selects the credential: `oidc` (the default, as above) or `api-key`, a supported mode for gateways that cannot trust forge OIDC. In `api-key` mode the runner reads a gateway key from `FULLSEND_INFERENCE_GATEWAY_API_KEY` and puts it behind the same placeholder, egress profile and guards, with no re-seed loop. The block then applies on local runs too. There is no fallback between modes, and because the mode relies on a long-lived secret, setup and status warn about it ([ADR 0138](ADRs/0138-inference-gateway-api-key-credential-mode.md)). An opt-in setting on the block, `messages_auth_header: x-api-key`, sends the gateway credential as `x-api-key` instead of `Authorization: Bearer` for Messages-dialect models (pi `anthropic-messages` models and Claude Code), for gateways that read the key where Anthropic documents it for that API. It is valid only with `auth: api-key`; an `oidc` block that sets it is a config error. The default stays `authorization`, the other dialects and codex keep Bearer, and an `x-api-key` gateway must replace the caller's key with its own on the upstream hop ([ADR 0142](ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md); implementation in [#8370](https://github.com/fullsend-ai/fullsend/issues/8370)).
 - GitHub Packages for sandboxed installs: the job's Actions workflow token is preserved as `GH_WORKFLOW_TOKEN`, refused at every harness `${}` site and in child environments and read by provider credential expansion, and a repo-level provider binds it to `npm.pkg.github.com` (read-only, enforced) and the tarball CDN (which serves pre-signed URLs); forge identity stays the minted App token, which cannot read public packages owned by another org ([ADR 0114](ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md)). On GitHub Actions the runner also reads the token itself to pull a private `ghcr.io` sandbox image before sandbox creation ([#9019](https://github.com/fullsend-ai/fullsend/issues/9019)).
@@ -606,6 +617,42 @@ The existing design principle is that [the repo is the coordinator](problems/age
   or explicit receipts to decide whether work has already been handled
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md), partially
   superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
+- Entity binding and CI integration (target state): harness `entity_kinds` maps
+  named slots to kinds, with source defaulting to work item and target to the
+  source kind. Repository `agents[].entities` maps those slots to lists of
+  scopes. Source defaults to `[native]`; omitted target copies the effective
+  source list, while additional slots require explicit bindings.
+  The configuration clone selects the native provider independently of the
+  runtime or CI platform. Its host and repository path supply defaults;
+  provider-default connections (`github`, `gitlab`, `forgejo`) can override the
+  instance, including GitHub.com to GitHub Enterprise. Reserved source names
+  default to those connections and can override queries and repository scopes.
+  The matching provider source and `native` resolve identically. Other provider names
+  require explicit external connections and scopes when bound. A source named
+  `native` is forbidden. Only source schedules work.
+  Harness `entity_filters` narrows each slot's source queries
+  by provider; primary selections combine for discovery and are checked before
+  full CEL admission. Other slot filters apply to explicit searches only.
+  GitHub source queries and harness filters share a bounded subset of native
+  UI metadata filters and Boolean combinations; unsupported syntax is rejected.
+  GitHub prefers GraphQL discovery with selective projections derived from
+  compiled CEL dependencies, progressively acquiring further decision and actor
+  evidence under ADR 0147.
+  The same resolved plan drives event
+  dispatch, broad polling, and bound-run checks, with CI providing trusted
+  invocation and execution rather than separate agent-routing decisions.
+  Installation verifies recurring discovery coverage for the effective plan
+  before resident eventless cycles can run. The target
+  [entity discovery contract](normative/entity-discovery/v1/) defines poll-pass
+  outcomes, coverage evidence, in-memory retry, and older-candidate backfill.
+  Target and additional slots make
+  typed scopes available to the run without implicit joins or broadcast writes.
+  Creation policy stays on connections independently of discovery; standalone
+  commands without context require explicit scope selection. Deprecated
+  `tracker` mappings translate in memory with warnings and preserved legacy
+  command defaults
+  ([ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md),
+  [configuration contract](normative/entity-source-configuration/v1/)).
 - GitLab dispatch uses a native webhook fast-path for low-latency candidates and the cron-poller as the authoritative reconciliation backstop ([ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)). Native `merge_request_event` dispatch stays removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)). No external webhook bridge (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) for the poller, credentials, and in-job gate).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
   dispatch as resolved entities with `entity.kind: conversation`; when a
@@ -711,11 +758,17 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md),
   [Authorization Contract v2](normative/authorization/v2/)).
 
-- Entity-source discovery (target state): `fullsend poll` combines admissible
-  harness queries into one logical candidate search per source scope and routes
-  possible matches locally. A bound `run` rechecks source-query membership
-  before event-backed or eventless sandbox cycles
-  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)).
+- Entity-source discovery (target state): `fullsend poll` combines source
+  queries into one logical candidate search per source scope. Source membership
+  follows native provider semantics, with exact checks over already-fetched
+  data or batched provider checks; Jira accepts native JQL, GitHub accepts a
+  bounded subset of UI metadata filters and Boolean combinations, and GitLab
+  starts with open/closed/all state selections. A bound `run` rechecks current
+  membership before event-backed or eventless sandbox cycles. Provider-native
+  selection can reflect changes excluded from the actor-filtered CEL view; it
+  grants no authority and does not admit content to the model
+  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md), partially
+  superseded by [ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md)).
   Implementation and the normative query protocol are tracked in
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
@@ -738,9 +791,13 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
   for selective acquisition and its authorization rules, and
   [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
-  for query combination and local routing. The normative discovery protocol,
-  including query syntax, adapter mappings, and discovery coverage evidence,
-  remains open.
+  for query combination and local routing. Named source bindings and provider
+  query configuration are decided in
+  [ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md) and the
+  [Entity-source configuration v1 contract](normative/entity-source-configuration/v1/README.md).
+  Provider-adapter mappings, pagination and consistency proofs, and coverage
+  evidence needed to establish complete discovery remain open for the discovery
+  protocol.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner

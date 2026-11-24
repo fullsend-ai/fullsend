@@ -29,8 +29,12 @@ GitHub repositories use a different command (`fullsend github setup`). See
   `projects.get` access on that project.
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI,
   or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
-* A GitLab personal or group access token with `api` scope and
-  Maintainer (or Owner) role on the target project. The CLI does **not**
+* A GitLab token for the installing user, who needs the Maintainer (or
+  Owner) role on the target project. Use a project-scoped fine-grained
+  personal access token with the permissions listed in
+  [Installer token permissions](#installer-token-permissions). Where
+  fine-grained tokens are not available, use a personal or group access
+  token with the legacy `api` scope. The CLI does **not**
   fall back to `glab auth token`. Set `GITLAB_TOKEN` in the environment
   before running setup, or pass `--gitlab-token` on each `fullsend repos`
   command.
@@ -57,6 +61,71 @@ GitHub repositories use a different command (`fullsend github setup`). See
   the push rule and stops before any write when the regex rejects a branch
   that does not exist yet. The check is skipped when the push rule cannot
   be read, for example on editions without push rules.
+
+### Installer token permissions
+
+`repos install` does more than push code and open a merge request. It also
+creates role service accounts and their tokens, a pipeline trigger token, a
+webhook, a deploy key, pipeline schedules, and CI/CD variables. It updates
+project membership and protected-branch rules too. The legacy `api` scope
+covers all of this, but it also grants much more.
+
+A GitLab
+[fine-grained personal access token](https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens/)
+lets you grant only the permissions install uses. Scope the token to the
+target project and select these permissions (see GitLab's
+[fine-grained REST API permission catalog](https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens_rest/)):
+
+| Group | Permission | Actions |
+|---|---|---|
+| Project | Project | Read |
+| Repository | Repository | Read |
+| Repository | Commit | Create, Read |
+| Repository | Branch | Create, Delete, Read |
+| Repository | Merge Request | Create, Read, Update |
+| Repository | Protected Branch | Read, Update |
+| Repository | Protected Tag | Read |
+| CI/CD | Job | Read |
+| CI/CD | Pipeline Schedule | Create, Delete, Read, Update |
+| CI/CD | Trigger | Create, Delete, Read |
+| CI/CD | Variable | Create, Delete, Read, Update |
+| Integrations | Webhook | Create, Delete, Read, Update |
+| System Access | Deploy Key | Create, Delete, Read |
+| System Access | Member | Create, Read, Update |
+| System Access | Service Account | Create, Delete, Read |
+| System Access | Service Account Personal Access Token | Create, Read, Revoke |
+| User | User | Read |
+| User | SSH Key | Read |
+
+This set was validated end to end on GitLab.com with an MR-based
+installation. That test covered `repos install --dry-run`, the real
+install, the post-merge rerun, `repos status` with no drift, and a
+dispatched agent run. Treat it as the minimum validated for that
+installation path, not a guaranteed minimum for every GitLab version, tier,
+or existing project state.
+
+Some optional permissions change what install can do:
+
+* **Resource Group: Read, Update.** Without them, install prints a warning
+  and skips resource-group lock healing. The rest of the install continues.
+* **Push Rule: Read.** Without it, install cannot read the push rule, so it
+  skips the branch-name preflight described in
+  [Prerequisites](#prerequisites).
+* **Project: Update.** The validated project already had
+  `ci_pipeline_variables_minimum_override_role` set to `no_one_allowed`.
+  Add this permission when you ask fullsend to change that setting, for
+  example with `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced`. See
+  [Typed-input dispatch migration](#typed-input-dispatch-migration).
+
+`repos uninstall` needs more permissions than install. It needs at least
+**Resource Access Token: Read** to list and revoke managed and legacy role
+project access tokens. The full uninstall set has not been validated. If a
+fine-grained token fails during uninstall, use a token with the legacy
+`api` scope.
+
+Install uses this token only while it runs. It is not a runtime
+credential: the role credentials that install creates have Developer
+access.
 
 ## Typed-input dispatch migration
 

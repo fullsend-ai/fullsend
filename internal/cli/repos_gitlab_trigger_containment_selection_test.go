@@ -38,6 +38,7 @@ forgejo:
       url: https://forgejo.example.com
       repos:
         - name: org/lib
+          vendor: true
 `
 
 // A Forgejo installation failure in a mixed selection (here a missing

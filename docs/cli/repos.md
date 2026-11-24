@@ -15,6 +15,23 @@ These flags are inherited by all `repos` subcommands:
 | `--gitlab-token` | | GitLab personal or project access token (overrides `GITLAB_TOKEN` env var) |
 | `--verbose` | `false` | Show the underlying API error text (for example the GitLab HTTP status and server message) instead of `(server error text withheld)`, and log each GitLab API request to stderr as `gitlab api: <METHOD> <path> -> <status>` |
 
+### GitLab token permissions
+
+For `repos install` on GitLab, use a project-scoped fine-grained personal
+access token from a user with the Maintainer (or Owner) role on the project.
+Grant it the permissions in
+[Configuring GitLab § Installer token permissions](../guides/getting-started/configuring-gitlab.md#installer-token-permissions).
+That set was validated end to end for an MR-based installation; it is not a
+guaranteed minimum for every GitLab version, tier, or project state. Without
+the optional Resource Group permissions, install warns and skips
+resource-group lock healing. Without Push Rule: Read, it skips the push-rule
+branch-name preflight. Add Project: Update when you ask fullsend to change
+`ci_pipeline_variables_minimum_override_role`. `repos uninstall` needs more:
+at least Resource Access Token: Read to list and revoke role project access
+tokens. Where fine-grained tokens are not available, or a fine-grained token
+lacks a permission, use a personal or group access token with the legacy
+`api` scope.
+
 ### Verbose output
 
 By default, API failures from credential-bearing calls are reported without
@@ -710,6 +727,16 @@ flag or environment variable supplies them.
   When install manages the caller, it checks that its upstream ref contains
   `reusable-poll-jira.yml`. An older pin fails with no credential or workflow
   changes; upgrade the pin to a ref that includes the workflow.
+  When the `jira` authorization entry reads a list with `groups_from` or
+  `accounts_from`, the poll job also receives the
+  `FULLSEND_JIRA_WRITE_GROUPS`, `FULLSEND_JIRA_WRITE_ACCOUNTS`,
+  `FULLSEND_JIRA_TRIAGE_GROUPS`, or `FULLSEND_JIRA_TRIAGE_ACCOUNTS` secret it
+  names. Install warns about any other name, which the caller cannot pass.
+  It also warns when a poll workflow you maintain calls
+  `reusable-poll-jira.yml` without passing a secret the entry names.
+  You set these secrets
+  yourself; install and uninstall never write or delete them. See
+  [Keeping the lists out of the repository](../guides/user/jira-integration.md#keeping-the-lists-out-of-the-repository).
   Install changes the file only when it carries the
   `# fullsend-component: jira-poll` marker line. A workflow at that path
   without the marker, such as one copied from the Jira guide, is reported and
@@ -725,7 +752,12 @@ flag or environment variable supplies them.
   environment variable available to all environments. The same rules apply
   to `--jira-client-secret` and an existing `FULLSEND_JIRA_CLIENT_SECRET`.
   Supplying any Jira credential flag when no selected repo enables polling
-  fails the run.
+  fails the run. When the `jira` authorization entry uses `groups_from` or
+  `accounts_from` and `fullsend_ref` pins a release that predates them, the
+  repo fails before any write, on GitHub and GitLab, with polling enabled or
+  not. On GitHub with polling enabled, it also fails when a poll workflow you
+  maintain calls a `reusable-poll-jira.yml` that predates them, unless the
+  install is vendored. `repos status` reports the same errors.
 - **Dry run.** `--dry-run` lists Jira secrets by name only and reports the
   poll-resource changes it would make.
 - **Command-line only.** `--jira-token`, `--jira-email`, `--jira-client-id`,
@@ -2176,15 +2208,38 @@ current command only, and asks you to log in again next time. To sign out,
 delete the `fullsend-forgejo-oauth` entry from your keyring, or revoke the
 application under **Settings → Applications** on the instance.
 
+### Forgejo workflow hosts
+
+Fullsend's Forgejo workflows run on the same Forgejo instance as the repositories that use them; no generated workflow reference points at GitHub or at another instance. Each instance either declares one workflow-host repository, or its repositories vendor their own copy of the workflows:
+
+```yaml
+forgejo:
+  instances:
+    - alias: home
+      url: https://git.example.com/forgejo
+      repos:
+        - name: fullsend/workflows
+          workflow_host: true    # receives the published workflow bundle
+        - name: org/app          # pins its shim to the bundle on fullsend/workflows
+        - name: org/standalone
+          vendor: true           # carries its own copy; needs no host
+```
+
+- **Workflow bundle.** The bundle holds Fullsend's reusable Forgejo workflows and their helpers. Its version is derived from its content, so a new `fullsend` release that changes the bundle produces a new version. `repos install` publishes the bundle to the workflow host in a single commit on its default branch and tags that commit `fullsend-bundle-<version>`. Running install again makes no changes until the bundle changes.
+- **Consumer shims.** Every non-host repository receives `.forgejo/workflows/fullsend.yml`. In a non-vendored repository the shim calls the host's `.forgejo/workflows/fullsend-dispatch.yml` by the instance's full URL, including any path prefix, pinned to the tagged commit SHA. That reference is immutable. Before pinning, install checks that every bundle file at the tagged commit matches the bundle, so a moved or hand-made tag is refused. A vendored repository receives the bundle files and a shim that calls its local copy.
+- **Missing host.** When a selected non-vendored repository's instance declares no workflow host, `repos install` fails before any credential lookup or write and names the instance. Declare a host with `workflow_host: true`, or set `vendor: true` on the repository (or `defaults.vendor: true`). An instance has at most one workflow host, and a workflow host cannot set `vendor: true`.
+- **Install order.** A host selected in the same run is published before its consumers, so the consumers pin the new version. When the host is not selected, install only reads its tag. If the current bundle version has not been published, the consumer fails and names the `repos install` command for the host.
+- **Uninstall protection.** `repos uninstall` refuses to remove a workflow host's bundle while any non-vendored repository on the same instance is still declared in `repos.yaml`. It lists those consumers and keeps the host's manifest entry. Uninstalling the consumers in the same run, or removing them from the manifest first, releases the host. A consumer whose workflow files are left in place (for example because its index lost the ownership marker) does not release the host. Only consumers declared in `repos.yaml` can be checked; repositories outside the manifest that call the host are not detected. Version tags are kept on uninstall, so a pinned commit stays reachable.
+
 ### Forgejo lifecycle
 
-The Fullsend-managed resource on Forgejo is the managed `.fullsend/config.yaml`. It carries the ownership marker and `defaults.config`.
+The Fullsend-managed resources on Forgejo are the managed `.fullsend/config.yaml`, which carries the ownership marker and `defaults.config`, and the workflow files above. A workflow host receives only the bundle. `.fullsend/forgejo-workflows.yaml` lists the workflow files Fullsend owns in each repository; only files it lists are updated or removed, and it can claim only paths under `.forgejo/workflows/fullsend` or `.fullsend/forgejo` (which includes the index itself). It can never claim `.fullsend/config.yaml`, which keeps its own ownership marker check. The index carries a `version` field (currently `1`); a newer version makes install and uninstall stop with an upgrade hint. A workflow update is committed together with a conditional rewrite of the index revision that authorized it, so ownership withdrawn concurrently rejects the commit. Install verifies every bundle file at a newly created tag before any consumer is pinned to it, and a shim's workflow reference is pinned to a full commit SHA.
 
-- `repos install` creates the file when it is missing and rewrites it when it has drifted. Running it again makes no changes. A `.fullsend/config.yaml` without the ownership marker is never overwritten: install reports an error for that repository. Updates and deletes are conditional on the revision whose marker was checked, so a file replaced in between causes a conflict error instead of an overwrite or delete. `--dry-run` reports what would change without writing.
-- `repos status` is read-only. Each selected repository is reported as `up-to-date`, `drift`, `not-installed`, `unmanaged` (a file without the ownership marker), or `error`, in a `FORGEJO REPO` table or in the `forgejo` array of `--json` output. Any state other than `up-to-date` gives a non-zero exit code. In `--json` output, `summary` covers only the `github`/`gitlab` repositories; Forgejo results appear only in the separate `forgejo` array, so a run that selects only Forgejo repositories has an empty `repos` array and a zeroed `summary` even when a Forgejo repository errored. Check the `forgejo` array or the exit code.
-- `repos uninstall` deletes the managed file and then removes the repository's entry from `repos.yaml`. A file without the ownership marker is never deleted. The entry is removed only when teardown succeeded. `--uninstall-only`, `--manifest-only`, `--dry-run` and `--yes` behave as they do for other forges. Forgejo file changes are committed directly to the default branch, whether or not `--direct` is set.
+- `repos install` creates missing files and rewrites drifted ones. Running it again makes no changes. A `.fullsend/config.yaml` without the ownership marker, or a workflow file that exists but is not listed in `.fullsend/forgejo-workflows.yaml`, is never overwritten: install reports an error for that repository before writing anything to it. Updates and deletes are conditional on the revision that was checked, so a file replaced in between causes a conflict error instead of an overwrite or delete. The workflow files of a repository change together in one commit. `--dry-run` reports what would change without writing.
+- `repos status` is read-only. Each selected repository is reported as `up-to-date`, `drift`, `not-installed`, `unmanaged` (a file Fullsend does not own), or `error`, in a `FORGEJO REPO` table or in the `forgejo` array of `--json` output. A workflow host also reports drift when the current bundle version is not tagged, and a consumer when its shim is not pinned to the current version. Each `--json` result carries a `role` of `workflow-host` or `vendored` (omitted for a consumer). A non-vendored repository whose instance declares no workflow host is reported as `error` by `repos status`, not only by `repos install`; this includes repositories installed before workflow hosts existed. To migrate, declare the instance's host with `workflow_host: true`, or set `vendor: true` on the repository (or `defaults.vendor: true`). Any state other than `up-to-date` gives a non-zero exit code. In `--json` output, `summary` covers only the `github`/`gitlab` repositories; Forgejo results appear only in the separate `forgejo` array, so a run that selects only Forgejo repositories has an empty `repos` array and a zeroed `summary` even when a Forgejo repository errored. Check the `forgejo` array or the exit code.
+- `repos uninstall` deletes the managed files and then removes the repository's entry from `repos.yaml`. A file Fullsend does not own is never deleted. The entry is removed only when teardown succeeded. A repository whose `.fullsend/forgejo-workflows.yaml` is missing has no ownership record: if a shim or dispatch workflow file remains at `.forgejo/workflows/fullsend*`, uninstall reports the repository as `unmanaged`, keeps the file, and keeps the `repos.yaml` entry, where earlier versions reported `not-installed`. Delete the file by hand to finish the removal. `--uninstall-only`, `--manifest-only`, `--dry-run` and `--yes` behave as they do for other forges. Forgejo file changes are committed directly to the default branch, whether or not `--direct` is set.
 
-Reusable workflow hosts and vendored agent workflows for Forgejo are tracked separately under [#9642](https://github.com/fullsend-ai/fullsend/issues/9642).
+Forgejo agent stages are tracked separately under [#9642](https://github.com/fullsend-ai/fullsend/issues/9642).
 
 ## See also
 
