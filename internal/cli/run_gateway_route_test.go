@@ -510,11 +510,18 @@ func gatewayRecoveryStub(t *testing.T) string {
 	return dir
 }
 
+// gatewayTestSettle is the settle window under shrinkGatewayRefreshTimers.
+// Each placeholder poll execs the openshell stub (a /bin/sh script), which
+// takes ~100 ms on macOS, so the window must fit several polls: a test whose
+// stub answers the old placeholder once (the "lag" file) needs a second poll
+// inside it. Tests that wait for the window to run out allow 10 s.
+const gatewayTestSettle = 500 * time.Millisecond
+
 // shrinkGatewayRefreshTimers makes the refresher's waits test-sized.
 func shrinkGatewayRefreshTimers(t *testing.T) {
 	t.Helper()
 	oldPoll, oldSettle, oldMin, oldBackoff := openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff
-	openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff = time.Millisecond, 20*time.Millisecond, time.Millisecond, time.Millisecond
+	openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff = time.Millisecond, gatewayTestSettle, time.Millisecond, time.Millisecond
 	t.Cleanup(func() {
 		openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff = oldPoll, oldSettle, oldMin, oldBackoff
 	})

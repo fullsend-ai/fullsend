@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -255,6 +256,15 @@ func TestApplyCIServerTLSCA_TrustsPrivateCAAndRejectsUntrusted(t *testing.T) {
 	require.Error(t, err, "certificate not signed by the supplied CA must be rejected")
 	assert.Contains(t, err.Error(), "certificate")
 
+	// TestMain primes the system pool through SSL_CERT_FILE, which
+	// crypto/x509 reads only on Linux and the other Unix ports. On macOS,
+	// iOS and Windows the pool comes from the platform verifier, so the
+	// synthetic CA is never in it and this handshake cannot pass there.
+	// CI (ubuntu-24.04) and hack/ci-local run it.
+	if runtime.GOOS == "darwin" || runtime.GOOS == "ios" || runtime.GOOS == "windows" {
+		t.Logf("skipping the system-pool assertion on %s: SSL_CERT_FILE does not feed x509.SystemCertPool there", runtime.GOOS)
+		return
+	}
 	resp3, err := client.http.Get(viaSystemPool.URL + "/user")
 	require.NoError(t, err, "a cert chaining to a pre-existing system-pool CA must remain trusted after the private CA append")
 	defer resp3.Body.Close()
