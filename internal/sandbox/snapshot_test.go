@@ -427,6 +427,112 @@ func TestCaptureRepositorySnapshot_SubmoduleActiveBooleans(t *testing.T) {
 	assert.Equal(t, "true", values["submodule.on.active"], "bare activation must stay true")
 }
 
+// TestCaptureRepositorySnapshot_RejectsInRepoCAPaths proves a CA setting the
+// downloaded checkout could supply fails capture: Git resolves a relative
+// value against the working tree, and an absolute path can land inside the
+// target repository directly or through a symlink. An absolute path outside
+// the repository and an empty value are captured verbatim.
+func TestCaptureRepositorySnapshot_RejectsInRepoCAPaths(t *testing.T) {
+	requireGit(t)
+	const caInfo = "http.https://gitlab.example.invalid/.sslCAInfo"
+	const caPath = "http.https://gitlab.example.invalid/.sslCAPath"
+
+	rejected := []struct {
+		name  string
+		key   string
+		value func(r *gitRepo) string
+		want  string
+	}{
+		{
+			name: "relative file",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				writeFile(t, r.dir, "certs/ca.pem", "ca")
+				return "certs/ca.pem"
+			},
+			want: "relative CA path",
+		},
+		{
+			name: "relative directory",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				writeFile(t, r.dir, "certs/ca.pem", "ca")
+				return "certs"
+			},
+			want: "relative CA path",
+		},
+		{
+			name:  "absolute file inside the repository",
+			key:   caInfo,
+			value: func(r *gitRepo) string { return writeFile(t, r.dir, "certs/ca.pem", "ca") },
+			want:  "inside the target repository",
+		},
+		{
+			name:  "absolute missing file inside the repository",
+			key:   caInfo,
+			value: func(r *gitRepo) string { return filepath.Join(r.dir, "certs", "missing", "ca.pem") },
+			want:  "inside the target repository",
+		},
+		{
+			name:  "repository root",
+			key:   caPath,
+			value: func(r *gitRepo) string { return r.dir },
+			want:  "inside the target repository",
+		},
+		{
+			name: "absolute path through a symlink into the repository",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				writeFile(t, r.dir, "certs/ca.pem", "ca")
+				link := filepath.Join(t.TempDir(), "link")
+				require.NoError(t, os.Symlink(filepath.Join(r.dir, "certs"), link))
+				return filepath.Join(link, "missing.pem")
+			},
+			want: "inside the target repository",
+		},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newGitRepo(t)
+			r.commitFile("file.txt", "x")
+			r.git("config", tc.key, tc.value(r))
+			_, err := CaptureRepositorySnapshot(r.dir)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+
+	t.Run("module store", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dependency")
+		super := newGitRepo(t)
+		super.commitFile("file.txt", "content")
+		super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+		super.gitAt(filepath.Join(super.dir, "vendor", "dep"), "config", caInfo, "certs/ca.pem")
+		_, err := CaptureRepositorySnapshot(super.dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "relative CA path")
+	})
+
+	t.Run("outside the repository and empty are kept", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		outside := writeFile(t, t.TempDir(), "ca.pem", "ca")
+		r.git("config", caInfo, outside)
+		r.git("config", caPath, "")
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+		values := make(map[string]string)
+		for _, entry := range snapshot.config {
+			values[strings.ToLower(entry.Key)] = entry.Value
+		}
+		assert.Equal(t, outside, values[strings.ToLower(caInfo)], "an absolute path outside the repository is kept verbatim")
+		empty, ok := values[strings.ToLower(caPath)]
+		assert.True(t, ok, "an empty CA setting is kept")
+		assert.Empty(t, empty)
+	})
+}
+
 // TestCaptureRepositorySnapshot_RejectsWorktreeRegistry fails the run before
 // upload when the root or a module store holds registered worktrees, instead
 // of rejecting the download after the agent has run.

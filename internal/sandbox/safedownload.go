@@ -619,10 +619,10 @@ func headExposesGitDir(path string, excluded func(dir string) bool) (bool, error
 func validateNestedGitFile(gitfile, absLocal string, gitDirs map[string]bool) error {
 	resolved, err := resolveGitfileDir(filepath.Dir(absLocal), gitfile)
 	if err != nil {
-		// Not wrapped in ErrRepositoryRejected: a Git timeout or start
-		// failure is transient and should be retried, while an invalid
-		// gitfile is deterministic — the caller's retry loop treats
-		// non-rejected errors as retryable, which is correct for both.
+		// Returned as is: resolveGitfileDir already wraps deterministic
+		// failures (an invalid redirect, an unreachable target) in
+		// ErrRepositoryRejected and leaves only a Git timeout unwrapped,
+		// which the caller's retry loop treats as transient.
 		return err
 	}
 	owning, err := owningCheckout(gitfile, absLocal)

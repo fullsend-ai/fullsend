@@ -2593,14 +2593,20 @@ func TestLayoutRejectionSymmetry(t *testing.T) {
 		{
 			name: "symlinked nested git",
 			plant: func(t *testing.T, r *gitRepo) {
-				require.NoError(t, os.MkdirAll(filepath.Join(r.dir, "vendor"), 0o755))
-				require.NoError(t, os.MkdirAll(filepath.Join(r.dir, ".git", "modules", "dep"), 0o755))
+				// A checkout's .git entry that is a symlink into a real
+				// module store, instead of a gitfile.
+				require.NoError(t, os.MkdirAll(filepath.Join(r.dir, "vendor", "dep"), 0o755))
+				store := filepath.Join(r.dir, ".git", "modules", "dep")
+				require.NoError(t, os.MkdirAll(filepath.Join(store, "objects"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(store, "refs"), 0o755))
+				writeFile(t, r.dir, ".git/modules/dep/config", "[core]\n")
 				writeFile(t, r.dir, ".git/modules/dep/HEAD", "ref: refs/heads/main\n")
-				require.NoError(t, os.Symlink("../../.git/modules/dep", filepath.Join(r.dir, "vendor", "dep")))
-				require.NoError(t, os.Symlink("../.git/modules/dep", filepath.Join(r.dir, "vendor", "link.git")))
+				require.NoError(t, os.Symlink("../../.git/modules/dep", filepath.Join(r.dir, "vendor", "dep", ".git")))
 			},
-			capture: "symlink",
-			walk:    "symlink",
+			// The temporary directory name contains "symlink", so assert on
+			// the full phrase, which no path component can supply.
+			capture: "is a symlink",
+			walk:    "is a symlink",
 		},
 		{
 			name: "symlinked modules entry",

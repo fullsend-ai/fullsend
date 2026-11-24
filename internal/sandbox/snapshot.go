@@ -428,7 +428,8 @@ func submoduleActivePathspecKey(key string) bool {
 
 // httpCAKey matches http.<url>.sslCAInfo and .sslCAPath, the certificate
 // authority settings CI runners write for private-CA instances. They are
-// non-executable host file paths, restored verbatim.
+// non-executable host file paths, restored verbatim once checkTrustedCAPaths
+// has confirmed they lie outside the target repository.
 func httpCAKey(key string) bool {
 	if !strings.HasPrefix(key, "http.") {
 		return false
@@ -439,6 +440,54 @@ func httpCAKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// checkTrustedCAPaths rejects a captured CA setting the downloaded checkout
+// could supply. Git resolves a relative value against the working tree, so it
+// can name a file inside the checkout, and so can an absolute path that lands
+// inside the target repository; restored verbatim, either would let the agent
+// choose the certificate authority the host trusts. An empty value names no
+// file and is left alone.
+func checkTrustedCAPaths(repoRoot string, entries []configEntry) error {
+	var resolvedRoot string
+	for _, entry := range entries {
+		if !httpCAKey(strings.ToLower(entry.Key)) || entry.Value == "" {
+			continue
+		}
+		if !filepath.IsAbs(entry.Value) {
+			return fmt.Errorf("trusted git config %q is a relative CA path %q, which Git resolves against the working tree; use an absolute path outside the repository", entry.Key, entry.Value)
+		}
+		if resolvedRoot == "" {
+			var err error
+			if resolvedRoot, err = filepath.EvalSymlinks(repoRoot); err != nil {
+				return fmt.Errorf("resolving target repository %s: %w", repoRoot, err)
+			}
+		}
+		existing := deepestExistingPath(entry.Value)
+		if inDir(filepath.Clean(entry.Value), filepath.Clean(repoRoot)) || inDir(existing, resolvedRoot) {
+			return fmt.Errorf("trusted git config %q names CA path %q inside the target repository; use an absolute path outside the repository", entry.Key, entry.Value)
+		}
+	}
+	return nil
+}
+
+// deepestExistingPath resolves the longest prefix of an absolute path that
+// resolves through symlinks. A component the host cannot resolve outside the
+// target repository cannot be supplied by the download, so the resolvable
+// prefix decides where Git would look; a missing file inside the repository
+// still resolves to a repository directory. The raw path is resolved, not a
+// cleaned one, so ".." after a symlink follows the kernel's resolution.
+func deepestExistingPath(path string) string {
+	for {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		i := strings.LastIndex(path, string(filepath.Separator))
+		if i <= len(filepath.VolumeName(path)) {
+			return filepath.VolumeName(path) + string(filepath.Separator)
+		}
+		path = path[:i]
+	}
 }
 
 // urlResetKey matches the multi-valued destination lists whose empty entries
@@ -725,6 +774,9 @@ func captureStoreConfigs(repoDir string) (map[string]storeSnapshot, error) {
 		entries, configErr := captureTrustedConfig(cwd, "", configPaths...)
 		if configErr != nil {
 			return fmt.Errorf("capturing trusted config of %s: %w", key, configErr)
+		}
+		if caErr := checkTrustedCAPaths(repoDir, entries); caErr != nil {
+			return fmt.Errorf("capturing trusted config of %s: %w", key, caErr)
 		}
 		shallow, shallowErr := captureShallowState(path)
 		if shallowErr != nil {
@@ -1114,6 +1166,9 @@ func CaptureRepositorySnapshot(repoDir string, excludes ...string) (RepositorySn
 		return RepositorySnapshot{}, fmt.Errorf("capturing trusted worktree config: %w", err)
 	}
 	if snapshot.config, err = captureTrustedConfig(cwd, absRepo, configPaths...); err != nil {
+		return RepositorySnapshot{}, fmt.Errorf("capturing trusted repository config: %w", err)
+	}
+	if err := checkTrustedCAPaths(absRepo, snapshot.config); err != nil {
 		return RepositorySnapshot{}, fmt.Errorf("capturing trusted repository config: %w", err)
 	}
 	if snapshot.format, err = captureGitConfigFormat(cwd, configPath); err != nil {
