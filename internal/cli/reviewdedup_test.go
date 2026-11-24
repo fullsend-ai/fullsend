@@ -253,6 +253,27 @@ func TestSupersedeReviewSkip_UpdatesOnlyVerifiedBotNotes(t *testing.T) {
 	assert.Equal(t, reviewSkipMarker+"\nleave me alone", comments[2].Body)
 }
 
+func TestSupersedeReviewSkip_SkipsAlreadySupersededNotes(t *testing.T) {
+	fc := forge.NewFakeClient()
+	alreadySuperseded := reviewSkipMarker + "\nFullsend's earlier unchanged-diff skip note " + supersededSkipPhrase +
+		" a full review for commit 0000000000000000000000000000000000000000."
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {
+			{ID: 1, Author: "o-review[bot]", AppClientID: "client", Body: reviewSkipMarker + "\nold"},
+			{ID: 2, Author: "o-review[bot]", AppClientID: "client", Body: alreadySuperseded},
+		},
+	}
+
+	require.NoError(t, supersedeReviewSkip(context.Background(), fc, "o", "r", 1,
+		"0123456789012345678901234567890123456789", "fullsend-ai", "client"))
+
+	comments := fc.IssueComments["o/r/1"]
+	assert.Contains(t, comments[0].Body, "superseded by a full review for commit 012345678901")
+	assert.Equal(t, alreadySuperseded, comments[1].Body)
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Equal(t, 1, fc.UpdatedComments[0].CommentID)
+}
+
 func TestSupersedeReviewSkip_WithoutClientIDIsNoop(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors = map[string]error{"ListIssueComments": assert.AnError}

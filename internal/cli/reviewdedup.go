@@ -15,6 +15,11 @@ import (
 
 const reviewSkipMarker = "<!-- fullsend:review-skip -->"
 
+// supersededSkipPhrase appears in a skip note a full review already rewrote; a
+// later full review leaves such a note alone so it keeps the commit that
+// superseded it.
+const supersededSkipPhrase = "was superseded by"
+
 // newReviewDedupCmd owns the unchanged-synchronize review decision. It is
 // deliberately fail-open: a missing or unverifiable input prints skip=false
 // and exits successfully so routing can continue with a full review.
@@ -278,7 +283,7 @@ func supersedeReviewSkip(ctx context.Context, client forge.Client, owner, repo s
 	if !hexSHARe.MatchString(headSHA) {
 		headSHA = "unknown head"
 	}
-	body := reviewSkipMarker + "\nFullsend's earlier unchanged-diff skip note was superseded by a full review for commit " + headSHA + "."
+	body := reviewSkipMarker + "\nFullsend's earlier unchanged-diff skip note " + supersededSkipPhrase + " a full review for commit " + headSHA + "."
 	if appClientID == "" {
 		return nil
 	}
@@ -288,7 +293,7 @@ func supersedeReviewSkip(ctx context.Context, client forge.Client, owner, repo s
 	}
 	logins := reviewBotLogins(owner, appSet)
 	for _, comment := range comments {
-		if logins[comment.Author] && comment.AppClientID == appClientID && strings.HasPrefix(comment.Body, reviewSkipMarker) {
+		if logins[comment.Author] && comment.AppClientID == appClientID && strings.HasPrefix(comment.Body, reviewSkipMarker) && !strings.Contains(comment.Body, supersededSkipPhrase) {
 			if err := client.UpdateIssueComment(ctx, owner, repo, comment.ID, body); err != nil {
 				return err
 			}
