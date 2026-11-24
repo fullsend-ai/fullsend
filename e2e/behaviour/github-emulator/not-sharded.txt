@@ -9,7 +9,7 @@ features/runtime/codex-openai.feature:26 # @requires:capability:runtime-codex-op
 features/runtime/inference-gateway-api-key.feature:28 # @requires:capability:inference-gateway-api-key
 features/runtime/inference-gateway.feature:62 # @requires:capability:inference-gateway
 features/runtime/inference-gateway.feature:100 # @requires:capability:inference-gateway-reseed
-features/runtime/opencode.feature:19 # @requires:capability:runtime-opencode
+features/runtime/opencode.feature:41 # @requires:capability:runtime-opencode
 features/runtime/pi-gateway.feature:23 # @requires:capability:runtime-pi-gateway
 features/runtime/pi-openai.feature:19 # @requires:capability:runtime-pi-openai
 features/runtime/pi.feature:17 # @requires:capability:runtime-pi

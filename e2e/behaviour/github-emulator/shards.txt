@@ -9,7 +9,7 @@ a 2 4 features/dispatch/fix-authorization.feature:47
 b 2 4 features/dispatch/fix-authorization.feature:16 features/dispatch/fork-dispatch.feature:114 features/platform/bot-role-lookup.feature:28
 c 2 4 features/dispatch/owners-auth.feature:18 features/platform/bot-actor-authorization.feature:141
 d 2 4 features/dispatch/review-cel-route.feature:13 features/runtime/skill-overrides.feature:34 features/dispatch/base-dispatch.feature:65 features/actors/actor-identities.feature:15 features/platform/mint-status.feature:25
-e 2 4 features/dispatch/fork-bash-routing.feature:17 features/dispatch/dispatch.feature:68 features/platform/actor-authorization.feature:82 features/dispatch/fetch-allowlist-gate.feature:25
+e 2 4 features/dispatch/fork-bash-routing.feature:17 features/dispatch/dispatch.feature:68 features/platform/actor-authorization.feature:82 features/dispatch/fetch-allowlist-gate.feature:25 features/runtime/opencode.feature:18
 f 2 4 features/dispatch/owners-auth.feature:43 features/dispatch/base-dispatch.feature:7 features/dispatch/reaction-notifications.feature:10 features/dispatch/runner-secret-overlay-guard.feature:54
 g 2 4 features/platform/bot-actor-authorization.feature:163 features/dispatch/fork-dispatch.feature:134 features/dispatch/url-dispatch.feature:64 features/dispatch/runner-secret-overlay-guard.feature:23
 h 2 4 features/code/branch-namespace.feature:31 features/triage/triage.feature:6 features/runtime/agent-settings.feature:13 features/dispatch/owners-auth.feature:55
