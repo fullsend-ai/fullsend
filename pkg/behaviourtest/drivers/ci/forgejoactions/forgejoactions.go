@@ -323,6 +323,11 @@ func (d *Driver) AssertNoWorkflow(ctx context.Context, owner, repo, workflowFile
 		}
 		for _, run := range runs {
 			created, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			// The exact trigger time is kept rather than truncating it to
+			// Forgejo's second precision: truncating would fail on an
+			// unrelated run created earlier in the trigger's own second.
+			// The cost is that a run created in that same second after the
+			// trigger is not flagged either, as in the GitHub driver.
 			if parseErr == nil && !created.Before(after) {
 				return fmt.Errorf("unexpected workflow %s run %d (event %q) created at %s, after the trigger time", workflowFile, run.ID, run.Event, run.CreatedAt)
 			}
@@ -771,9 +776,11 @@ func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, age
 }
 
 // AssertNoHarnessAgentArtifact checks that no harness run created at or
-// after the trigger ran agent's job: every matching job must be skipped.
-// An unreadable job listing fails the assertion rather than passing it.
+// after the trigger ran agent's job: every matching job must be skipped
+// and no run may hold an artifact of agent. An unreadable job or artifact
+// listing fails the assertion rather than passing it.
 func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, agent string, after time.Time) error {
+	requested := "fullsend-" + agent
 	runs, err := d.listHarnessRuns(ctx, owner, repo, after)
 	if err != nil {
 		return err
@@ -789,6 +796,17 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 		for _, job := range matchingAgentJobs(jobs, agent) {
 			if job.Conclusion != "skipped" {
 				return fmt.Errorf("expected harness %q not to run, but job %q found in workflow run %d", agent, job.Name, r.ID)
+			}
+		}
+		// An agent artifact proves the agent ran even when its job is not
+		// recognised by name, as in agentRunState.
+		arts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, r.ID)
+		if err != nil {
+			return fmt.Errorf("list artifacts of workflow run %d: %w", r.ID, err)
+		}
+		for _, art := range arts {
+			if agentArtifactNameMatches(art.Name, requested) {
+				return fmt.Errorf("expected harness %q not to run, but artifact %q found in workflow run %d", agent, art.Name, r.ID)
 			}
 		}
 	}

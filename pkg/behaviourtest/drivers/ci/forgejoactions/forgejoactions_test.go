@@ -43,6 +43,7 @@ type fakeForgejo struct {
 	zips     map[int][]byte
 	requests []string
 	failList int // number of run listings to fail with HTTP 500
+	failArts int // number of artifact listings to fail with HTTP 500
 }
 
 type fakeRun struct {
@@ -105,6 +106,12 @@ func (f *fakeForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, out)
 	case len(parts) == 3 && parts[0] == "runs" && parts[2] == "artifacts":
+		if f.failArts > 0 {
+			f.failArts--
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"artifacts broke"}`))
+			return
+		}
 		id, _ := strconv.Atoi(parts[1])
 		out := []map[string]any{}
 		if r.URL.Query().Get("page") == "1" {
@@ -403,6 +410,16 @@ func TestAssertNoWorkflow(t *testing.T) {
 	require.Error(t, d.AssertNoWorkflow(ctx, "o", "r", "fullsend.yaml", trigger))
 }
 
+// A run created within the trigger's own second but after it is not
+// flagged: the exact trigger time is kept deliberately (see AssertNoWorkflow).
+func TestAssertNoWorkflowKeepsExactTriggerTime(t *testing.T) {
+	t.Parallel()
+	d, f := newDriver(t)
+	exact := trigger.Truncate(time.Second).Add(500 * time.Millisecond)
+	f.runs = []fakeRun{{ID: 1, Workflow: "fullsend.yaml", Event: "issues", Status: "success", Created: exact.Add(-100 * time.Millisecond)}}
+	require.NoError(t, d.AssertNoWorkflow(ctx, "o", "r", "fullsend.yaml", exact))
+}
+
 func TestListRecentRunsAndLogs(t *testing.T) {
 	t.Parallel()
 	d, f := newDriver(t)
@@ -631,6 +648,37 @@ func TestAssertNoHarnessAgentArtifact(t *testing.T) {
 	f.update(func(f *fakeForgejo) { f.runs = append(f.runs, harnessRun(99, "running", trigger)) })
 	f.update(func(f *fakeForgejo) { f.failList = 1 })
 	require.Error(t, d.AssertNoHarnessAgentArtifact(ctx, "o", "r", "triage", trigger))
+}
+
+func TestAssertNoHarnessAgentArtifactChecksArtifacts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("fails on an agent artifact despite an unrecognised job", func(t *testing.T) {
+		t.Parallel()
+		d, f := newDriver(t)
+		f.runs = []fakeRun{harnessRun(2, "success", trigger)}
+		f.jobs[2] = []fakeJob{{Name: "unrecognised", Status: "success"}}
+		f.arts[2] = []fakeArtifact{{ID: 1, Name: "fullsend-triage.matrix-0"}}
+		require.ErrorContains(t, d.AssertNoHarnessAgentArtifact(ctx, "o", "r", "triage", trigger), `artifact "fullsend-triage.matrix-0" found in workflow run 2`)
+	})
+
+	t.Run("ignores other agents' artifacts", func(t *testing.T) {
+		t.Parallel()
+		d, f := newDriver(t)
+		f.runs = []fakeRun{harnessRun(2, "success", trigger)}
+		f.jobs[2] = []fakeJob{{Name: "unrecognised", Status: "success"}}
+		f.arts[2] = []fakeArtifact{{ID: 1, Name: "fullsend-code"}}
+		require.NoError(t, d.AssertNoHarnessAgentArtifact(ctx, "o", "r", "triage", trigger))
+	})
+
+	t.Run("returns artifact listing errors", func(t *testing.T) {
+		t.Parallel()
+		d, f := newDriver(t)
+		f.runs = []fakeRun{harnessRun(2, "success", trigger)}
+		f.jobs[2] = []fakeJob{{Name: "unrecognised", Status: "success"}}
+		f.failArts = 1
+		require.ErrorContains(t, d.AssertNoHarnessAgentArtifact(ctx, "o", "r", "triage", trigger), "list artifacts of workflow run 2")
+	})
 }
 
 func TestCountHarnessDispatches(t *testing.T) {
