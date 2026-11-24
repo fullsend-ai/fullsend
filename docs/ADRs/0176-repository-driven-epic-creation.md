@@ -135,21 +135,13 @@ sources:
     paths:
       - docs/
     role: architecture
-    skills:
-      - discover-components
-      - repo-to-architecture-summary
 ```
 
-The source declaration tells the platform where the data lives. The
-`skills` field tells it which skills from that source to load for
-interpretation — these provide the guidance on how to read the data,
-what the structure means, and how to map component names to repos.
-Different workloads load different skills for the same resolver.
-
-A generic loader fetches the source, snapshots it, and records a
-content hash. Refs are resolved to a commit SHA at load time. If the
-content changes between resolution and verification, the integrity
-check rejects the result.
+The source declaration tells the platform where the data lives. A
+generic loader fetches the source, snapshots it, and records a content
+hash. Refs are resolved to a commit SHA at load time. If the content
+changes between resolution and verification, the integrity check
+rejects the result.
 
 For RHAI, the architecture-context repository already contains a
 `component-map.json` with full structured details for each component:
@@ -160,42 +152,28 @@ Phase 2 uses alongside the mapping hints to resolve with evidence.
 
 The component mapping, architecture context, and other sources are
 declared sources with the same structure: `id`, `url`, `ref`, `paths`,
-`role`, `skills`. The platform owns loading, snapshotting, hashing, and
+`role`. The platform owns loading, snapshotting, hashing, and
 verification. Each workload owns the declaration of where its sources
-live and which skills to load for interpreting them. Any workload points
-at its own architecture repository and skills — the resolution logic
-does not change. RHAI is one configuration of sources fed into generic
-resolution logic. Other workloads declare their own sources without code
-changes in the resolver.
+live. Any workload points at its own architecture repository — the
+resolution logic does not change. RHAI is one configuration of sources
+fed into generic resolution logic. Other workloads declare their own
+sources without code changes in the resolver.
 
-#### Architecture context skills (from Nov 17 tech review)
+#### Future: architecture context skills (from Nov 17 tech review)
 
 Ralph proposed that agents should not reference the architecture context
-repository directly. Instead, each workload declares which skills to
-load from its architecture source. The architecture context is loaded
-and snapshotted upfront — sources are fetched, pinned to a commit SHA,
-and content-hashed before the resolver runs. The skills do not fetch
-data at resolution time; they provide the interpretation guidance: which
-files to read, what the structure means, how to map component names to
-repos.
+repository directly. Instead, each workload would declare which skills
+to load from its architecture source. The skills would provide
+interpretation guidance: which files to read, what the structure means,
+how to map component names to repos. This is future work — the current
+implementation reads the architecture context directly.
 
-For RHAI, the skills live in the architecture-context repo itself (which
-already has 12 skills including `discover-components`,
-`repo-to-architecture-summary`, and `analyze-platform-components`). They
-instruct the agent how to read the RHAI docs — for example, how to use
-`component-map.json` to match candidates by type and tier. For another
-workload with different data sources — for example, a team that queries
-repos live instead of maintaining a static architecture-context repo —
-the workload provides skills that get the same information from their
-source.
-
-Phase 2 reads the pre-loaded architecture context using the
-interpretation guidance from the workload's declared skills, rather than
-hardcoding how to read a specific source. This also addresses the
-scaling concern
-from the Nov 17 review — workloads that cannot afford to maintain a
-static architecture-context repo at scale can provide skills that work
-differently.
+The direction: Phase 2 would read the pre-loaded architecture context
+using interpretation guidance from the workload's declared skills,
+rather than hardcoding how to read a specific source. This would also
+address the scaling concern from the Nov 17 review — workloads that
+cannot afford to maintain a static architecture-context repo at scale
+could provide skills that work differently.
 
 ### Verification
 
