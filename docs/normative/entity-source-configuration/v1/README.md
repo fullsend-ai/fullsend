@@ -842,4 +842,5 @@ Implementations MUST cover at least these observable cases:
 
 Provider query pagination/consistency proofs, detailed authorization evidence,
 and normalized entity/context schemas are specified and tested in their owning
-contracts. Passing configuration conformance alone MUST NOT enable execution.
+contracts. [Entity discovery v1](../../entity-discovery/v1/README.md) defines
+the discovery coverage, recovery, and replanning guarantees. Passing configuration conformance alone MUST NOT enable execution.

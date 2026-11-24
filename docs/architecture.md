@@ -642,7 +642,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   dispatch, broad polling, and bound-run checks, with CI providing trusted
   invocation and execution rather than separate agent-routing decisions.
   Installation verifies recurring discovery coverage for the effective plan
-  before resident eventless cycles can run. Target and additional slots make
+  before resident eventless cycles can run. The target
+  [entity discovery contract](normative/entity-discovery/v1/) defines poll-pass
+  outcomes, coverage evidence, in-memory retry, and older-candidate backfill.
+  Target and additional slots make
   typed scopes available to the run without implicit joins or broadcast writes.
   Creation policy stays on connections independently of discovery; standalone
   commands without context require explicit scope selection. Deprecated
