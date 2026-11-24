@@ -58,7 +58,7 @@ sources (component mapping, architecture context, and other configured
 sources).
 
 **Output**: one of:
-- Resolved: the repository URL with the layer that resolved it
+- Resolved: the repository (org and name) with the layer that resolved it
 - Unresolved: a reason, the candidate repositories from the mapping,
   and a hint from the LLM guess if layer 4 ran
 
@@ -121,14 +121,15 @@ consumer.
 ### Component mapping
 
 One data structure per workload: Jira component → candidate
-repositories, each with its URL.
+repositories.
 
 The mapping records:
 - Which repositories are associated with each Jira component
-- Their canonical URLs
+- Repository details (organization, name) — the caller builds the
+  SSH or HTTP URL from these as needed
 
 For RHAI, this data already exists. The Component Mapping Results
-document maps every Jira component to its repos with URLs.
+document maps every Jira component to its repos.
 Examples from the existing data:
 
 | Jira component | Repos |
