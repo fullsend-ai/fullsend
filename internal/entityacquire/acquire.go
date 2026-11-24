@@ -177,6 +177,13 @@ type collState struct {
 	// the predicate: the next read discards its members and rereads the
 	// collection without a filter.
 	broaden bool
+	// seqPages counts the pages accepted in the current read sequence (it
+	// restarts when the read broadens).
+	seqPages int
+	// unverified is sticky for the current read sequence: some accepted
+	// page reported no source revision, so the sequence's provenance was
+	// never established and it can never become complete.
+	unverified bool
 }
 
 // Acquire derives the predicate's plan, reads the base facts, and then reads
@@ -213,6 +220,9 @@ func Acquire(ctx context.Context, req Request) (*Result, error) {
 	// adapter's slices are never appended to.
 	entity := *base.Entity
 	res := &Result{Plan: plan, Entity: &entity, Revision: base.Revision, BaseReads: 1}
+	// observedRev is the first non-empty page revision seen when the base
+	// established none; every later page must match it.
+	var observedRev string
 
 	var states []*collState
 	for _, n := range plan.CollectionOrder() {
@@ -267,7 +277,7 @@ func Acquire(ctx context.Context, req Request) (*Result, error) {
 			return finish(StatusIncomplete, fmt.Sprintf("read budget of %d pages exhausted", maxReads))
 		}
 		res.PageReads++
-		inconsistent, err := readPage(ctx, req.Adapter, &entity, base.Revision, st)
+		inconsistent, err := readPage(ctx, req.Adapter, &entity, base.Revision, &observedRev, st)
 		if err != nil {
 			return nil, err
 		}
@@ -295,12 +305,13 @@ func nextOpen(states []*collState) *collState {
 
 // readPage reads and merges one page of st. It returns a non-empty reason
 // when the page shows the source changed since the base read.
-func readPage(ctx context.Context, a Adapter, entity *normentity.Entity, baseRev string, st *collState) (string, error) {
+func readPage(ctx context.Context, a Adapter, entity *normentity.Entity, baseRev string, observedRev *string, st *collState) (string, error) {
 	n := st.read.Need
 	if st.broaden {
 		// Filtered members are discarded so the unfiltered reread does not
 		// duplicate them.
 		st.broaden, st.broad, st.filtered = false, true, false
+		st.seqPages, st.unverified = 0, false
 		st.cursor = ""
 		st.read.Members = 0
 		resetList(entity, n, normentity.Coverage{Status: normentity.CoverageNotLoaded})
@@ -345,18 +356,33 @@ func readPage(ctx context.Context, a Adapter, entity *normentity.Entity, baseRev
 	if page.Next != "" && page.Next == st.cursor {
 		return fail("pagination did not advance")
 	}
-	if baseRev != "" && page.Revision != "" && page.Revision != baseRev {
-		return fmt.Sprintf("source revision changed from %q to %q while reading %s", baseRev, page.Revision, n), nil
+	// Every page is checked against the base revision, or, when the base
+	// established none, against the first revision any page reported.
+	refRev := baseRev
+	if refRev == "" {
+		refRev = *observedRev
 	}
-	if page.Filtered && !st.filtered && st.read.Members > 0 {
-		return fail("adapter switched to a filtered read mid-collection")
+	if page.Revision != "" {
+		if refRev != "" && page.Revision != refRev {
+			return fmt.Sprintf("source revision changed from %q to %q while reading %s", refRev, page.Revision, n), nil
+		}
+		if refRev == "" {
+			*observedRev = page.Revision
+		}
+	}
+	if st.seqPages > 0 && page.Filtered != st.filtered {
+		return fail("adapter changed filter mode mid-collection")
 	}
 	added, ok := appendMembers(entity, page.Members, n)
 	if !ok {
 		return fail("page carries no members container for " + string(n))
 	}
 	st.read.Members += added
+	st.seqPages++
 	st.filtered = page.Filtered
+	if page.Revision == "" {
+		st.unverified = true
+	}
 	st.read.Filtered = st.read.Filtered || page.Filtered
 	st.cursor = page.Next
 
@@ -369,7 +395,7 @@ func readPage(ctx context.Context, a Adapter, entity *normentity.Entity, baseRev
 		// predicate, the next read broadens.
 		st.broaden = true
 		st.read.Coverage = normentity.Coverage{Status: normentity.CoveragePartial, Reason: "filtered read exhausted", SourceRevision: page.Revision}
-	case baseRev == "" || page.Revision == "":
+	case baseRev == "" || st.unverified:
 		st.done = true
 		st.read.Coverage = normentity.Coverage{Status: normentity.CoverageUnknown, Reason: "source revision not established"}
 	default:

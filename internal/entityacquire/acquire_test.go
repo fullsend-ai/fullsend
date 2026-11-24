@@ -327,6 +327,41 @@ func TestAcquireFilteredReads(t *testing.T) {
 	})
 }
 
+func TestAcquireSequenceProvenanceFailsClosed(t *testing.T) {
+	t.Run("unverified intermediate page keeps absence unproven", func(t *testing.T) {
+		p := pagesOf(rev1, false, commentsFrag(comment("1", "a")), commentsFrag(comment("2", "b")))
+		p[0].Revision = ""
+		a := &fakeAdapter{base: workItem(), rev: rev1, pages: map[Need][]*Page{NeedComments: p}}
+		res := acquire(t, `!entity.comments.exists(c, c.command == "/fs-code")`, a)
+		assert.Equal(t, StatusIncomplete, res.Status)
+		assert.Equal(t, entitycel.Unknown, res.Value)
+		assert.Equal(t, ne.CoverageUnknown, res.Entity.Comments.Coverage.Status)
+	})
+	t.Run("filtered page followed by an unfiltered terminal page fails closed", func(t *testing.T) {
+		p := pagesOf(rev1, false, commentsFrag(comment("1", "a")), commentsFrag(comment("2", "b")))
+		p[0].Filtered = true
+		a := &fakeAdapter{base: workItem(), rev: rev1, pages: map[Need][]*Page{NeedComments: p}}
+		res := acquire(t, `entity.comments.exists(c, c.command == "/fs-code")`, a)
+		assert.Equal(t, StatusIncomplete, res.Status)
+		assert.Equal(t, entitycel.Unknown, res.Value)
+		assert.Equal(t, ne.CoverageFailed, res.Entity.Comments.Coverage.Status)
+	})
+	t.Run("conflicting page revisions without a base revision are inconsistent", func(t *testing.T) {
+		a := &fakeAdapter{
+			base: workItem(), rev: "",
+			pages: map[Need][]*Page{
+				NeedComments: pagesOf(rev1, false, commentsFrag(comment("1", "/fs-code"))),
+				NeedLabels:   pagesOf("2026-11-24T10:05:00Z", false, labelsFrag("ready")),
+			},
+		}
+		res := acquire(t, `entity.comments.exists(c, c.command == "/fs-code") && entity.labels.exists(l, l == "ready")`, a)
+		assert.Equal(t, StatusInconsistent, res.Status)
+		assert.Equal(t, entitycel.Unknown, res.Value)
+		_, err := res.ResolvedEntity()
+		assert.Error(t, err)
+	})
+}
+
 func TestAcquireMalformedPagesFailClosed(t *testing.T) {
 	expr := `size(entity.comments) == 0`
 	stuck := pagesOf(rev1, false, commentsFrag(), commentsFrag())
