@@ -69,6 +69,7 @@ func TestForkPRStubTemplate(t *testing.T) {
 				}
 			}
 			s := string(content)
+			assert.Contains(t, s, "runs-on: ubuntu-latest", "a GitHub-hosted runner, never a self-hosted one")
 			assert.NotContains(t, s, "secrets.")
 			assert.NotContains(t, s, "upload-artifact")
 			assert.NotContains(t, s, "checkout")
@@ -84,7 +85,10 @@ func TestForkPRStubRender(t *testing.T) {
 	assert.Equal(t, ForkPRStubPath, f.Path)
 	assert.Equal(t, "100644", f.Mode)
 	assert.True(t, strings.HasPrefix(string(f.Content), "# This file is managed by fullsend."))
-	assert.Contains(t, string(f.Content), "runs-on: my-runner")
+	// The fork controls the stub copy that runs: it never takes the
+	// repository's (possibly self-hosted) runner.
+	assert.Contains(t, string(f.Content), "runs-on: ubuntu-latest")
+	assert.NotContains(t, string(f.Content), "my-runner")
 	assert.NotContains(t, string(f.Content), "__GH_RUNNER__")
 
 	files, err := CollectPerRepoInstallFiles(false, "", "")
@@ -151,6 +155,7 @@ const (
 	forkHeadSHA    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	recentTime     = "2026-11-24T09:58:30Z" // 90 s before the run
 	oldTime        = "2026-11-20T08:00:00Z"
+	otherSHA       = "dddddddddddddddddddddddddddddddddddddddd"
 )
 
 func forkPRStepEnv(runnerTemp string) map[string]string {
@@ -242,10 +247,23 @@ case "$*" in
     if [[ -n "$filter" ]]; then jq -r "$filter" runs.json; else cat runs.json; fi ;;
   *"/issues/"*"/events"*) cat events.json ;;
   *"/pulls/"[0-9]*) cat pr.json ;;
-  *"/pulls"*) cat pulls.json ;;
+  *"/pulls"*)
+    [[ -f pulls.json ]] || { printf 'boom%%0A::error::injected\n' >&2; exit 1; }
+    cat pulls.json ;;
   *) exit 1 ;;
 esac
 `
+
+// stubRun is one fullsend-fork-pr.yaml run on the fork branch.
+type stubRun struct {
+	created string
+	sha     string
+	repoID  int
+}
+
+func (r stubRun) json() map[string]any {
+	return map[string]any{"created_at": r.created, "head_sha": r.sha, "head_repository": map[string]any{"id": r.repoID}}
+}
 
 func TestResolveForkPullRequestStep(t *testing.T) {
 	requireBash4(t)
@@ -277,7 +295,7 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 		list     []forkPR
 		pr       *forkPR
 		events   []map[string]any
-		runs     []string // stub run creation times for the head SHA
+		runs     []stubRun // stub runs on the fork branch, as the runs API lists them
 		want     map[string]string
 		wantSkip string
 		wantWarn string
@@ -332,13 +350,39 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 		},
 		{
 			// The outside author pushes 2 minutes after a maintainer's label:
-			// the new head had no stub run when the label was added, so the
-			// push is checked as the author's, not under the label.
+			// the labeled head was another commit, so the push is checked as
+			// the author's, not under the label.
 			name: "push after the label", list: []forkPR{labeledPR}, pr: &labeledPR,
-			events:   []map[string]any{labeled(labelTime, "triager")},
-			runs:     []string{"2026-11-24T09:59:00Z", "2026-11-24T10:00:00Z"},
+			events: []map[string]any{labeled(labelTime, "triager")},
+			runs: []stubRun{{oldTime, otherSHA, 222},
+				{"2026-11-24T09:59:00Z", forkHeadSHA, 222}, {"2026-11-24T10:00:00Z", forkHeadSHA, 222}},
 			want:     map[string]string{"resolved": "true", "labeler": "", "action": "synchronize"},
-			wantWarn: "pushed after ready-for-review was added",
+			wantWarn: "was not the pull request head when ready-for-review was added",
+		},
+		{
+			// The commit was seeded earlier through another fork's PR on a
+			// branch of the same name: only this fork's runs count.
+			name: "head seeded through another fork", list: []forkPR{labeledPR}, pr: &labeledPR,
+			events:   []map[string]any{labeled(labelTime, "triager")},
+			runs:     []stubRun{{oldTime, forkHeadSHA, 333}, {"2026-11-24T09:50:00Z", otherSHA, 222}, {"2026-11-24T09:59:00Z", forkHeadSHA, 222}},
+			want:     map[string]string{"resolved": "true", "labeler": ""},
+			wantWarn: "was not the pull request head when ready-for-review was added",
+		},
+		{
+			// The commit was the head earlier, then force-pushed away before
+			// the label and pushed back after it.
+			name: "head earlier but not when labeled", list: []forkPR{labeledPR}, pr: &labeledPR,
+			events:   []map[string]any{labeled(labelTime, "triager")},
+			runs:     []stubRun{{"2026-11-24T09:50:00Z", forkHeadSHA, 222}, {"2026-11-24T09:56:00Z", otherSHA, 222}, {"2026-11-24T09:59:00Z", forkHeadSHA, 222}},
+			want:     map[string]string{"resolved": "true", "labeler": ""},
+			wantWarn: "was not the pull request head when ready-for-review was added",
+		},
+		{
+			// The label's own stub run, seconds after it, is on the labeled head.
+			name: "labeled head with the label's own run", list: []forkPR{labeledPR}, pr: &labeledPR,
+			events: []map[string]any{labeled(labelTime, "triager")},
+			runs:   []stubRun{{"2026-11-24T09:57:02Z", forkHeadSHA, 222}, {"2026-11-24T09:40:00Z", forkHeadSHA, 222}, {"2026-11-24T09:30:00Z", otherSHA, 222}},
+			want:   map[string]string{"resolved": "true", "labeler": "triager"},
 		},
 		{
 			name: "label added then removed", list: []forkPR{open}, pr: &open,
@@ -392,12 +436,12 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			}
 			runs := tc.runs
 			if runs == nil {
-				// The head commit's first stub run predates any label.
-				runs = []string{oldTime}
+				// The head commit was already the PR head before any label.
+				runs = []stubRun{{oldTime, forkHeadSHA, 222}}
 			}
 			runList := make([]any, 0, len(runs))
 			for _, r := range runs {
-				runList = append(runList, map[string]any{"created_at": r})
+				runList = append(runList, r.json())
 			}
 			files := map[string]string{
 				"bin/gh":      forkPRGHStub,
@@ -451,7 +495,7 @@ func TestResolveForkPullRequestStepSlashedBranchAndRunLookup(t *testing.T) {
 		"pr.json":    mustJSON(t, pr.json()),
 		"events.json": mustJSON(t, []any{map[string]any{"event": "labeled", "created_at": "2026-11-24T09:57:00Z",
 			"label": map[string]any{"name": "ready-for-review"}, "actor": map[string]any{"login": "triager"}}}),
-		"runs.json": mustJSON(t, map[string]any{"workflow_runs": []any{map[string]any{"created_at": oldTime}}}),
+		"runs.json": mustJSON(t, map[string]any{"workflow_runs": []any{stubRun{oldTime, forkHeadSHA, 222}.json()}}),
 	}
 	ghLog := filepath.Join(t.TempDir(), "gh.log")
 	env["GH_LOG"] = ghLog
@@ -460,7 +504,7 @@ func TestResolveForkPullRequestStepSlashedBranchAndRunLookup(t *testing.T) {
 	log, err := os.ReadFile(ghLog)
 	require.NoError(t, err)
 	assert.Contains(t, string(log), "-f head=contributor:feature/x")
-	assert.Contains(t, string(log), "--method GET repos/acme/widgets/actions/workflows/fullsend-fork-pr.yaml/runs -f head_sha="+forkHeadSHA+" -f event=pull_request -f per_page=100")
+	assert.Contains(t, string(log), "--method GET repos/acme/widgets/actions/workflows/fullsend-fork-pr.yaml/runs -f branch=feature/x -f event=pull_request -f per_page=100")
 }
 
 func TestResolveForkPullRequestStepLookup(t *testing.T) {
@@ -506,6 +550,10 @@ func TestResolveForkPullRequestStepLookup(t *testing.T) {
 	b, err = newCmd().CombinedOutput()
 	require.Error(t, err)
 	assert.Contains(t, string(b), "::error::GitHub API call failed")
+	// The API error text cannot add a workflow command: control
+	// characters, colons and percent encodings are dropped.
+	assert.NotContains(t, string(b), "%0A")
+	assert.NotContains(t, string(b), "::error::injected")
 }
 
 // forkRouteEnv is the "Determine stage" env for a resolved fork PR.
@@ -523,6 +571,7 @@ const permissionGHStub = `#!/usr/bin/env bash
 case "$*" in
   *collaborators/writer/*) echo write ;;
   *collaborators/triager/*) echo triage ;;
+  *collaborators/unreachable/*) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;;
   *) echo read ;;
 esac
 `
@@ -558,6 +607,15 @@ func TestDetermineStageWorkflowRun(t *testing.T) {
 			assert.Equal(t, tc.wantSender, got.outputs["event_sender"])
 		})
 	}
+
+	// A failed permission lookup fails closed: no retro for that close.
+	t.Run("closer permission lookup fails", func(t *testing.T) {
+		got := runRouteStep(t, "Determine stage", forkRouteEnv("closed", "closed", "outsider", "unreachable", ""),
+			map[string]string{"bin/gh": permissionGHStub})
+		assert.Empty(t, got.outputs["stage"])
+		assert.Equal(t, "closed", got.outputs["event_action"])
+		assert.Contains(t, got.stdout, "::warning::Permission API call failed for unreachable")
+	})
 
 	t.Run("unresolved run routes nothing", func(t *testing.T) {
 		env := forkRouteEnv("open", "synchronize", "writer", "", "")

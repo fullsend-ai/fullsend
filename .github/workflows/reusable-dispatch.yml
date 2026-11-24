@@ -213,8 +213,8 @@ jobs:
       # The action the run stands for is rebuilt from API data: closed for a
       # closed PR; labeled when ready-for-review is on the PR, was added
       # within FORK_PR_WINDOW seconds before the stub run was created, and
-      # the head commit already had a stub run when it was added (so a later
-      # push never runs under someone else's label); otherwise opened,
+      # the run's head commit was this PR's head when it was added (so a
+      # later push never runs under someone else's label); otherwise opened,
       # ready_for_review or synchronize. The window bounds how long one
       # label or close can start a run: GitHub creates the stub run seconds
       # after the event, and five minutes absorbs Actions event backlog. A
@@ -261,7 +261,7 @@ jobs:
             local out err
             err=$(mktemp)
             if ! out=$(gh api "$@" 2>"${err}"); then
-              echo "::error::GitHub API call failed: $(LC_ALL=C tr -d '\000-\037:' < "${err}" | head -c 300)" >&2
+              echo "::error::GitHub API call failed: $(LC_ALL=C tr -d '\000-\037:%' < "${err}" | head -c 300)" >&2
               rm -f "${err}"
               exit 1
             fi
@@ -333,18 +333,24 @@ jobs:
               LABEL_EVENT=$(last_event '.event == "labeled" and .label.name == "ready-for-review"')
               LABELED_AT=$(jq -r '.created_at // ""' <<<"${LABEL_EVENT}")
               if [[ -n "${LABELED_AT}" ]] && within "${LABELED_AT}"; then
-                # The label counts only while it is on the PR, and only for a
-                # head commit that already had a stub run when it was added:
-                # a push after the label is checked as the author's.
+                # The label counts only while it is on the PR, and only for the
+                # commit that was this PR's head when it was added: the newest
+                # stub run on this fork branch, from this fork, created by
+                # then (5 s slack). A push after the label, or a commit seeded
+                # through another branch, fork or earlier push, is checked as
+                # the author's.
                 ON_PR=$(jq -r 'any(.labels[]?; .name == "ready-for-review")' "${PR_FILE}")
-                FIRST_RUN_AT=$(api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/${STUB_PATH##*/}/runs" \
-                  -f "head_sha=${WR_HEAD_SHA}" -f event=pull_request -f per_page=100 \
-                  --jq '[.workflow_runs[].created_at] | sort | first // ""')
+                RUNS=$(api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/${STUB_PATH##*/}/runs" \
+                  -f "branch=${WR_HEAD_BRANCH}" -f event=pull_request -f per_page=100)
+                HEAD_AT_LABEL=$(jq -r --argjson hid "${WR_HEAD_REPO_ID}" --arg label "${LABELED_AT}" '
+                  def t: sub("\\.[0-9]+"; "") | fromdateiso8601;
+                  ($label | t) as $l
+                  | [.workflow_runs[]? | select((.head_repository.id // -1) == $hid and (.created_at | t) <= $l + 5)]
+                  | sort_by(.created_at) | last | .head_sha // ""' <<<"${RUNS}")
                 if [[ "${ON_PR}" != "true" ]]; then
                   echo "::warning::Fork pull request #${NUMBER}: ready-for-review was removed; checking the author instead"
-                elif [[ -z "${FIRST_RUN_AT}" ]] || ! jq -en --arg first "${FIRST_RUN_AT}" --arg label "${LABELED_AT}" '
-                    ($first | sub("\\.[0-9]+"; "") | fromdateiso8601) <= ($label | sub("\\.[0-9]+"; "") | fromdateiso8601) + 5' >/dev/null 2>&1; then
-                  echo "::warning::Fork pull request #${NUMBER}: the head commit was pushed after ready-for-review was added; checking the author instead"
+                elif [[ "${HEAD_AT_LABEL}" != "${WR_HEAD_SHA}" ]]; then
+                  echo "::warning::Fork pull request #${NUMBER}: the run's head commit was not the pull request head when ready-for-review was added; checking the author instead"
                 else
                   LABELER=$(jq -r '.actor.login // ""' <<<"${LABEL_EVENT}")
                 fi

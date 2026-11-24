@@ -1023,7 +1023,10 @@ What it does:
 
 1. A fork PR is opened, pushed to, marked ready for review, labeled
    `ready-for-review`, or closed. GitHub runs `fullsend-fork-pr.yaml` for
-   the event. It has no permissions and no secrets and does nothing.
+   the event. It has no permissions and no secrets and does nothing. It
+   always runs on a GitHub-hosted runner (`ubuntu-latest`), never on your
+   configured runner, because the fork controls the copy that runs. If your
+   organization disables GitHub-hosted runners, fork PRs need `/fs-review`.
 2. When that run finishes, GitHub starts the shim (`fullsend.yaml`) from the
    default branch, with the repository's secrets, the same way a maintainer's
    `/fs-review` comment does.

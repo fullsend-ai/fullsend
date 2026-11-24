@@ -32,7 +32,10 @@ jobs:
       github.event.pull_request.head.repo.id != github.repository_id
       && (github.event.action != 'labeled'
        || github.event.label.name == 'ready-for-review')
-    runs-on: ubuntu-24.04
+    # A GitHub-hosted runner, not the repository's configured runner: the
+    # fork controls the copy of this file that runs, so a self-hosted
+    # runner here would run fork-chosen steps on it. The job only echoes.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Hand the event to the fullsend workflow
