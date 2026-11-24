@@ -214,15 +214,6 @@ func TestWarnNoMatch_SanitizesDynamicStrings(t *testing.T) {
 	}
 }
 
-func TestSanitizeAnnotation_NoDoubleColon(t *testing.T) {
-	for _, in := range []string{"::", ":::", "::::", ":::::", "a:::error:::b", ":%0A::", "::\n::"} {
-		got := sanitizeAnnotation(in)
-		if strings.Contains(got, "::") {
-			t.Errorf("sanitizeAnnotation(%q) = %q, still contains %q", in, got, "::")
-		}
-	}
-}
-
 func TestWarnNoMatch_BoundsEventList(t *testing.T) {
 	out := captureAnnotations(t)
 	p := New(nil, &reportingMatcher{}, Options{})

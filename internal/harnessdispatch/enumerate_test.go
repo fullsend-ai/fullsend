@@ -611,6 +611,27 @@ func TestMatchHarnesses_TriggerEvalFailureAnnotation(t *testing.T) {
 	assert.Contains(t, annotation, "trigger eval failed")
 }
 
+// Dynamic text in an ::error:: annotation (agent name and error text) must
+// not be able to end the line and start another workflow command.
+func TestMatchHarnesses_TriggerEvalFailureAnnotationSanitized(t *testing.T) {
+	buf := captureAnnotations(t)
+
+	ev := mustEvent(t, "issue-opened.json")
+	matched, err := MatchHarnesses([]TriggeredHarness{{
+		Name:    "evil\n::error::spoofed",
+		Harness: &harness.Harness{Trigger: "!!!\n::set-output name=a::b"},
+	}}, ev)
+	require.NoError(t, err)
+	assert.Empty(t, matched)
+
+	annotation := buf.String()
+	assert.Equal(t, 1, strings.Count(annotation, "\n"), "annotation must be a single line: %q", annotation)
+	assert.True(t, strings.HasSuffix(annotation, "\n"))
+	assert.NotContains(t, annotation, "::spoofed")
+	assert.NotContains(t, annotation, "::set-output")
+	assert.Contains(t, annotation, "%0A")
+}
+
 func TestDispatch_PRMatch(t *testing.T) {
 	dir := t.TempDir()
 	harnessDir := filepath.Join(dir, "harness")

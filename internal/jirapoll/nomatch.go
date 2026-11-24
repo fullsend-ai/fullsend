@@ -5,9 +5,9 @@ import (
 	"io"
 	"os"
 	"strings"
-	"unicode"
 
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
 )
 
 // annotationWriter is where the poller writes GitHub Actions workflow
@@ -34,36 +34,6 @@ type CandidateReporter interface {
 type unmatchedEvent struct {
 	issueKey string
 	event    string
-}
-
-// annotationEscaper encodes the characters GitHub Actions treats specially
-// in a workflow command message: '%' first (so a literal "%0A" in a value
-// stays visible as text), then CR and LF. Breaking up "::" is done separately
-// in sanitizeAnnotation, because a non-overlapping replacer leaves "::" in
-// runs of three or more colons.
-var annotationEscaper = strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
-
-// sanitizeAnnotation makes a dynamic string safe to embed in a workflow
-// command annotation: control characters (including ANSI escape
-// sequences' ESC) are dropped, the characters annotationEscaper names are
-// encoded, and "::" is broken up until none remains so a value cannot read
-// as the start of another workflow command. Jira comment commands and label
-// names are user-controlled.
-func sanitizeAnnotation(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if r == '\r' || r == '\n' {
-			return r
-		}
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-	s = annotationEscaper.Replace(s)
-	for strings.Contains(s, "::") {
-		s = strings.ReplaceAll(s, "::", ": :")
-	}
-	return s
 }
 
 // describeEvent summarizes a normalized event for the no-match warning: its
@@ -99,7 +69,7 @@ func (p *Poller) warnNoMatch(selected int) {
 		}
 		considered := "none"
 		if len(agents) > 0 {
-			considered = sanitizeAnnotation(strings.Join(agents, ", "))
+			considered = workflowcmd.SanitizeAnnotation(strings.Join(agents, ", "))
 		}
 		agentsClause = " Agents considered: " + considered + "."
 	}
@@ -109,7 +79,7 @@ func (p *Poller) warnNoMatch(selected int) {
 			events = append(events, fmt.Sprintf("and %d more", len(p.unmatched)-maxNoMatchEvents))
 			break
 		}
-		events = append(events, sanitizeAnnotation(u.issueKey+" ("+u.event+")"))
+		events = append(events, workflowcmd.SanitizeAnnotation(u.issueKey+" ("+u.event+")"))
 	}
 	fmt.Fprintf(annotationWriter, "::warning::jira-poll: selected %d issue(s) but no agent matched any of their events, so nothing was dispatched: %s.%s "+
 		"Check that the agent is not disabled under agents: in .fullsend/config.yaml, that its harness trigger matches the event, "+

@@ -15,6 +15,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
 )
 
 // annotationWriter is the destination for GitHub Actions workflow command
@@ -146,7 +147,7 @@ func listTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		loadOpts.Agent = name
 		h, _, err := harness.LoadWithBase(ctx, path, loadOpts)
 		if err != nil {
-			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: load failed: %v\n", name, err)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: load failed: %s\n", workflowcmd.SanitizeAnnotation(name), workflowcmd.SanitizeAnnotation(err.Error()))
 			loadErrs = append(loadErrs, fmt.Errorf("agent %s: load failed: %w", name, err))
 			return
 		}
@@ -159,7 +160,7 @@ func listTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 	for _, agent := range registered {
 		resolved, err := harness.ResolveRegisteredPath(ctx, configDir, agent.Entry, allowlist, composeOpts)
 		if err != nil {
-			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: resolve failed: %v\n", agent.Name, err)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: resolve failed: %s\n", workflowcmd.SanitizeAnnotation(agent.Name), workflowcmd.SanitizeAnnotation(err.Error()))
 			loadErrs = append(loadErrs, fmt.Errorf("agent %s: resolve failed: %w", agent.Name, err))
 			continue
 		}
@@ -176,7 +177,7 @@ func listTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 	for _, name := range builtins {
 		path, loadOpts, ok := builtin(ctx, name, composeOpts)
 		if !ok {
-			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping built-in agent %s: its harness could not be resolved\n", name)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping built-in agent %s: its harness could not be resolved\n", workflowcmd.SanitizeAnnotation(name))
 			loadErrs = append(loadErrs, fmt.Errorf("built-in agent %s: harness could not be resolved", name))
 			continue
 		}
@@ -225,7 +226,7 @@ func MatchHarnesses(candidates []TriggeredHarness, event *normevent.Event) ([]Tr
 	for _, c := range candidates {
 		ok, err := harness.EvaluateTrigger(c.Harness.Trigger, eventMap)
 		if err != nil {
-			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: trigger eval failed: %v\n", c.Name, err)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: trigger eval failed: %s\n", workflowcmd.SanitizeAnnotation(c.Name), workflowcmd.SanitizeAnnotation(err.Error()))
 			continue
 		}
 		if ok {
