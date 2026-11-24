@@ -75,7 +75,9 @@ five issues per cycle only makes a large batch rare.
 direction for discovery, and no Jira adapter for it exists yet, so the
 `jira-poll` driver stays in service. This ADR aims to stop that driver from
 losing requests to its row limit and its random pick, with one change that
-leaves change detection and authorization alone.
+leaves change detection and authorization alone. It also lets a deployment
+choose the length of the backfill window, so that a longer outage need not
+lose requests.
 
 ## Decision
 
@@ -136,7 +138,9 @@ remove the row limit, the random pick, and the lock.
    advances the checkpoint, is unchanged. At any of these limits the driver
    stops reading, leaves an issue it has not finished for the next cycle,
    dispatches what it has completed, commits those checkpoints, and exits
-   normally.
+   normally. A cycle in which every issue the driver tried failed or timed
+   out ends in an error, as today, so a poller blocked by slow issues shows
+   as a failed run.
 4. **Bounds.** 250 is GitHub's 256-job matrix limit less a small margin; it
    bounds a cycle and a single issue, and it applies on both targets. The
    default is 100 because the limit sets how fast a backlog drains, and a
@@ -157,7 +161,8 @@ remove the row limit, the random pick, and the lock.
    `max_dispatches_per_cycle` replaces both keys of ADR 0160, neither of
    which shipped.
 5. **Unchanged.** Change detection, bot filtering, authorization, the
-   window's clamps and ADR 0160's one log line per cycle naming the clamped
+   window's clamps (only the window's length becomes a setting) and
+   ADR 0160's one log line per cycle naming the clamped
    candidates, the checkpoint commit with ADR 0160's `updated` clause,
    and on GitLab the record-by-record dispatch with its retry of an issue
    whose dispatch failed.
@@ -175,9 +180,10 @@ Forgejo has no Jira poll target.
 
 ## Consequences
 
-- Every issue that changed within the window is eligible each cycle, in
-  order, so none is skipped because of its position in the results or by
-  chance.
+- Every issue that changed within the window is eligible each cycle, so none
+  is cut off by a row limit or lost to chance. Position still matters under
+  a backlog, behind slow issues, and under a configured order, as the
+  bullets below say.
 - Requests are still lost when issues change faster than the driver can
   process them within the window, when the poller is stopped for longer than
   the window, or when one issue produces more than 250 dispatch records, or on
@@ -195,16 +201,18 @@ Forgejo has no Jira poll target.
   are not served. It takes no record room from other issues, and a slow one
   costs up to two minutes of each cycle. Two or three slow issues at the
   front of the line can use up a whole cycle, and the issues behind them are
-  then not reached and can lose their requests; this ADR accepts that and
+  then not reached and can lose their requests. Such a cycle ends in an
+  error, so the stall shows as failed runs. This ADR accepts the stall and
   adds no way to set a slow issue aside.
 - A configured query that sets another order is served in that order. Under
   a sustained backlog, an order other than oldest change first can leave
   older requests waiting until they leave the window, so the guide and the
   config reference recommend oldest change first, say what another order
   costs, and drop the newest-first sort clause from their example queries.
-- A longer window lets requests survive a longer outage, at two costs. A
-  missing or rewound checkpoint replays requests as old as the window. A
-  window that holds more issues than a cycle can list makes the driver fall
+- A longer window lets requests survive a longer outage, at three costs. A
+  missing or rewound checkpoint replays requests as old as the window. An
+  issue the driver cannot write to, or cannot read in time, is retried for
+  as long as the window. A window that holds more issues than a cycle can list makes the driver fall
   behind without failing, so recent requests are not served and the run still
   looks healthy. The guide and the config reference say how to choose the
   length and what a long one costs.
@@ -219,6 +227,11 @@ Forgejo has no Jira poll target.
   that; this ADR accepts it and extends the
   [Jira guide](../guides/user/jira-integration.md)'s rule that Edit Issues on
   a polled project is part of the trust boundary.
+- The config loader rejects unknown keys under `tracker.jira.poll`, so a
+  repository that sets either new key while its workflow still pins an older
+  fullsend fails to load its config and stops polling; the keys are adopted
+  after the upgrade, and the config reference names the version that
+  introduces them.
 - Each cycle reads the search rows of every issue that changed within the
   window, including those already handled, and no longer makes the lock calls
   or the per-issue pause. The number of Jira calls in a cycle is now bounded
@@ -226,9 +239,10 @@ Forgejo has no Jira poll target.
 - The implementation must show that a batch at the record limit and a batch at
   the size limit, built from the largest records the driver can produce, are
   each dispatched whole, that an issue larger than the configured limit is
-  dispatched alone and does not hold back the issues behind it, and that a
+  dispatched alone and does not hold back the issues behind it, that a
   cycle stopped by the time limit leaves undispatched requests eligible for
-  the next one; the [Jira guide](../guides/user/jira-integration.md), the
+  the next one, and that a pool larger than the 10,000 rows the search
+  client stops at today is not cut short silently; the [Jira guide](../guides/user/jira-integration.md), the
   [config reference](../reference/config-reference.md), and the
   [custom poller example](../guides/user/custom-poller-example.md) change
   with it.
