@@ -409,9 +409,3 @@ model is not one-size-fits-all.
   repository mapping: evaluate and integrate Epic Creator resolution
 - [AISDLC-90](https://redhat.atlassian.net/browse/AISDLC-90): Tag
   implementation epics with target repositories (parent)
-- [AISDLC-546](https://redhat.atlassian.net/browse/AISDLC-546): Verify
-  sources and build evaluation cases
-- [PR #56](https://github.com/fullsend-ai/epic-creator/pull/56):
-  Current implementation (merge held pending design approval)
-- [PR #45](https://github.com/fullsend-ai/epic-creator/pull/45):
-  Earlier ADR in epic-creator (replaced by this document)
