@@ -160,7 +160,9 @@ The repository's existing infrastructure provides all the coordination needed:
   [ADR 0149](../ADRs/0149-coalesce-entity-source-discovery-queries.md)
   combines source queries into one logical candidate search and routes each
   possible result locally. A bound run rechecks source-query membership,
-  including when an event supplies the candidate.
+  including when an event supplies the candidate. The discovery guarantees
+  for completeness, caps, and recovery are in
+  [Entity discovery v1](../normative/entity-discovery/v1/README.md).
   [ADR 0079](../ADRs/0079-bind-entity-execution-through-named-sources.md)
   binds named, typed harness entity slots to repository-owned source lists.
   Harness provider filters further narrow those queries before full CEL
