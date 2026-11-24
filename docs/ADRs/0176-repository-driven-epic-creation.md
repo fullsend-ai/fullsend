@@ -37,9 +37,10 @@ Resolution must be:
 
 - Correct — the right repository for this work, not just any related
   one
-- Deterministic where possible — no LLM when a lookup can answer
-- Explicit — resolved deterministically, or unresolved with a reason,
-  candidates, and a hint; never silently guessed
+- Verified — even a deterministic match is confirmed against
+  architecture context, because human-assigned components can be wrong
+- Explicit — resolved with cited evidence, or unresolved with a reason
+  and candidates; never silently guessed
 - Generic — not hardcoded to any single workload's sources or rules
 
 ## Decision
@@ -58,48 +59,34 @@ sources (component mapping, architecture context, and other configured
 sources).
 
 **Output**: one of:
-- Resolved: the repository (org and name) with the layer that resolved it
-- Unresolved: a reason, the candidate repositories from the mapping,
-  and a hint from the LLM guess if layer 3 ran
+- Resolved: the repository (org and name) with cited evidence from the
+  architecture context
+- Unresolved: a reason and the candidate repositories from the mapping
 
-### Three resolution layers
+### Two-phase resolution
 
-Resolution proceeds through three ordered layers, cheapest and most
-certain first. Stop at the first definitive answer. Because each layer
-records which layer resolved and why — a mapping hit, a cited
-architecture doc, or an LLM guess — the selection is verifiable by both
-agents (downstream validation scripts) and humans (the reviewer sees
-the evidence in the epic comment).
+Resolution has two phases: collect hints, then resolve with evidence.
 
-**Layer 1 — Component mapping (deterministic).** Look up the Jira
-component in a maintained mapping. If the component maps to exactly one
-repository, return it. No LLM needed. If the component maps to multiple
-repositories, pass the narrowed candidate set to layer 2. If the
-component is not in the mapping, the resolver returns unresolved — the
-mapping is the source of truth for which components have approved
-repositories.
+**Phase 1 — Hints (optional).** Look up the Jira component in the
+maintained mapping. If the component is in the mapping, its candidate
+repositories are passed to Phase 2 as hints — even a single-repo match.
+Component assignments are made by humans and can be wrong or stale, so
+a mapping hit is a strong signal but not a trusted final answer. If the
+component is not in the mapping, Phase 2 runs without hints.
 
-**Layer 2 — Architecture context with LLM (evidence-based).** The LLM
-reads the architecture docs and the candidate repositories from
-layer 1. It selects a repo, citing specific text from the architecture
-context as evidence. This is the first time an LLM runs — only when the
-deterministic mapping could not resolve. The cited evidence must exist
-in the pinned source at the recorded commit SHA, and the selected
-repository must be in the candidate set from layer 1. If the LLM can
-identify exactly one repository with supporting evidence, return it.
-If it cannot, pass the candidates to layer 3.
+**Phase 2 — Resolution (always runs).** The LLM reads the architecture
+context, the issue description, and any hints from Phase 1. It selects
+a repository, citing specific text from the architecture context as
+evidence. The cited evidence must exist in the pinned source at the
+recorded commit SHA, and the selected repository must be in the
+candidate set from the mapping (when one exists). If Phase 1 provided
+a hint, Phase 2 confirms or overrides it — a confirmed hint resolves
+faster than a cold resolution. If Phase 2 cannot identify a repository
+with supporting evidence, the result is unresolved.
 
-**Layer 3 — LLM guess (hint only).** The LLM receives the candidate
-repositories from the mapping, the Jira issue description, and the
-architecture context. It picks the most likely repository from the
-candidates. The guess is recorded as a hint for a human reviewer — it
-is never published as the repository. This is a signal to the human,
-not a decision by the system.
-
-When no layer resolves, the resolver returns unresolved with:
+When resolution fails, the resolver returns unresolved with:
 - The reason resolution failed
-- The candidate repositories from the mapping
-- The hint from layer 3, if one exists
+- The candidate repositories from the mapping, if any
 
 What the consumer does with an unresolved result — leave the field
 empty, add a warning comment, block publication — is up to the
@@ -127,8 +114,9 @@ Examples from the existing data:
 | Feature Store | feast |
 | Model Serving | kserve, odh-model-controller, modelmesh, vllm-orchestrator-gateway, ... (9 repos) |
 
-Layer 1 uses the mapping to identify candidate repositories for a
-given Jira component.
+Phase 1 uses the mapping to identify candidate repositories for a
+given Jira component. These candidates are hints for Phase 2, not
+final answers.
 
 The mapping is workload data — RHAI owns its mapping, another workload
 owns its own. It is a declared source fetched through the same mechanism
@@ -168,8 +156,7 @@ For RHAI, the architecture-context repository already contains a
 repository organization, name, URL, release ref, component type
 (operator, ui, asset, …), tier (core_platform, …), cross-references
 to other components, and discovery confidence. This is the data that
-Layer 2 would use — it already has the structured metadata needed to
-narrow candidates when Layer 1 returns multiple repos.
+Phase 2 uses alongside the mapping hints to resolve with evidence.
 
 The component mapping, architecture context, and other sources are
 declared sources with the same structure: `id`, `url`, `ref`, `paths`,
@@ -202,7 +189,7 @@ repos live instead of maintaining a static architecture-context repo —
 the workload provides skills that get the same information from their
 source.
 
-Layer 2 reads the pre-loaded architecture context using the
+Phase 2 reads the pre-loaded architecture context using the
 interpretation guidance from the workload's declared skills, rather than
 hardcoding how to read a specific source. This also addresses the
 scaling concern
@@ -212,16 +199,14 @@ differently.
 
 ### Verification
 
-Layer 1 is deterministic — the result comes directly from the mapping,
-no verification beyond mapping membership needed.
+Phase 1 is deterministic — it produces hints from the mapping, not
+final answers.
 
-Layer 2 is LLM-based with evidence — the cited evidence must exist in
+Phase 2 is LLM-based with evidence — the cited evidence must exist in
 the pinned source at the recorded commit SHA, and the selected
-repository must be in the candidate set from Layer 1.
-
-Layer 3 is a hint — it is never published as the answer, so it does
-not require verification. The hint is presented to the human reviewer
-alongside the candidates and the reason resolution failed.
+repository must be in the candidate set from the mapping (when one
+exists). This applies whether Phase 2 confirms a Phase 1 hint or
+resolves from scratch.
 
 ### The resolution skill
 
@@ -231,10 +216,10 @@ instructions and scripts — the layered lookup, evidence citation rules,
 and verification logic.
 
 The skill owns:
-- The three-layer resolution procedure
-- The verification logic (mapping membership check)
-- The output contract: resolved repo + resolving layer + evidence,
-  or unresolved + reason + candidates + hint
+- The two-phase resolution procedure (hints → resolution)
+- The verification logic (evidence citation check, mapping membership)
+- The output contract: resolved repo + cited evidence,
+  or unresolved + reason + candidates
 
 The skill does not own:
 - Splitting strategies into work items
@@ -252,10 +237,10 @@ A RHAISTRAT strategy arrives with one or more Jira components and a
 description containing requirements and acceptance criteria.
 
 **Step 1 — Resolve components.** For each Jira component in the
-strategy, call the resolution skill (see "Three resolution layers"
-above). Each component gets a resolved repo with evidence, or an
-unresolved result with candidates and a hint. The evidence is preserved
-through the remaining steps.
+strategy, call the resolution skill (see "Two-phase resolution"
+above). Each component gets a resolved repo with cited evidence, or an
+unresolved result with candidates. The evidence is preserved through
+the remaining steps.
 
 **Step 2 — Split into work items.** Using the resolved component → repo
 map, split the strategy's requirements into work items. Each work item
@@ -271,17 +256,17 @@ operator change, or code versus documentation — become separate planned
 PRs. Each planned PR has exactly one repo.
 
 **Step 4 — Draft epics.** One epic per planned PR. Each epic carries the
-resolved repo URL and the resolution evidence — which layer resolved it
-and the cited sources. Unresolved work items still get an epic, but with
-an empty repo field and a comment carrying the reason, candidates, hint,
+resolved repo URL and the resolution evidence — the cited architecture
+context sources. Unresolved work items still get an epic, but with
+an empty repo field and a comment carrying the reason, candidates,
 and what evidence was available.
 
 **Step 5 — Review and publish.** The agent self-reviews the drafted
 epics for consistency (correct repo URLs, evidence present, no
 unresolved items published without warning). Then a staff engineer
 reviews the output before publication. The resolution evidence is
-included so the reviewer can verify each repo assignment — which layer
-resolved it, what text was cited, and what source versions were used.
+included so the reviewer can verify each repo assignment — what text
+was cited and what source versions were used.
 The repo URL is written to the configured Jira URL field. If sources
 have changed since resolution, the system forces re-resolution before
 publication.
@@ -321,7 +306,7 @@ dependencies.
 
 Resolved epics carry the repository URL in the workload's configured
 Jira URL field. Unresolved epics are created with an empty URL field
-and a warning comment carrying the reason, candidates, and hint.
+and a warning comment carrying the reason and candidates.
 
 ### Feature flag
 
@@ -358,27 +343,32 @@ operational cost of maintaining that data at scale is high — for a
 workload with hundreds of repos across multiple releases, keeping the
 mappings current is a significant ongoing effort.
 
-The three-layer design is a middle ground:
+The two-phase design is a middle ground:
 
-- Layer 1 handles the easy cases cheaply — a maintained mapping that
-  covers the common path. For RHAI, this data already exists.
-- Layer 2 handles the ambiguous cases — LLM reads the architecture
-  docs and selects a repo with cited evidence.
-- Layer 3 handles the hard cases honestly — the LLM guesses from the
-  Jira description, but the guess is a hint, not a published answer.
+- Phase 1 narrows the search cheaply — a maintained mapping provides
+  candidate hints. For RHAI, this data already exists.
+- Phase 2 resolves with evidence — the LLM reads the architecture
+  context, evaluates the hints, and selects a repo with cited evidence.
+  If hints are wrong or missing, Phase 2 still resolves from the
+  architecture context alone.
 
-The user sees: a resolved repo or an unresolved result with a hint.
-They do not see the layers. The experience is seamless when the data
-supports it, and explicit when it doesn't — the system never silently
-guesses wrong.
+The user sees: a resolved repo with evidence, or an unresolved result
+with candidates. They do not see the phases. The experience is seamless
+when the data supports it, and explicit when it doesn't — the system
+never silently guesses wrong.
+
+Component mappings are maintained by humans and can be wrong or stale.
+Phase 2 always verifies — a mapping hint that contradicts the
+architecture context is overridden, not blindly trusted. This addresses
+the tech review feedback that component assignments are error-prone.
 
 The operational cost scales with how much of the resolution a workload
-wants to be deterministic. A workload that invests in its mapping —
-covering more components with unambiguous mappings — gets more
-Layer 1 hits. A workload that cannot afford that investment still
-gets Layer 2 and 3 coverage. The architecture context skill (see
-above) allows workloads to provide their own implementation of how
-context is fetched, so the operational model is not one-size-fits-all.
+wants to accelerate. A workload that invests in its mapping — covering
+more components with accurate hints — gets faster Phase 2 resolutions.
+A workload without a mapping still gets full Phase 2 coverage. The
+architecture context skill (see above) allows workloads to provide
+their own implementation of how context is fetched, so the operational
+model is not one-size-fits-all.
 
 ## Current implementation (PR #56) vs. this proposal
 
@@ -404,7 +394,7 @@ review and owner feedback.
   before epic drafting
 - Python scripts for deterministic work: source loading, snapshotting,
   content hashing, evidence citation validation, plan finalization
-- The layered logic (mapping → arch context → unresolved) as LLM
+- The resolution logic (mapping → arch context → unresolved) as LLM
   instructions in the guidance prompt
 - One repo per planned PR, one epic per planned PR
 - Unresolved work gets empty URL field + warning comment
@@ -414,15 +404,15 @@ review and owner feedback.
 ### What this ADR changes
 
 The layers already exist in PR #56 as LLM instructions. This ADR
-separates them into distinct execution steps and moves the deterministic
-lookup out of the LLM:
+restructures them into two explicit phases:
 
-- **Layer 1 becomes a script**: a Python script reads the mapping and
-  returns candidates. If one repo, done — the LLM never runs. This is
-  the same pattern as `fetch_components.py` and other fullsend scripts
-  that handle deterministic work before the LLM.
-- **Layers 2 and 3 become separate LLM steps** instead of one combined
-  pass, each with different inputs and confidence levels.
+- **Phase 1 becomes a script**: a Python script reads the mapping and
+  returns candidate hints. This is the same pattern as
+  `fetch_components.py` and other fullsend scripts that handle
+  deterministic work before the LLM.
+- **Phase 2 always runs**: the LLM reads the architecture context and
+  evaluates the hints. Even a single-repo mapping hit is verified —
+  component assignments are human-maintained and can be wrong.
 - **The resolver becomes a standalone skill** that any agent can call,
   not embedded in the epic-creator wave prompt.
 
@@ -434,8 +424,9 @@ execution order and separation, not rewriting the logic.
 
 | Aspect | PR #56 | This ADR |
 | --- | --- | --- |
-| Layer 1 | LLM reads mapping doc | Deterministic code lookup — no LLM for unambiguous components |
-| Layer separation | All layers in one LLM pass | Three distinct steps: deterministic mapping → LLM with evidence → LLM guess |
+| Hints | LLM reads mapping doc | Script extracts mapping hints before LLM runs |
+| Resolution | All layers in one LLM pass | Two phases: hints (deterministic) → resolution (LLM + evidence, always runs) |
+| Verification | LLM self-validates | Phase 2 verifies mapping hints against architecture context — wrong components are overridden |
 | Resolver scope | Embedded in epic-creator's wave prompt | Standalone skill, any agent can call |
 | Input | Strategy + all sources | Jira component + issue context |
 | Output | Work items with resolutions + planned PRs | Resolved repo or unresolved per component |
@@ -463,22 +454,27 @@ execution order and separation, not rewriting the logic.
   assignment would require merging and splitting already-drafted epics.
   Resolution must happen before epic creation.
 
-- **Publish LLM guesses as repository selections** — rejected: an
-  unverifiable pick published as if verified has asymmetric cost. It
-  saves one human action but can send work to the wrong repository with
-  no evidence trail. The mapping candidates are surfaced as hints
-  instead.
+- **Trust deterministic mapping without verification** — rejected: Jira
+  component assignments are human-maintained and can be wrong or stale.
+  Even a single-repo match needs verification against architecture
+  context. The tech review confirmed this risk.
 
 - **Deterministic-only resolution** — not viable: some components map to
   multiple repositories and even structured metadata cannot always
   disambiguate. Architecture context read by an LLM is needed for
   those cases.
 
+- **Three layers with LLM guess as fallback** — rejected: if the LLM
+  with full architecture context (Phase 2) cannot resolve, a second
+  LLM call without better information adds nothing. The guess either
+  agrees with Phase 2 (redundant) or disagrees (confusing for the
+  reviewer). Unresolved is a cleaner signal than a low-confidence hint.
+
 - **Single LLM pass for all resolution** (the current PR #56 approach) —
-  works but misses the cheap deterministic shortcut. When a component
-  maps to exactly one repo, there is no reason to invoke an LLM. The
-  layers also stay implicit in the prompt rather than being visible,
-  testable execution steps.
+  works but misses the cheap hint extraction. The mapping narrows
+  candidates before the LLM runs, making resolution faster and more
+  focused. The phases also stay implicit in the prompt rather than
+  being visible, testable execution steps.
 
 - **Split by component, then assign repos** — rejected: the many-to-many
   relationship between Jira components and repos means component-scoped
@@ -489,12 +485,13 @@ execution order and separation, not rewriting the logic.
 
 - The resolver is a standalone skill: component in, repo out. Any
   agent can use it without importing epic-creator pipeline concepts.
-- The resolution order is visible and explainable: deterministic
-  mapping → LLM with evidence → LLM guess as hint
-- Layer 1 is deterministic — no LLM needed when the mapping resolves
-  (single repo match)
-- Layer 3 (LLM guess) is only used as a last resort and its output
-  is a hint, never a published answer
+- Two-phase resolution: hints from mapping → LLM resolves with
+  evidence. The mapping accelerates resolution but never short-circuits
+  it — every result is verified against architecture context.
+- Human-assigned component mappings are treated as hints, not truth.
+  Wrong or stale assignments are caught by Phase 2 verification.
+- Unresolved is an honest answer — no low-confidence guesses published
+  as hints. The system resolves with evidence or says it cannot.
 - Epic boundaries shift from Jira component to repository — each epic
   corresponds to exactly one PR in one repo
 - Workloads declare their own sources and mapping; RHAI is
