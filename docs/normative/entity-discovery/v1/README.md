@@ -178,15 +178,23 @@ as complete:
 
 - **Consistent cursor.** A provider cursor that the provider documents as
   consistent across pages for the request sequence.
-- **Stable key.** Ordering by a required, immutable key, such as creation time
-  or entity number, with a unique tiebreaker. New entities can only appear
-  after the traversal position or outside the partition bounds.
-- **Keyset bounds.** Each request after the first is bounded by the last key
-  seen, using the provider's filter syntax. The bound is inclusive, and the
-  adapter removes duplicates by canonical entity identity.
+- **Keyset bounds over a stable key.** Ordering by a required, immutable key,
+  such as creation time or entity number, with a unique tiebreaker. Each
+  request after the first is bounded by the last key seen, using the
+  provider's filter syntax. The bound is inclusive, and the adapter removes
+  duplicates by canonical entity identity. Because the bound is a key value
+  and not a position, an entity that is removed or stops matching earlier in
+  the order cannot shift a later entity out of the next page. An immutable
+  ordering alone, paired with offset pagination, does not meet this method.
+  Deleting or un-matching an entity on an earlier page shifts every later
+  entity by one position, so the next offset skips an entity that matched
+  throughout.
+- **Consistent snapshot.** The provider serves every page of the request
+  sequence from one snapshot, and documents that guarantee.
 - **Overlap and reconciliation.** The adapter re-requests a margin around
   each page boundary or re-traverses the partition. It checks that no
-  boundary entity moved in a way that could hide another entity.
+  boundary entity moved, was removed, or changed membership in a way that
+  could hide another entity.
 
 Ties on the sort key need care. Providers may order entities with equal keys
 differently on each request. At a page boundary where the last key equals the
@@ -313,6 +321,15 @@ There is no global deadline for catching up. Every partition MUST still be
 visited again within a bounded number of passes that have a backfill budget.
 A pass records which partitions it visited for backfill and their outcomes.
 
+Visiting a partition is not enough. Without persistent progress, an adapter
+can rotate across partitions in fresh processes, spend each visit on the
+first page, and never reach a candidate deeper in a partition. The adapter
+MUST therefore ensure that every backfill range is eventually traversed
+exhaustively. For example, it can rotate restart-independent subpartitions
+that are small enough for one pass to complete, or it can use provider
+reconciliation with equivalent evidence. A visit that traverses only the
+first pages of a range does not satisfy the bounded-visit rule.
+
 ## Plan identity
 
 The plan identity changes whenever any of these inputs changes:
@@ -393,7 +410,7 @@ Jira work items, as the initial targets.
 | GitHub | [Search](https://docs.github.com/en/rest/search/search#search-issues-and-pull-requests) returns at most 1,000 results for one query. REST search can return `incomplete_results: true`. GraphQL search can return [partial errors](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api). The search index can lag behind writes. Search has its own [rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api), including secondary limits. | Partition below the cap. Treat incomplete results and partial errors as incomplete. Use a lag margin for the settled boundary. A repository issue list endpoint without the search cap MAY enumerate a broader set, with exact local checks under entity-source configuration v1. |
 | GitLab | The [issue](https://docs.gitlab.com/api/issues/#list-all-project-issues) and [merge request](https://docs.gitlab.com/api/merge_requests/#list-project-merge-requests) list endpoints use offset pagination unless keyset pagination is available. Total-count headers can be absent for large result sets. The change-proposal `closed` preset needs two native states. | Use keyset pagination, keyset bounds on `updated_after`, `updated_before`, `created_after`, or `created_before`, or overlap and reconciliation. Never use a missing total count as evidence. Complete both native state requests. |
 | Forgejo | List endpoints use offset pagination with a server-configured maximum page size. | Report `unsupported` until a Forgejo adapter passes conformance. ADR 0079 keeps Forgejo disabled until then. |
-| Jira | Enhanced JQL search pages with `nextPageToken` and `isLast` and does not return a total count. Its results may not yet reflect recent writes. JQL supports relative date functions. Requests can return HTTP 429 with `Retry-After`. | Never treat `isLast` alone as evidence. Combine it with a stable key, keyset bounds, or reconciliation, and a lag margin. Mark plans with relative date functions as time-dependent. Respect `Retry-After`. |
+| Jira | Enhanced JQL search pages with `nextPageToken` and `isLast` and does not return a total count. Its results may not yet reflect recent writes. JQL supports relative date functions. Requests can return HTTP 429 with `Retry-After`. | Never treat `isLast` alone as evidence. Combine it with keyset bounds over a stable key, or reconciliation, and a lag margin. Mark plans with relative date functions as time-dependent. Respect `Retry-After`. |
 
 The [JQL match API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/#api-rest-api-3-jql-match-post)
 checks the membership of known entities. It does not enumerate candidates, so
@@ -457,9 +474,12 @@ until each part is below the cap, or reports `incomplete` with the reason
 the cap, the partition bounds, and the match counts.
 
 **DC-7. Movement during traversal.** While the adapter pages through a
-partition, another entity moves ahead of the traversal position. No entity
-that matched throughout the traversal is skipped, or the partition reports
-`incomplete`. Evidence: the traversal method from
+partition, another entity moves ahead of the traversal position. In a second
+scenario, an entity before the traversal position is deleted or stops
+matching, which shifts offsets. For example, with IDs 1, 2, 3, and 4 and a
+page size of 2, entity 1 is removed after the first page. In both scenarios,
+no entity that matched throughout the traversal is skipped (here, entity 3),
+or the partition reports `incomplete`. Evidence: the traversal method from
 [Page traversal](#page-traversal) and the duplicate removal by canonical
 identity.
 
@@ -489,10 +509,13 @@ margin and the later pass's results.
 
 ### Ordering and rate limits
 
-**DC-13. Freshness-first ordering.** Where supported, the most recently
-updated candidates are routed before later pages are fetched. The complete
-set of returned entities is the same as without this ordering. Evidence: the
-routing order and set equality.
+**DC-13. Freshness-first ordering.** Where the adapter supports
+freshness-first ordering, it requests the most recently updated candidates
+first. An adapter that also routes candidates as pages arrive routes them
+before later pages are fetched. An adapter that waits for the full pass is
+exempt from the early-routing check. The complete set of returned entities is
+the same as without this ordering. Evidence: the request order, the routing
+order where early routing is used, and set equality.
 
 **DC-14. Ordering unsupported.** A partition that cannot be ordered by update
 time reports that freshness-first ordering is unsupported, and all coverage
@@ -500,16 +523,22 @@ rules still apply. Evidence: the report.
 
 **DC-15. Rate-limit interruption.** A rate limit mid-pass causes the adapter
 to follow provider backoff guidance. When the budget runs out, the affected
-partitions report `incomplete` with the reason `rate_limited`. Candidates
-already found are processed, and the pass is not complete-empty. Evidence:
-the request timing and the backoff headers.
+partitions report `incomplete` with the reason `rate_limited`. The pass is
+not complete-empty, and candidates already found are not recorded as
+non-matches. An adapter that processes already-found candidates after the
+interruption does so under the MAY in
+[Ordering and processing](#ordering-and-processing), and the case checks that
+processing only where it occurs. Evidence: the request timing and the backoff
+headers.
 
 ### Recovery
 
 **DC-16. In-memory retry.** An unresolved candidate is retried in the same
-process with bounded backoff, alongside new passes, oldest first. Exhausting
-its retries reports it as unresolved, not as a non-match. Evidence: the retry
-schedule and the final report.
+process with bounded backoff, alongside new passes. Retries starve neither
+new passes nor each other. Where the process schedules oldest first, as the
+retry rule recommends, the case checks that order, and a different order is
+a permitted exception. Exhausting its retries reports it as unresolved, not as
+a non-match. Evidence: the retry schedule and the final report.
 
 **DC-17. Restart with in-memory retry only.** After a process restart, the
 next process starts a fresh pass. No stored hint marks a range complete. A
@@ -518,8 +547,11 @@ pass while it still matches. Evidence: the reports of both processes.
 
 **DC-18. Older-candidate backfill.** In a scope too large for any single pass
 to complete, with a new process for every pass, every partition is visited
-again within a bounded number of passes. Evidence: the backfill partitions
-recorded across passes.
+again within a bounded number of passes. A candidate deeper than the first
+pages of a repeatedly visited partition is still rediscovered, because every
+backfill range is eventually traversed exhaustively. Evidence: the backfill
+partitions recorded across passes and the pass that returned the deep
+candidate.
 
 ### Plan changes
 
