@@ -48,15 +48,19 @@ Resolution must be:
 
 ### The resolver
 
-A standalone resolution skill that any agent can call. It takes a Jira
-component, the issue description, and the configured sources
-(architecture context, and optionally a component mapping). It returns
-a resolved repository or an unresolved result. The resolver knows
-nothing about work items, epics, PR grouping, or any consumer's
+A standalone resolution skill that any agent can call. It takes the
+issue description, an optional Jira component, and the configured
+sources (architecture context, and optionally a component mapping). It
+returns a resolved repository or an unresolved result. The resolver
+knows nothing about work items, epics, PR grouping, or any consumer's
 pipeline.
 
-**Input**: a Jira component, the issue description, and configured
-sources (architecture context required; component mapping optional).
+**Input**: the issue description, an optional Jira component, and
+configured sources (architecture context required; component mapping
+optional). Many tickets — especially outside bugs and CVEs — have no
+component set. The resolver handles this: when no component is
+provided, Phase 1 is skipped and Phase 2 resolves from the issue
+description and architecture context alone.
 
 **Output**: one of:
 - Resolved: the repository (org and name) with cited evidence from the
@@ -68,13 +72,15 @@ sources (architecture context required; component mapping optional).
 
 Resolution has two phases: collect hints, then resolve with evidence.
 
-**Phase 1 — Hints (optional).** Look up the Jira component in the
-maintained mapping. If the component is in the mapping, its candidate
-repositories are passed to Phase 2 as hints — even a single-repo match.
-Both the component assigned to the Jira issue and the mappings
-themselves are human-maintained and can be wrong or stale, so a mapping
-hit is a strong signal but not a trusted final answer. If the
-component is not in the mapping, Phase 2 runs without hints.
+**Phase 1 — Hints (optional).** When a Jira component is provided and
+a mapping is configured, look up the component in the mapping. If the
+component is in the mapping, its candidate repositories are passed to
+Phase 2 as hints — even a single-repo match. Both the component
+assigned to the Jira issue and the mappings themselves are
+human-maintained and can be wrong or stale, so a mapping hit is a
+strong signal but not a trusted final answer. Phase 1 is skipped
+entirely when no component is provided or no mapping is configured —
+Phase 2 runs without hints.
 
 **Phase 2 — Resolution (always runs).** The LLM reads the architecture
 context, the issue description, and any hints from Phase 1. It selects
@@ -217,14 +223,15 @@ when more consumers need it is decided with the fullsend maintainers.
 
 ### Complete flow
 
-A RHAISTRAT strategy arrives with one or more Jira components and a
-description containing requirements and acceptance criteria.
+A RHAISTRAT strategy arrives with a description containing requirements
+and acceptance criteria, and zero or more Jira components.
 
-**Step 1 — Resolve components.** For each Jira component in the
-strategy, call the resolution skill (see "Two-phase resolution"
-above). Each component gets a resolved repo with cited evidence, or an
-unresolved result with candidates. The evidence is preserved through
-the remaining steps.
+**Step 1 — Resolve repositories.** For each Jira component in the
+strategy (if any), call the resolution skill (see "Two-phase
+resolution" above). When no component is set, the resolver uses the
+issue description and architecture context alone. Each item gets a
+resolved repo with cited evidence, or an unresolved result with
+candidates. The evidence is preserved through the remaining steps.
 
 **Step 2 — Split into work items.** Using the resolved component → repo
 map, split the strategy's requirements into work items. Each work item
