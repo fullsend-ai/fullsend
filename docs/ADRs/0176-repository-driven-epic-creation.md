@@ -358,37 +358,17 @@ model is not one-size-fits-all.
 
 ## Alternatives considered
 
-- **Resolution private to one agent** — rejected: other agents need the
-  same resolution. Duplicating the logic creates implementations that
-  drift.
-
-- **Assign repositories after drafting** (a post-hoc mapper) — rejected:
-  the component-to-repo relationship is many-to-many, so post-hoc
-  assignment would require merging and splitting already-drafted epics.
-  Resolution must happen before epic creation.
-
 - **Trust deterministic mapping without verification** — rejected: both
   the component assigned to the Jira issue and the mappings themselves
   are human-maintained and can be wrong or stale. Even a single-repo
   match needs verification against architecture context. The tech review
   confirmed this risk.
 
-- **Deterministic-only resolution** — not viable: some components map to
-  multiple repositories and even structured metadata cannot always
-  disambiguate. Architecture context read by an LLM is needed for
-  those cases.
-
 - **Three layers with LLM guess as fallback** — rejected: if the LLM
   with full architecture context (Phase 2) cannot resolve, a second
   LLM call without better information adds nothing. The guess either
   agrees with Phase 2 (redundant) or disagrees (confusing for the
   reviewer). Unresolved is a cleaner signal than a low-confidence hint.
-
-- **Single LLM pass for all resolution** (the current PR #56 approach) —
-  works but misses the cheap hint extraction. The mapping narrows
-  candidates before the LLM runs, making resolution faster and more
-  focused. The phases also stay implicit in the prompt rather than
-  being visible, testable execution steps.
 
 - **Split by component, then assign repos** — rejected: the many-to-many
   relationship between Jira components and repos means component-scoped
