@@ -290,3 +290,55 @@ func TestLoadJiraPollSettings_InvalidRunLabelDoesNotBlockPolling(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "my label", tracking.RunLabel)
 }
+
+func TestLoadJiraPollSettings_RoutingConfig(t *testing.T) {
+	dir := writeJiraPollConfig(t, `tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    project: PROJ
+    poll:
+      enabled: true
+      repo_label_prefix: "target:"
+      strict_routing: true
+`)
+	settings, err := loadJiraPollSettings(dir, "", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, "target:", settings.repoLabelPrefix)
+	assert.True(t, settings.strictRouting)
+}
+
+func TestResolveJiraRoutingOptions(t *testing.T) {
+	t.Run("defaults from settings", func(t *testing.T) {
+		settings := jiraPollSettings{repoLabelPrefix: "cfg:", strictRouting: true}
+		prefix, strict := resolveJiraRoutingOptions(nil, settings, func(string) string { return "" })
+		assert.Equal(t, "cfg:", prefix)
+		assert.True(t, strict)
+	})
+
+	t.Run("env overrides settings", func(t *testing.T) {
+		settings := jiraPollSettings{repoLabelPrefix: "cfg:", strictRouting: false}
+		env := map[string]string{
+			"FULLSEND_REPO_LABEL_PREFIX":   "env:",
+			"FULLSEND_STRICT_REPO_ROUTING": "true",
+		}
+		prefix, strict := resolveJiraRoutingOptions(nil, settings, func(k string) string { return env[k] })
+		assert.Equal(t, "env:", prefix)
+		assert.True(t, strict)
+	})
+
+	t.Run("cli flag overrides env and settings", func(t *testing.T) {
+		settings := jiraPollSettings{repoLabelPrefix: "cfg:", strictRouting: false}
+		env := map[string]string{
+			"FULLSEND_REPO_LABEL_PREFIX":   "env:",
+			"FULLSEND_STRICT_REPO_ROUTING": "false",
+		}
+		cmd := &cobra.Command{}
+		cmd.Flags().String("repo-label-prefix", "", "")
+		cmd.Flags().Bool("strict-repo-routing", false, "")
+		require.NoError(t, cmd.ParseFlags([]string{"--repo-label-prefix", "flag:", "--strict-repo-routing"}))
+
+		prefix, strict := resolveJiraRoutingOptions(cmd, settings, func(k string) string { return env[k] })
+		assert.Equal(t, "flag:", prefix)
+		assert.True(t, strict)
+	})
+}

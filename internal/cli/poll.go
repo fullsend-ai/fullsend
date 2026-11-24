@@ -38,6 +38,9 @@ func newPollCmd() *cobra.Command {
 		targetForge string
 		modeFlag    string
 
+		repoLabelPrefix   string
+		strictRepoRouting bool
+
 		printDispatchRoutes bool
 	)
 
@@ -175,6 +178,8 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub owner/repo slug where agents run, without '..' (default: $GITHUB_REPOSITORY; jira-poll with --target-forge github only)")
 	cmd.Flags().StringVar(&targetForge, "target-forge", jirapoll.TargetForgeGitHub, "Forge the jira-poll driver dispatches agents to: 'github' (write --output for reusable-dispatch.yml) or 'gitlab' (start the project's protected agent pipelines; uses --project and --gitlab-url)")
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "Poll mode: 'slash' (slash commands only) or 'events' (labels, merges, non-slash notes)")
+	cmd.Flags().StringVar(&repoLabelPrefix, "repo-label-prefix", "", "Label prefix for repository routing (default: tracker.jira.poll.repo_label_prefix or 'repo:')")
+	cmd.Flags().BoolVar(&strictRepoRouting, "strict-repo-routing", false, "Strict repository routing: skip candidates without matching repo labels or attached links")
 	cmd.MarkFlagsOneRequired("forge", "input-driver")
 
 	cmd.Hidden = true
@@ -186,6 +191,7 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 	if err != nil {
 		return err
 	}
+	settings.repoLabelPrefix, settings.strictRouting = resolveJiraRoutingOptions(cmd, settings, os.Getenv)
 	args, err := validateJiraPollArgs(settings, targetRepo, outputPath, fullsendDir)
 	if err != nil {
 		return err
@@ -339,11 +345,13 @@ func gitlabChildDispatchJobToken(getenv func(string) string) (string, error) {
 // jiraPollSettings are the Jira connection and poll settings the jira-poll
 // driver reads from tracker.jira in the effective config.yaml (#9077).
 type jiraPollSettings struct {
-	baseURL string // tracker.jira.base_url: the Jira site URL
-	apiURL  string // tracker.jira.api_url, or its default
-	project string // tracker.jira.project
-	jql     string // tracker.jira.poll.query (or the default) scoped to project
-	enabled bool   // tracker.jira.poll.enabled is true
+	baseURL         string // tracker.jira.base_url: the Jira site URL
+	apiURL          string // tracker.jira.api_url, or its default
+	project         string // tracker.jira.project
+	jql             string // tracker.jira.poll.query (or the default) scoped to project
+	enabled         bool   // tracker.jira.poll.enabled is true
+	repoLabelPrefix string // tracker.jira.poll.repo_label_prefix
+	strictRouting   bool   // tracker.jira.poll.strict_routing
 }
 
 // loadJiraPollSettings reads the Jira site, API gateway, project, and poll
@@ -380,13 +388,47 @@ func loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jql string) (jiraPo
 	if err := jiraCfg.ValidateConnection(); err != nil {
 		return jiraPollSettings{}, err
 	}
+	var repoLabelPrefix string
+	var strictRouting bool
+	if jiraCfg.Poll != nil {
+		repoLabelPrefix = jiraCfg.Poll.RepoLabelPrefix
+		if jiraCfg.Poll.StrictRouting != nil {
+			strictRouting = *jiraCfg.Poll.StrictRouting
+		}
+	}
 	return jiraPollSettings{
-		baseURL: jiraCfg.BaseURL,
-		apiURL:  jiraCfg.EffectiveAPIURL(),
-		project: jiraCfg.Project,
-		jql:     jiraCfg.PollJQL(),
-		enabled: jiraCfg.PollEnabled(),
+		baseURL:         jiraCfg.BaseURL,
+		apiURL:          jiraCfg.EffectiveAPIURL(),
+		project:         jiraCfg.Project,
+		jql:             jiraCfg.PollJQL(),
+		enabled:         jiraCfg.PollEnabled(),
+		repoLabelPrefix: repoLabelPrefix,
+		strictRouting:   strictRouting,
 	}, nil
+}
+
+// resolveJiraRoutingOptions applies CLI flag and environment variable overrides
+// to the routing settings loaded from config.yaml.
+func resolveJiraRoutingOptions(cmd *cobra.Command, settings jiraPollSettings, getenv func(string) string) (string, bool) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	prefix := settings.repoLabelPrefix
+	if cmd != nil && cmd.Flags().Lookup("repo-label-prefix") != nil && cmd.Flags().Changed("repo-label-prefix") {
+		prefix, _ = cmd.Flags().GetString("repo-label-prefix")
+	} else if envPrefix := getenv("FULLSEND_REPO_LABEL_PREFIX"); envPrefix != "" {
+		prefix = envPrefix
+	}
+
+	strict := settings.strictRouting
+	if cmd != nil && cmd.Flags().Lookup("strict-repo-routing") != nil && cmd.Flags().Changed("strict-repo-routing") {
+		strict, _ = cmd.Flags().GetBool("strict-repo-routing")
+	} else if envStrict := getenv("FULLSEND_STRICT_REPO_ROUTING"); envStrict != "" {
+		if b, err := strconv.ParseBool(envStrict); err == nil {
+			strict = b
+		}
+	}
+	return prefix, strict
 }
 
 // skipDisabledJiraPoll ends a jira-poll run without contacting Jira when
@@ -569,11 +611,13 @@ func jiraAuthOptions(p *config.AuthorizationProvider) harnessdispatch.AuthOption
 // authorization lists reach the poller on every target.
 func jiraPollOptions(args jiraPollArgs, matcher *celMatcher) jirapoll.Options {
 	return jirapoll.Options{
-		TargetRepo:  args.targetRepo,
-		JiraBaseURL: args.jira.baseURL,
-		JiraProject: args.jira.project,
-		JQL:         args.jira.jql,
-		OutputPath:  args.outputPath,
+		TargetRepo:        args.targetRepo,
+		JiraBaseURL:       args.jira.baseURL,
+		JiraProject:       args.jira.project,
+		JQL:               args.jira.jql,
+		OutputPath:        args.outputPath,
+		RepoLabelPrefix:   args.jira.repoLabelPrefix,
+		StrictRepoRouting: args.jira.strictRouting,
 
 		Authorization: jiraPollAuthorization(matcher.jiraAuth),
 	}

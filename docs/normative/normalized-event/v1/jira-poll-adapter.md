@@ -35,9 +35,9 @@ deployment. The config gate's `jiraProjectKeyRe` accepts single-character
 project keys, and the CLI always scopes the query to the project, so such a
 project is polled on the default query too: every one of its events fails
 validation and the all-invalid guard fails each cycle (see the Jira guide's
-troubleshooting table). The project-key check inside `searchCandidates` runs
-only when no JQL is set at all — direct API use such as the behaviour-test
-step, not the CLI — so it never intercepts these keys.
+troubleshooting table). The project-key check inside `buildCandidateJQL` (called
+by `discoverCandidates`) runs only when no JQL is set at all — direct API use such
+as the behaviour-test step, not the CLI — so it never intercepts these keys.
 One further consumer has no downstream key check: `fullsend dispatch
 --input-driver json` (or `--route <agent>` with a JSON event) validates the
 key at parse time, so it now rejects such a key instead of printing a route

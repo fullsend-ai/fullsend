@@ -17,7 +17,9 @@ type JiraClient interface {
 	// A limit <= 0 returns all matching issues (bounded by the
 	// implementation's own pagination cap).
 	SearchIssues(ctx context.Context, jql string, limit int) ([]jira.Issue, error)
+	SearchIssuesPage(ctx context.Context, jql, nextPageToken string, maxResults int) (*jira.SearchResult, error)
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
+	ListRemoteLinks(ctx context.Context, issueIDOrKey string) ([]jira.RemoteLink, error)
 	// GetStatus resolves a status name to its statusCategory, used to
 	// classify status transitions (closed/reopened) without relying on
 	// locale/workflow-specific status name substrings.
@@ -53,6 +55,9 @@ type RecordDispatcher interface {
 	Dispatch(ctx context.Context, record DispatchRecord) error
 }
 
+// DefaultRepoLabelPrefix is the default label prefix used for repository routing.
+const DefaultRepoLabelPrefix = "repo:"
+
 // Options configures the Jira poller.
 type Options struct {
 	TargetRepo              string           // Repo where agents run: a GitHub owner/repo slug, or the full GitLab project path (nested groups allowed)
@@ -61,6 +66,9 @@ type Options struct {
 	Dispatcher              RecordDispatcher // Optional output driver that schedules records directly (GitLab)
 	JiraBaseURL             string           // Jira instance base URL
 	JiraProject             string           // Jira project key for default JQL
+	RepoLabelPrefix         string           // RepoLabelPrefix specifies the label prefix for repository routing (default: "repo:")
+	DisableRepoLabels       bool             // DisableRepoLabels explicitly turns off label-based routing
+	StrictRepoRouting       bool             // StrictRepoRouting skips unrouted candidates (neither repo labels nor attached git links) when true; when false (default), unrouted candidates are retained
 	JQL                     string           // Custom JQL override
 	OutputPath              string           // Path to write dispatch records JSON
 	M                       int              // Max candidate issues per cycle (default: 50)

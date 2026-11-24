@@ -97,6 +97,7 @@ func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
 	if err != nil {
 		return err
 	}
+	settings.repoLabelPrefix, settings.strictRouting = resolveJiraRoutingOptions(cmd, settings, os.Getenv)
 	args, gitlabURL, err := validateJiraGitLabPollArgs(settings, f, os.Getenv)
 	if err != nil {
 		return err

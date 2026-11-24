@@ -117,6 +117,9 @@ func registerJiraPollSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^Jira issue "([^"]+)" has id "([^"]*)"$`, func(ctx context.Context, key, id string) (context.Context, error) {
 		return ctx, givenJiraIssueID(world.FromContext(ctx), key, id)
 	})
+	sc.Step(`^Jira issue "([^"]+)" has a remote link to "([^"]+)"$`, func(ctx context.Context, key, rawURL string) (context.Context, error) {
+		return ctx, givenJiraRemoteLink(world.FromContext(ctx), key, rawURL)
+	})
 	sc.Step(`^a comment "([^"]*)" is added to Jira issue "([^"]+)"$`, func(ctx context.Context, body, key string) (context.Context, error) {
 		return ctx, whenJiraComment(world.FromContext(ctx), key, body)
 	})
@@ -199,6 +202,14 @@ func givenJiraIssueID(w *world.World, key, id string) error {
 	if !w.JiraMockState.SetIssueID(key, id) {
 		return fmt.Errorf("issue %q not found in the mock Jira server", key)
 	}
+	return nil
+}
+
+func givenJiraRemoteLink(w *world.World, key, rawURL string) error {
+	if w.JiraMockState == nil {
+		return fmt.Errorf("mock Jira server not initialized")
+	}
+	w.JiraMockState.AddRemoteLink(key, rawURL)
 	return nil
 }
 
