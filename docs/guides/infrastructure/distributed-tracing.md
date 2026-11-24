@@ -135,17 +135,16 @@ command as `Bash`'s `command`, a patched path as `Write`'s or `Edit`'s
 so not recorded); an MCP call's arguments pass through as the wire
 carried them.
 Codex tool results are what its `exec --json` stream reports: a
-command's `aggregated_output` and an MCP call's text (its
-`structured_content` when no content block holds text, reduced to its
-string values, never kept as JSON, and marked truncated). A web
-search's `results` are not recorded: fullsend runs codex with web
+command's `aggregated_output` and an MCP call's text. An MCP call's
+`structured_content` is not recorded, since flattened to bare values it
+would lose the field names the redactor recognises some secrets by. A web
+search's `results` are not recorded either: fullsend runs codex with web
 search disabled, so no capture shows their shape. That stream carries a tool's
 output from before any `PostToolUse` hook ran, and a codex hook can
 block a result from the model but cannot rewrite it, so output a hook
 withheld from the model is still recorded here, after the collector's
 redaction, as the same output already is in codex's `output.jsonl` and
-rollout artifacts. Claude Code's stream carries the result the hooks
-left.
+rollout artifacts.
 `arguments` holds the members of the call's input that name what was
 called, listed by tool, each redacted as text: `Bash` — `command`,
 `description`, `timeout`; `Read` — `file_path`, `limit`, `offset`;
@@ -261,7 +260,9 @@ closes `unanswered`). Codex reports a call only at its end, so there the call
 is named from its `item.started`, and one whose id is not recovered, or whose
 `item.started` was not read, has no span. Two cases are absent rather than
 truncated: any other stream line beyond 1 MiB is skipped whole by the parser,
-and results whose content is entirely non-text (for example images), or a pi result with no content list, produce no part unless the call
+and results whose content is entirely non-text (for example images), a pi result
+with no content list, or a codex MCP result that holds only
+`structured_content`, produce no part unless the call
 failed. A result that mixed text with non-text blocks keeps
 its text and is marked `fullsend.truncated`; a failed call with empty
 output survives as a `tool_call_response` part carrying `is_error`. The SDK's span attribute length cap is

@@ -917,15 +917,24 @@ func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
 		assert.False(t, results[0].IsError)
 	})
 
-	t.Run("MCP structured_content stands in for a result with no text", func(t *testing.T) {
+	t.Run("MCP structured_content is not recorded, only marked", func(t *testing.T) {
 		t.Parallel()
 		_, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":{"content":[],"structured_content":{"value":"42","key":"alpha","hits":3}},"error":null,"status":"completed"}}`)
 		require.Len(t, results, 1)
-		assert.Equal(t, "alpha\n42", results[0].Result, "string values by key; the number is dropped")
-		assert.True(t, results[0].Partial, "keys and the number are not kept")
+		assert.Empty(t, results[0].Result, "a value without its key can hide a secret from the redactor")
+		assert.True(t, results[0].Partial, "the result is not the whole of what codex sent")
+		assert.False(t, results[0].IsError)
 	})
 
-	t.Run("MCP structured_content is not read when a block holds text", func(t *testing.T) {
+	t.Run("an empty MCP structured_content is an empty result", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":{"content":[],"structured_content":{}},"error":null,"status":"completed"}}`)
+		require.Len(t, results, 1)
+		assert.Empty(t, results[0].Result)
+		assert.False(t, results[0].Partial)
+	})
+
+	t.Run("MCP structured_content beside a text block leaves the result whole", func(t *testing.T) {
 		t.Parallel()
 		_, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":{"content":[{"type":"text","text":"{\"key\":\"alpha\"}"}],"structured_content":{"key":"alpha"}},"error":null,"status":"completed"}}`)
 		require.Len(t, results, 1)
@@ -1114,27 +1123,25 @@ func TestCodexFirstID(t *testing.T) {
 	}
 }
 
-func TestCodexStructuredText(t *testing.T) {
+func TestCodexHasValue(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name, raw, text string
-		present         bool
+		name, raw string
+		want      bool
 	}{
-		{"absent", ``, "", false},
-		{"null", `null`, "", false},
-		{"empty containers", `[{}, [], null]`, "", false},
-		{"a number alone", `[7]`, "", true},
-		{"an empty string", `[""]`, "", true},
-		{"nested, keys in order", `{"b":{"y":"2","x":"1"},"a":["0"]}`, "0\n1\n2", true},
-		{"escapes are decoded", `{"k":"line\nnext A"}`, "line\nnext A", true},
-		{"not JSON", `{`, "", true},
+		{"absent", ``, false},
+		{"null", `null`, false},
+		{"empty containers", `[{}, [], null]`, false},
+		{"a number alone", `[7]`, true},
+		{"false", `{"ok":false}`, true},
+		{"an empty string", `[""]`, true},
+		{"nested", `{"a":[],"b":{"x":[null,"1"]}}`, true},
+		{"not JSON", `{`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			text, present := codexStructuredText(json.RawMessage(tc.raw))
-			assert.Equal(t, tc.text, text)
-			assert.Equal(t, tc.present, present)
+			assert.Equal(t, tc.want, codexHasValue(json.RawMessage(tc.raw)))
 		})
 	}
 }

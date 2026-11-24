@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -270,9 +269,9 @@ type codexMcpToolCallItem struct {
 // codexMcpResult is an MCP call's result as the exec stream carries it: the
 // server's content blocks (text, image, audio, resource) and an optional
 // structured_content value. Text is what the Level 3 record keeps, as it is
-// for Claude and pi tool results; structured_content is read only when the
-// blocks hold no text (see codexStructuredText). Each block is decoded on
-// its own, so one block of an unknown shape is skipped, not the result.
+// for Claude and pi tool results. structured_content is never recorded (see
+// codexMcpResultText). Each block is decoded on its own, so one block of an
+// unknown shape is skipped, not the result.
 type codexMcpResult struct {
 	Content           []json.RawMessage `json:"content"`
 	StructuredContent json.RawMessage   `json:"structured_content"`
@@ -288,7 +287,7 @@ type codexCollabToolCallItem struct {
 // WebSearchItem.results ("structured results returned by web search, when
 // available"): arbitrary JSON values, absent when codex has none. They are
 // not recorded: fullsend runs codex with web_search disabled, so no capture
-// shows what codex puts there, and flattening an unknown shape could carry
+// shows what codex puts there, and recording an unknown shape could carry
 // URLs and provider metadata into the Level 3 record. A non-empty value
 // only marks the result Partial.
 type codexWebSearchItem struct {
@@ -446,9 +445,12 @@ func codexCommandFailed(item codexCommandExecutionItem) bool {
 // it, and whether it failed: the error message when the item carries one,
 // otherwise the text of its content blocks, with partial set when a block of
 // another type was skipped (as for Claude and pi). A result whose blocks
-// hold no text falls back to its structured_content, flattened by
-// codexStructuredText. A result, or a block, in a shape this parser does
-// not know is skipped and the result marked partial.
+// hold no text but which carries a structured_content is marked partial and
+// that value dropped, as piResultText drops a result it cannot read as text:
+// as JSON, an escape can hide a secret from the redactor, and as bare values,
+// a secret loses the field name the redactor recognises it by. A result, or
+// a block, in a shape this parser does not know is skipped and the result
+// marked partial.
 func codexMcpResultText(item codexMcpToolCallItem) (text string, isError, partial bool) {
 	if item.Error != nil {
 		return item.Error.Message, true, false
@@ -472,59 +474,43 @@ func codexMcpResultText(item codexMcpToolCallItem) (text string, isError, partia
 	}
 	text, skipped := piContentText(blocks)
 	partial = partial || skipped
-	if text == "" {
-		if s, present := codexStructuredText(result.StructuredContent); present {
-			text, partial = s, true
-		}
+	if text == "" && codexHasValue(result.StructuredContent) {
+		partial = true
 	}
 	return text, isError, partial
 }
 
-// codexStructuredText flattens a JSON value the exec stream carries as a
-// tool's output (an MCP structured_content) to its string values, one per
-// line: array elements in order, object members by key. JSON itself is never kept, as for Claude's and pi's non-text results
-// (see piResultText): the redactor is written for plain text, and a JSON
-// escape can hide a secret from it. Decoding first leaves only plain text.
-// present reports that the value held anything (a string, number or boolean
-// anywhere in it); since keys, numbers and booleans are dropped, the caller
-// marks the result Partial whenever it is set.
-func codexStructuredText(raw json.RawMessage) (text string, present bool) {
+// codexHasValue reports whether a JSON value the exec stream carries holds
+// anything: a string, number or boolean anywhere in it. The value itself is
+// never recorded; the caller only marks the result Partial. An unreadable
+// value counts as holding something.
+func codexHasValue(raw json.RawMessage) bool {
 	if codexRawArguments(raw) == "" {
-		return "", false
+		return false
 	}
 	var v any
 	if json.Unmarshal(raw, &v) != nil {
-		// Unreadable, but something was there.
-		return "", true
+		return true
 	}
-	var b strings.Builder
-	var walk func(any)
-	walk = func(v any) {
+	var holds func(any) bool
+	holds = func(v any) bool {
 		switch t := v.(type) {
-		case string:
-			present = true
-			if t == "" {
-				return
-			}
-			if b.Len() > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(t)
-		case []any:
-			for _, e := range t {
-				walk(e)
-			}
-		case map[string]any:
-			for _, k := range slices.Sorted(maps.Keys(t)) {
-				walk(t[k])
-			}
 		case nil:
+			return false
+		case []any:
+			return slices.ContainsFunc(t, holds)
+		case map[string]any:
+			for _, e := range t {
+				if holds(e) {
+					return true
+				}
+			}
+			return false
 		default:
-			present = true
+			return true
 		}
 	}
-	walk(v)
-	return b.String(), present
+	return holds(v)
 }
 
 // codexRawArguments returns an mcp_tool_call's arguments as the wire carried
@@ -803,7 +789,6 @@ func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.T
 			if json.Unmarshal(raw, &item) != nil {
 				return
 			}
-			_, partial := codexStructuredText(item.Results)
 			summary := redactSummary(item.Query)
 			if utf8.RuneCountInString(summary) > maxPatternDisplay {
 				summary = string([]rune(summary)[:maxPatternDisplay]) + "…"
@@ -812,7 +797,7 @@ func parseCodexStreamAt(r io.Reader, onEvent func(AgentEvent), now func() time.T
 				Name:      "WebSearch",
 				Summary:   summary,
 				Arguments: codexArgument("query", item.Query),
-			}, "", false, partial)
+			}, "", false, codexHasValue(item.Results))
 		case "error":
 			// Non-fatal: warnings, deprecation notices and model reroutes
 			// all arrive as completed error items, and the run carries on.

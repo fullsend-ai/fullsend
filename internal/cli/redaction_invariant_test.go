@@ -462,6 +462,9 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 		{"codex MCP structured content", viaCodex(func(text string) string {
 			return codexWire(codexMcp(`{}`, `{"content":[],"structured_content":{"body":`+jsonStr(text)+`}}`, ""))
 		})},
+		{"codex MCP structured content, secret-named key", viaCodex(func(text string) string {
+			return codexWire(codexMcp(`{}`, `{"content":[],"structured_content":{"password":`+jsonStr(text)+`}}`, ""))
+		})},
 		{"input message", func(t *testing.T, text string) []string {
 			// The real path: the feedback is redacted, then composed into the
 			// retry prompt (sanitized, cut, framed), then recorded.
@@ -544,4 +547,43 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestCodexStructuredContentIsNotRecorded covers a secret only its field name
+// identifies: no pattern matches the value alone, so it must not reach the
+// record without that name. The invariant test's secrets each have a form
+// the redactor knows, so its structured-content surfaces cannot show this.
+func TestCodexStructuredContentIsNotRecorded(t *testing.T) {
+	const value = "Zq9xLm2Pw7KdR4tY"
+	var findings []security.Finding
+	require.Equal(t, value, redactText(security.OutputPipeline(), nil, value, &findings),
+		"control: the redactor must not recognise the value by itself")
+
+	record := func(t *testing.T, result, status string) string {
+		t.Helper()
+		item := `{"id":"item_1","type":"mcp_tool_call","server":"s","tool":"t","arguments":{},"result":` + result +
+			`,"error":null,"status":"` + status + `"}`
+		c := newContentCollector(maxContentBytes)
+		_, err := agentruntime.ParseCodexStream(strings.NewReader(
+			`{"type":"item.started","item":`+item+"}\n"+`{"type":"item.completed","item":`+item+"}\n"), c.Handle)
+		require.NoError(t, err)
+		return c.Result("stop").OutputMessages
+	}
+
+	for _, key := range []string{"password", "value"} {
+		for _, status := range []string{"completed", "failed"} {
+			t.Run(key+"/"+status, func(t *testing.T) {
+				structured := `{"` + key + `":"` + value + `","nested":{"` + key + `":["` + value + `"]}}`
+				out := record(t, `{"content":[],"structured_content":`+structured+`}`, status)
+				require.Contains(t, out, `"tool_call"`, "control: the call is recorded")
+				require.NotContains(t, out, value)
+			})
+		}
+	}
+
+	t.Run("the same object as a text block is masked by its key", func(t *testing.T) {
+		out := record(t, `{"content":[{"type":"text","text":`+strconv.Quote(`{"password":"`+value+`"}`)+`}],"structured_content":null}`, "completed")
+		require.Contains(t, out, `"tool_call_response"`)
+		require.NotContains(t, out, value)
+	})
 }
