@@ -799,7 +799,10 @@ file at any path inside the repository, so capture fails before upload for a
 relative value or one that resolves into the repository, whether directly,
 through a symlink (including a dangling one), or through `..` after a
 repository component. A path whose symlinks cannot be resolved also fails
-capture. Remote
+capture. A `sslCAPath` value is checked as a list, since OpenSSL searches every
+directory in a separator-delimited list: each element must meet the same
+requirement, and a symlink among a directory's entries that resolves into the
+repository also fails capture. Remote
 and push destinations are restored in their original order, so push behaviour
 is not silently changed. A relative local destination in the target checkout
 is restored as the absolute target it named on the host; a relative local

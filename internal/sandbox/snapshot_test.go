@@ -532,6 +532,33 @@ func TestCaptureRepositorySnapshot_RejectsInRepoCAPaths(t *testing.T) {
 			want: "inside the target repository",
 		},
 		{
+			name: "directory list with an in-repository element after an external one",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				return t.TempDir() + string(filepath.ListSeparator) + filepath.Join(r.dir, "certs")
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "directory list with a relative element",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				return t.TempDir() + string(filepath.ListSeparator) + "certs"
+			},
+			want: "relative CA path",
+		},
+		{
+			name: "directory entry symlinked into the repository",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				ca := writeFile(t, r.dir, "certs/ca.pem", "ca")
+				dir := t.TempDir()
+				require.NoError(t, os.Symlink(ca, filepath.Join(dir, "5d30f3c5.0")))
+				return dir
+			},
+			want: "resolves inside the target repository",
+		},
+		{
 			name: "symlink loop",
 			key:  caInfo,
 			value: func(r *gitRepo) string {
@@ -569,10 +596,13 @@ func TestCaptureRepositorySnapshot_RejectsInRepoCAPaths(t *testing.T) {
 	t.Run("differently-cased alias of the repository", func(t *testing.T) {
 		r := newGitRepo(t)
 		r.commitFile("file.txt", "x")
-		alias := filepath.Join(filepath.Dir(r.dir), strings.ToUpper(filepath.Base(r.dir)))
-		if alias == r.dir {
-			alias = filepath.Join(filepath.Dir(r.dir), strings.ToLower(filepath.Base(r.dir)))
-		}
+		// The temporary directory's basename is numeric, so move the
+		// repository under an alphabetic name whose case can differ.
+		moved := filepath.Join(t.TempDir(), "Repo")
+		require.NoError(t, os.Rename(r.dir, moved))
+		r.dir = moved
+		alias := filepath.Join(filepath.Dir(moved), "repo")
+		require.NotEqual(t, moved, alias, "the alias spelling must differ from the repository path")
 		if _, err := os.Stat(alias); err != nil {
 			t.Skip("filesystem is case-sensitive; no alias spelling of the repository exists")
 		}
@@ -598,6 +628,23 @@ func TestCaptureRepositorySnapshot_RejectsInRepoCAPaths(t *testing.T) {
 		empty, ok := values[strings.ToLower(caPath)]
 		assert.True(t, ok, "an empty CA setting is kept")
 		assert.Empty(t, empty)
+	})
+
+	t.Run("external directory list with external entries is kept", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		ca := writeFile(t, t.TempDir(), "ca.pem", "ca")
+		first := t.TempDir()
+		require.NoError(t, os.Symlink(ca, filepath.Join(first, "5d30f3c5.0")))
+		list := first + string(filepath.ListSeparator) + t.TempDir()
+		r.git("config", caPath, list)
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+		values := make(map[string]string)
+		for _, entry := range snapshot.config {
+			values[strings.ToLower(entry.Key)] = entry.Value
+		}
+		assert.Equal(t, list, values[strings.ToLower(caPath)])
 	})
 }
 

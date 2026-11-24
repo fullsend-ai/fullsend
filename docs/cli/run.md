@@ -69,7 +69,9 @@ sparse-checkout settings, and the `http.<url>.sslCAInfo` and `.sslCAPath`
 certificate authority paths CI runners write for private-CA instances. These
 two CA settings must be absolute paths outside the target repository; capture
 fails before the run when a value is relative (including `~/`) or resolves
-inside the repository. Settings outside the restored list, including `filter.lfs.*` and
+inside the repository, and that applies to every directory in a
+`sslCAPath` list and to the certificate symlinks inside those directories.
+Settings outside the restored list, including `filter.lfs.*` and
 `core.sshCommand`, are discarded; an LFS checkout therefore comes back with
 its filters unset. Partial clones are rejected in both their forms, as is a
 relative local submodule destination in the target checkout that does not

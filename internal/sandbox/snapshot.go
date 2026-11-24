@@ -455,21 +455,67 @@ func checkTrustedCAPaths(repoRoot string, entries []configEntry) error {
 		if !httpCAKey(strings.ToLower(entry.Key)) || entry.Value == "" {
 			continue
 		}
-		if !filepath.IsAbs(entry.Value) {
-			return fmt.Errorf("trusted git config %q is a relative CA path %q, which Git resolves against the working tree; use an absolute path outside the repository", entry.Key, entry.Value)
+		// sslCAPath is a directory list with OpenSSL, so every element is
+		// validated on its own; sslCAInfo names a single file.
+		values := []string{entry.Value}
+		isDirList := strings.HasSuffix(strings.ToLower(entry.Key), ".sslcapath")
+		if isDirList {
+			values = filepath.SplitList(entry.Value)
 		}
-		if root == nil {
-			var err error
-			if root, err = newCARepoRoot(repoRoot); err != nil {
-				return err
+		for _, value := range values {
+			if value == "" && isDirList {
+				continue
+			}
+			if !filepath.IsAbs(value) {
+				return fmt.Errorf("trusted git config %q is a relative CA path %q, which Git resolves against the working tree; use an absolute path outside the repository", entry.Key, value)
+			}
+			if root == nil {
+				var err error
+				if root, err = newCARepoRoot(repoRoot); err != nil {
+					return err
+				}
+			}
+			enters, err := root.pathEnters(value)
+			if err != nil {
+				return fmt.Errorf("trusted git config %q names CA path %q whose destination cannot be established outside the target repository: %w", entry.Key, value, err)
+			}
+			if enters {
+				return fmt.Errorf("trusted git config %q names CA path %q inside the target repository; use an absolute path outside the repository", entry.Key, value)
+			}
+			if isDirList {
+				if err := root.checkCADirEntries(entry.Key, value); err != nil {
+					return err
+				}
 			}
 		}
-		enters, err := root.pathEnters(entry.Value)
+	}
+	return nil
+}
+
+// checkCADirEntries inspects the lookup entries of a CA directory: a
+// certificate symlink that resolves into the target repository would let the
+// downloaded checkout supply a trusted certificate even though the directory
+// itself is outside it. A directory that does not exist or cannot be read
+// holds no certificates for Git to use and is left alone.
+func (r *caRepoRoot) checkCADirEntries(key, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.ENOTDIR) {
+			return nil
+		}
+		return fmt.Errorf("trusted git config %q: reading CA directory %q: %w", key, dir, err)
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		enters, err := r.pathEnters(path)
 		if err != nil {
-			return fmt.Errorf("trusted git config %q names CA path %q whose destination cannot be established outside the target repository: %w", entry.Key, entry.Value, err)
+			return fmt.Errorf("trusted git config %q: CA directory entry %q has a destination that cannot be established outside the target repository: %w", key, path, err)
 		}
 		if enters {
-			return fmt.Errorf("trusted git config %q names CA path %q inside the target repository; use an absolute path outside the repository", entry.Key, entry.Value)
+			return fmt.Errorf("trusted git config %q: CA directory entry %q resolves inside the target repository; use a directory whose entries lie outside the repository", key, path)
 		}
 	}
 	return nil
