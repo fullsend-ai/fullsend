@@ -1341,9 +1341,10 @@ GitHub event ──► SHIM WORKFLOW (.github/workflows/fullsend.yaml in the rep
                  ║ │                                                           │ ║
                  ║ │ Extracts from destroyed sandbox:                          │ ║
                  ║ │   /sandbox/workspace/output/, JSONL transcripts,          │ ║
-                 ║ │   SafeDownload repo (sanitize symlinks, strip hooks)      │ ║
-                 ║ │   replacement refs, grafts, commit graphs removed         │ ║
-                 ║ │   root shallow state restored from pre-upload snapshot    │ ║
+                 ║ │   SafeDownload repo: sanitized, host settings restored    │ ║
+                 ║ │   hooks, symlinks and ancestry overrides removed          │ ║
+                 ║ │   downloaded Git config rebuilt from declared format      │ ║
+                 ║ │   shallow state restored from pre-upload snapshot         │ ║
                  ║ │ Post-agent secret scan (redact from extracted output).    │ ║
                  ║ │                                                           │ ║
                  ║ │ Post-script (scripts/post-code.sh, with PUSH_TOKEN):      │ ║

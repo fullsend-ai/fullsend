@@ -10870,167 +10870,6 @@ func newShallowTestRepo(t *testing.T) string {
 	return dir
 }
 
-func TestCaptureRepositorySnapshot(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
-	t.Run("full history has no marker", func(t *testing.T) {
-		snapshot, err := captureRepositorySnapshot(newShallowTestRepo(t))
-		require.NoError(t, err)
-		assert.False(t, snapshot.Shallow.Present)
-		assert.Nil(t, snapshot.Shallow.Data)
-		assert.True(t, snapshot.IsCheckout)
-	})
-
-	t.Run("shallow clone is captured and disappears after unshallow", func(t *testing.T) {
-		src := newShallowTestRepo(t)
-		clone := filepath.Join(t.TempDir(), "clone")
-		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+src, clone)
-
-		want, err := os.ReadFile(filepath.Join(clone, ".git", "shallow"))
-		require.NoError(t, err)
-		snapshot, err := captureRepositorySnapshot(clone)
-		require.NoError(t, err)
-		require.True(t, snapshot.Shallow.Present)
-		assert.Equal(t, want, snapshot.Shallow.Data)
-		assert.True(t, snapshot.IsCheckout)
-		assert.Equal(t, "1", captureGit(t, clone, "rev-list", "--count", "HEAD"))
-
-		// A pre-script may legitimately unshallow the host checkout before
-		// upload; the captured state must then carry no boundary.
-		captureGit(t, clone, "fetch", "--quiet", "--unshallow")
-		snapshot, err = captureRepositorySnapshot(clone)
-		require.NoError(t, err)
-		assert.False(t, snapshot.Shallow.Present)
-		assert.True(t, snapshot.IsCheckout)
-		assert.Equal(t, "3", captureGit(t, clone, "rev-list", "--count", "HEAD"))
-	})
-
-	t.Run("inherited selectors cannot choose the shallow boundary", func(t *testing.T) {
-		decoySrc := newShallowTestRepo(t)
-		require.NoError(t, os.WriteFile(filepath.Join(decoySrc, "decoy.txt"), []byte("decoy\n"), 0o644))
-		captureGit(t, decoySrc, "add", "decoy.txt")
-		captureGit(t, decoySrc, "commit", "--quiet", "-m", "decoy")
-		decoy := filepath.Join(t.TempDir(), "decoy")
-		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+decoySrc, decoy)
-		decoyMarker, err := os.ReadFile(filepath.Join(decoy, ".git", "shallow"))
-		require.NoError(t, err)
-
-		trusted := filepath.Join(t.TempDir(), "trusted")
-		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+newShallowTestRepo(t), trusted)
-		trustedMarker, err := os.ReadFile(filepath.Join(trusted, ".git", "shallow"))
-		require.NoError(t, err)
-		require.NotEqual(t, decoyMarker, trustedMarker,
-			"fixtures must have distinct boundaries for this test to discriminate")
-
-		t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
-		t.Setenv("GIT_WORK_TREE", decoy)
-		t.Setenv("GIT_COMMON_DIR", filepath.Join(decoy, ".git"))
-
-		snapshot, err := captureRepositorySnapshot(trusted)
-		require.NoError(t, err)
-		require.True(t, snapshot.Shallow.Present)
-		assert.Equal(t, trustedMarker, snapshot.Shallow.Data,
-			"inherited selectors must not substitute another repository's boundary")
-		assert.True(t, snapshot.IsCheckout)
-
-		// Unshallowing the trusted checkout must clear its boundary even while
-		// the inherited selectors name a shallow repository.
-		captureGit(t, trusted, "fetch", "--quiet", "--unshallow")
-		snapshot, err = captureRepositorySnapshot(trusted)
-		require.NoError(t, err)
-		assert.False(t, snapshot.Shallow.Present)
-		assert.Nil(t, snapshot.Shallow.Data)
-		assert.True(t, snapshot.IsCheckout)
-	})
-
-	t.Run("empty marker is distinct from absence", func(t *testing.T) {
-		repo := newShallowTestRepo(t)
-		require.NoError(t, os.WriteFile(filepath.Join(repo, ".git", "shallow"), nil, 0o644))
-		snapshot, err := captureRepositorySnapshot(repo)
-		require.NoError(t, err)
-		assert.True(t, snapshot.Shallow.Present)
-		assert.Empty(t, snapshot.Shallow.Data)
-		assert.True(t, snapshot.IsCheckout)
-	})
-
-	t.Run("linked worktree gitfile is unsupported", func(t *testing.T) {
-		repo := newShallowTestRepo(t)
-		wt := filepath.Join(t.TempDir(), "wt")
-		captureGit(t, repo, "worktree", "add", "--quiet", wt, "-b", "wt-branch")
-
-		snapshot, err := captureRepositorySnapshot(wt)
-		require.Error(t, err)
-		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
-	})
-
-	t.Run("plain directory without .git is accepted", func(t *testing.T) {
-		snapshot, err := captureRepositorySnapshot(t.TempDir())
-		require.NoError(t, err)
-		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
-	})
-
-	t.Run("plain directory does not capture a parent shallow checkout", func(t *testing.T) {
-		src := newShallowTestRepo(t)
-		parent := filepath.Join(t.TempDir(), "parent")
-		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+src, parent)
-		plain := filepath.Join(parent, "plain")
-		require.NoError(t, os.Mkdir(plain, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(plain, "file.txt"), []byte("content\n"), 0o644))
-
-		snapshot, err := captureRepositorySnapshot(plain)
-		require.NoError(t, err)
-		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot,
-			"plain input must not inherit the parent checkout's shallow boundary")
-	})
-
-	t.Run("bare repository root is rejected", func(t *testing.T) {
-		bare := filepath.Join(t.TempDir(), "bare.git")
-		captureGit(t, t.TempDir(), "init", "--quiet", "--bare", bare)
-
-		snapshot, err := captureRepositorySnapshot(bare)
-		require.Error(t, err)
-		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
-	})
-
-	t.Run("broken git metadata fails closed", func(t *testing.T) {
-		dir := t.TempDir()
-		require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
-		_, err := captureRepositorySnapshot(dir)
-		require.Error(t, err)
-	})
-
-	t.Run("non-regular marker is rejected", func(t *testing.T) {
-		repo := newShallowTestRepo(t)
-		require.NoError(t, os.Mkdir(filepath.Join(repo, ".git", "shallow"), 0o755))
-		_, err := captureRepositorySnapshot(repo)
-		require.Error(t, err)
-	})
-
-	t.Run("non-directory repo path fails closed", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "repo")
-		require.NoError(t, os.WriteFile(path, []byte("x\n"), 0o644))
-		_, err := captureRepositorySnapshot(path)
-		require.Error(t, err)
-	})
-
-	t.Run("unreadable marker fails closed", func(t *testing.T) {
-		if os.Getuid() == 0 {
-			t.Skip("root bypasses permission checks")
-		}
-		repo := newShallowTestRepo(t)
-		marker := filepath.Join(repo, ".git", "shallow")
-		require.NoError(t, os.WriteFile(marker, []byte("0123456789012345678901234567890123456789\n"), 0o644))
-		require.NoError(t, os.Chmod(marker, 0o000))
-		t.Cleanup(func() { _ = os.Chmod(marker, 0o644) })
-
-		_, err := captureRepositorySnapshot(repo)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "reading git shallow metadata")
-	})
-}
-
 func TestCaptureRepositorySnapshot_Reftable(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -11070,10 +10909,10 @@ func TestCaptureRepositorySnapshot_Reftable(t *testing.T) {
 		refsBefore := captureGit(t, repo, "for-each-ref", "refs/replace")
 		require.NotEmpty(t, refsBefore)
 
-		snapshot, err := captureRepositorySnapshot(repo)
+		snapshot, err := sandbox.CaptureRepositorySnapshot(repo)
 		require.NoError(t, err)
-		assert.False(t, snapshot.Shallow.Present)
-		assert.True(t, snapshot.IsCheckout)
+		assert.NotEqual(t, sandbox.RepositorySnapshot{}, snapshot,
+			"a real checkout must produce a non-zero snapshot")
 
 		configAfter, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
 		require.NoError(t, err)
@@ -11088,7 +10927,7 @@ func TestCaptureRepositorySnapshot_Reftable(t *testing.T) {
 		require.NoError(t, err)
 		refsBefore := captureGit(t, repo, "for-each-ref", "refs/replace")
 
-		snapshot, err := captureRepositorySnapshot(repo)
+		snapshot, err := sandbox.CaptureRepositorySnapshot(repo)
 		require.Error(t, err)
 		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
 
@@ -11102,10 +10941,10 @@ func TestCaptureRepositorySnapshot_Reftable(t *testing.T) {
 		repo := newShallowTestRepo(t)
 		useFakeGitVersion(t, "2.52.0")
 
-		snapshot, err := captureRepositorySnapshot(repo)
+		snapshot, err := sandbox.CaptureRepositorySnapshot(repo)
 		require.NoError(t, err)
-		assert.False(t, snapshot.Shallow.Present)
-		assert.True(t, snapshot.IsCheckout)
+		assert.NotEqual(t, sandbox.RepositorySnapshot{}, snapshot,
+			"a real checkout must produce a non-zero snapshot")
 	})
 }
 
