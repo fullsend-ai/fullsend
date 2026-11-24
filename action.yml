@@ -638,13 +638,46 @@ runs:
         if [[ -n "${MINT_URL}" ]]; then
           MINT_FLAGS+=(--mint-url "${MINT_URL}")
         fi
-        # Replace this shell so Actions cancellation signals reach the CLI.
-        exec fullsend run "${AGENT}" \
+        # Retry the agent once on failure (rerun-failed-agent-once).
+        # The original `exec` was replaced by a background + wait loop with
+        # signal forwarding, so Actions cancellation signals still reach the
+        # CLI directly. A cancelled run is NOT retried (exit 143/130 path).
+        set -- fullsend run "${AGENT}" \
           --fullsend-dir "${FULLSEND_DIR}" \
           --output-dir "${GITHUB_WORKSPACE}/output" \
           --target-repo "${TARGET_REPO}" \
           "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}" \
           "${MINT_FLAGS[@]+"${MINT_FLAGS[@]}"}"
+
+        attempt=1
+        max_attempts=2
+        while true; do
+          "$@" &
+          child=$!
+          forward() { kill -s "$1" "${child}" 2>/dev/null || true; }
+          trap 'forward TERM' TERM
+          trap 'forward INT'  INT
+          set +e
+          wait "${child}"
+          status=$?
+          set -e
+          trap - TERM INT
+          # 128+SIGTERM (15) or 128+SIGINT (2): workflow was cancelled - do not retry.
+          if (( status == 143 || status == 130 )); then
+            echo "::notice::fullsend run terminated by cancellation signal (exit ${status}); not retrying"
+            exit "${status}"
+          fi
+          if (( status == 0 )); then
+            exit 0
+          fi
+          if (( attempt >= max_attempts )); then
+            echo "::error::fullsend run failed (exit ${status}) after ${max_attempts} attempts"
+            exit "${status}"
+          fi
+          echo "::warning::fullsend run failed (exit ${status}); retrying (attempt $((attempt + 1))/${max_attempts}) in 30s..."
+          attempt=$((attempt + 1))
+          sleep 30
+        done
 
     # fullsend run deletes the staged bundle as soon as it reads it; this
     # removes it when the run never started or stopped before reading it.
