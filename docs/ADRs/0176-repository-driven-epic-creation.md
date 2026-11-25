@@ -92,22 +92,23 @@ provided, Phase 1 is skipped and Phase 2 resolves from the issue
 description and architecture context alone.
 
 **Output**: one of:
-- Resolved: one or more repositories (org and name), each with cited
-  evidence from the architecture context. A narrow work item resolves
-  to one repo; a strategy resolves to every repo its implementation
-  touches.
+- Resolved: one or more repositories (namespace path and name), each
+  with cited evidence from the architecture context. A narrow work item
+  resolves to one repo; a strategy resolves to every repo its
+  implementation touches.
 - Unresolved: a reason, and the candidate repositories from the
   mapping if one is configured
 
 ### Repository details
 
 Every repository the resolver returns carries full details —
-organization and name — before the result is accepted: the canonical
-URL is built from them. The details come from the architecture
-context, either directly where a repository is mentioned with its
-organization, or by resolving a repository key against the
-structured repository data. This resolution always runs, with or
-without a mapping. A repository mention that cannot be resolved to
+namespace path and name — before the result is accepted: the canonical
+URL is built from them. The namespace path is the organization or
+group, and may be nested (`group/subgroup` on GitLab). The details come
+from the architecture context, either directly where a repository is
+mentioned with its namespace path, or by resolving a repository key
+against the structured repository data. This resolution always runs,
+with or without a mapping. A repository mention that cannot be resolved to
 full details is a hard failure before any result is accepted.
 
 ### Two-phase resolution
@@ -212,9 +213,7 @@ sources:
 
 The source declaration tells the loader where the data lives. The
 loader fetches the source, snapshots it, and records a content
-hash. Refs are resolved to a commit SHA at load time. If the content
-changes between resolution and verification, the integrity check
-rejects the result.
+hash. Refs are resolved to a commit SHA at load time.
 
 The loader contract is fixed: a source URL is credential-free HTTPS
 or `self`; declared paths are canonicalized within the source root,
@@ -240,31 +239,6 @@ architecture repository — the resolution logic does not change. Each
 group is a configuration of
 sources fed into the same generic resolution logic, declared without
 code changes in the resolver.
-
-#### Future: architecture context skills
-
-Agents should not reference the architecture context
-repository directly. Instead, each group would declare which skills
-to load from its architecture source. The skills would provide
-interpretation guidance: which files to read, what the structure means,
-how to map component names to repos. This is future work — the current
-implementation reads the architecture context directly.
-
-The direction: Phase 2 would read the pre-loaded architecture context
-using interpretation guidance from the group's declared skills,
-rather than hardcoding how to read a specific source. This would also
-address the scaling concern — groups that
-cannot afford to maintain a static architecture-context repo at scale
-could provide skills that work differently.
-
-This direction is already motivated beyond RHAI: tools that map out
-an organization's repositories and their connections already exist,
-and teams in the organization already maintain data about which
-repositories map to which components and teams — shipped as skills,
-in structures totally different from the architecture-context
-repository. The resolver must treat architecture context as data
-whose shape and producer vary — not assume a single hand-maintained
-repository.
 
 ### Verification
 
@@ -374,7 +348,8 @@ two work items referencing the same requirement, with a dependency
 between them. When splitting reveals a slice that belongs to a repo
 outside the resolved set, that slice is resolved individually — one
 extra resolver call with the slice's description — so every work item
-carries its own evidence.
+carries its own evidence. If Step 1 returns unresolved, the strategy is
+still split into work items; unresolved items follow Step 4.
 
 **Step 3 — Group into planned PRs.** Work items targeting the same repo
 are grouped into planned PRs. Work items that form one coherent
@@ -395,24 +370,26 @@ unresolved items published without warning). Then a staff engineer
 reviews the output before publication. The resolution evidence is
 included so the reviewer can verify each repo assignment — what text
 was cited and what source versions were used.
-The repo URL is written to the configured Jira URL field. If sources
-have changed since resolution, the system forces re-resolution before
-publication.
+The repo URL is written to the configured Jira URL field. Resolution,
+review, and publication use the same pinned snapshot. The reviewed
+result is published as reviewed, with the commit SHAs it was resolved
+against; sources are not re-fetched or re-resolved before publication.
+Source changes apply to the next run.
 
 ### Jira field for resolved repository
 
 The resolved repository is written to a configurable Jira field on the
 epic. The field is a URL type. The written value uses one canonical
-form — `https://<host>/<org>/<name>`, no `.git`, lowercase host, no
-trailing slash — and the deterministic layer normalizes to it before
-writing. A repository URL that cannot be normalized to this form —
-one carrying a query string, fragment, userinfo, or `..` traversal
+form — `https://<host>/<namespace path>/<name>`, all lowercase, no
+`.git`, no trailing slash — and the deterministic layer normalizes to
+it before writing. A repository URL that cannot be normalized to this
+form — one carrying a query string, fragment, userinfo, or `..` traversal
 segments — is a hard error, never a value written as-is; the
 accepted character set is fixed by the normative schemas
 ([#9851](https://github.com/fullsend-ai/fullsend/issues/9851)).
 Jira URL fields match on exact value only in JQL, so any
-variation (SSH form, `.git` suffix, trailing slash) would make epics
-invisible to the agents polling for them.
+variation (SSH form, `.git` suffix, trailing slash, letter case) would
+make epics invisible to the agents polling for them.
 
 Which field to use is group configuration — a group's Jira
 project may already have a suitable field, and others configure
@@ -453,9 +430,9 @@ and a warning comment carrying the reason and candidates.
 
 ### Feature flag
 
-Repository resolution is gated by the `repository_mode` environment
-variable. The flag controls whether the resolver runs before
-decomposition:
+Repository resolution is gated by the `EPIC_CREATOR_REPOSITORY_MODE`
+environment variable. The flag controls whether the resolver runs
+before decomposition:
 
 - **Off (the production default):** the resolver is skipped entirely.
   Epic Creator splits by Jira component and team boundary — the current
@@ -464,9 +441,10 @@ decomposition:
   decomposition splits along repo boundaries (Steps 2–5). Epics
   carry the resolved repository URL.
 
-The flag is an environment variable, delivered as a CI variable in
-GitLab. Unset means off — the production default — so runs without
-the variable keep legacy behavior regardless of forge. The flag
+The flag is an environment variable, delivered through the harness
+`env.sandbox` block (ADR 0055) when run as a fullsend harness, or as a
+CI variable in GitLab. Unset means off — the production default — so
+runs without the variable keep legacy behavior regardless of forge. The flag
 recognizes two values, `true` and `false`; any other non-empty value
 is a hard configuration error before the run starts, matching the
 inputs-section stance — a malformed flag never silently selects
@@ -538,10 +516,10 @@ optional accelerator.
 The operational cost scales with how much of the resolution a group
 wants to accelerate. A group whose components are reliable can invest
 in its mapping to accelerate Phase 2; a group without a mapping still
-gets full Phase 2 coverage. The
-architecture context skill (see above) allows groups to provide
-their own implementation of how context is fetched, so the operational
-model is not one-size-fits-all.
+gets full Phase 2 coverage. A future architecture context skill (see
+Open questions) would allow groups to provide their own implementation
+of how context is fetched, so the operational model would not be
+one-size-fits-all.
 
 ## Forge scope
 
@@ -569,7 +547,8 @@ not forge-specific.
   corresponds to exactly one PR in one repo
 - Groups declare their own sources and optionally a mapping; each
   group is configuration, not code
-- Changed inputs invalidate prior results
+- A reviewed result is published as reviewed; source changes apply to
+  the next run
 - The skill stays in epic-creator for now; moving it is future work
 
 ## Open questions
@@ -581,3 +560,22 @@ not forge-specific.
   resolution should run from the description and architecture context
   alone. This is the group owner's decision, informed by the
   backtest's with-and-without-mapping comparison.
+- Architecture context skills — not decided here; a forward-looking
+  direction raised at the Technical Review Forum (2026-11-24). The
+  current implementation reads the architecture context directly.
+  Each group would declare which skills to load from its architecture
+  source; the skills would provide interpretation guidance: which
+  files to read, what the structure means, how to map component names
+  to repos. Phase 2 would then read the pre-loaded architecture
+  context using that guidance, rather than hardcoding how to read a
+  specific source. This would also address the scaling concern —
+  groups that cannot afford to maintain a static architecture-context
+  repo at scale could provide skills that work differently. The
+  direction is motivated beyond RHAI: tools that map an
+  organization's repositories and their connections, and
+  team-maintained repository, component, and team data shipped as
+  skills in structures different from the architecture-context
+  repository (for example, the Konflux team's skills), were raised at
+  the same forum. Under this direction, the resolver would treat
+  architecture context as data whose shape and producer vary, rather
+  than assume a single hand-maintained repository.
