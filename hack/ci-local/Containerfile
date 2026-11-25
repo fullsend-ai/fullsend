@@ -4,7 +4,7 @@
 # `hack/ci-local/ci-local build-image`: the versions are read from go.mod and
 # lint.yml and passed in as build args, so this file pins none of them.
 # Digest-pinned like images/*; Renovate keeps the digest current.
-FROM docker.io/library/ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+FROM docker.io/library/ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
 LABEL fullsend-ci-local=1
 
 # TARGETARCH is set automatically by BuildKit and Buildah, but not by Docker's

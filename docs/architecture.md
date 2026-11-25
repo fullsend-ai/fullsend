@@ -562,12 +562,20 @@ The existing design principle is that [the repo is the coordinator](problems/age
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
-  scope is per-repo mode only.
-- Jira poll candidate selection spends per-cycle slots only on candidates
-  whose Jira `updated` is newer than their per-repository checkpoint, picks
-  at random among them, and reads the per-cycle caps (N, default 5, and M,
-  default 50) from `tracker.jira.poll` within fixed bounds
-  ([ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
+  scope is per-repo mode only. In the target state the `jira-poll` driver no
+  longer uses those locks (see the next item).
+- Jira poll candidate selection (target state): one poller per repository
+  reads every issue that changed within the backfill window
+  (`tracker.jira.poll.backfill_window_hours`, default 24), oldest change
+  first unless the configured query sets its own order, skips issues whose
+  Jira `updated` is not newer than their
+  per-repository checkpoint, and dispatches up to
+  `tracker.jira.poll.max_dispatches_per_cycle` records per cycle (default 100,
+  at most 250) within a five-minute cycle limit, with no row limit on the
+  candidate pool, no random pick, and no per-issue lock
+  ([ADR 0085](ADRs/0085-serve-every-changed-jira-issue.md), partially
+  superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md) and
+  [ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
 - Jira poll actor authorization does not require the poller to administer the
   Jira project once a repository adds a `jira` provider under
   `authorization:`. With no `jira` entry, every Jira event resolves through the
@@ -801,8 +809,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
-  lock refresh; ADR 0165 chooses an operation journal for recoverable effects,
-  while adapter implementation and external-system guarantees remain open.)
+  lock refresh, which ADR 0085 removes for the `jira-poll` driver in favor of
+  one poller per repository; ADR 0165 chooses an operation journal for
+  recoverable effects, while adapter implementation and external-system
+  guarantees remain open.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - How should explicit cancellation, retry, and reassignment interact with the
   automatic event-coalescing policy in
@@ -1341,9 +1351,10 @@ GitHub event ──► SHIM WORKFLOW (.github/workflows/fullsend.yaml in the rep
                  ║ │                                                           │ ║
                  ║ │ Extracts from destroyed sandbox:                          │ ║
                  ║ │   /sandbox/workspace/output/, JSONL transcripts,          │ ║
-                 ║ │   SafeDownload repo (sanitize symlinks, strip hooks)      │ ║
-                 ║ │   replacement refs, grafts, commit graphs removed         │ ║
-                 ║ │   root shallow state restored from pre-upload snapshot    │ ║
+                 ║ │   SafeDownload repo: sanitized, host settings restored    │ ║
+                 ║ │   hooks, symlinks and ancestry overrides removed          │ ║
+                 ║ │   downloaded Git config rebuilt from declared format      │ ║
+                 ║ │   shallow state restored from pre-upload snapshot         │ ║
                  ║ │ Post-agent secret scan (redact from extracted output).    │ ║
                  ║ │                                                           │ ║
                  ║ │ Post-script (scripts/post-code.sh, with PUSH_TOKEN):      │ ║
