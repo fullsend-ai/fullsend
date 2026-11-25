@@ -192,7 +192,9 @@ line showed no id in that prefix — is closed as `error.type=unanswered` by
 assembly (the pi parser holds a call's `ToolUseEvent` until
 `tool_execution_end`, because a failed call's summary needs the result, and
 emits it when the stream stops for a call cut off by a kill or timeout; the
-codex parser emits it only at `item.completed`, so such a call has no span); a
+codex parser emits it only at `item.completed`, so such a call has no span,
+and neither does one whose over-long `item.completed` shows no id or had no
+`item.started`); a
 call superseded by a second `tool_use` with the same id is ended the same
 way at the reuse; a result with no matching call (its `tool_use` or, on pi,
 `tool_execution_start` line was skipped) becomes a

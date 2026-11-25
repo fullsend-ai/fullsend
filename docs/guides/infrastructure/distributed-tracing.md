@@ -135,8 +135,8 @@ command as `Bash`'s `command`, a patched path as `Write`'s or `Edit`'s
 so not recorded); an MCP call's arguments pass through as the wire
 carried them.
 Codex tool results are what its `exec --json` stream reports: a
-command's `aggregated_output` and an MCP call's text. An MCP call's
-`structured_content` is not recorded, since flattened to bare values it
+command's `aggregated_output` and an MCP call's text or error message. An MCP
+call's `structured_content` is not recorded, since flattened to bare values it
 would lose the field names the redactor recognises some secrets by. A web
 search's `results` are not recorded either: fullsend runs codex with web
 search disabled, so no capture shows their shape. That stream carries a tool's

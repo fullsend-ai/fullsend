@@ -168,7 +168,7 @@ collab_tool_call  {tool: spawn_agent|send_input|wait|close_agent,
                    sender_thread_id, receiver_thread_ids[], prompt|null,
                    agents_states{}, status: in_progress|completed|failed}
 web_search        {id, query, action{type: search|open_page|find_in_page, …},
-                   results?: [any JSON]}
+                   results?: [any JSON] (rust-v0.166.0)}
                   (this id is the search's raw id, a second "id" key
                    after the item's item_N, which the parser uses)
 todo_list         {items: [{text, completed}]}
@@ -210,6 +210,7 @@ in `parseCodexStream`:
   incomplete, failed run, not a success.
 - `file_change` is documented as "emitted only as a completed event", but the
   live capture shows `item.started` **and** `item.completed` for it. The parser
-  maps only `item.completed`, so this costs nothing either way.
+  reports a call only at `item.completed`; an `item.started` gives it its start
+  instant and, when the completed line is over 1 MiB, the item itself.
 - `codex exec` has **no `--ask-for-approval` flag** in 0.152.1; the approval
   policy is a `-c approval_policy=never` override.

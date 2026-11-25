@@ -18,9 +18,10 @@ import (
 // Codex `exec --json` wire format, taken from openai/codex tag rust-v0.152.1:
 // codex-rs/exec/src/exec_events.rs (the event/item structs) and
 // codex-rs/exec/src/event_processor_with_jsonl_output.rs (which events are
-// emitted, and when). Fixtures live under testdata/codex/; basic_run.ndjson is
-// a live capture, the rest are hand-authored to the struct list below.
-// Regenerate the live one with testdata/codex/regen.sh and re-verify this file
+// emitted, and when); anything later names its own tag. Fixtures live under
+// testdata/codex/; basic_run.ndjson and mcp_tool_call.ndjson are live captures,
+// the rest are hand-authored to the struct list below. Regenerate the live ones
+// with testdata/codex/regen.sh and regen-mcp.sh and re-verify this file
 // whenever the pinned CODEX_VERSION moves.
 //
 // Top-level events (`ThreadEvent`, serde tag "type", the variant payload
@@ -50,9 +51,9 @@ import (
 //	                   sender_thread_id, receiver_thread_ids[], prompt?,
 //	                   agents_states{}, status}
 //	web_search        {id, query, action{type: search|open_page|find_in_page, ...},
-//	                   results?[]} -- its own id is the search's raw id, a
-//	                   second "id" key after the item's (see
-//	                   decodeCodexItemHeader)
+//	                   results?[] (rust-v0.166.0)} -- its own id is the
+//	                   search's raw id, a second "id" key after the item's
+//	                   (see decodeCodexItemHeader)
 //	todo_list         {items[{text, completed}]}
 //	error             {message}
 //
@@ -514,7 +515,8 @@ func codexHasValue(raw json.RawMessage) bool {
 }
 
 // codexRawArguments returns an mcp_tool_call's arguments as the wire carried
-// them, or nothing for an absent or null value.
+// them, or nothing for an absent or null value. The result helpers use it to
+// test for the same.
 func codexRawArguments(raw json.RawMessage) string {
 	s := strings.TrimSpace(string(raw))
 	if s == "" || s == "null" {
@@ -553,7 +555,8 @@ func ParseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 // "no result was delivered". The signature mirrors parsePiStream so the runner
 // can drive either with the same handler.
 //
-// Behaviour notes, all verified against rust-v0.152.1:
+// Behaviour notes, verified against rust-v0.152.1 unless a note names another
+// version:
 //
 //   - No InitEvent is emitted: the stream carries neither a model nor a
 //     version. The runner emits one from the resolved run parameters, as
@@ -564,9 +567,9 @@ func ParseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 //     both arrive started-then-completed with the same id), as a
 //     ToolUseEvent carrying the item id followed by its ToolResultEvent:
 //     the command's aggregated_output, the MCP call's result text or error
-//     (its structured_content when no block holds text), and an empty
-//     result for the rest (file_change, collab_tool_call, and web_search,
-//     whose results are not recorded; see codexWebSearchItem).
+//     (structured_content is never recorded; see codexMcpResultText), and an
+//     empty result for the rest (file_change, collab_tool_call, and
+//     web_search, whose results are not recorded; see codexWebSearchItem).
 //     item.started emits nothing; the instant the parser read it becomes
 //     the call's StartedAt, so the execute_tool span covers the call
 //     rather than its completion line. item.updated maps to nothing.

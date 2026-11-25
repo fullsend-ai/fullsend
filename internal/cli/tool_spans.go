@@ -71,7 +71,8 @@ const maxToolSpanNameBytes = 128
 // kill or timeout when its stream stops; at turn end codex completes a call
 // still open from the turn snapshot, and the parser reports one whose snapshot
 // status is still in_progress without a result, while a codex call that never
-// gets an item.completed gets no span); a result whose
+// gets an item.completed, or whose over-long one cannot be matched to its
+// item.started, gets no span); a result whose
 // line exceeded the parser's 1 MiB bound (ToolResultEvent.Oversized) ends its span at
 // receipt, marked fullsend.tool.result_oversized and left without a status,
 // since the tool answered and its is_error was never decoded; and a result
