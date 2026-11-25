@@ -83,6 +83,12 @@ func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
 	if opts.FirstPollBackfillWindow == 0 {
 		opts.FirstPollBackfillWindow = 24 * time.Hour
 	}
+	if opts.CycleTimeLimit == 0 {
+		opts.CycleTimeLimit = 5 * time.Minute
+	}
+	if opts.IssueTimeLimit == 0 {
+		opts.IssueTimeLimit = 2 * time.Minute
+	}
 	return &Poller{
 		client:  client,
 		matcher: matcher,
@@ -94,6 +100,14 @@ func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
 // cycles for one target repository from overlapping: with no lock, they
 // would dispatch the same requests twice (ADR 0085, Decision item 1).
 func (p *Poller) Run(ctx context.Context) error {
+	// Reading — the preflight, the search, the activity filter and every
+	// issue — must finish within CycleTimeLimit of the cycle's start, and
+	// one issue within IssueTimeLimit (ADR 0085, Decision item 3). The
+	// dispatch and checkpoint commit after it use ctx, so they get the rest
+	// of the job's time.
+	readCtx, cancelRead := context.WithTimeout(ctx, p.opts.CycleTimeLimit)
+	defer cancelRead()
+
 	p.dispatches = nil
 	p.eventsSeen, p.eventsInvalid, p.eventsMatchErrors = 0, 0, 0
 	p.statusCategoryCache = make(map[string]string)
@@ -107,7 +121,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	// checkpoint operations. Without this, bad credentials cause Jira to
 	// treat the request as unauthenticated and return empty results —
 	// indistinguishable from a genuinely quiet project.
-	myself, err := p.client.GetMyself(ctx)
+	myself, err := p.client.GetMyself(readCtx)
 	if err != nil {
 		return fmt.Errorf("authentication preflight failed: %w", err)
 	}
@@ -122,7 +136,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	p.selfAccountID = userID(*myself)
 
 	// Step 1: Execute JQL to get candidate issues.
-	candidates, err := p.searchCandidates(ctx)
+	candidates, err := p.searchCandidates(readCtx)
 	if err != nil {
 		return fmt.Errorf("search candidates: %w", err)
 	}
@@ -130,7 +144,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	// Step 2: Drop the issues with nothing new since their lastCheck
 	// (ADR 0160), so an already-handled issue does not take a slot from a
 	// fresh request.
-	active := p.filterActive(ctx, candidates)
+	active := p.filterActive(readCtx, candidates)
 
 	// Step 3: Randomly select min(N, len(active)) candidates.
 	selected := selectRandom(active, p.opts.N)
@@ -149,29 +163,52 @@ func (p *Poller) Run(ctx context.Context) error {
 	// candidate checkpoint per issue; processIssue returns it (zero if
 	// there's nothing to advance) together with the issue's records, this
 	// loop adds the two to the cycle as one unit, and Step 6 below commits
-	// the checkpoint only after
-	// Step 5's dispatch-file write has durably succeeded. Committing here
-	// instead would mean a local write failure permanently loses every
-	// event this cycle found: the checkpoint would already be past them in
-	// Jira with no record of them ever written anywhere.
+	// the checkpoint only after Step 5's dispatch-file write has durably
+	// succeeded. Committing here instead would mean a local write failure
+	// permanently loses every event this cycle found: the checkpoint would
+	// already be past them in Jira with no record of them ever written
+	// anywhere. An issue that times out, or that the cycle limit cuts off,
+	// contributes neither records nor a checkpoint, so its requests stay
+	// eligible next cycle.
 	var pending []pendingCheckpoint
-	var processErrors int
+	var processErrors, tried int
 	for _, issue := range selected {
-		pc, err := p.processIssue(ctx, issue)
+		if readCtx.Err() != nil {
+			break
+		}
+		tried++
+		issueCtx, cancelIssue := context.WithTimeout(readCtx, p.opts.IssueTimeLimit)
+		pc, err := p.processIssue(issueCtx, issue)
+		issueTimedOut := errors.Is(issueCtx.Err(), context.DeadlineExceeded)
+		cancelIssue()
 		if err != nil {
 			var rle *roleLoadError
-			if errors.As(err, &rle) {
+			switch {
+			case errors.Is(readCtx.Err(), context.DeadlineExceeded):
+				log.Printf("WARNING: the %s cycle time limit cut off reading %s; it waits for the next cycle", p.opts.CycleTimeLimit, issue.Key)
+			case issueTimedOut:
+				log.Printf("WARNING: reading %s took longer than %s; none of its records were taken and its lastCheck was not advanced", issue.Key, p.opts.IssueTimeLimit)
+			case errors.As(err, &rle):
 				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, rle.err)
+			default:
+				log.Printf("WARNING: processing %s: %v", issue.Key, err)
 			}
-			log.Printf("WARNING: processing %s: %v", issue.Key, err)
 			processErrors++
 			continue
 		}
 		p.dispatches = append(p.dispatches, pc.records...)
 		pending = append(pending, pc)
 	}
-	if processErrors > 0 && processErrors == len(selected) {
-		return fmt.Errorf("all %d selected issues failed to process", processErrors)
+	if left := len(selected) - tried; left > 0 {
+		log.Printf("WARNING: the %s cycle time limit was reached with %d selected issue(s) not read; they wait for the next cycle", p.opts.CycleTimeLimit, left)
+	}
+	// A cycle that served no selected issue fails, so a poller blocked by
+	// failing or slow issues shows as a failed run.
+	if len(selected) > 0 && len(pending) == 0 {
+		if processErrors == len(selected) {
+			return fmt.Errorf("all %d selected issues failed to process", processErrors)
+		}
+		return fmt.Errorf("the %s cycle time limit was reached before any selected issue was read (%d of %d tried, all failed or timed out)", p.opts.CycleTimeLimit, tried, len(selected))
 	}
 
 	// Step 5: Write dispatch records.

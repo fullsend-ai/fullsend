@@ -585,3 +585,133 @@ func TestProcessIssueReturnsRecordsAsOneUnit(t *testing.T) {
 		t.Errorf("processIssue() = key %q, checkpoint %v, %d records; want PROJ-1, a checkpoint and both comments' records", pc.issueKey, pc.t, len(pc.records))
 	}
 }
+
+// slowClient blocks ListComments on the issues in slow until the call's
+// context ends, like a Jira read that never returns, and fails a property
+// write made with an ended context, so a commit that wrongly used the
+// cycle's read context would fail.
+type slowClient struct {
+	*mockClient
+	slow map[string]bool
+}
+
+func (c slowClient) ListComments(ctx context.Context, key string) ([]jira.Comment, error) {
+	if c.slow[key] {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return c.mockClient.ListComments(ctx, key)
+}
+
+func (c slowClient) SetEntityProperty(ctx context.Context, issueKey, propKey string, value any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.mockClient.SetEntityProperty(ctx, issueKey, propKey, value)
+}
+
+// timeLimitPoller returns a poller over two issues, PROJ-1 then PROJ-2, each
+// with a fresh triage comment. With two active issues and N = 5 the pick
+// keeps the search order.
+func timeLimitPoller(t *testing.T, mc *mockClient, slow map[string]bool, cycle, issue time.Duration) *Poller {
+	now := time.Now().Truncate(time.Second)
+	if len(mc.searchResult) == 0 {
+		for n := 1; n <= 2; n++ {
+			mc.searchResult = append(mc.searchResult, idleTestIssue(n, now.Add(-48*time.Hour), now.Add(-time.Minute)))
+			addTriageComment(mc, fmt.Sprintf("PROJ-%d", n), fmt.Sprintf("50%d", n), now.Add(-time.Minute))
+		}
+	}
+	return newTestPoller(slowClient{mc, slow}, &stubMatcher{agents: []string{"triage"}}, Options{
+		TargetRepo:     "acme/platform",
+		JiraBaseURL:    "https://acme.atlassian.net",
+		JiraProject:    "PROJ",
+		OutputPath:     filepath.Join(t.TempDir(), "dispatches.json"),
+		CycleTimeLimit: cycle,
+		IssueTimeLimit: issue,
+	})
+}
+
+// An issue that takes longer than the per-issue limit is treated as a
+// failed read: a WARNING names it, none of its records are taken, its
+// lastCheck stays, and the next issue is served (ADR 0085, Decision
+// item 3).
+func TestRunIssueTimeLimit(t *testing.T) {
+	logs := captureLog(t)
+	mc := newMockClient()
+	p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true}, time.Hour, 50*time.Millisecond)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if got := dispatchedKeys(p); len(got) != 1 || got[0] != "10002" {
+		t.Errorf("dispatched for %v, want PROJ-2 only", got)
+	}
+	if !storedLastCheckAt(t, mc, "PROJ-1").IsZero() {
+		t.Error("the timed-out issue's lastCheck advanced")
+	}
+	if storedLastCheckAt(t, mc, "PROJ-2").IsZero() {
+		t.Error("the served issue's lastCheck was not committed")
+	}
+	if want := "WARNING: reading PROJ-1 took longer than 50ms"; !strings.Contains(logs.String(), want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+}
+
+// The cycle limit stops reading mid-issue: the cycle dispatches and commits
+// what it finished and exits normally, and the cut-off issue's request is
+// served by the next cycle.
+func TestRunCycleTimeLimitLeavesRestForNextCycle(t *testing.T) {
+	logs := captureLog(t)
+	mc := newMockClient()
+	p := timeLimitPoller(t, mc, map[string]bool{"PROJ-2": true}, 200*time.Millisecond, time.Hour)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	if got := dispatchedKeys(p); len(got) != 1 || got[0] != "10001" {
+		t.Errorf("cycle 1 dispatched for %v, want PROJ-1 only", got)
+	}
+	if storedLastCheckAt(t, mc, "PROJ-1").IsZero() {
+		t.Error("cycle 1 did not commit PROJ-1's lastCheck after the read limit passed")
+	}
+	if !storedLastCheckAt(t, mc, "PROJ-2").IsZero() {
+		t.Error("cycle 1 advanced the cut-off issue's lastCheck")
+	}
+	if want := "WARNING: the 200ms cycle time limit cut off reading PROJ-2"; !strings.Contains(logs.String(), want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+
+	p = timeLimitPoller(t, mc, nil, time.Hour, time.Hour)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if got := dispatchedKeys(p); len(got) != 1 || got[0] != "10002" {
+		t.Errorf("cycle 2 dispatched for %v, want the request cycle 1 left: PROJ-2", got)
+	}
+}
+
+// A cycle that serves no selected issue because of the time limits fails, so
+// a poller blocked by slow issues shows as a failed run.
+func TestRunTimeLimitsServingNothingFailCycle(t *testing.T) {
+	t.Run("cycle limit on the first issue", func(t *testing.T) {
+		logs := captureLog(t)
+		mc := newMockClient()
+		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true}, 100*time.Millisecond, time.Hour)
+		err := p.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "cycle time limit was reached before any selected issue was read (1 of 2 tried") {
+			t.Fatalf("Run() error = %v, want the cycle-limit failure", err)
+		}
+		if want := "1 selected issue(s) not read"; !strings.Contains(logs.String(), want) {
+			t.Errorf("log lacks %q:\n%s", want, logs)
+		}
+		if mc.listCommentsCalls["PROJ-2"] != 0 {
+			t.Error("read PROJ-2 after the cycle limit")
+		}
+	})
+	t.Run("every issue over the per-issue limit", func(t *testing.T) {
+		mc := newMockClient()
+		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true, "PROJ-2": true}, time.Hour, 20*time.Millisecond)
+		err := p.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "all 2 selected issues failed to process") {
+			t.Fatalf("Run() error = %v, want the all-failed guard", err)
+		}
+	})
+}

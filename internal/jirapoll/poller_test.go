@@ -303,6 +303,9 @@ func TestNew(t *testing.T) {
 	if p.opts.N != 5 {
 		t.Errorf("N = %d, want default 5", p.opts.N)
 	}
+	if p.opts.CycleTimeLimit != 5*time.Minute || p.opts.IssueTimeLimit != 2*time.Minute {
+		t.Errorf("time limits = %v per cycle, %v per issue; want the ADR 0085 defaults 5m and 2m", p.opts.CycleTimeLimit, p.opts.IssueTimeLimit)
+	}
 }
 
 func TestRunEmptyPoll(t *testing.T) {

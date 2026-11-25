@@ -66,6 +66,8 @@ type Options struct {
 	M                       int              // Max candidate issues per cycle (default: 50)
 	N                       int              // Max issues to process per cycle (default: 5)
 	FirstPollBackfillWindow time.Duration    // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
+	CycleTimeLimit          time.Duration    // Reading budget per cycle, from its start through the last issue read (default: 5m, ADR 0085)
+	IssueTimeLimit          time.Duration    // Reading budget per issue (default: 2m, ADR 0085)
 
 	// Authorization holds the jira authorization provider from
 	// config.yaml. The zero value (no provider entry) resolves every event
