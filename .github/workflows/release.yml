@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
+  # Dry-run of the release-notes gather step only: measures the
+  # GITHUB_TOKEN rate-limit cost and runtime over a real tag range
+  # before a final release relies on it. Nothing is built or published.
+  workflow_dispatch:
+    inputs:
+      start-tag:
+        description: "Previous tag (gather PRs merged after this tag)"
+        required: true
+      end-tag:
+        description: "Tag to gather notes up to"
+        required: true
 
 permissions:
   contents: write
@@ -11,6 +22,7 @@ permissions:
 
 jobs:
   release:
+    if: github.event_name == 'push'
     needs: [validate-agents, resolve-agents, recheck-tag]
     runs-on: ubuntu-24.04
     # pull-requests: read is needed by release-notes generate, which reads
@@ -63,20 +75,6 @@ jobs:
       # reads the blocks from the merged PRs in the tag range, skips NONE
       # entries, and renders markdown. GoReleaser then publishes that
       # markdown instead of its commit-subject changelog.
-      - name: Install release-notes
-        env:
-          # SHA-256 of release-notes-amd64-linux from the v0.17.1 release.
-          # Update the URL and this digest together (see
-          # scripts/renovate/ for the checksum-pinning convention).
-          RELEASE_NOTES_SHA256: 16e0ada3e3602c229e97fa789ea97c7d128710d7fe1fee9f12c00f7eaa770d6a
-        run: |
-          set -euo pipefail
-          curl -fsSLo "${RUNNER_TEMP}/release-notes" \
-            https://github.com/kubernetes/release/releases/download/v0.17.1/release-notes-amd64-linux
-          echo "${RELEASE_NOTES_SHA256}  ${RUNNER_TEMP}/release-notes" | sha256sum -c -
-          chmod +x "${RUNNER_TEMP}/release-notes"
-          sudo mv "${RUNNER_TEMP}/release-notes" /usr/local/bin/release-notes
-
       - name: Generate release notes from PR bodies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -99,62 +97,11 @@ jobs:
             echo "::error::Could not find a previous release tag before the current tag"
             exit 1
           fi
-          echo "Gathering notes from ${PREV} to ${TAG}"
-          # The tool lists commits from START_SHA's commit date onward
-          # (inclusive). Use the first first-parent commit after PREV:
-          # picking the oldest-dated commit in the range would open the
-          # window before PREV (PR-branch commits can carry dates older
-          # than PREV) and re-list PRs from the previous release.
-          RANGE=$(git rev-list --first-parent --reverse "${PREV}..${TAG}")
-          if [[ -n "${RANGE}" ]]; then
-            START_SHA=$(head -n1 <<<"${RANGE}")
-          else
-            # PREV and TAG share a commit (a re-tag); fall back to PREV.
-            START_SHA=$(git rev-list -n1 "${PREV}")
-          fi
-          END_SHA=$(git rev-list -n1 "${TAG}")
-          export START_SHA END_SHA
-          # The tool reads its range and branch from these env vars. Use
-          # the tag's SHA as the listing ref (the `sha` parameter accepts
-          # a SHA): listing from main would include PRs merged to main
-          # after the tag but dated inside the window. --required-author=""
-          # includes bot-authored PRs (agents open many of our PRs). Write
-          # outside the checkout: GoReleaser refuses a dirty git tree.
-          export BRANCH="${END_SHA}"
-          # Gather as JSON, then render with our own script. The tool
-          # credits a commit to any PR cited as "(#N)" in its message, so
-          # PRs from earlier releases can appear; the renderer keeps only
-          # PRs actually merged in the range (first-parent commits between
-          # PREV and TAG) and groups notes by PR title type, mirroring the
-          # old GoReleaser changelog layout.
-          release-notes generate \
-            --required-author="" \
-            --dependencies=false \
-            --format json \
-            --output "${RUNNER_TEMP}/release-notes.json" \
-            --org fullsend-ai --repo fullsend
-          # PRs merged in this release: merge commits say "Merge pull
-          # request #N"; squash-merge subjects end with "(#N)".
-          git log --first-parent --format='%s' "${PREV}..${TAG}" \
-            | sed -nE 's/^Merge pull request #([0-9]+).*/\1/p; s/.*\(#([0-9]+)\)$/\1/p' \
-            | sort -u > "${RUNNER_TEMP}/merged-prs.txt"
-          # Titles for the gathered PRs (one cheap API call each; only PRs
-          # with a release-note block reach this list).
-          : > "${RUNNER_TEMP}/pr-titles.tsv"
-          while read -r pr; do
-            gh pr view "${pr}" --json number,title \
-              --jq '"\(.number)\t\(.title)"' >> "${RUNNER_TEMP}/pr-titles.tsv"
-          done < <(jq -r 'keys[]' "${RUNNER_TEMP}/release-notes.json")
-          bash scripts/render-release-notes.sh \
-            "${RUNNER_TEMP}/release-notes.json" \
-            "${RUNNER_TEMP}/merged-prs.txt" \
-            "${RUNNER_TEMP}/pr-titles.tsv" \
-            > "${RUNNER_TEMP}/release-notes-body.md"
-          # Prepend the header prepend-release-highlights.sh expects, so
-          # the release-highlights step keeps working with the
-          # gathered-notes body.
-          printf '## Changelog\n\n' | cat - "${RUNNER_TEMP}/release-notes-body.md" \
-            > "${RUNNER_TEMP}/release-notes.md"
+          # The gather logic (pinned release-notes install, JSON gather,
+          # rendering) lives in the shared script so the workflow_dispatch
+          # dry-run job measures the exact same path. Output goes outside
+          # the checkout: GoReleaser refuses a dirty git tree.
+          bash scripts/gather-release-notes.sh "${PREV}" "${TAG}" "${RUNNER_TEMP}"
 
       # GoReleaser signs the release here. Installed CLIs only accept a
       # signature made by this workflow file, for the tag, on a
@@ -193,6 +140,7 @@ jobs:
           fi
 
   validate-agents:
+    if: github.event_name == 'push'
     needs: resolve-agents
     # Permission contract of the called workflow. GitHub validates this at
     # parse time, before any job runs or `if:` is evaluated — a called
@@ -222,6 +170,7 @@ jobs:
       EVAL_GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
 
   resolve-agents:
+    if: github.event_name == 'push'
     # Resolve agents main once at release start. Since agents#1010 the gate
     # itself reports the SHA it validated (validate-agents' agents_sha
     # output), and tag-agents prefers that; this job's resolution is the
@@ -288,6 +237,7 @@ jobs:
         run: bash scripts/check-agents-gate-pin.sh
 
   recheck-tag:
+    if: github.event_name == 'push'
     # Second half of the tag-move guard. validate-agents clones fullsend by
     # tag name — the called workflow only accepts `main` or a `v*` ref and
     # uses `git clone --branch`, so it cannot be pinned to a SHA from this
@@ -317,6 +267,7 @@ jobs:
         run: bash scripts/verify-release-tag.sh
 
   tag-agents:
+    if: github.event_name == 'push'
     # Sync the version tag to fullsend-ai/agents. Runs for all tags
     # including pre-releases — agents' own release.yml handles
     # pre-release semantics. Only runs after agents functional tests
@@ -379,7 +330,8 @@ jobs:
     # otherwise a blocked release is silent on Slack.
     needs: [validate-agents, resolve-agents, recheck-tag]
     if: >-
-      always()
+      github.event_name == 'push'
+      && always()
       && (needs.validate-agents.result == 'failure'
           || needs.resolve-agents.result == 'failure'
           || needs.recheck-tag.result == 'failure')
@@ -407,7 +359,8 @@ jobs:
     # passed, and their failure is reported by notify-release-blocked.
     needs: [release, tag-agents]
     if: >-
-      always()
+      github.event_name == 'push'
+      && always()
       && needs.release.result == 'success'
       && needs.tag-agents.result == 'failure'
     runs-on: ubuntu-24.04
@@ -426,3 +379,47 @@ jobs:
           PAYLOAD=$(jq -n --arg tag "${GITHUB_REF_NAME}" --arg url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             '{text: ":warning: Agents tag sync failed for `\($tag)`. The fullsend release shipped but the agents tag was not created. <\($url)|View run>"}')
           curl -fsS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$SLACK_WEBHOOK"
+
+  gather-dry-run:
+    # Measures the release-notes gather step with the workflow's own
+    # GITHUB_TOKEN (the smoke test in #9704 used a personal token, whose
+    # budget differs). Records the core rate limit before and after plus
+    # the runtime, so the release job's timeout-minutes can be set from
+    # data instead of guesswork. Nothing is built or published.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    # Generous on purpose: on a rate-limit error the release-notes tool
+    # waits for the reset window (up to an hour). The point of the dry
+    # run is to observe that behaviour, not to cut it off at the release
+    # job's 20 minutes.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Record rate limit before
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api rate_limit --jq '.resources.core | "core before \(.remaining)/\(.limit) (reset \(.reset))"'
+
+      - name: Gather release notes (dry run)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          START_TAG: ${{ inputs.start-tag }}
+          END_TAG: ${{ inputs.end-tag }}
+        run: |
+          set -euo pipefail
+          SECONDS=0
+          bash scripts/gather-release-notes.sh "${START_TAG}" "${END_TAG}" "${RUNNER_TEMP}"
+          echo "gather runtime: ${SECONDS}s"
+          echo "gathered notes:"
+          cat "${RUNNER_TEMP}/release-notes.md"
+
+      - name: Record rate limit after
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api rate_limit --jq '.resources.core | "core after \(.remaining)/\(.limit) (reset \(.reset))"'

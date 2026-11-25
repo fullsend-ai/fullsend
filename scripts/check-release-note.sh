@@ -86,6 +86,9 @@ fi
 # then `!` before the colon, e.g. "feat(harness)!:" or "fix!:".
 BREAKING_RE='^[[:alpha:]]+(\([^)]*\))?!:'
 
+# The "no note" sentinels the gatherer excludes, mirroring its regex.
+SENTINEL_PAT='none|n/a|na'
+
 has_breaking_marker() {
   local text="$1"
   [[ -z "${text}" ]] && return 1
@@ -98,12 +101,12 @@ has_breaking_marker() {
 # are NOT excluded by the gatherer — it would publish the literal text —
 # so they are rejected below instead.
 is_none_block() {
-  [[ "${NOTE_TRIMMED,,}" =~ ^(none|n/a|na)$ ]]
+  [[ "${NOTE_TRIMMED,,}" =~ ^(${SENTINEL_PAT})$ ]]
 }
 
 # A quoted sentinel would be published literally by the gatherer.
 is_quoted_none_block() {
-  local re="^['\"](none|n/a|na)['\"]$"
+  local re="^['\"](${SENTINEL_PAT})['\"]$"
   [[ "${NOTE_TRIMMED,,}" =~ ${re} ]]
 }
 
@@ -115,7 +118,9 @@ is_quoted_none_block() {
 matches_exclusion_filter() {
   local oneline
   oneline=$(tr '\n' ' ' <<<"${PR_BODY}")
-  grep -Eiq '```release-notes?[[:space:]]*(none|n/a|na)[[:space:]]*```' <<<"${oneline}" ||
+  local fenced_re
+  fenced_re='```release-notes?[[:space:]]*('"${SENTINEL_PAT}"')[[:space:]]*```'
+  grep -Eiq "${fenced_re}" <<<"${oneline}" ||
     grep -q '/release-note-none' <<<"${PR_BODY}"
 }
 

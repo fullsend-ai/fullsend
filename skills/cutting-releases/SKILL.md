@@ -299,6 +299,12 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   working), followed by **Urgent Upgrade Notes** (PRs labeled
   `release-note-action-required`, applied automatically when a PR's
   block starts with `action required`) and **Changes by Kind**.
+- **Gather dry-run:** the Release workflow has a `workflow_dispatch`
+  trigger that runs only the release-notes gather step over a tag range
+  with the workflow's own `GITHUB_TOKEN`, recording the core rate limit
+  before and after plus the runtime. Run it over a recent final range
+  before relying on the gather step for a final release (its API budget
+  differs from a personal token's).
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. It is automatically moved by the release workflow after
   GoReleaser completes (skipped for pre-release tags).
