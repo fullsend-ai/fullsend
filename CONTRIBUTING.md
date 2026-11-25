@@ -61,9 +61,27 @@ contribution.
 
 ### Review etiquette
 
-- **Comment resolution belongs to the PR author.** When a reviewer leaves a comment, the PR author is free to address the feedback and resolve the conversation themselves. This keeps the review cycle moving.
-- **If you need to block a PR on your feedback, use "Request changes."** A comment alone is advisory — the author may resolve it at their discretion. The "Request changes" review status is how a reviewer signals that the PR should not merge until their concern is addressed. This is the only mechanism for enforcing your review.
-- **Be constructive.** This is a design exploration — disagreement is expected and valuable. Critique ideas, not people. When you push back on a proposal, suggest an alternative or explain what concern drives your objection.
+- **The approving maintainer merges the pull request** after requested reviewers
+  have responded and the PR has all required approvals. ADRs require two
+  maintainer approvals; see [Working with ADRs](#working-with-adrs).
+  - If another maintainer authored or drove the change, that maintainer merges
+    it after a different maintainer approves. For an agent-authored PR, treat
+    the maintainer who triggered or drove the work as its originator.
+  - The approving maintainer merges bot-authored PRs and PRs from contributors
+    with Write access, unless another maintainer drove the change.
+- **The PR author resolves review comments.** The author can address feedback
+  and resolve the conversation themselves.
+- **If you need to block a PR on your feedback, use "Request changes."** A
+  comment alone is advisory; the author may resolve it at their discretion.
+  The "Request changes" review status signals that the PR should not merge
+  until the reviewer clears it by submitting an approving review. If the
+  reviewer is unavailable, only a maintainer may dismiss the review, with a
+  reason in the dismissal comment. Keep the reviewer's threads open while the
+  review blocks the PR; do not resolve them to bypass the block. Once the
+  reviewer clears the block by approving, or a maintainer dismisses the review
+  because the reviewer is unavailable, the PR author resolves those threads as
+  usual.
+- **Be constructive.** Disagreement is expected and valuable. Critique ideas, not people. When you push back on a proposal, suggest an alternative or explain what concern drives your objection.
 
 ### Reworking a PR
 
@@ -80,6 +98,8 @@ Small adjustments in response to review feedback are normal iteration — this g
 - PRs require approval from a [CODEOWNERS](CODEOWNERS) member before merging.
 
 ## Working with ADRs
+
+ADRs require approval from two maintainers before merging.
 
 ADRs (Architecture Decision Records) are **point-in-time records**. Once accepted, do not substantially rewrite their Context, Decision, or Consequences sections — if a decision needs to change, write a new ADR that supersedes the old one. Minor annotations are welcome: cross-references to related ADRs, short notes linking to newer decisions, and typo fixes. See the [ADR template](docs/ADRs/0000-adr-template.md) and [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md) for full details.
 
