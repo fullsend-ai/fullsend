@@ -238,6 +238,15 @@ address the scaling concern — groups that
 cannot afford to maintain a static architecture-context repo at scale
 could provide skills that work differently.
 
+This direction is already motivated beyond RHAI: tools that map out
+an organization's repositories and their connections already exist,
+and teams in the organization already maintain data about which
+repositories map to which components and teams — shipped as skills,
+in structures totally different from the architecture-context
+repository. The resolver must treat architecture context as data
+whose shape and producer vary — not assume a single hand-maintained
+repository.
+
 ### Verification
 
 Phase 1 is deterministic — when a mapping is configured, it produces
