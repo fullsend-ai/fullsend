@@ -830,6 +830,11 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Where do repository-resolution component mappings live long-term — with the
   consumer, or in the architecture-context repository
   ([ADR 0176](ADRs/0176-repository-driven-epic-creation.md))?
+- Is the Jira component signal or noise for repository resolution — does
+  maintaining a component mapping pay off, or should resolution run from the
+  description and architecture context alone? The group owner decides,
+  informed by the backtest's with-and-without-mapping comparison
+  ([ADR 0176](ADRs/0176-repository-driven-epic-creation.md)).
 
 ## Policy Store
 

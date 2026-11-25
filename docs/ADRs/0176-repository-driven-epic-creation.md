@@ -495,12 +495,12 @@ always verifies — a mapping hint that contradicts the architecture
 context is overridden, not blindly trusted.
 
 What does the mapping buy, given Phase 2 always runs? Not a skipped
-phase — hint precision. Phase 2 starts from a handful of candidates
-instead of reasoning over the whole component tree: fewer wrong
-turns, less evidence hunting, cheaper prompts. When resolution fails,
-the mapping supplies the candidates offered to the human; without it,
-an unresolved result has nothing to offer. And every Phase 2 override
-of a mapping hint is a signal that the mapping needs maintenance.
+phase. If the group's components are reliable, candidate hints can
+make Phase 2 cheaper; when resolution fails, the mapping supplies the
+candidates offered to the human; and every Phase 2 override of a
+mapping hint is a signal that the mapping needs maintenance. Whether
+the components are reliable enough for this to pay off — signal or
+noise — is the group owner's open question, not this ADR's decision.
 
 Without a mapping, the search is bounded by the architecture context,
 not the organization. The LLM never scans an org's repositories — it
@@ -510,9 +510,9 @@ architecture context is the required source and the mapping is the
 optional accelerator.
 
 The operational cost scales with how much of the resolution a group
-wants to accelerate. A group that invests in its mapping — covering
-more components with accurate hints — gets faster Phase 2 resolutions.
-A group without a mapping still gets full Phase 2 coverage. The
+wants to accelerate. A group whose components are reliable can invest
+in its mapping to accelerate Phase 2; a group without a mapping still
+gets full Phase 2 coverage. The
 architecture context skill (see above) allows groups to provide
 their own implementation of how context is fetched, so the operational
 model is not one-size-fits-all.
@@ -548,3 +548,8 @@ repository is tracker configuration, not forge-specific.
 
 - Where group mappings live long-term (the architecture-context
   repository is a candidate)
+- Whether the Jira component is signal or noise for a given group —
+  whether maintaining a component mapping pays off at all, or
+  resolution should run from the description and architecture context
+  alone. This is the group owner's decision, informed by the
+  backtest's with-and-without-mapping comparison.
