@@ -223,6 +223,11 @@ fullsend
 │   └── --base-url <url>                      #   Forge API base URL
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 │   └── --token <string>                     #   GitHub token (default: $GH_TOKEN / $GITHUB_TOKEN / gh auth token)
+├── execution-plan                          # Experimental multi-target reconciliation
+│   ├── --plan <path>                       #   Reviewed immutable plan JSON
+│   ├── --state-dir <path>                  #   Private persistent local checkpoints
+│   ├── --driver <absolute-path>            #   Trusted host executable
+│   └── --driver-timeout <duration>         #   Per-call timeout (default 30s; maximum 5m)
 ├── eval-measure                             # Score wild-run traces (eval measurements)
 │   ├── --telemetry <path>                   #   Path to run-telemetry.jsonl (or --output-dir)
 │   ├── --output-dir <path>                  #   CI output base or runDir (managed-job form)

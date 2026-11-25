@@ -80,3 +80,4 @@ Guides for contributors developing and testing fullsend itself.
 - [Behaviour test drivers](dev/behaviour-drivers.md) — Implement SCM and CI drivers for behaviour tests
 - [Testing workflow changes](dev/testing-workflows.md) — Point a test repository at a branch to test workflow, action, and agent changes before release, and run the PR CI checks locally with `make ci-local`
 - [Tracing internals](dev/tracing.md) — How the distributed tracing implementation works and how to extend it
+- [Execution plan drivers](dev/execution-plan-driver.md) — Connect the experimental multi-target coordinator to a trusted execution backend
