@@ -403,12 +403,14 @@ jobs:
 
       - name: Record rate limit before
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN (not GH_TOKEN): the release-notes tool only reads
+          # GITHUB_TOKEN; gh accepts it too.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh api rate_limit --jq '.resources.core | "core before \(.remaining)/\(.limit) (reset \(.reset))"'
 
       - name: Gather release notes (dry run)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           START_TAG: ${{ inputs.start-tag }}
           END_TAG: ${{ inputs.end-tag }}
         run: |
@@ -421,5 +423,5 @@ jobs:
 
       - name: Record rate limit after
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh api rate_limit --jq '.resources.core | "core after \(.remaining)/\(.limit) (reset \(.reset))"'
