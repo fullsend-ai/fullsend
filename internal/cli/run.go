@@ -95,6 +95,13 @@ const (
 	// lint/type-check diagnostics without overwhelming the model's context.
 	maxFeedbackBytes = 10 * 1024
 
+	// feedbackHeadBytes and feedbackTailBytes split maxFeedbackBytes between
+	// the start and the end of over-long validation output. Validators print
+	// their failures last, so most of the budget goes to the tail; the head
+	// keeps what was being validated. See #9850.
+	feedbackHeadBytes = 2 * 1024
+	feedbackTailBytes = maxFeedbackBytes - feedbackHeadBytes
+
 	// Fixed feedback keeps sandbox errors and paths out of the prompt.
 	repoRejectedFeedback            = "Repository output was rejected because one or more repository requirements were not met. A plain directory is supported. For a checkout, keep a real root .git directory, avoid shared or redirected Git metadata such as commondir or alternate object stores, and do not introduce new shallow boundaries; if the needed history is missing, fetch full history when possible instead of editing shallow state directly. Downloaded .git/packed-refs must be at most 32 MiB and .git/shallow at most 4 MiB. Inspect the checkout, correct any requirement violation while preserving existing work, then retry."
 	repoValidationUncertainFeedback = "Repository output could not be validated. The checkout may be invalid, or Git, the runner, or the filesystem may have failed. Check the checkout and retry."
@@ -4644,7 +4651,8 @@ const (
 // buildFeedbackPrompt constructs the agent prompt for a retry iteration,
 // appending the previous iteration's validation failure output so the agent
 // can self-correct. The feedback is sanitized for dangerous Unicode
-// characters, truncated to maxFeedbackBytes, and fenced inside XML-like
+// characters, cut to its first feedbackHeadBytes and last feedbackTailBytes
+// when it exceeds maxFeedbackBytes, and fenced inside XML-like
 // delimiters with a preamble instructing the model to treat the fenced
 // content as data, not as instructions. See #1050, #6494, #6502.
 //
@@ -4666,7 +4674,9 @@ func buildFeedbackPrompt(feedback string) (string, int) {
 	// compatibility characters as content rather than an attack. See #6502.
 	feedback, sanitizedFindings := sanitizeFeedbackUnicode(feedback)
 
-	feedback = truncateUTF8(feedback, maxFeedbackBytes)
+	// Keep the start and the end: validators print their errors last, so a
+	// head-only cut drops exactly what the agent needs to fix. See #9850.
+	feedback = truncateMiddleUTF8(feedback, feedbackHeadBytes, feedbackTailBytes)
 
 	// Escape any occurrences of the closing delimiter inside the feedback
 	// to prevent delimiter breakout.
@@ -4698,11 +4708,12 @@ func buildFeedbackPrompt(feedback string) (string, int) {
 // sanitizer stripped something (sanitized > 0), which the collector's own
 // normalizer can then no longer see — a stripped colour code can take a
 // token's first letter with it, and what is left matches no pattern — or
-// the feedback was cut at maxFeedbackBytes while it held what the
+// the feedback was cut (over maxFeedbackBytes) while it held what the
 // collector recognises only whole: compatibility characters, which only
 // its fold joins, or a URL whose userinfo, query or fragment maskURLs
-// masks — a cut can take the '@' that marks userinfo and leave the
-// password before it. Feedback cut with neither is recorded.
+// masks — either cut can take the '@' that marks userinfo and leave the
+// password beside it. It checks the whole feedback, before the cuts, so
+// it covers both of them. Feedback cut with neither is recorded.
 func promptHidesAlterations(feedback string, sanitized int) bool {
 	if sanitized > 0 {
 		return true
@@ -4755,18 +4766,27 @@ func sanitizeFeedbackUnicode(feedback string) (string, int) {
 	return result.Sanitized, dangerous
 }
 
-// truncateUTF8 caps s at max bytes without splitting a multi-byte rune,
-// appending a marker when anything was dropped. A byte-slice truncation
-// would leave invalid UTF-8 in the middle of the agent prompt.
-func truncateUTF8(s string, max int) string {
-	if len(s) <= max {
+// truncateMiddleUTF8 keeps at most the first head and the last tail bytes
+// of s, replacing what lies between with a "[truncated: N bytes omitted]"
+// line, where N is the number of bytes actually dropped. s is returned
+// unchanged when it fits in head+tail bytes. Both cuts move inward to a
+// rune boundary, so a multi-byte rune is never split: a byte-slice cut
+// would leave invalid UTF-8 in the middle of the agent prompt. A cut moves
+// at most utf8.UTFMax-1 bytes, so invalid input made of continuation bytes
+// cannot swallow the head or the tail.
+func truncateMiddleUTF8(s string, head, tail int) string {
+	if len(s) <= head+tail {
 		return s
 	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
+	headCut := head
+	for i := 0; i < utf8.UTFMax-1 && headCut > 0 && !utf8.RuneStart(s[headCut]); i++ {
+		headCut--
 	}
-	return s[:cut] + "\n[truncated]"
+	tailCut := len(s) - tail
+	for i := 0; i < utf8.UTFMax-1 && tailCut < len(s) && !utf8.RuneStart(s[tailCut]); i++ {
+		tailCut++
+	}
+	return s[:headCut] + "\n[truncated: " + strconv.Itoa(tailCut-headCut) + " bytes omitted]\n" + s[tailCut:]
 }
 
 // sensitiveEnvKey reports whether a runner env key is expected to hold a

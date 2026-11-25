@@ -518,12 +518,15 @@ function in `internal/cli/run.go` is the canonical implementation.
    never passed through either source — for example, a key baked into
    a test fixture or a pre-commit hook printing its own secrets.
 
-5. **Use `truncateUTF8` when enforcing size limits on external
+5. **Use `truncateMiddleUTF8` when enforcing size limits on external
    content.** Naive byte slicing (`s[:max]`) can split a multi-byte
    UTF-8 rune, producing invalid text that breaks downstream JSON
-   serialization or LLM tokenization. Use `truncateUTF8(s, max)`
-   (defined in `internal/cli/run.go`), which backs up to the last
-   valid rune boundary before appending a `[truncated]` marker.
+   serialization or LLM tokenization. Use
+   `truncateMiddleUTF8(s, head, tail)` (defined in
+   `internal/cli/run.go`), which keeps the first `head` and last `tail`
+   bytes, moves both cuts inward to a rune boundary, and puts a
+   `[truncated: N bytes omitted]` line between them. Keep the tail:
+   validators and linters print their errors last.
 
 6. **Write files containing potential secrets with mode `0600`.**
    Feedback files, redacted logs, and any file derived from external

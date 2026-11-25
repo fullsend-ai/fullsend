@@ -220,9 +220,21 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 		{"variation selector inside", func(a, _ secret) string { return insert(a, 5, "\ufe0f") }, none, false},
 		{"fullwidth body", func(a, _ secret) string { return fullwidth(a) }, envExcluded, false},
 		{"inside 2 KiB of noise each side", func(a, _ secret) string { return noise(1, 2048) + " " + a.text + " " + noise(2, 2048) }, none, false},
-		{"fullwidth body straddling the feedback cut", func(a, _ secret) string { return noise(3, maxFeedbackBytes-48) + " " + fullwidth(a) }, envExcluded, false},
-		{"body straddling the feedback cut, 12 bytes before it", func(a, _ secret) string {
-			return noise(5, maxFeedbackBytes-1-window-strings.Index(a.text, a.body)) + " " + a.text
+		// The feedback is cut twice (truncateMiddleUTF8): feedbackHeadBytes
+		// from the start, and feedbackTailBytes before the end.
+		{"fullwidth body straddling the feedback head cut", func(a, _ secret) string {
+			return noise(3, feedbackHeadBytes-48) + " " + fullwidth(a) + " " + noise(6, maxFeedbackBytes)
+		}, envExcluded, false},
+		{"body straddling the feedback head cut, 12 bytes before it", func(a, _ secret) string {
+			return noise(5, feedbackHeadBytes-1-window-strings.Index(a.text, a.body)) + " " + a.text + " " + noise(7, maxFeedbackBytes)
+		}, none, false},
+		{"fullwidth body straddling the feedback tail cut", func(a, _ secret) string {
+			fw := fullwidth(a)
+			return noise(8, maxFeedbackBytes) + " " + fw + " " + noise(9, feedbackTailBytes-1-(len(fw)-48))
+		}, envExcluded, false},
+		{"body straddling the feedback tail cut, 12 bytes after it", func(a, _ secret) string {
+			after := len(a.text) - strings.Index(a.text, a.body) - len(a.body)
+			return noise(10, maxFeedbackBytes) + " " + a.text + " " + noise(11, feedbackTailBytes-1-window-after)
 		}, none, false},
 	}
 

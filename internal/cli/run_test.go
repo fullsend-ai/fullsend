@@ -3283,11 +3283,74 @@ func TestBuildFeedbackPrompt_WithFeedback(t *testing.T) {
 func TestBuildFeedbackPrompt_Truncation(t *testing.T) {
 	long := strings.Repeat("x", maxFeedbackBytes+100)
 	prompt, _ := buildFeedbackPrompt(long)
-	assert.Contains(t, prompt, "[truncated]")
+	assert.Contains(t, prompt, "\n[truncated: 100 bytes omitted]\n")
 	// The total prompt should be bounded: the injected feedback should be
-	// truncated to maxFeedbackBytes plus the "[truncated]" suffix.
+	// cut to maxFeedbackBytes plus the marker line.
 	assert.True(t, len(prompt) < maxFeedbackBytes+500,
 		"prompt length %d should be bounded", len(prompt))
+}
+
+func TestBuildFeedbackPrompt_KeepsTrailingErrors(t *testing.T) {
+	// The shape of #9850: 16,097 bytes of validator output whose failures
+	// come last, the first at byte 12,449. A head-only cut sent none of
+	// them; the retry prompt must carry every one, plus the head.
+	head := "Validating: output/agent-result.json ...\n"
+	var errs strings.Builder
+	errs.WriteString("lint markdown links ........ Failed\n")
+	for i := range 18 {
+		fmt.Fprintf(&errs, "[ERROR] docs/guides/user/page-%02d.md#anchor: link target not found\n", i)
+	}
+	errs.WriteString("check yaml ........ Passed\n")
+	passed := "fix end of files ........ Passed\n"
+	var b strings.Builder
+	b.WriteString(head)
+	for b.Len() < 12449 {
+		b.WriteString(passed)
+	}
+	b.WriteString(errs.String())
+	for b.Len() < 16097 {
+		b.WriteString(passed)
+	}
+	feedback := b.String()
+	require.Greater(t, strings.Index(feedback, "[ERROR]"), maxFeedbackBytes,
+		"fixture must put the errors past a head-only cut")
+
+	prompt, _ := buildFeedbackPrompt(feedback)
+
+	assert.Equal(t, 18, strings.Count(prompt, "[ERROR]"), "every trailing error must reach the agent")
+	assert.Contains(t, prompt, "lint markdown links ........ Failed")
+	assert.Contains(t, prompt, feedbackDelimiterOpen+"\n"+feedback[:feedbackHeadBytes]+"\n[truncated: ")
+	dropped := len(feedback) - feedbackHeadBytes - feedbackTailBytes
+	assert.Contains(t, prompt, fmt.Sprintf("\n[truncated: %d bytes omitted]\n", dropped)+feedback[len(feedback)-feedbackTailBytes:])
+}
+
+func TestBuildFeedbackPrompt_AtBudgetUnchanged(t *testing.T) {
+	for _, n := range []int{5 * 1024, maxFeedbackBytes} {
+		feedback := strings.Repeat("y", n)
+		prompt, _ := buildFeedbackPrompt(feedback)
+		assert.Contains(t, prompt, feedbackDelimiterOpen+"\n"+feedback+"\n"+feedbackDelimiterClose, "n=%d", n)
+		assert.NotContains(t, prompt, "[truncated", "n=%d", n)
+	}
+}
+
+func TestBuildFeedbackPrompt_EscapesDelimiterAtEitherCut(t *testing.T) {
+	// A closing delimiter beside either cut is still escaped: escaping
+	// runs on what the cuts keep.
+	tailStart := maxFeedbackBytes + 500 - feedbackTailBytes
+	for name, at := range map[string]int{
+		"ending at the head cut":     feedbackHeadBytes - len(feedbackDelimiterClose),
+		"starting at the tail cut":   tailStart,
+		"ending inside the head":     feedbackHeadBytes - len(feedbackDelimiterClose) - 1,
+		"starting just past the cut": tailStart + 1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			feedback := strings.Repeat("z", at) + feedbackDelimiterClose
+			feedback += strings.Repeat("z", maxFeedbackBytes+500-len(feedback))
+			prompt, _ := buildFeedbackPrompt(feedback)
+			assert.Equal(t, 1, strings.Count(prompt, feedbackDelimiterClose), "only the real closing delimiter")
+			assert.Contains(t, prompt, "[/validation-output]")
+		})
+	}
 }
 
 func TestBuildFeedbackPrompt_DataFraming(t *testing.T) {
@@ -3457,18 +3520,59 @@ func TestWriteValidationFeedback_FallsBackToError(t *testing.T) {
 	assert.Equal(t, "permission denied", feedback)
 }
 
-func TestTruncateUTF8_KeepsRunesIntact(t *testing.T) {
-	// A byte-slice truncation at this boundary would split the 3-byte rune
-	// and leave invalid UTF-8 in the middle of the agent prompt.
-	s := strings.Repeat("a", maxFeedbackBytes-1) + "\u4e16\u754c"
-	got := truncateUTF8(s, maxFeedbackBytes)
-	assert.True(t, utf8.ValidString(got), "truncated feedback must stay valid UTF-8")
-	assert.Contains(t, got, "[truncated]")
+func TestTruncateMiddleUTF8_KeepsRunesIntact(t *testing.T) {
+	// A byte-slice cut at either boundary would split a 3-byte rune and
+	// leave invalid UTF-8 in the middle of the agent prompt. Each offset
+	// puts a different byte of the rune on the cut.
+	const r = "\u4e16" // 3 bytes
+	for off := range 3 {
+		t.Run(fmt.Sprintf("head cut %d bytes into a rune", off), func(t *testing.T) {
+			s := strings.Repeat("a", feedbackHeadBytes-off) + strings.Repeat(r, 4) + strings.Repeat("b", maxFeedbackBytes)
+			got := truncateMiddleUTF8(s, feedbackHeadBytes, feedbackTailBytes)
+			assert.True(t, utf8.ValidString(got), "cut feedback must stay valid UTF-8")
+			head, _, ok := strings.Cut(got, "\n[truncated: ")
+			require.True(t, ok)
+			assert.LessOrEqual(t, len(head), feedbackHeadBytes, "the head cut moves inward")
+			assert.Greater(t, len(head), feedbackHeadBytes-3)
+		})
+		t.Run(fmt.Sprintf("tail cut %d bytes into a rune", off), func(t *testing.T) {
+			s := strings.Repeat("a", maxFeedbackBytes) + strings.Repeat(r, 4) + strings.Repeat("b", feedbackTailBytes-3*4+off)
+			got := truncateMiddleUTF8(s, feedbackHeadBytes, feedbackTailBytes)
+			assert.True(t, utf8.ValidString(got), "cut feedback must stay valid UTF-8")
+			_, tail, ok := strings.Cut(got, " bytes omitted]\n")
+			require.True(t, ok)
+			assert.LessOrEqual(t, len(tail), feedbackTailBytes, "the tail cut moves inward")
+			assert.Greater(t, len(tail), feedbackTailBytes-3)
+		})
+	}
 }
 
-func TestTruncateUTF8_ShortInputUnchanged(t *testing.T) {
-	assert.Equal(t, "short", truncateUTF8("short", maxFeedbackBytes))
-	assert.NotContains(t, truncateUTF8("short", maxFeedbackBytes), "[truncated]")
+func TestTruncateMiddleUTF8_MarkerCountsDroppedBytes(t *testing.T) {
+	// N is the number of bytes actually dropped, including what the cuts
+	// gave up to stay on rune boundaries.
+	s := strings.Repeat("a", feedbackHeadBytes-1) + "\u00e9" + strings.Repeat("m", 5000) + "\u00e9" + strings.Repeat("z", feedbackTailBytes-1)
+	got := truncateMiddleUTF8(s, feedbackHeadBytes, feedbackTailBytes)
+	want := strings.Repeat("a", feedbackHeadBytes-1) + "\n[truncated: 5004 bytes omitted]\n" + strings.Repeat("z", feedbackTailBytes-1)
+	assert.Equal(t, want, got)
+}
+
+func TestTruncateMiddleUTF8_InvalidInputKeepsHeadAndTail(t *testing.T) {
+	// Continuation bytes are not runes; a cut moves past at most three of
+	// them, so invalid input cannot swallow the head or the tail.
+	s := strings.Repeat("\x80", 3*maxFeedbackBytes)
+	got := truncateMiddleUTF8(s, feedbackHeadBytes, feedbackTailBytes)
+	head, rest, ok := strings.Cut(got, "\n[truncated: ")
+	require.True(t, ok)
+	_, tail, ok := strings.Cut(rest, " bytes omitted]\n")
+	require.True(t, ok)
+	assert.Equal(t, feedbackHeadBytes-3, len(head))
+	assert.Equal(t, feedbackTailBytes-3, len(tail))
+}
+
+func TestTruncateMiddleUTF8_ShortInputUnchanged(t *testing.T) {
+	assert.Equal(t, "short", truncateMiddleUTF8("short", feedbackHeadBytes, feedbackTailBytes))
+	exact := strings.Repeat("e", maxFeedbackBytes)
+	assert.Equal(t, exact, truncateMiddleUTF8(exact, feedbackHeadBytes, feedbackTailBytes))
 }
 
 func TestReplaceEnvSecrets_LongerValuesGoFirst(t *testing.T) {
