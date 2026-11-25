@@ -115,8 +115,9 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    its name and `enabled: false`. This disables the agent on the code host
    as well, not only for Jira. If the poller cannot fetch a built-in harness,
    for example because `allowed_remote_resources` leaves out the agents
-   repository, it logs an error and skips that agent. If it can load no agent
-   at all, the poll run fails without advancing any checkpoint, and the next
+   repository, it logs an error for that agent and the poll run fails. The
+   same holds when it cannot resolve or load any other selected, enabled
+   agent. The failure happens before any checkpoint advances, so the next
    run tries again. When a cycle selects issues but no agent matches their
    events, it logs a
    `jira-poll: selected N issue(s) but no agent matched` warning. That

@@ -242,8 +242,10 @@ these built-in agents: `triage` enables triage, `coder` enables code and fix,
 `prioritize` enables prioritize. A built-in agent that no configured role
 enables is never fetched or dispatched from Jira. Omitting `roles` falls
 back to the parent's roles or the default roles, which select every built-in
-agent, while an explicit empty list (`roles: []`) selects none. Roles do not scope agents
-registered with a `source`.
+agent, while an explicit empty list (`roles: []`) selects none, including over
+a parent that lists roles. `roles: null` and a bare `roles:` behave like
+omitting the key, as for other list settings that inherit from the parent.
+Roles do not scope agents registered with a `source`.
 
 ### `agents`
 

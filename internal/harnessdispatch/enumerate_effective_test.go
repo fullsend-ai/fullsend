@@ -251,6 +251,40 @@ func TestListEffectiveTriggeredHarnesses_Roles(t *testing.T) {
 		assert.Empty(t, stub.requested)
 	})
 
+	// Omitted, `roles: null` and a bare `roles:` all decode to a nil slice,
+	// which means "inherit"; only an explicit `roles: []` selects nothing.
+	// The null forms are intentionally not treated as an empty selection.
+	inheritForms := []struct {
+		name string
+		yaml string
+	}{
+		{"omitted roles", "version: \"1\"\n"},
+		{"roles null", "version: \"1\"\nroles: null\n"},
+		{"bare roles", "version: \"1\"\nroles:\n"},
+	}
+	for _, form := range inheritForms {
+		t.Run(form.name+" inherits the parent selection", func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte("version: \"1\"\nroles: [triage]\n"), 0o644))
+			cfg := loadYAMLConfig(t, dir, form.yaml)
+			stub := newBuiltinStub(t, triggers)
+			out, err := ListEffectiveTriggeredHarnesses(context.Background(), dir, cfg, nil, stub.resolve)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"triage"}, candidateNames(out))
+			assert.Equal(t, []string{"triage"}, stub.requested, "the parent's roles still scope the built-ins")
+		})
+
+		t.Run(form.name+" without a parent selects every built-in", func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := loadYAMLConfig(t, dir, form.yaml)
+			stub := newBuiltinStub(t, triggers)
+			out, err := ListEffectiveTriggeredHarnesses(context.Background(), dir, cfg, nil, stub.resolve)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"triage", "code"}, candidateNames(out))
+			assert.Equal(t, config.ValidAgentNames(), stub.requested, "no roles means the default selection")
+		})
+	}
+
 	t.Run("roles coder selects code", func(t *testing.T) {
 		dir := t.TempDir()
 		cfg := loadYAMLConfig(t, dir, "version: \"1\"\nroles: [coder]\n")
