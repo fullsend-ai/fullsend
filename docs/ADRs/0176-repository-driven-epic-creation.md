@@ -156,9 +156,15 @@ Phase 1 and go straight to Phase 2.
 
 The mapping records:
 - Which repositories are associated with each Jira component — a
-  component may map to one repo or many
-- Repository details (organization, name) — the caller builds the
-  canonical URL from these
+  component may map to one repo or many. Entries carry repository
+  keys, not full details.
+
+Repository keys are resolved to full details — organization and name —
+deterministically from the architecture context's structured
+repository data. This resolution always runs, with or without a
+mapping, because the resolver's output always carries full repository
+details: the canonical URL is built from them. A key that cannot be
+resolved to details is a hard failure before any result is accepted.
 
 Phase 1 uses the mapping to identify candidate repositories for a
 given Jira component. These candidates are hints for Phase 2, not
@@ -209,8 +215,9 @@ rejects the result.
 An architecture context may include structured component data:
 repository organization, name, URL, release ref, component type,
 tier, cross-references to other components, and discovery
-confidence. This is the data that Phase 2 uses alongside the mapping
-hints to resolve with evidence.
+confidence. This is the data that repository keys resolve against for
+full details, and that Phase 2 uses alongside the mapping hints to
+resolve with evidence.
 
 The component mapping, architecture context, and other sources are
 declared sources with the same structure: `id`, `url`, `ref`, `paths`,
@@ -276,8 +283,9 @@ rules, and verification logic.
 The skill owns:
 - The two-phase resolution procedure (hints → resolution)
 - The deterministic checks, as scripts: source loading, ref → SHA
-  resolution, snapshotting, hashing, input and output schema
-  validation, and the citation-exists-at-SHA check
+  resolution, snapshotting, hashing, repository key → full-details
+  resolution, input and output schema validation, and the
+  citation-exists-at-SHA check
 - The output contract: resolved repos + cited evidence,
   or unresolved + reason + candidates
 
