@@ -217,8 +217,9 @@ declared sources with the same structure: `id`, `url`, `ref`, `paths`,
 `role`. Loading, snapshotting, hashing, and verification are
 deterministic scripts shipped with the skill — not platform
 machinery, and not model judgment. Each group owns the declaration
-of where its sources live. Any configuration group points at its own architecture repository — the
-resolution logic does not change. Each group is a configuration of
+of where its sources live. Any configuration group points at its own
+architecture repository — the resolution logic does not change. Each
+group is a configuration of
 sources fed into the same generic resolution logic, declared without
 code changes in the resolver.
 
@@ -269,8 +270,8 @@ checks is future work as more consumers adopt the skill.
 
 The resolution logic lives in its own skill directory
 (`skills/repository-resolution/`). The skill contains the resolution
-instructions and scripts — the layered lookup, evidence citation rules,
-and verification logic.
+instructions and scripts — the two-phase procedure, evidence citation
+rules, and verification logic.
 
 The skill owns:
 - The two-phase resolution procedure (hints → resolution)
@@ -471,7 +472,7 @@ The two-phase design is a middle ground:
   cited evidence. If hints are wrong or missing, Phase 2 still resolves
   from the architecture context alone.
 
-The user sees: a resolved repo with evidence, or an unresolved result
+The user sees: resolved repos with evidence, or an unresolved result
 with candidates. They do not see the phases. The experience is seamless
 when the data supports it, and explicit when it doesn't — the system
 never silently guesses wrong.
