@@ -32,6 +32,11 @@ permissions:
 jobs:
   poll:
     runs-on: ubuntu-24.04
+    # The jira-poll driver keeps no per-issue lock: two overlapping cycles
+    # for one repository dispatch the same requests twice, so queue them.
+    concurrency:
+      group: ${{ github.workflow }}-poll
+      cancel-in-progress: false
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
     steps:
