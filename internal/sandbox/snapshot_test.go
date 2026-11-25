@@ -427,6 +427,227 @@ func TestCaptureRepositorySnapshot_SubmoduleActiveBooleans(t *testing.T) {
 	assert.Equal(t, "true", values["submodule.on.active"], "bare activation must stay true")
 }
 
+// TestCaptureRepositorySnapshot_RejectsInRepoCAPaths proves a CA setting the
+// downloaded checkout could supply fails capture: Git resolves a relative
+// value against the working tree, and an absolute path can land inside the
+// target repository directly or through a symlink. An absolute path outside
+// the repository and an empty value are captured verbatim.
+func TestCaptureRepositorySnapshot_RejectsInRepoCAPaths(t *testing.T) {
+	requireGit(t)
+	const caInfo = "http.https://gitlab.example.invalid/.sslCAInfo"
+	const caPath = "http.https://gitlab.example.invalid/.sslCAPath"
+
+	rejected := []struct {
+		name  string
+		key   string
+		value func(r *gitRepo) string
+		want  string
+	}{
+		{
+			name: "relative file",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				writeFile(t, r.dir, "certs/ca.pem", "ca")
+				return "certs/ca.pem"
+			},
+			want: "relative CA path",
+		},
+		{
+			name: "relative directory",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				writeFile(t, r.dir, "certs/ca.pem", "ca")
+				return "certs"
+			},
+			want: "relative CA path",
+		},
+		{
+			name:  "absolute file inside the repository",
+			key:   caInfo,
+			value: func(r *gitRepo) string { return writeFile(t, r.dir, "certs/ca.pem", "ca") },
+			want:  "inside the target repository",
+		},
+		{
+			name:  "absolute missing file inside the repository",
+			key:   caInfo,
+			value: func(r *gitRepo) string { return filepath.Join(r.dir, "certs", "missing", "ca.pem") },
+			want:  "inside the target repository",
+		},
+		{
+			name:  "repository root",
+			key:   caPath,
+			value: func(r *gitRepo) string { return r.dir },
+			want:  "inside the target repository",
+		},
+		{
+			name: "absolute path through a symlink into the repository",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				writeFile(t, r.dir, "certs/ca.pem", "ca")
+				link := filepath.Join(t.TempDir(), "link")
+				require.NoError(t, os.Symlink(filepath.Join(r.dir, "certs"), link))
+				return filepath.Join(link, "missing.pem")
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "external dangling file symlink into the repository",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				link := filepath.Join(t.TempDir(), "host-ca.pem")
+				require.NoError(t, os.Symlink(filepath.Join(r.dir, "certs", "ca.pem"), link))
+				return link
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "external dangling directory symlink into the repository",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				link := filepath.Join(t.TempDir(), "host-certs")
+				require.NoError(t, os.Symlink(filepath.Join(r.dir, "certs"), link))
+				return filepath.Join(link, "ca.pem")
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "relative dangling symlink into the repository",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				dir := t.TempDir()
+				rel, err := filepath.Rel(dir, filepath.Join(r.dir, "certs", "ca.pem"))
+				require.NoError(t, err)
+				link := filepath.Join(dir, "host-ca.pem")
+				require.NoError(t, os.Symlink(rel, link))
+				return link
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "path that enters the repository and leaves through dotdot",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				return filepath.Join(r.dir, "link") + "/../../ca.pem"
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "directory list with an in-repository element after an external one",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				return t.TempDir() + string(filepath.ListSeparator) + filepath.Join(r.dir, "certs")
+			},
+			want: "inside the target repository",
+		},
+		{
+			name: "directory list with a relative element",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				return t.TempDir() + string(filepath.ListSeparator) + "certs"
+			},
+			want: "relative CA path",
+		},
+		{
+			name: "directory entry symlinked into the repository",
+			key:  caPath,
+			value: func(r *gitRepo) string {
+				ca := writeFile(t, r.dir, "certs/ca.pem", "ca")
+				dir := t.TempDir()
+				require.NoError(t, os.Symlink(ca, filepath.Join(dir, "5d30f3c5.0")))
+				return dir
+			},
+			want: "resolves inside the target repository",
+		},
+		{
+			name: "symlink loop",
+			key:  caInfo,
+			value: func(r *gitRepo) string {
+				dir := t.TempDir()
+				require.NoError(t, os.Symlink(filepath.Join(dir, "b"), filepath.Join(dir, "a")))
+				require.NoError(t, os.Symlink(filepath.Join(dir, "a"), filepath.Join(dir, "b")))
+				return filepath.Join(dir, "a")
+			},
+			want: "cannot be established",
+		},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newGitRepo(t)
+			r.commitFile("file.txt", "x")
+			r.git("config", tc.key, tc.value(r))
+			_, err := CaptureRepositorySnapshot(r.dir)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+
+	t.Run("module store", func(t *testing.T) {
+		dep := newGitRepo(t)
+		dep.commitFile("dep.txt", "dependency")
+		super := newGitRepo(t)
+		super.commitFile("file.txt", "content")
+		super.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.dir, "vendor/dep")
+		super.gitAt(filepath.Join(super.dir, "vendor", "dep"), "config", caInfo, "certs/ca.pem")
+		_, err := CaptureRepositorySnapshot(super.dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "relative CA path")
+	})
+
+	t.Run("differently-cased alias of the repository", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		// The temporary directory's basename is numeric, so move the
+		// repository under an alphabetic name whose case can differ.
+		moved := filepath.Join(t.TempDir(), "Repo")
+		require.NoError(t, os.Rename(r.dir, moved))
+		r.dir = moved
+		alias := filepath.Join(filepath.Dir(moved), "repo")
+		require.NotEqual(t, moved, alias, "the alias spelling must differ from the repository path")
+		if _, err := os.Stat(alias); err != nil {
+			t.Skip("filesystem is case-sensitive; no alias spelling of the repository exists")
+		}
+		r.git("config", caInfo, filepath.Join(alias, "certs", "ca.pem"))
+		_, err := CaptureRepositorySnapshot(r.dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "inside the target repository")
+	})
+
+	t.Run("outside the repository and empty are kept", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		outside := writeFile(t, t.TempDir(), "ca.pem", "ca")
+		r.git("config", caInfo, outside)
+		r.git("config", caPath, "")
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+		values := make(map[string]string)
+		for _, entry := range snapshot.config {
+			values[strings.ToLower(entry.Key)] = entry.Value
+		}
+		assert.Equal(t, outside, values[strings.ToLower(caInfo)], "an absolute path outside the repository is kept verbatim")
+		empty, ok := values[strings.ToLower(caPath)]
+		assert.True(t, ok, "an empty CA setting is kept")
+		assert.Empty(t, empty)
+	})
+
+	t.Run("external directory list with external entries is kept", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "x")
+		ca := writeFile(t, t.TempDir(), "ca.pem", "ca")
+		first := t.TempDir()
+		require.NoError(t, os.Symlink(ca, filepath.Join(first, "5d30f3c5.0")))
+		list := first + string(filepath.ListSeparator) + t.TempDir()
+		r.git("config", caPath, list)
+		snapshot, err := CaptureRepositorySnapshot(r.dir)
+		require.NoError(t, err)
+		values := make(map[string]string)
+		for _, entry := range snapshot.config {
+			values[strings.ToLower(entry.Key)] = entry.Value
+		}
+		assert.Equal(t, list, values[strings.ToLower(caPath)])
+	})
+}
+
 // TestCaptureRepositorySnapshot_RejectsWorktreeRegistry fails the run before
 // upload when the root or a module store holds registered worktrees, instead
 // of rejecting the download after the agent has run.

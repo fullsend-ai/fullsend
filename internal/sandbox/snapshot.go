@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // This file holds the trusted-state round trip of the download sanitizer: the
@@ -428,7 +429,8 @@ func submoduleActivePathspecKey(key string) bool {
 
 // httpCAKey matches http.<url>.sslCAInfo and .sslCAPath, the certificate
 // authority settings CI runners write for private-CA instances. They are
-// non-executable host file paths, restored verbatim.
+// non-executable host file paths, restored verbatim once checkTrustedCAPaths
+// has confirmed they lie outside the target repository.
 func httpCAKey(key string) bool {
 	if !strings.HasPrefix(key, "http.") {
 		return false
@@ -439,6 +441,181 @@ func httpCAKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// checkTrustedCAPaths rejects a captured CA setting the downloaded checkout
+// could supply. Git resolves a relative value against the working tree, so it
+// can name a file inside the checkout, and so can an absolute path that lands
+// inside the target repository; restored verbatim, either would let the agent
+// choose the certificate authority the host trusts. An empty value names no
+// file and is left alone.
+func checkTrustedCAPaths(repoRoot string, entries []configEntry) error {
+	var root *caRepoRoot
+	for _, entry := range entries {
+		if !httpCAKey(strings.ToLower(entry.Key)) || entry.Value == "" {
+			continue
+		}
+		// sslCAPath is a directory list with OpenSSL, so every element is
+		// validated on its own; sslCAInfo names a single file.
+		values := []string{entry.Value}
+		isDirList := strings.HasSuffix(strings.ToLower(entry.Key), ".sslcapath")
+		if isDirList {
+			values = filepath.SplitList(entry.Value)
+		}
+		for _, value := range values {
+			if value == "" && isDirList {
+				continue
+			}
+			if !filepath.IsAbs(value) {
+				return fmt.Errorf("trusted git config %q is a relative CA path %q, which Git resolves against the working tree; use an absolute path outside the repository", entry.Key, value)
+			}
+			if root == nil {
+				var err error
+				if root, err = newCARepoRoot(repoRoot); err != nil {
+					return err
+				}
+			}
+			enters, err := root.pathEnters(value)
+			if err != nil {
+				return fmt.Errorf("trusted git config %q names CA path %q whose destination cannot be established outside the target repository: %w", entry.Key, value, err)
+			}
+			if enters {
+				return fmt.Errorf("trusted git config %q names CA path %q inside the target repository; use an absolute path outside the repository", entry.Key, value)
+			}
+			if isDirList {
+				if err := root.checkCADirEntries(entry.Key, value); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkCADirEntries inspects the lookup entries of a CA directory: a
+// certificate symlink that resolves into the target repository would let the
+// downloaded checkout supply a trusted certificate even though the directory
+// itself is outside it. A directory that does not exist or cannot be read
+// holds no certificates for Git to use and is left alone.
+func (r *caRepoRoot) checkCADirEntries(key, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.ENOTDIR) {
+			return nil
+		}
+		return fmt.Errorf("trusted git config %q: reading CA directory %q: %w", key, dir, err)
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		enters, err := r.pathEnters(path)
+		if err != nil {
+			return fmt.Errorf("trusted git config %q: CA directory entry %q has a destination that cannot be established outside the target repository: %w", key, path, err)
+		}
+		if enters {
+			return fmt.Errorf("trusted git config %q: CA directory entry %q resolves inside the target repository; use a directory whose entries lie outside the repository", key, path)
+		}
+	}
+	return nil
+}
+
+// maxCASymlinkHops bounds the symlinks followed while resolving a CA path,
+// like the kernel's own limit, so a loop fails closed.
+const maxCASymlinkHops = 40
+
+// caRepoRoot identifies the target repository by its spelled, resolved, and
+// on-disk identity, so containment survives symlinks and case-insensitive
+// filesystems.
+type caRepoRoot struct {
+	clean    string
+	resolved string
+	info     os.FileInfo
+}
+
+func newCARepoRoot(repoRoot string) (*caRepoRoot, error) {
+	resolved, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolving target repository %s: %w", repoRoot, err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("inspecting target repository %s: %w", repoRoot, err)
+	}
+	return &caRepoRoot{clean: filepath.Clean(repoRoot), resolved: resolved, info: info}, nil
+}
+
+// at reports whether a location is the repository or inside it. The textual
+// checks cover paths that do not exist yet; the filesystem identity check
+// recognizes an existing alias of the repository, such as a differently-cased
+// spelling on a case-insensitive host.
+func (r *caRepoRoot) at(path string) bool {
+	if inDir(path, r.clean) || inDir(path, r.resolved) {
+		return true
+	}
+	info, err := os.Stat(path)
+	return err == nil && os.SameFile(info, r.info)
+}
+
+// pathEnters resolves an absolute path one component at a time and reports
+// whether any location it visits is inside the target repository. Every
+// intermediate location counts, not just the endpoint: the agent can replace
+// a repository component with a symlink, so a path that enters the repository
+// and leaves again (through "..") is not stable. Symlinks, including dangling
+// ones, are followed to their destinations; components that do not exist are
+// kept lexically, since the download could create them. A path whose
+// resolution fails for any other reason, or loops, returns an error.
+func (r *caRepoRoot) pathEnters(path string) (bool, error) {
+	volume := filepath.VolumeName(path)
+	top := volume + string(filepath.Separator)
+	pending := splitCAPath(strings.TrimPrefix(path, volume))
+	cur := top
+	hops := 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+		default:
+			next := filepath.Join(cur, name)
+			info, err := os.Lstat(next)
+			switch {
+			case err == nil && info.Mode()&os.ModeSymlink != 0:
+				if hops++; hops > maxCASymlinkHops {
+					return false, errors.New("too many symbolic links")
+				}
+				target, err := os.Readlink(next)
+				if err != nil {
+					return false, err
+				}
+				if r.at(next) {
+					return true, nil
+				}
+				if filepath.IsAbs(target) {
+					cur = filepath.VolumeName(target) + string(filepath.Separator)
+					target = strings.TrimPrefix(target, filepath.VolumeName(target))
+				}
+				pending = append(splitCAPath(target), pending...)
+				continue
+			case err == nil, errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+				cur = next
+			default:
+				return false, err
+			}
+		}
+		if r.at(cur) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func splitCAPath(path string) []string {
+	return strings.Split(path, string(filepath.Separator))
 }
 
 // urlResetKey matches the multi-valued destination lists whose empty entries
@@ -725,6 +902,9 @@ func captureStoreConfigs(repoDir string) (map[string]storeSnapshot, error) {
 		entries, configErr := captureTrustedConfig(cwd, "", configPaths...)
 		if configErr != nil {
 			return fmt.Errorf("capturing trusted config of %s: %w", key, configErr)
+		}
+		if caErr := checkTrustedCAPaths(repoDir, entries); caErr != nil {
+			return fmt.Errorf("capturing trusted config of %s: %w", key, caErr)
 		}
 		shallow, shallowErr := captureShallowState(path)
 		if shallowErr != nil {
@@ -1114,6 +1294,9 @@ func CaptureRepositorySnapshot(repoDir string, excludes ...string) (RepositorySn
 		return RepositorySnapshot{}, fmt.Errorf("capturing trusted worktree config: %w", err)
 	}
 	if snapshot.config, err = captureTrustedConfig(cwd, absRepo, configPaths...); err != nil {
+		return RepositorySnapshot{}, fmt.Errorf("capturing trusted repository config: %w", err)
+	}
+	if err := checkTrustedCAPaths(absRepo, snapshot.config); err != nil {
 		return RepositorySnapshot{}, fmt.Errorf("capturing trusted repository config: %w", err)
 	}
 	if snapshot.format, err = captureGitConfigFormat(cwd, configPath); err != nil {
