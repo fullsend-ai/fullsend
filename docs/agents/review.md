@@ -86,8 +86,13 @@ the loop. Dispatch is keyed on the head SHA, so later polls that see the same
 head do not review it again. Diff versions do not record who pushed, so the
 poller cannot authorize the pusher. It therefore reviews pushes only to
 same-project MRs, where any pusher already has project push access. A push to
-a fork MR is not reviewed automatically, and re-review of fork MR pushes is
-currently unsupported (the router also denies slash commands on fork MRs).
+a fork MR is not reviewed automatically. To review a fork MR after a push, or
+an existing fork MR that predates the installation, someone with Developer
+access or higher comments `/fs-review` on it (the router accepts Reporter, but
+the agent job requires Developer). `/fs-review` is the only slash
+command that dispatches on a fork MR: write-capable commands such as `/fs-fix`
+and `/fs-code`, and the `ready-for-review` label, do not dispatch on fork MRs.
+When the poller skips an event, its log names the reason.
 
 ## Control labels
 
