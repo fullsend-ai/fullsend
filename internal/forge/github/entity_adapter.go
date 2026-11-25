@@ -21,6 +21,11 @@ import (
 // entityPageSize is the GitHub GraphQL connection page size (its maximum).
 const entityPageSize = 100
 
+// entityLimitCursor is the synthetic continuation returned with a page whose
+// collection hit a provider result cap. Reading it reports the limit. It is
+// not a GitHub cursor (those are opaque base64 strings).
+const entityLimitCursor = "fullsend:result-cap"
+
 // EntityAdapter is the GitHub issue and pull request provider adapter for
 // selective entity acquisition (ADR 0147). It implements
 // [entityacquire.Adapter] for one candidate entity, translating the
@@ -56,6 +61,9 @@ type EntityAdapter struct {
 	// seen counts the members returned in each collection's current read
 	// sequence, to detect a provider result cap on the last page.
 	seen map[entityacquire.Need]int
+	// capped holds the limit error to report when a collection's final page
+	// exposed a provider result cap.
+	capped map[entityacquire.Need]error
 }
 
 var _ entityacquire.Adapter = (*EntityAdapter)(nil)
@@ -72,7 +80,7 @@ func NewEntityAdapter(c *LiveClient, owner, repo string, number int) (*EntityAda
 	if number <= 0 {
 		return nil, fmt.Errorf("github entity adapter: invalid entity number %d", number)
 	}
-	return &EntityAdapter{c: c, owner: owner, repo: repo, number: number, seen: map[entityacquire.Need]int{}}, nil
+	return &EntityAdapter{c: c, owner: owner, repo: repo, number: number, seen: map[entityacquire.Need]int{}, capped: map[entityacquire.Need]error{}}, nil
 }
 
 // gqlEntityActor is an Actor selected with entityActorFragment.
@@ -99,7 +107,7 @@ const entityBaseQuery = `query($owner: String!, $name: String!, $number: Int!, $
 				id
 				number
 				url
-				state
+				issueState: state
 				createdAt
 				updatedAt
 				stateReason @include(if: $workItem)
@@ -110,7 +118,7 @@ const entityBaseQuery = `query($owner: String!, $name: String!, $number: Int!, $
 				id
 				number
 				url
-				state
+				pullRequestState: state
 				createdAt
 				updatedAt
 				headRefOid
@@ -131,11 +139,16 @@ const entityBaseQuery = `query($owner: String!, $name: String!, $number: Int!, $
 ` + entityActorFragment
 
 type gqlEntityBase struct {
-	Typename          string          `json:"__typename"`
-	ID                string          `json:"id"`
-	Number            int             `json:"number"`
-	URL               string          `json:"url"`
-	State             string          `json:"state"`
+	Typename string `json:"__typename"`
+	ID       string `json:"id"`
+	Number   int    `json:"number"`
+	URL      string `json:"url"`
+	// IssueState and PullRequestState are aliases of state: GitHub types
+	// the two as different enums, so one response name cannot serve both.
+	IssueState       string `json:"issueState"`
+	PullRequestState string `json:"pullRequestState"`
+	// State is the alias matching the entity's kind, set by ReadBase.
+	State             string          `json:"-"`
 	CreatedAt         string          `json:"createdAt"`
 	UpdatedAt         string          `json:"updatedAt"`
 	HeadRefOid        string          `json:"headRefOid"`
@@ -216,7 +229,12 @@ func (a *EntityAdapter) ReadBase(ctx context.Context, facts []entityacquire.Need
 		Number:   g.Number,
 		URL:      g.URL,
 	}
-	state := entityState(kind, g.State)
+	rawState := g.IssueState
+	if kind == normentity.KindChangeProposal {
+		rawState = g.PullRequestState
+	}
+	g.State = rawState
+	state := entityState(kind, rawState)
 	for _, n := range facts {
 		if !n.AppliesTo(kind) {
 			continue
@@ -294,6 +312,14 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 	if !ok || !req.Need.AppliesTo(a.kind) {
 		return nil, fmt.Errorf("%w: github %s %s", entityacquire.ErrUnsupported, a.kind, req.Need)
 	}
+	if req.Cursor == entityLimitCursor {
+		err, ok := a.capped[req.Need]
+		if !ok {
+			return nil, fmt.Errorf("github entity %s read: no provider limit pending", req.Need)
+		}
+		return nil, err
+	}
+	delete(a.capped, req.Need)
 	typename, revField := "Issue", ""
 	if a.kind == normentity.KindChangeProposal {
 		typename, revField = "PullRequest", "headRefOid"
@@ -386,7 +412,10 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 			return nil, fmt.Errorf("github entity %s read: no total count", req.Need)
 		}
 		if a.seen[req.Need] != *total {
-			return nil, fmt.Errorf("%w: github returned %d of %d %s", entityacquire.ErrLimit, a.seen[req.Need], *total, req.Need)
+			// Keep the members just read as witnesses: hand them back with a
+			// continuation, and report the limit on the following read.
+			a.capped[req.Need] = fmt.Errorf("%w: github returned %d of %d %s", entityacquire.ErrLimit, a.seen[req.Need], *total, req.Need)
+			page.Next = entityLimitCursor
 		}
 	}
 	return page, nil
@@ -448,10 +477,7 @@ func (a *EntityAdapter) query(ctx context.Context, q string, vars map[string]any
 		return err
 	}
 	var body struct {
-		Errors []struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"errors"`
+		Errors []graphQLError `json:"errors"`
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
@@ -462,7 +488,7 @@ func (a *EntityAdapter) query(ctx context.Context, q string, vars map[string]any
 		return fmt.Errorf("decode response: %w", err)
 	}
 	if len(body.Errors) > 0 {
-		e := &graphQLError{Type: body.Errors[0].Type, Message: body.Errors[0].Message}
+		e := &body.Errors[0]
 		if e.Type == "RATE_LIMITED" {
 			return fmt.Errorf("%w: %w", entityacquire.ErrLimit, e)
 		}

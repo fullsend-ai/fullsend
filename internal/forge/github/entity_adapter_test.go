@@ -58,8 +58,26 @@ func (f *fakeEntityGraphQL) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, isBase := req.Variables["author"]; isBase {
+		// The query aliases state per fragment (GitHub types the two enums
+		// differently), so serve the alias that matches the entity.
+		var base map[string]any
+		if f.base != nil {
+			base = map[string]any{}
+			for k, v := range f.base {
+				base[k] = v
+			}
+		}
+		if state, ok := base["state"]; ok {
+			delete(base, "state")
+			alias := "issueState"
+			if base["__typename"] == "PullRequest" {
+				alias = "pullRequestState"
+			}
+			assert.Contains(f.t, req.Query, alias+": state")
+			base[alias] = state
+		}
 		json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
-			"id": "R_1", "nameWithOwner": "Owner/Repo", "issueOrPullRequest": f.base,
+			"id": "R_1", "nameWithOwner": "Owner/Repo", "issueOrPullRequest": base,
 		}}})
 		return
 	}
@@ -509,10 +527,6 @@ func TestEntityAdapterReadPageErrors(t *testing.T) {
 		"inapplicable collection": {
 			base: issueBase(), need: entityacquire.NeedCommits, kind: ne.KindWorkItem, is: entityacquire.ErrUnsupported,
 		},
-		"result cap": {
-			base: pullBase(), need: entityacquire.NeedCommits, kind: ne.KindChangeProposal,
-			conns: map[string][]map[string]any{"commits": {commits(300, "a")}}, is: entityacquire.ErrLimit,
-		},
 		"no total count": {
 			base: pullBase(), need: entityacquire.NeedCommits, kind: ne.KindChangeProposal,
 			conns: map[string][]map[string]any{"commits": {{"nodes": []any{}}}},
@@ -693,4 +707,44 @@ func TestEntityAdapterAcquireResultCapIsPartial(t *testing.T) {
 	assert.Equal(t, entityacquire.StatusIncomplete, res.Status)
 	require.Len(t, res.Reads, 1)
 	assert.Equal(t, ne.CoveragePartial, res.Reads[0].Coverage.Status)
+}
+
+func TestEntityAdapterReadPageResultCapKeepsMembers(t *testing.T) {
+	f := &fakeEntityGraphQL{base: pullBase(), conns: map[string][]map[string]any{
+		"commits": {{"totalCount": 300, "nodes": []any{map[string]any{"commit": map[string]any{"oid": "a"}}}}},
+	}}
+	a := newEntityTest(t, f)
+	_, err := a.ReadBase(context.Background(), nil)
+	require.NoError(t, err)
+	req := entityacquire.PageRequest{Need: entityacquire.NeedCommits, Kind: ne.KindChangeProposal}
+	page, err := a.ReadPage(context.Background(), req)
+	require.NoError(t, err, "the capped page keeps its members")
+	cp, ok := page.Members.ChangeProposal.Value()
+	require.True(t, ok)
+	assert.Equal(t, []string{"a"}, cp.Commits.Known)
+	require.NotEmpty(t, page.Next, "the page is not terminal, so it can never read complete")
+
+	req.Cursor = page.Next
+	_, err = a.ReadPage(context.Background(), req)
+	assert.ErrorIs(t, err, entityacquire.ErrLimit, "the limit is reported on the following read")
+	assert.Len(t, f.pageQueries(), 1, "reporting the limit makes no provider read")
+}
+
+func TestEntityAdapterAcquireWitnessOnCappedPageSettles(t *testing.T) {
+	f := &fakeEntityGraphQL{base: pullBase(), conns: map[string][]map[string]any{
+		"commits": {{"totalCount": 300, "nodes": []any{map[string]any{"commit": map[string]any{"oid": "a"}}}}},
+	}}
+	res := acquireGitHub(t, f, `"a" in entity.change_proposal.commits`)
+	assert.Equal(t, entityacquire.StatusSettled, res.Status)
+	assert.Equal(t, "true", res.Value.String())
+}
+
+func TestEntityAdapterBaseQueryAliasesState(t *testing.T) {
+	// GitHub types state differently for issues and pull requests, so an
+	// unaliased selection in both fragments fails query validation.
+	assert.Contains(t, entityBaseQuery, "issueState: state")
+	assert.Contains(t, entityBaseQuery, "pullRequestState: state")
+	for line := range strings.SplitSeq(entityBaseQuery, "\n") {
+		assert.NotEqual(t, "state", strings.TrimSpace(line), "state must be aliased")
+	}
 }
