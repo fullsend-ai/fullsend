@@ -94,6 +94,94 @@ type piToolExecutionStartEvent struct {
 // when the whole line exceeds streamBufSize.
 var piOversizedEndRe = regexp.MustCompile(`^\{"type":"tool_execution_end","toolCallId":"([^"\\]{1,256})","toolName":"([^"\\]{1,256})"`)
 
+// Pi writes type and messages first, then adds willRetry to the outer event.
+var piAgentEndHeader = regexp.MustCompile(`^\s*\{\s*"type"\s*:\s*"agent_end"\s*,\s*"messages"\s*:\s*\[`)
+var piNonAssistantMessage = regexp.MustCompile(`^\s*\{\s*"role"\s*:\s*"(user|toolResult|system|custom)"`)
+
+// readPiAgentEnd retains the last assistant and the fields after messages
+// (including willRetry). It reads one history entry at a time, so a long
+// session does not require buffering the whole line. fragment starts after '['.
+func readPiAgentEnd(br *bufio.Reader, fragment []byte) ([]byte, error) {
+	const header = `{"type":"agent_end","messages":[`
+	var message, lastAssistant, tail []byte
+	var quoted, escaped, oversized bool
+	depth := 0
+	valid := true
+	appendPart := func(part []byte) {
+		n := min(len(part), streamBufSize-len(message))
+		message = append(message, part[:n]...)
+		oversized = oversized || n < len(part)
+	}
+	finishMessage := func() {
+		if oversized {
+			// A single oversized assistant may have lost its message_end
+			// as well. Its stop reason cannot be recovered safely.
+			valid = piNonAssistantMessage.Match(message)
+		} else {
+			var msg piWireMessage
+			if err := json.Unmarshal(message, &msg); err != nil {
+				valid = false
+			} else if msg.Role == "assistant" {
+				lastAssistant = append(lastAssistant[:0], message...)
+			}
+		}
+		message = message[:0]
+		oversized = false
+	}
+
+	for more := true; ; {
+		start := 0
+		for i, b := range fragment {
+			if !valid || tail != nil {
+				break
+			}
+			switch {
+			case escaped:
+				escaped = false
+			case quoted && b == '\\':
+				escaped = true
+			case b == '"':
+				quoted = !quoted
+			case quoted:
+				continue
+			case b == '{' || b == '[':
+				depth++
+			case depth == 0 && (b == ',' || b == ']'):
+				appendPart(fragment[start:i])
+				finishMessage()
+				start = i + 1
+				if b == ']' {
+					tail = []byte{']'}
+				}
+			case b == '}' || b == ']':
+				depth--
+			}
+		}
+		if valid {
+			if tail == nil {
+				appendPart(fragment[start:])
+			} else if len(tail)+len(fragment[start:]) <= streamBufSize {
+				tail = append(tail, fragment[start:]...)
+			} else {
+				valid = false
+			}
+		}
+		if !more {
+			break
+		}
+		var err error
+		fragment, more, err = br.ReadLine()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !valid || tail == nil {
+		return nil, nil
+	}
+	line := append([]byte(header), lastAssistant...)
+	return append(line, tail...), nil
+}
+
 // piToolCall is what tool_execution_start leaves for the matching
 // tool_execution_end.
 type piToolCall struct {
@@ -390,6 +478,8 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		compacting    bool
 		sawAgentEnd   bool
 		emittedInit   bool
+		// A recovered end waits for Pi to confirm that the prompt settled.
+		awaitingSettled bool
 		// In-flight tool calls, keyed by toolCallId; an entry exists for
 		// every start seen, even when the context is "".
 		toolCalls   = map[string]piToolCall{}
@@ -474,6 +564,7 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		pendingResult = nil
 		compacting = false
 		sawAgentEnd = false
+		awaitingSettled = false
 		checkpoint(nil)
 	}
 
@@ -544,9 +635,8 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 	// have been running, so an unsettled result is not evidence of completion.
 	finish := func(lost bool) {
 		reportUnfinishedCalls()
-		if compacting || (lost && pendingResult != nil) {
-			// Died mid-compaction (pi may have been about to retry) or the
-			// stream was lost before agent_settled.
+		if compacting || ((lost || awaitingSettled) && pendingResult != nil) {
+			// Pi may still have been retrying, or the recovered end never settled.
 			discardPending()
 		}
 		switch {
@@ -582,6 +672,14 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 
 	for {
 		line, isPrefix, err := br.ReadLine()
+		recoveredEnd := false
+		if isPrefix {
+			if header := piAgentEndHeader.Find(line); header != nil {
+				line, err = readPiAgentEnd(br, line[len(header):])
+				isPrefix = false
+				recoveredEnd = true
+			}
+		}
 		if err == io.EOF {
 			break
 		}
@@ -589,11 +687,8 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			finish(true)
 			return sessionID, err
 		}
-		// Skip lines exceeding the buffer (same pattern as other parsers). A
-		// tool_execution_end line is not skipped silently: its retained prefix
-		// carries the call id, so the call is reported as answered with its
-		// result lost (ToolResultEvent.Oversized), as on Claude, rather than
-		// left open and reported as unanswered when the stream stops.
+		// Other oversized lines are skipped. A tool_execution_end still
+		// carries the call id in its prefix, so report that it was answered.
 		if isPrefix {
 			// Copied out now: the next ReadLine reuses the buffer line points into.
 			var lostID, lostName string
@@ -734,6 +829,7 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 				checkpoint(evt.Messages)
 				continue
 			}
+			awaitingSettled = recoveredEnd
 			sawAgentEnd = true
 			if msg, ok := piLastAssistant(evt.Messages); ok {
 				lastStopReason = msg.StopReason
@@ -757,6 +853,19 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			pendingResult = buildResult(isErr, errMsg, lastStopReason)
 
 		case "agent_settled":
+			if awaitingSettled {
+				var settled struct {
+					Aborted bool `json:"aborted"`
+				}
+				if json.Unmarshal(line, &settled) != nil {
+					continue
+				}
+				if settled.Aborted && !pendingResult.IsError {
+					pendingResult.IsError = true
+					pendingResult.Subtype = "aborted"
+				}
+				awaitingSettled = false
+			}
 			// Settled implies the post-run compaction, if any, is over.
 			compacting = false
 			if pendingResult != nil {
