@@ -159,16 +159,6 @@ The mapping records:
   component may map to one repo or many. Entries carry repository
   keys, not full details.
 
-Every repository the resolver returns carries full details —
-organization and name — before the result is accepted: the canonical
-URL is built from them. The details come from the architecture
-context, either directly where a repository is mentioned with its
-organization, or by resolving a repository key against the
-architecture context's structured repository data. This resolution
-always runs, with or without a mapping. A repository mention that
-cannot be resolved to full details is a hard failure before any
-result is accepted.
-
 Phase 1 uses the mapping to identify candidate repositories for a
 given Jira component. These candidates are hints for Phase 2, not
 final answers.
@@ -225,6 +215,15 @@ tier, cross-references to other components, and discovery
 confidence. This is the data that repository keys resolve against for
 full details, and that Phase 2 uses alongside the mapping hints to
 resolve with evidence.
+
+Every repository the resolver returns carries full details —
+organization and name — before the result is accepted: the canonical
+URL is built from them. The details come from the architecture
+context, either directly where a repository is mentioned with its
+organization, or by resolving a repository key against the structured
+repository data. This resolution always runs, with or without a
+mapping. A repository mention that cannot be resolved to full
+details is a hard failure before any result is accepted.
 
 The component mapping, architecture context, and other sources are
 declared sources with the same structure: `id`, `url`, `ref`, `paths`,
