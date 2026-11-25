@@ -260,19 +260,20 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 
 // ReviewResult represents a parsed review result file.
 type ReviewResult struct {
-	Body             string              `json:"body"`
-	Action           string              `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
-	HeadSHA          string              `json:"head_sha"` // commit SHA the agent reviewed
-	Reason           string              `json:"reason"`   // failure reason (when action is "failure")
-	Findings         []ReviewFinding     `json:"findings"`
-	ResolvedFindings []string            `json:"resolved_findings,omitempty"`
-	Dispositions     []ReviewDisposition `json:"dispositions,omitempty"`
+	Body         string              `json:"body"`
+	Action       string              `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
+	HeadSHA      string              `json:"head_sha"` // commit SHA the agent reviewed
+	Reason       string              `json:"reason"`   // failure reason (when action is "failure")
+	Findings     []ReviewFinding     `json:"findings"`
+	Dispositions []ReviewDisposition `json:"dispositions,omitempty"`
 }
 
 // ReviewDisposition represents a finding disposition emitted by the review agent.
 type ReviewDisposition struct {
-	ID     string `json:"id"`
-	Status string `json:"status"` // "open", "resolved_by_change", "reclassified", "dismissed_by_human"
+	ID        string `json:"id"`
+	Status    string `json:"status"` // "open", "resolved_by_change", "reclassified", "dismissed_by_human"
+	Rationale string `json:"rationale,omitempty"`
+	Evidence  string `json:"evidence,omitempty"`
 }
 
 // ReviewFinding is the structured form emitted by the review agent.
@@ -553,29 +554,36 @@ func resolveFixedThreadsConfig(flag *bool, fullsendDir string, testConfigReader 
 
 // resolveFixedReviewThreads fetches unresolved review threads and resolves
 // those corresponding to findings explicitly reported as resolved by change
-// in the review result (via resolved_findings or dispositions).
+// with non-empty rationale and evidence in the review result dispositions.
 //
 // Fail-closed safeguards:
 //   - Skips thread listing entirely on dry-run or when no resolved findings are supplied.
 //   - Requires a non-empty reviewed HeadSHA.
+//   - Excludes any finding IDs currently reported in parsed.Findings.
 //   - Only threads whose comments were all authored by a bot and whose root
 //     comment is stamped on line 1 with a valid finding marker are eligible.
 //   - Threads containing any human comments or truncated comments remain open.
-//   - Only findings explicitly confirmed resolved by change are eligible.
+//   - Only findings explicitly confirmed resolved by change with non-empty
+//     rationale and evidence are eligible.
 func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, dryRun bool, printer *ui.Printer) {
 	if dryRun || parsed.HeadSHA == "" {
 		return
 	}
 
 	resolvedIDs := make(map[string]struct{})
-	for _, id := range parsed.ResolvedFindings {
-		if findingIDRe.MatchString(id) {
-			resolvedIDs[id] = struct{}{}
-		}
-	}
 	for _, d := range parsed.Dispositions {
 		if d.Status == "resolved_by_change" && findingIDRe.MatchString(d.ID) {
-			resolvedIDs[d.ID] = struct{}{}
+			if strings.TrimSpace(d.Rationale) != "" && strings.TrimSpace(d.Evidence) != "" {
+				resolvedIDs[d.ID] = struct{}{}
+			}
+		}
+	}
+	// Fail closed: exclude any finding IDs currently reported in parsed.Findings.
+	// Even if dispositions claims an ID was resolved by change, if it is still reported
+	// in the current review's findings, it is not resolved.
+	for _, f := range parsed.Findings {
+		if id := strings.TrimSpace(string(f.ID)); id != "" {
+			delete(resolvedIDs, id)
 		}
 	}
 	if len(resolvedIDs) == 0 {

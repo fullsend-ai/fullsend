@@ -183,8 +183,8 @@ comments are synced to Jira where `<details>` does not render as collapsible.
 ### `resolve_fixed_threads`
 
 Controls whether `post-review` resolves inline pull request review threads when
-the review agent explicitly reports findings as resolved by change (via
-`resolved_findings` or `dispositions`). Default is `false` (threads remain open).
+the review agent explicitly reports findings as resolved by change via
+`dispositions` with non-empty rationale and evidence. Default is `false` (threads remain open).
 Can be overridden on the command line via `--resolve-fixed-threads`. Uses pointer
 semantics in the layered config system — `nil` (omitted) falls through to parent.
 

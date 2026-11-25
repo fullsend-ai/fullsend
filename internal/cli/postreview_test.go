@@ -838,8 +838,15 @@ func TestResolveFixedReviewThreads(t *testing.T) {
 	}
 
 	parsed := ReviewResult{
-		HeadSHA:          "c0ffee",
-		ResolvedFindings: []string{"f_fixed1"},
+		HeadSHA: "c0ffee",
+		Dispositions: []ReviewDisposition{
+			{
+				ID:        "f_fixed1",
+				Status:    "resolved_by_change",
+				Rationale: "Fixed typo",
+				Evidence:  "Fixed in commit c0ffee",
+			},
+		},
 		Findings: []ReviewFinding{
 			{
 				ID:          "f_active1",
@@ -899,8 +906,8 @@ func TestResolveFixedReviewThreads_Dispositions(t *testing.T) {
 	parsed := ReviewResult{
 		HeadSHA: "c0ffee",
 		Dispositions: []ReviewDisposition{
-			{ID: "f_disp1", Status: "resolved_by_change"},
-			{ID: "f_disp2", Status: "open"},
+			{ID: "f_disp1", Status: "resolved_by_change", Rationale: "fixed bug", Evidence: "commit c0ffee"},
+			{ID: "f_disp2", Status: "open", Rationale: "pending", Evidence: "still broken"},
 		},
 	}
 
@@ -933,8 +940,10 @@ func TestResolveFixedReviewThreads_EmptyHeadSHA(t *testing.T) {
 	}
 
 	parsed := ReviewResult{
-		HeadSHA:          "", // missing head SHA
-		ResolvedFindings: []string{"f_fixed1"},
+		HeadSHA: "", // missing head SHA
+		Dispositions: []ReviewDisposition{
+			{ID: "f_fixed1", Status: "resolved_by_change", Rationale: "fixed", Evidence: "commit c0ffee"},
+		},
 	}
 
 	var buf bytes.Buffer
@@ -965,8 +974,10 @@ func TestResolveFixedReviewThreads_DryRun(t *testing.T) {
 	fc.Errors["ListPullRequestReviewThreads"] = errors.New("must not list threads on dry run")
 
 	parsed := ReviewResult{
-		HeadSHA:          "c0ffee",
-		ResolvedFindings: []string{"f_fixed1"},
+		HeadSHA: "c0ffee",
+		Dispositions: []ReviewDisposition{
+			{ID: "f_fixed1", Status: "resolved_by_change", Rationale: "fixed", Evidence: "commit c0ffee"},
+		},
 	}
 
 	var buf bytes.Buffer
@@ -982,8 +993,10 @@ func TestResolveFixedReviewThreads_ErrNotSupported(t *testing.T) {
 	fc.Errors["ListPullRequestReviewThreads"] = forge.ErrNotSupported
 
 	parsed := ReviewResult{
-		HeadSHA:          "c0ffee",
-		ResolvedFindings: []string{"f_fixed1"},
+		HeadSHA: "c0ffee",
+		Dispositions: []ReviewDisposition{
+			{ID: "f_fixed1", Status: "resolved_by_change", Rationale: "fixed", Evidence: "commit c0ffee"},
+		},
 	}
 
 	var buf bytes.Buffer
@@ -1016,8 +1029,10 @@ func TestResolveFixedReviewThreads_ErrorsLoggedWithoutFailing(t *testing.T) {
 	fc.Errors["ResolvePullRequestReviewThread"] = errors.New("network error")
 
 	parsed := ReviewResult{
-		HeadSHA:          "c0ffee",
-		ResolvedFindings: []string{"f_fixed1"},
+		HeadSHA: "c0ffee",
+		Dispositions: []ReviewDisposition{
+			{ID: "f_fixed1", Status: "resolved_by_change", Rationale: "fixed", Evidence: "commit c0ffee"},
+		},
 	}
 
 	var buf bytes.Buffer
@@ -1025,6 +1040,135 @@ func TestResolveFixedReviewThreads_ErrorsLoggedWithoutFailing(t *testing.T) {
 	resolveFixedReviewThreads(context.Background(), fc, "o", "r", 1, parsed, false, printer)
 
 	assert.Contains(t, buf.String(), "Failed to resolve review thread thread-fixed")
+}
+
+func TestResolveFixedReviewThreads_StillReportedFindingNotResolved(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRReviewThreads = map[string]forge.ReviewThreadPage{
+		"o/r/1": {
+			Threads: []forge.ReviewThread{
+				{
+					ID:         "thread-fixed",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_fixed -->\nFixed finding",
+						},
+					},
+				},
+				{
+					ID:         "thread-still-present",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_stillpresent -->\nStill present finding",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	parsed := ReviewResult{
+		HeadSHA: "c0ffee",
+		Dispositions: []ReviewDisposition{
+			{
+				ID:        "f_fixed",
+				Status:    "resolved_by_change",
+				Rationale: "resolved",
+				Evidence:  "fixed in commit",
+			},
+			{
+				ID:        "f_stillpresent",
+				Status:    "resolved_by_change",
+				Rationale: "thought it was resolved",
+				Evidence:  "evidence",
+			},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          "f_stillpresent",
+				Severity:    "HIGH",
+				Category:    "bug",
+				Description: "still happening",
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	resolveFixedReviewThreads(context.Background(), fc, "o", "r", 1, parsed, false, printer)
+
+	require.Len(t, fc.ResolvedPRReviewThreads, 1)
+	assert.Equal(t, "thread-fixed", fc.ResolvedPRReviewThreads[0].ThreadID)
+	assert.True(t, fc.PRReviewThreads["o/r/1"].Threads[0].IsResolved)
+	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[1].IsResolved)
+	assert.Contains(t, buf.String(), "Resolved 1 fixed review thread(s)")
+}
+
+func TestResolveFixedReviewThreads_MissingRationaleOrEvidence(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRReviewThreads = map[string]forge.ReviewThreadPage{
+		"o/r/1": {
+			Threads: []forge.ReviewThread{
+				{
+					ID:         "thread-1",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_norat -->\nNo rationale",
+						},
+					},
+				},
+				{
+					ID:         "thread-2",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_noevid -->\nNo evidence",
+						},
+					},
+				},
+				{
+					ID:         "thread-3",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_whitesp -->\nWhitespace only",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	parsed := ReviewResult{
+		HeadSHA: "c0ffee",
+		Dispositions: []ReviewDisposition{
+			{ID: "f_norat", Status: "resolved_by_change", Rationale: "", Evidence: "evidence"},
+			{ID: "f_noevid", Status: "resolved_by_change", Rationale: "rationale", Evidence: ""},
+			{ID: "f_whitesp", Status: "resolved_by_change", Rationale: "   ", Evidence: "   "},
+		},
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	resolveFixedReviewThreads(context.Background(), fc, "o", "r", 1, parsed, false, printer)
+
+	assert.Empty(t, fc.ResolvedPRReviewThreads)
+	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[0].IsResolved)
+	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[1].IsResolved)
+	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[2].IsResolved)
 }
 
 func TestPostReviewContent_ResolvesFixedThreads(t *testing.T) {
@@ -1052,10 +1196,12 @@ func TestPostReviewContent_ResolvesFixedThreads(t *testing.T) {
 	printer := ui.New(&buf)
 	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
 	parsed := ReviewResult{
-		Body:             "LGTM now",
-		Action:           "approve",
-		HeadSHA:          "abc123def456",
-		ResolvedFindings: []string{"f_prior"},
+		Body:    "LGTM now",
+		Action:  "approve",
+		HeadSHA: "abc123def456",
+		Dispositions: []ReviewDisposition{
+			{ID: "f_prior", Status: "resolved_by_change", Rationale: "addressed in patch", Evidence: "see diff"},
+		},
 	}
 
 	// resolveFixed = false (default) -> threads should not be resolved
