@@ -1021,8 +1021,8 @@ same install run; `fullsend repos uninstall` removes it.
 
 What it does:
 
-1. A fork PR is opened, pushed to, marked ready for review, labeled
-   `ready-for-review`, or closed. GitHub runs `fullsend-fork-pr.yaml` for
+1. A fork PR is opened, pushed to, marked ready for review, or closed.
+   GitHub runs `fullsend-fork-pr.yaml` for
    the event. It has no permissions and no secrets and does nothing. It
    always runs on a GitHub-hosted runner (`ubuntu-latest`), never on your
    configured runner, because the fork controls the copy that runs. If your
@@ -1035,13 +1035,12 @@ What it does:
    | Event | Runs | Who must be authorized |
    |---|---|---|
    | Opened, pushed to, marked ready | Review | The PR author: triage access or higher, or an OWNERS approver or reviewer. A bot author is checked the same way (on a same-repo PR a bot author is trusted) |
-   | Labeled `ready-for-review` | Review, from the stub run GitHub starts for the label event (its run actor is the labeler), while the label stays on the PR | Whoever added the label (adding labels needs triage access) |
    | Closed or merged | Retro | Whoever closed or merged it: write access |
 
-An outside contributor's fork PR is therefore still not reviewed until
-someone authorized labels it or comments `/fs-review`. A push after the
-label is checked as the author's, so to review a newer commit of an
-outside contributor's PR, label it again or comment `/fs-review`.
+For any other fork PR, such as an outside contributor's, someone with
+triage access or higher comments `/fs-review`. The `ready-for-review`
+label does not start a fork PR review: nothing GitHub records ties a
+label to the commit it was added on.
 
 The shim never runs the fork's code or reads anything the fork's run
 produced: the fork controls its own copy of `fullsend-fork-pr.yaml`. It
@@ -1049,8 +1048,8 @@ skips a run when:
 
 - the run did not succeed, or came from another workflow file;
 - the PR has new commits since the run (the newer push has its own run);
-- the label or close happened more than five minutes before the run (the
-  run log shows a warning, so a missed retro is visible).
+- the close happened more than five minutes before the run (the run log
+  shows a warning, so a missed retro is visible).
 
 If your repository requires approval for fork PR workflows (**Settings →
 Actions → General**), the review starts after a maintainer approves the

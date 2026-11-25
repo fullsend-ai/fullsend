@@ -55,15 +55,15 @@ func TestForkPRStubTemplate(t *testing.T) {
 			assert.Equal(t, ForkPRStubWorkflowName, wf.Name, "the shim's workflow_run trigger names the stub by its name")
 			require.Len(t, wf.On, 1, "the stub triggers on pull_request only")
 			require.Contains(t, wf.On, "pull_request")
-			assert.ElementsMatch(t, []string{"opened", "synchronize", "ready_for_review", "labeled", "closed"}, wf.On["pull_request"].Types)
+			assert.ElementsMatch(t, []string{"opened", "synchronize", "ready_for_review", "closed"}, wf.On["pull_request"].Types)
+			assert.NotContains(t, wf.On["pull_request"].Types, "labeled", "a label never starts a fork PR review")
 			assert.NotNil(t, wf.Permissions)
 			assert.Empty(t, wf.Permissions, "the stub must have no permissions")
 			require.Len(t, wf.Jobs, 1)
 			for _, job := range wf.Jobs {
 				assert.Contains(t, job.If, "github.event.pull_request.head.repo.id != github.repository_id",
 					"the stub must skip same-repo PRs, which the shim handles directly")
-				assert.Contains(t, job.If, "github.event.action != 'labeled'")
-				assert.Contains(t, job.If, "github.event.label.name == 'ready-for-review'")
+				assert.NotContains(t, job.If, "label")
 				for _, step := range job.Steps {
 					assert.Empty(t, step.Uses, "the stub runs no action: no checkout, no artifact upload")
 				}
@@ -171,7 +171,6 @@ func forkPRStepEnv(runnerTemp string) map[string]string {
 		"WR_HEAD_BRANCH":    "fix-typo",
 		"WR_HEAD_SHA":       forkHeadSHA,
 		"WR_CREATED_AT":     forkRunCreated,
-		"WR_ACTOR":          "contributor",
 		"RUNNER_TEMP":       runnerTemp,
 	}
 }
@@ -271,15 +270,14 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 	}
 
 	cases := []struct {
-		name       string
-		env        map[string]string
-		list       []forkPR
-		pr         *forkPR
-		events     []map[string]any
-		want       map[string]string
-		wantSkip   string
-		wantWarn   string
-		wantNotice string
+		name     string
+		env      map[string]string
+		list     []forkPR
+		pr       *forkPR
+		events   []map[string]any
+		want     map[string]string
+		wantSkip string
+		wantWarn string
 	}{
 		{name: "stub run that failed", env: map[string]string{"WR_CONCLUSION": "failure"}, wantSkip: "did not succeed"},
 		{name: "stub run held for approval", env: map[string]string{"WR_CONCLUSION": "action_required"}, wantSkip: "did not succeed"},
@@ -309,55 +307,11 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			want: map[string]string{"resolved": "true", "state": "open", "action": "synchronize"},
 		},
 		{
-			// The stub run GitHub started for the label event: its actor is
-			// the labeler, and its head is the PR head at the label.
-			name: "label run by the labeler", list: []forkPR{labeledPR}, pr: &labeledPR,
-			env:    map[string]string{"WR_ACTOR": "triager"},
-			events: []map[string]any{labeled(oldTime, "old-labeler"), labeled(labelTime, "triager")},
-			want:   map[string]string{"resolved": "true", "labeler": "triager"},
-		},
-		{
-			// The events API documents no order: the newest event wins.
-			name: "label events in reverse order", list: []forkPR{labeledPR}, pr: &labeledPR,
-			env:    map[string]string{"WR_ACTOR": "triager"},
-			events: []map[string]any{labeled(labelTime, "triager"), labeled(oldTime, "old-labeler")},
-			want:   map[string]string{"resolved": "true", "labeler": "triager"},
-		},
-		{
-			// No run history is needed: a PR opened before install, or whose
-			// earlier runs expired, still gets the label route.
-			name: "label on a PR with no earlier stub runs", list: []forkPR{labeledPR}, pr: &labeledPR,
-			env:    map[string]string{"WR_ACTOR": "triager"},
+			// A ready-for-review label never routes a fork PR: even a
+			// maintainer's label in the window leaves the author check.
+			name: "ready-for-review label in the window", list: []forkPR{labeledPR}, pr: &labeledPR,
 			events: []map[string]any{labeled(labelTime, "triager")},
-			want:   map[string]string{"resolved": "true", "labeler": "triager", "action": "synchronize"},
-		},
-		{
-			// The author pushes within the window after a maintainer's label:
-			// the run's actor is the author, so it is checked as the author's.
-			// A maintainer re-running that run keeps the original actor.
-			name: "author push after the label", list: []forkPR{labeledPR}, pr: &labeledPR,
-			events:     []map[string]any{labeled(labelTime, "triager")},
-			want:       map[string]string{"resolved": "true", "labeler": "", "action": "synchronize"},
-			wantNotice: "this run was not started by the ready-for-review label",
-		},
-		{
-			name: "labeler's run but the label is outside the window", list: []forkPR{labeledPR}, pr: &labeledPR,
-			env:    map[string]string{"WR_ACTOR": "triager"},
-			events: []map[string]any{labeled(oldTime, "triager")},
-			want:   map[string]string{"resolved": "true", "labeler": "", "action": "synchronize"},
-		},
-		{
-			name: "label after the run", list: []forkPR{labeledPR}, pr: &labeledPR,
-			env:    map[string]string{"WR_ACTOR": "triager"},
-			events: []map[string]any{labeled("2026-11-24T10:05:00Z", "triager")},
-			want:   map[string]string{"resolved": "true", "labeler": ""},
-		},
-		{
-			name: "label added then removed", list: []forkPR{open}, pr: &open,
-			env:      map[string]string{"WR_ACTOR": "triager"},
-			events:   []map[string]any{labeled(labelTime, "triager"), {"event": "unlabeled", "created_at": recentTime, "label": map[string]any{"name": "ready-for-review"}, "actor": map[string]any{"login": "triager"}}},
-			want:     map[string]string{"resolved": "true", "labeler": ""},
-			wantWarn: "ready-for-review was removed",
+			want:   map[string]string{"resolved": "true", "state": "open", "action": "synchronize"},
 		},
 		{
 			name: "merged PR", list: []forkPR{closedMerged}, pr: &closedMerged,
@@ -428,10 +382,8 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			} else {
 				assert.NotContains(t, got.stdout, "::warning::")
 			}
-			if tc.wantNotice != "" {
-				assert.Contains(t, got.stdout, "::notice::")
-				assert.Contains(t, got.stdout, tc.wantNotice)
-			}
+			assert.NotContains(t, got.outputs, "labeler", "a fork run never names a labeler")
+			assert.NotEqual(t, "labeled", got.outputs["action"])
 			for k, v := range tc.want {
 				assert.Equal(t, v, got.outputs[k], "output %s", k)
 			}
@@ -443,28 +395,26 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 }
 
 // A fork branch name with a slash reaches the head= filter unchanged (gh
-// encodes the query), and the label route needs no run history.
+// encodes the query).
 func TestResolveForkPullRequestStepSlashedBranch(t *testing.T) {
 	requireBash4(t)
-	pr := forkPR{number: 7, state: "open", sha: forkHeadSHA, created: oldTime, labels: []string{"ready-for-review"}}
+	pr := forkPR{number: 7, state: "open", sha: forkHeadSHA, created: oldTime}
 	env := forkPRStepEnv(t.TempDir())
 	env["WR_HEAD_BRANCH"] = "feature/x"
-	env["WR_ACTOR"] = "triager"
 	files := map[string]string{
-		"bin/gh":     forkPRGHStub,
-		"pulls.json": mustJSON(t, []any{pr.json()}),
-		"pr.json":    mustJSON(t, pr.json()),
-		"events.json": mustJSON(t, []any{map[string]any{"event": "labeled", "created_at": "2026-11-24T09:57:00Z",
-			"label": map[string]any{"name": "ready-for-review"}, "actor": map[string]any{"login": "triager"}}}),
+		"bin/gh":      forkPRGHStub,
+		"pulls.json":  mustJSON(t, []any{pr.json()}),
+		"pr.json":     mustJSON(t, pr.json()),
+		"events.json": "[]",
 	}
 	ghLog := filepath.Join(t.TempDir(), "gh.log")
 	env["GH_LOG"] = ghLog
 	got := runRouteStep(t, "Resolve fork pull request for workflow_run", env, files)
-	assert.Equal(t, "triager", got.outputs["labeler"])
+	assert.Equal(t, "true", got.outputs["resolved"])
 	log, err := os.ReadFile(ghLog)
 	require.NoError(t, err)
 	assert.Contains(t, string(log), "-f head=contributor:feature/x")
-	assert.NotContains(t, string(log), "actions/workflows", "the label route reads no run history")
+	assert.NotContains(t, string(log), "actions/workflows", "the step reads no Actions run history")
 }
 
 // The PR lookup filters on the fork owner and branch, and the step uses the
@@ -518,7 +468,9 @@ func TestResolveForkPullRequestStepLookup(t *testing.T) {
 	assert.NotContains(t, string(b), "::error::injected")
 }
 
-// forkRouteEnv is the "Determine stage" env for a resolved fork PR.
+// forkRouteEnv is the "Determine stage" env for a resolved fork PR. labeler
+// sets FORK_PR_LABELER, which the workflow no longer reads: tests pass one
+// to show that a labeler never routes a fork PR.
 func forkRouteEnv(state, action, author, closer, labeler string) map[string]string {
 	return map[string]string{
 		"EVENT_NAME": "workflow_run", "EVENT_ACTION": "completed",
@@ -554,8 +506,9 @@ func TestDetermineStageWorkflowRun(t *testing.T) {
 		// Any registered GitHub App can open a fork PR: a bot author is
 		// checked like anyone else (the stub answers read for it).
 		{"push by a bot author", forkRouteEnv("open", "synchronize", "helper[bot]", "", ""), "", "synchronize", "helper[bot]"},
-		// The label needs only the permission to add it, as on pull_request.
-		{"ready-for-review label on an outsider's PR", forkRouteEnv("open", "synchronize", "outsider", "", "triager"), "review", "labeled", "triager"},
+		// Labels never route a fork PR, even if a labeler were passed in:
+		// an outsider's PR is checked against its author only.
+		{"labeler on an outsider's PR is ignored", forkRouteEnv("open", "synchronize", "outsider", "", "triager"), "", "synchronize", "outsider"},
 		{"closed by a write user", forkRouteEnv("closed", "closed", "outsider", "writer", ""), "retro", "closed", "writer"},
 		{"closed by a triage user", forkRouteEnv("closed", "closed", "outsider", "triager", ""), "", "closed", "triager"},
 		{"closed by the read-only author", forkRouteEnv("closed", "closed", "outsider", "outsider", ""), "", "closed", "outsider"},
@@ -634,7 +587,6 @@ func TestCELRouteOptInWorkflowRun(t *testing.T) {
 	}{
 		{"synchronize", "review", "review"},
 		{"synchronize", "", "review"},
-		{"labeled", "review", "review"},
 		{"closed", "retro", "retro"},
 		{"closed", "", "retro"},
 	}
@@ -657,12 +609,11 @@ func TestEvaluateCELRouteWorkflowRun(t *testing.T) {
 	script := extractReusableDispatchStepScript(t, "route", "Evaluate CEL route")
 	open := forkPR{number: 7, state: "open", sha: forkHeadSHA, created: oldTime}
 	for _, tc := range []struct {
-		action, sender, label string
-		kind                  normevent.TransitionKind
+		action, sender string
+		kind           normevent.TransitionKind
 	}{
-		{"synchronize", "contributor", "", normevent.TransitionSynchronized},
-		{"labeled", "triager", "ready-for-review", normevent.TransitionLabelChanged},
-		{"closed", "maintainer", "", normevent.TransitionClosed},
+		{"synchronize", "contributor", normevent.TransitionSynchronized},
+		{"closed", "maintainer", normevent.TransitionClosed},
 	} {
 		t.Run(tc.action, func(t *testing.T) {
 			dir := t.TempDir()
@@ -717,12 +668,7 @@ func TestEvaluateCELRouteWorkflowRun(t *testing.T) {
 			assert.EqualValues(t, 7, ev.PullRequest["number"])
 			assert.Equal(t, tc.sender, ev.Sender.Login)
 			assert.Equal(t, "User", ev.Sender.Type)
-			if tc.label == "" {
-				assert.Nil(t, ev.Label)
-			} else {
-				require.NotNil(t, ev.Label)
-				assert.Equal(t, tc.label, ev.Label.Name)
-			}
+			assert.Nil(t, ev.Label, "a fork PR's rebuilt event never carries a label")
 
 			// The same loader `fullsend dispatch --input-driver gha-event`
 			// uses reads it as the pull_request event it stands for.

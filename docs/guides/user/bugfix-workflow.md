@@ -142,7 +142,7 @@ The code agent:
 
 ### Stage 3: Review
 
-**Triggered by:** `pull_request` events on same-repo PRs (PR opened, push to PR branch, marked ready for review, or labeled `ready-for-review`), or `/fs-review` on a PR comment. On GitHub, PRs from forks get the same automatic review through the managed `fullsend-fork-pr.yaml` workflow, which hands the event to the shim from the default branch (see [Fork pull requests](../getting-started/repo-management.md#fork-pull-requests)); the author of an outside contributor's fork PR is not authorized, so someone with triage access or higher labels it `ready-for-review` or comments `/fs-review`.
+**Triggered by:** `pull_request` events on same-repo PRs (PR opened, push to PR branch, marked ready for review, or labeled `ready-for-review`), or `/fs-review` on a PR comment. On GitHub, PRs from forks get the same automatic review through the managed `fullsend-fork-pr.yaml` workflow, which hands the event to the shim from the default branch (see [Fork pull requests](../getting-started/repo-management.md#fork-pull-requests)); the author of an outside contributor's fork PR is not authorized, and the `ready-for-review` label does not start a fork PR review, so someone with triage access or higher comments `/fs-review`.
 
 The review swarm:
 

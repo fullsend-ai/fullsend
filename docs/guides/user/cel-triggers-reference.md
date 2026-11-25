@@ -357,8 +357,9 @@ On GitHub, fork pull request events reach both paths through the managed
 `fullsend-fork-pr.yaml` workflow (see
 [Fork pull requests](../getting-started/repo-management.md#fork-pull-requests)).
 The trigger then sees the pull request event rebuilt from the API: the
-action (`opened`, `synchronize`, `ready_for_review`, `labeled` or `closed`)
-and, as the actor, the pull request author, the labeler or the closer.
+action (`opened`, `synchronize`, `ready_for_review` or `closed`) and, as
+the actor, the pull request author or the closer. Labels on a fork pull
+request never reach a trigger this way.
 
 A harness `trigger:` field never changes when a built-in agent runs, whether
 your own harness writes it, inherits it through `base:`, or the entry's

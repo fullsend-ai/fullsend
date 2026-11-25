@@ -193,7 +193,7 @@ When all five components are present, any code the PR author controls can read a
 
 - never download the triggering run's artifacts or read its logs or run name, and never check out its head SHA;
 - treat the run's `head_repository`, `head_branch`, `head_sha`, `path` and `created_at` as lookup metadata a fork can influence, not as provenance; look the PR up through the API and re-check its head repository id and head SHA;
-- authorize the actor the API reports (PR author, labeler, closer) before any token mint. A label counts only for the stub run GitHub started for the label event: the run's `actor`, which GitHub sets and the fork cannot, must be the labeler; later pushes are checked as the author's.
+- authorize the actor the API reports (PR author, closer) before any token mint. Labels do not route a fork PR: the fork's stub copy can run on any label event, so no trusted record ties a label to the head it was added on.
 
 A `branches:` filter (github/gh-aw's CTR-021 check) does not help here: for a fork PR the run's `head_branch` is a name the fork chose.
 

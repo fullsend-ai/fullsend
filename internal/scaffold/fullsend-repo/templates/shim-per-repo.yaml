@@ -21,9 +21,9 @@
 # run: the dispatch job runs for a successful pull_request run of the stub's
 # file from a fork, and reusable-dispatch.yml looks the PR up by head SHA
 # through the API, skips a run whose SHA is no longer the PR head, and
-# authorizes the PR author, labeler or closer as for a same-repo PR. It
-# never downloads the stub run's artifacts or checks out PR code. A
-# maintainer can still comment /fs-review on any PR.
+# authorizes the PR author (review) or closer (retro). Labels do not start
+# a fork PR review. It never downloads the stub run's artifacts or checks
+# out PR code. A maintainer can still comment /fs-review on any PR.
 #
 # Routing: this shim forwards the raw event context to reusable-dispatch.yml,
 # which determines the stage and runs the agent inline (ADR 62).
