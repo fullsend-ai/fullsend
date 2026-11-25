@@ -782,6 +782,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
   CI finalization provides only a best-effort checkpoint. Domain adapters
   retain operation, completion and compensation semantics
   ([ADR 0165](ADRs/0165-recover-work-through-repository-owned-operation-journals.md)).
+- Repository resolution for implementation epics: a two-phase resolution
+  skill (optional component-mapping hints, then LLM-verified resolution
+  against architecture context with cited evidence) resolves the set of
+  repositories a strategy touches; each epic is assigned exactly one
+  repository — one epic per planned PR. Results are written to a
+  group-configured Jira URL field, which polling agents use as a
+  discovery signal
+  ([ADR 0176](ADRs/0176-repository-driven-epic-creation.md)).
 
 **Open questions:**
 
@@ -819,6 +827,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md))?
 - How should concurrent agent runs that touch the same conversation thread be
   coordinated ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md))?
+- Where do repository-resolution component mappings live long-term — with the
+  consumer, or in the architecture-context repository
+  ([ADR 0176](ADRs/0176-repository-driven-epic-creation.md))?
 
 ## Policy Store
 
