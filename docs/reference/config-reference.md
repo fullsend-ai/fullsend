@@ -905,8 +905,8 @@ no effect while config sets `mint_url`. When every layer is silent, dispatch
 uses the variable and does not apply the compiled CLI default
 (`https://mint.fullsend.sh`). Dispatch fails when a config file exists but
 `yq` is missing, a config file does not parse, or the resolved URL fails
-validation (file values must be HTTPS with no userinfo; the variable
-fallback may use loopback HTTP only when config is silent on `mint_url`).
+validation. Both config and the variable fallback accept HTTPS or HTTP on
+`localhost` or `127.0.0.1`, without userinfo.
 When a declared config value differs from the workflow variable snapshot
 (including an unset variable), dispatch follows config and the route job
 may emit a workflow notice that config overrides the variable (no URL or

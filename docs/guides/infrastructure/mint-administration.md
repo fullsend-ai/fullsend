@@ -53,12 +53,10 @@ fallback). When config declares a value that differs from the workflow
 dispatch follows config and emits a workflow notice that config overrides
 the variable (no URL or host in the notice).
 
-Config-sourced values must be HTTPS with no userinfo. The resolved URL is
-validated on every run: declared config values must be HTTPS (no userinfo).
-The variable fallback when config is silent on `mint_url` must also be a
-valid URL and may use loopback HTTP (`localhost` / `127.0.0.1`) only on
-that fallback path. Dispatch fails when config is present but `yq` is
-missing, YAML does not parse, or the resolved URL fails validation.
+Dispatch validates the resolved URL on every run. Both config and the
+variable fallback accept HTTPS or HTTP on `localhost` or `127.0.0.1`,
+without userinfo. Dispatch fails when config is present but `yq` is missing,
+YAML does not parse, or the resolved URL fails validation.
 
 ## Prerequisites
 

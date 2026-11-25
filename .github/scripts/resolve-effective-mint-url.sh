@@ -5,9 +5,8 @@
 # the FULLSEND_MINT_URL snapshot when both files are silent. Stops short of the
 # compiled default (https://mint.fullsend.sh), matching resolveMintURL in the CLI.
 #
-# Declared file values use the same HTTPS/userinfo gate as
-# validateDeclaredMintURL. The FULLSEND_MINT_URL fallback also allows loopback
-# HTTP (localhost / 127.0.0.1), matching mintclient.MintToken.
+# Both config and fallback values allow HTTPS or loopback HTTP (localhost /
+# 127.0.0.1), without userinfo, matching validateDeclaredMintURL.
 #
 # Requires: GITHUB_OUTPUT, FALLBACK_MINT_URL (may be empty). yq is required
 # only when .fullsend/config.yaml or config.base.yaml is present.
@@ -31,11 +30,9 @@ if [[ -f "${_overlay}" || -f "${_base}" ]]; then
   fi
 fi
 
-# Aligns with validateDeclaredMintURL for file-sourced values. Never echoes
-# the URL: rejected values may contain userinfo.
+# Never echoes the URL: rejected values may contain userinfo.
 _validate_resolved_mint_url() {
   local url="$1"
-  local from_file="${2:-false}"
   if [[ -z "${url}" ]]; then
     return 0
   fi
@@ -45,16 +42,17 @@ _validate_resolved_mint_url() {
   fi
 
   local scheme rest authority host
+  local invalid_url="::error::mint_url must be a valid HTTPS URL, or HTTP on localhost/127.0.0.1"
   if [[ "${url}" =~ ^([A-Za-z][A-Za-z0-9+.-]*)://(.*)$ ]]; then
     scheme="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
     rest="${BASH_REMATCH[2]}"
   else
-    echo "::error::mint_url must be a valid HTTPS URL" >&2
+    echo "${invalid_url}" >&2
     return 1
   fi
   authority="${rest%%[/?#]*}"
   if [[ -z "${authority}" ]]; then
-    echo "::error::mint_url must be a valid HTTPS URL" >&2
+    echo "${invalid_url}" >&2
     return 1
   fi
   if [[ "${authority}" == *@* ]]; then
@@ -64,13 +62,13 @@ _validate_resolved_mint_url() {
   if [[ "${scheme}" == "https" ]]; then
     return 0
   fi
-  if [[ "${from_file}" != "true" && "${scheme}" == "http" ]]; then
+  if [[ "${scheme}" == "http" ]]; then
     host="${authority%%:*}"
     if [[ "${host}" == "localhost" || "${host}" == "127.0.0.1" ]]; then
       return 0
     fi
   fi
-  echo "::error::mint_url must be a valid HTTPS URL" >&2
+  echo "${invalid_url}" >&2
   return 1
 }
 
@@ -106,7 +104,7 @@ elif [[ -f "${_base}" ]]; then
   fi
 fi
 
-if ! _validate_resolved_mint_url "${_effective}" "${_from_file}"; then
+if ! _validate_resolved_mint_url "${_effective}"; then
   exit 1
 fi
 

@@ -136,7 +136,7 @@ assert_eq "empty fallback" "" "$(run_resolve "")"
 
 setup_repo
 printf 'version: "1"\nmint_url: http://evil.example\n' >.fullsend/config.yaml
-run_resolve_expect_fail "https://fallback.example" "reject http mint_url" "::error::mint_url must be a valid HTTPS URL"
+run_resolve_expect_fail "https://fallback.example" "reject non-loopback http from config" "::error::mint_url must be a valid HTTPS URL, or HTTP on localhost/127.0.0.1"
 
 setup_repo
 printf 'version: "1"\nmint_url: https://user:pass@mint.example\n' >.fullsend/config.yaml
@@ -157,11 +157,15 @@ setup_repo
 assert_eq "loopback http fallback" "http://127.0.0.1:8080" "$(run_resolve "http://127.0.0.1:8080")"
 
 setup_repo
-printf 'version: "1"\nmint_url: http://localhost:8080\n' >.fullsend/config.yaml
-run_resolve_expect_fail "" "reject localhost http from config file" "::error::mint_url must be a valid HTTPS URL"
+printf 'version: "1"\nmint_url: http://127.0.0.1:18502\n' >.fullsend/config.yaml
+assert_eq "emulator loopback http in overlay and fallback" "http://127.0.0.1:18502" "$(run_resolve "http://127.0.0.1:18502")"
 
 setup_repo
-run_resolve_expect_fail "http://evil.example" "reject non-loopback http fallback" "::error::mint_url must be a valid HTTPS URL"
+printf 'version: "1"\nmint_url: http://localhost:8080\n' >.fullsend/config.base.yaml
+assert_eq "localhost http from base config" "http://localhost:8080" "$(run_resolve "https://fallback.example")"
+
+setup_repo
+run_resolve_expect_fail "http://evil.example" "reject non-loopback http fallback" "::error::mint_url must be a valid HTTPS URL, or HTTP on localhost/127.0.0.1"
 
 setup_repo
 run_resolve_expect_fail "https://u:p@host" "reject userinfo fallback" "::error::mint_url must not contain userinfo" "u:p"
