@@ -335,17 +335,19 @@ jobs:
               if [[ -n "${LABELED_AT}" ]] && within "${LABELED_AT}"; then
                 # The label counts only while it is on the PR, and only for the
                 # commit that was this PR's head when it was added: the newest
-                # stub run on this fork branch, from this fork, created by
-                # then (5 s slack). A push after the label, or a commit seeded
-                # through another branch, fork or earlier push, is checked as
-                # the author's.
+                # stub run on this fork branch, from this fork, created before
+                # the label. The label's own stub run is not needed: the head's
+                # push already has a run. A push after the label (even within
+                # the same second), a push whose run started only after the
+                # label, or a commit seeded through another branch, fork or
+                # earlier push, is checked as the author's.
                 ON_PR=$(jq -r 'any(.labels[]?; .name == "ready-for-review")' "${PR_FILE}")
                 RUNS=$(api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/${STUB_PATH##*/}/runs" \
                   -f "branch=${WR_HEAD_BRANCH}" -f event=pull_request -f per_page=100)
                 HEAD_AT_LABEL=$(jq -r --argjson hid "${WR_HEAD_REPO_ID}" --arg label "${LABELED_AT}" '
                   def t: sub("\\.[0-9]+"; "") | fromdateiso8601;
                   ($label | t) as $l
-                  | [.workflow_runs[]? | select((.head_repository.id // -1) == $hid and (.created_at | t) <= $l + 5)]
+                  | [.workflow_runs[]? | select((.head_repository.id // -1) == $hid and (.created_at | t) < $l)]
                   | sort_by(.created_at) | last | .head_sha // ""' <<<"${RUNS}")
                 if [[ "${ON_PR}" != "true" ]]; then
                   echo "::warning::Fork pull request #${NUMBER}: ready-for-review was removed; checking the author instead"

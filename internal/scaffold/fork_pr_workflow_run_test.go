@@ -378,7 +378,18 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			wantWarn: "was not the pull request head when ready-for-review was added",
 		},
 		{
-			// The label's own stub run, seconds after it, is on the labeled head.
+			// The outside author pushes 2 s after the label: that push's run
+			// starts after the label, so the labeled head is the earlier
+			// commit and the push is checked as the author's.
+			name: "push seconds after the label", list: []forkPR{labeledPR}, pr: &labeledPR,
+			events:   []map[string]any{labeled(labelTime, "triager")},
+			runs:     []stubRun{{"2026-11-24T09:40:00Z", otherSHA, 222}, {"2026-11-24T09:57:02Z", forkHeadSHA, 222}},
+			want:     map[string]string{"resolved": "true", "labeler": ""},
+			wantWarn: "was not the pull request head when ready-for-review was added",
+		},
+		{
+			// The label's own stub run, seconds after it, is ignored; the
+			// head's earlier run shows it was the PR head at the label.
 			name: "labeled head with the label's own run", list: []forkPR{labeledPR}, pr: &labeledPR,
 			events: []map[string]any{labeled(labelTime, "triager")},
 			runs:   []stubRun{{"2026-11-24T09:57:02Z", forkHeadSHA, 222}, {"2026-11-24T09:40:00Z", forkHeadSHA, 222}, {"2026-11-24T09:30:00Z", otherSHA, 222}},
