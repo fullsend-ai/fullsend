@@ -241,7 +241,7 @@ To remove fullsend from a single repository:
 
 **GitHub repos:**
 
-1. Delete `.github/workflows/fullsend.yaml`, `.github/workflows/prioritize.yml`, and repo-level secrets/variables
+1. Delete `.github/workflows/fullsend.yaml`, `.github/workflows/fullsend-fork-pr.yaml`, `.github/workflows/prioritize.yml`, and repo-level secrets/variables
 2. Run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access
 3. Remove the `FULLSEND_MINT_URL` repository variable (if set) — no separate unenrollment is needed for the hosted community mint
 

@@ -3,7 +3,10 @@ package scaffold
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // InstallFile is a file to commit during install.
@@ -33,6 +36,57 @@ func PerRepoThinCallerPaths() []string {
 	return out
 }
 
+// ForkPRStubPath is where a GitHub per-repo install puts the fork pull
+// request stub workflow. The stub runs on fork pull request events with no
+// permissions and no secrets; the shim's workflow_run trigger then resolves
+// the pull request from the default branch.
+const ForkPRStubPath = ".github/workflows/fullsend-fork-pr.yaml"
+
+// ForkPRStubTemplate is the stub's template in the fullsend-repo scaffold.
+const ForkPRStubTemplate = "templates/fork-pr-per-repo.yaml"
+
+// ForkPRStubWorkflowName is the stub's workflow name, which the shim's
+// workflow_run trigger lists.
+const ForkPRStubWorkflowName = "fullsend-fork-pr"
+
+// RenderForkPRStub renders the fork pull request stub template content for
+// installation at ForkPRStubPath, with the managed header.
+func RenderForkPRStub(raw []byte, opts RenderOptions) (InstallFile, error) {
+	rendered, err := RenderTemplate(ForkPRStubTemplate, raw, opts)
+	if err != nil {
+		return InstallFile{}, fmt.Errorf("rendering fork pull request stub: %w", err)
+	}
+	return InstallFile{
+		Path:    ForkPRStubPath,
+		Content: PrependManagedHeader(ForkPRStubPath, rendered),
+		Mode:    "100644",
+	}, nil
+}
+
+// ShimReferencesForkPRStub reports whether a shim workflow triggers on
+// workflow_run for the fork pull request stub. A shim from a release before
+// the stub existed does not, and such an install does not need the stub.
+// Content that does not parse does not reference it.
+func ShimReferencesForkPRStub(shim []byte) bool {
+	var doc struct {
+		On map[string]yaml.Node `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(shim, &doc); err != nil {
+		return false
+	}
+	node, ok := doc.On["workflow_run"]
+	if !ok {
+		return false
+	}
+	var trigger struct {
+		Workflows []string `yaml:"workflows"`
+	}
+	if err := node.Decode(&trigger); err != nil {
+		return false
+	}
+	return slices.Contains(trigger.Workflows, ForkPRStubWorkflowName)
+}
+
 // CollectPerRepoInstallFiles gathers files for per-repo installation.
 func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) (InstallFiles, error) {
 	opts := RenderOptionsForInstall(vendored, upstreamRef, upstreamTag)
@@ -51,6 +105,16 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 		Content: PrependManagedHeader(".github/workflows/fullsend.yaml", shimRendered),
 		Mode:    "100644",
 	}}
+
+	stubRaw, err := FullsendRepoFile(ForkPRStubTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("loading fork pull request stub template: %w", err)
+	}
+	stub, err := RenderForkPRStub(stubRaw, opts)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, stub)
 
 	// Install thin caller workflows that are dispatched externally
 	// (e.g. prioritize.yml receives dispatches from the org-level

@@ -156,6 +156,23 @@ func probeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		}
 	}
 
+	// The fork pull request stub (GitHub only). Only a shim that triggers
+	// on the stub's runs needs it, so an install from a release before the
+	// stub does not report it missing; an unchanged-ref rollout that has
+	// not yet rewritten the shim is covered by CheckFileContentDrift.
+	if (forgeName == ForgeGitHub || forgeName == "") && scaffold.ShimReferencesForkPRStub(content) {
+		_, stubErr := client.GetFileContent(ctx, owner, repo, scaffold.ForkPRStubPath)
+		if stubErr != nil && !forge.IsNotFound(stubErr) {
+			return nil, fmt.Errorf("checking fork pull request stub %s: %w", scaffold.ForkPRStubPath, stubErr)
+		}
+		present := stubErr == nil
+		results = append(results, ComponentStatus{
+			Name:    "scaffold:" + scaffold.ForkPRStubPath,
+			Present: present,
+			Match:   present,
+		})
+	}
+
 	// Per-repo thin callers (GitHub only).
 	if forgeName == ForgeGitHub || forgeName == "" {
 		for _, tcPath := range scaffold.PerRepoThinCallerPaths() {

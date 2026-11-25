@@ -750,8 +750,9 @@ pins traffic to an older revision; otherwise it changes nothing.
   `--concurrency`, so Cloud Run's default applies: 80 slots per vCPU, so 80 with `--cpu 1`.
 - **Cap bursts with agentgateway's `localRateLimit`** (requests and tokens per `fillInterval`).
   Set its `key` so that callers outside your allow rule draw from a separate bucket. Any GitHub
-  Actions job can mint a token for your audience (only pull-request runs from forks cannot: they
-  get no `id-token: write`). That token passes `jwtAuth` and reaches the rate limit before the
+  Actions job can mint a token for your audience (only a fork's own pull-request runs cannot:
+  they get no `id-token: write`; fullsend reviews a fork PR from a `workflow_run` run in your
+  repository, which mints as your repository). That token passes `jwtAuth` and reaches the rate limit before the
   model's rule refuses it, so with one shared bucket an outside repository can use up your
   repositories' share. The caps apply per instance and reset on each new instance,
   so they are a burst guard, not a spend limit. Set a budget alert at the model provider as well.

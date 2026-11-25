@@ -4,9 +4,9 @@ Feature: Fork PR dispatch
 
   Owns fork pull request CEL matching (is_fork, linked change proposal, disabled
   harnesses), the kill switch and synchronize handling for harness
-  dispatch. The shim runs on pull_request and skips fork pull requests
-  (#9221): fork pull request events never dispatch, so every scenario
-  dispatches through a maintainer's slash command on the fork pull request.
+  dispatch. Fork pull request events never dispatch a harness (#9221; the
+  workflow_run path routes only the built-in review and retro), so every
+  scenario dispatches through a maintainer's comment on the fork pull request.
   Which actors may trigger a harness on a fork pull request is owned by
   platform/actor-authorization.feature.
 

@@ -602,8 +602,8 @@ func TestCELRouteStepsGatedAndIsolated(t *testing.T) {
 		assert.True(t, step.ContinueOnError, "step %q must continue on error", step.Name)
 		switch step.ID {
 		case "cel-opt-in":
-			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' }}", step.If,
-				"CEL routing covers same-repo pull_request events and never a fork or Dependabot PR on pull_request (#9221)")
+			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action != '') }}", step.If,
+				"CEL routing covers same-repo pull_request events and never a fork or Dependabot PR on pull_request (#9221); a fork PR comes in as the shim's workflow_run once Determine stage rebuilt its event")
 		case "cel-config":
 			assert.Equal(t, "steps.cel-opt-in.outputs.opt_in == 'true'", step.If)
 		default:

@@ -88,7 +88,10 @@ func CheckFileContentDrift(ctx context.Context, client forge.Client,
 			// only when the installed wrapper already references them, so
 			// a rollout that is about to rewrite the wrapper must deliver
 			// them here when the selected version's scaffold includes them.
-			if forgeName == ForgeGitLab && slices.Contains(gitlabDispatcherPaths(), ef.Path) {
+			// The same holds for the GitHub fork pull request stub: the
+			// probe expects it only once the installed shim triggers on it.
+			if (forgeName == ForgeGitLab && slices.Contains(gitlabDispatcherPaths(), ef.Path)) ||
+				(forgeName != ForgeGitLab && ef.Path == scaffold.ForkPRStubPath) {
 				drifted = append(drifted, ContentDriftFile{
 					Path:          ef.Path,
 					InstalledPath: ef.Path,
@@ -149,6 +152,7 @@ func CheckOrphanFiles(ctx context.Context, client forge.Client,
 	switch forgeName {
 	case ForgeGitHub, "":
 		addUnique(scaffold.PerRepoThinCallerPaths()...)
+		addUnique(scaffold.ForkPRStubPath)
 	case ForgeGitLab:
 		addUnique(ScaffoldPathsForForge(ForgeGitLab)...)
 	}

@@ -48,8 +48,11 @@ to focus on:
 - `/fs-retro the code agent spent 30 minutes on a 2-line fix, what went wrong`
 
 The retro agent also runs automatically when a same-repository PR is closed
-(merged or not) by an actor with write access. Fork PRs get no automatic
-retro; a user with write access can run `/fs-retro` on a closed or merged fork PR.
+(merged or not) by an actor with write access. On GitHub, a fork PR closed
+by such an actor gets the same automatic retro, through the managed
+`fullsend-fork-pr.yaml` workflow (see
+[Fork pull requests](../guides/getting-started/repo-management.md#fork-pull-requests)); a user with
+write access can also run `/fs-retro` on a closed or merged fork PR.
 Merge-queue events follow the same rule: the event
 sender must have write access. Other automated senders without repository
 write access do not start retro; a write-authorized user can run `/fs-retro`
