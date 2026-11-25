@@ -531,9 +531,11 @@ model is not one-size-fits-all.
 
 The resolution skill is forge-neutral — it reads declared sources
 (architecture context, optional component mapping) and returns
-resolved repositories. Source loading uses the platform's existing
-forge-abstracted mechanism. The Jira URL field for the resolved
-repository is tracker configuration, not forge-specific.
+resolved repositories. Source loading is the same deterministic
+scripts shipped with the skill (see Verification): a declared source
+is fetched by its URL, with no forge-specific resolution logic. The
+Jira URL field for the resolved repository is tracker configuration,
+not forge-specific.
 
 ## Consequences
 
