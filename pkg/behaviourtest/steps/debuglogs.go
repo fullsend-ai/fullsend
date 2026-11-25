@@ -59,7 +59,8 @@ const (
 // the repository's runs. A run that shows up during the grace period
 // measures a late dispatch; no run at all points to a lost event (#9469).
 // The diagnostics run only for a *ci.NotDispatchedError, which only the
-// GitHub Actions driver returns, so this applies to GitHub Actions only.
+// GitHub Actions and Forgejo Actions drivers return, so this applies to
+// those drivers only.
 // It runs outside failureLogBudget so it cannot starve the log collection
 // that follows, and is bounded per process by dispatchGraceBudget. It is
 // skipped when no verdict can be computed (the CI driver is not a
@@ -582,8 +583,8 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 
 	// Dispatch diagnostics run first: the grace period gives a late run
 	// time to appear, so the run-log collection below also saves it. They
-	// need the details only *ci.NotDispatchedError (GitHub Actions)
-	// carries; another driver's not-dispatched timeout, which wraps only
+	// need the details only *ci.NotDispatchedError (GitHub Actions and
+	// Forgejo Actions) carries; another driver's not-dispatched timeout, which wraps only
 	// ci.ErrWorkflowNotDispatched, gets none.
 	var dispatch string
 	var waited *ci.NotDispatchedError
@@ -745,7 +746,7 @@ func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 }
 
 // collectDispatchDiagnostics records, for a scenario that failed because
-// no workflow run appeared (GitHub Actions only), what the repository
+// no workflow run appeared (GitHub Actions and Forgejo Actions only), what the repository
 // shows after a grace period: a note when the wait was skipped (no
 // budget left, or no verdict possible) or shortened, the time of the
 // listing and the real elapsed wait, the scenario's issue with its

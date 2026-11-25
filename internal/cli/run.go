@@ -2791,7 +2791,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// (which may unshallow the checkout) and immediately before the only
 	// upload. Every later download and validation iteration is reconciled
 	// to it.
-	hostRepositorySnapshot, err := captureRepositorySnapshot(hostRepositoryDir)
+	hostRepositorySnapshot, err := sandbox.CaptureRepositorySnapshot(hostRepositoryDir, uploadExcludes...)
 	if err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("validating target repository before upload: %w", err)
@@ -3321,8 +3321,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		// 9d. Extract target repo back to host. SafeDownload removes dangerous
-		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
+		// 9d. Extract target repo back to host. SafeDownload sanitizes the
+		// downloaded tree: dangerous symlinks, Git hooks and per-worktree
+		// config, and ancestry overrides are removed, and the Git
+		// configuration is rebuilt from the trusted host snapshot.
 		//
 		// SafeDownload is a security boundary: it combines Download with
 		// sanitizeDownload, which strips dangerous symlinks. If either step
@@ -9185,45 +9187,6 @@ func forceRemoveAll(path string) error {
 		return nil
 	})
 	return os.RemoveAll(path)
-}
-
-// captureRepositorySnapshot validates and captures the trusted shallow state
-// after the pre-script and before the only upload, so every later download is
-// reconciled to it. A plain input returns a zero snapshot without Git
-// discovery, so a parent checkout is never captured. A materialized checkout
-// records IsCheckout so the downloaded root must remain a checkout.
-func captureRepositorySnapshot(repoDir string) (sandbox.RepositorySnapshot, error) {
-	plain, err := sandbox.ValidateRepositoryRoot(repoDir)
-	if err != nil {
-		return sandbox.RepositorySnapshot{}, fmt.Errorf("validating target repository: %w", err)
-	}
-	if plain {
-		return sandbox.RepositorySnapshot{}, nil
-	}
-	snapshot := sandbox.RepositorySnapshot{IsCheckout: true}
-
-	// Validation proved .git is a real directory that resolves as itself, so
-	// the boundary lives directly there. Resolving it with a Git query would
-	// honor inherited selectors such as GIT_DIR or GIT_COMMON_DIR and could
-	// capture another repository's boundary.
-	shallowPath := filepath.Join(repoDir, ".git", "shallow")
-
-	info, err := os.Stat(shallowPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return snapshot, nil
-	}
-	if err != nil {
-		return sandbox.RepositorySnapshot{}, fmt.Errorf("inspecting git shallow metadata: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return sandbox.RepositorySnapshot{}, fmt.Errorf("git shallow metadata %s is not a regular file", shallowPath)
-	}
-	data, err := os.ReadFile(shallowPath)
-	if err != nil {
-		return sandbox.RepositorySnapshot{}, fmt.Errorf("reading git shallow metadata %s: %w", shallowPath, err)
-	}
-	snapshot.Shallow = sandbox.ShallowState{Present: true, Data: data}
-	return snapshot, nil
 }
 
 // checkProviderProfileIntegrity validates that every provider references a
