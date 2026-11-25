@@ -1285,7 +1285,7 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 	require.True(t, ok, "reusable-dispatch.yml must have a route job")
 
 	var payload workflowStep
-	ladder := make([]workflowStep, 0, 9)
+	ladder := make([]workflowStep, 0, 10)
 	for _, step := range route.Steps {
 		if step.Name == "Build event payload" {
 			payload = step
@@ -1295,8 +1295,8 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, payload.Name, "the route job must keep its 'Build event payload' step")
-	require.Len(t, ladder, 9,
-		"the payload step plus the eight payload-cli install ladder steps must stay in the route job")
+	require.Len(t, ladder, 10,
+		"the payload step plus the nine payload-cli install ladder steps must stay in the route job")
 
 	assert.Contains(t, payload.Run, "--print-event",
 		"the payload step must normalize the event with `fullsend dispatch --print-event`; without it the stage jobs get no _normalized_event")
@@ -1321,6 +1321,43 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 		assert.Contains(t, step.If, reviewSkipGuard,
 			"step %q must gate on the review-skip guard like the job-level `stage` output, so an unchanged-diff synchronize push with the review skipped runs no payload work", step.Name)
 	}
+
+	// Main's #9663 hardened every CLI ladder; the payload ladder mirrors that
+	// shape: a restored cache entry is validated before it is exposed, an
+	// invalid entry re-runs the install, the artifact is proven with
+	// `dispatch --help` before it is saved, and the keys carry the runner
+	// architecture.
+	var validate, installUpstream, expose, prepare, save workflowStep
+	for _, step := range ladder {
+		switch step.Name {
+		case "Validate cached fullsend CLI for event payload":
+			validate = step
+		case "Install fullsend CLI for event payload (upstream workflow)":
+			installUpstream = step
+		case "Expose cached fullsend CLI for event payload":
+			expose = step
+		case "Prepare fullsend CLI cache artifact for event payload":
+			prepare = step
+		case "Save fullsend CLI cache for event payload":
+			save = step
+		}
+	}
+	const invalidCache = "(steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true')"
+	require.NotEmpty(t, validate.Name, "the payload ladder must validate a restored cache entry before exposing it (main #9663)")
+	assert.Contains(t, validate.Run, "dispatch --help",
+		"the validate step must prove the cached binary answers `dispatch --help` before it is exposed")
+	assert.Contains(t, installUpstream.If, invalidCache,
+		"the upstream install must re-run when the cached binary is missing or invalid (main #9663)")
+	assert.Contains(t, expose.If, "steps.payload-cli-cache-validation.outputs.valid == 'true'",
+		"the expose step must run only on a validated cache hit (main #9663)")
+	assert.Contains(t, prepare.Run, "dispatch --help",
+		"the prepare step must prove the binary with `dispatch --help` before it is saved (main #9663)")
+	assert.Contains(t, save.If, invalidCache,
+		"the save must run only when the cache missed or held an invalid binary (main #9663)")
+	assert.Contains(t, save.If, "steps.payload-cli-cache-prepare.outcome == 'success'",
+		"the save must be gated on the prepare outcome (main #9663)")
+	assert.Equal(t, 2, strings.Count(string(content), "fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ runner.arch }}-"),
+		"both payload ladder cache keys must carry runner.arch so an entry restored across architectures is not exposed (main #9663)")
 }
 
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch
