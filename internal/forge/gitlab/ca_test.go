@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -27,9 +28,8 @@ import (
 // (see TestMain). crypto/x509 caches the system pool behind a sync.Once for
 // the lifetime of the process, so priming it here — rather than trying to
 // set SSL_CERT_FILE from within an individual test — is what makes
-// TestApplyCIServerTLSCA_TrustsPrivateCAAndRejectsUntrusted's "system pool
-// CA survives the private-CA append" assertion deterministic regardless of
-// test execution order.
+// TestApplyCIServerTLSCA_TrustsSystemPoolAfterAppend deterministic
+// regardless of test execution order.
 var (
 	systemPoolCACert *x509.Certificate
 	systemPoolCAKey  *ecdsa.PrivateKey
@@ -224,15 +224,6 @@ func TestApplyCIServerTLSCA_TrustsPrivateCAAndRejectsUntrusted(t *testing.T) {
 		_, _ = io.WriteString(w, `{"id": 2}`)
 	}))
 
-	// Chains to systemPoolCACert, which TestMain primed into the system
-	// pool before applyCIServerTLSCA ever ran. If a future regression
-	// turned the private-CA append into a replace, this handshake — unlike
-	// the two above, which only exercise the newly-appended private CA —
-	// would start failing.
-	viaSystemPool := startCASignedTLSServer(t, systemPoolCACert, systemPoolCAKey, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"id": 3}`)
-	}))
-
 	caPath := writePEMCert(t, t.TempDir(), "ci-server-ca.pem", trusted.Certificate())
 	t.Setenv(ciServerTLSCAFileEnv, caPath)
 
@@ -254,13 +245,42 @@ func TestApplyCIServerTLSCA_TrustsPrivateCAAndRejectsUntrusted(t *testing.T) {
 	_, err = client.http.Get(untrusted.URL + "/user")
 	require.Error(t, err, "certificate not signed by the supplied CA must be rejected")
 	assert.Contains(t, err.Error(), "certificate")
+}
 
-	resp3, err := client.http.Get(viaSystemPool.URL + "/user")
-	require.NoError(t, err, "a cert chaining to a pre-existing system-pool CA must remain trusted after the private CA append")
-	defer resp3.Body.Close()
-	body3, err := io.ReadAll(resp3.Body)
+// TestApplyCIServerTLSCA_TrustsSystemPoolAfterAppend guards the append: a
+// server chaining to systemPoolCACert, which TestMain primed into the system
+// pool before applyCIServerTLSCA ever ran, must stay trusted after the
+// private CA is added. If a regression turned the append into a replace,
+// this handshake would start failing.
+func TestApplyCIServerTLSCA_TrustsSystemPoolAfterAppend(t *testing.T) {
+	// TestMain primes the system pool through SSL_CERT_FILE, which
+	// crypto/x509 reads only on Linux and the other Unix ports. On macOS,
+	// iOS and Windows the pool comes from the platform verifier, so the
+	// synthetic CA is never in it. CI (ubuntu-24.04) and hack/ci-local run
+	// this test.
+	if runtime.GOOS == "darwin" || runtime.GOOS == "ios" || runtime.GOOS == "windows" {
+		t.Skipf("SSL_CERT_FILE does not feed x509.SystemCertPool on %s", runtime.GOOS)
+	}
+
+	private := startUniqueTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"id": 1}`)
+	}))
+	viaSystemPool := startCASignedTLSServer(t, systemPoolCACert, systemPoolCAKey, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"id": 3}`)
+	}))
+
+	caPath := writePEMCert(t, t.TempDir(), "ci-server-ca.pem", private.Certificate())
+	t.Setenv(ciServerTLSCAFileEnv, caPath)
+
+	client, err := New("test-token", WithBaseURL(private.URL), WithAfterFunc(noWaitAfter))
 	require.NoError(t, err)
-	assert.Contains(t, string(body3), `"id": 3`)
+
+	resp, err := client.http.Get(viaSystemPool.URL + "/user")
+	require.NoError(t, err, "a cert chaining to a pre-existing system-pool CA must remain trusted after the private CA append")
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"id": 3`)
 }
 
 func TestApplyCIServerTLSCA_UnsetRejectsUnknownAuthority(t *testing.T) {
