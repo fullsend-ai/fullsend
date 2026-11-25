@@ -578,10 +578,19 @@ func (m *celMatcher) DispatchCandidates() ([]string, bool) {
 // built-in agents with. Override in tests to resolve built-in harnesses
 // from local files without the network.
 var newJiraBuiltinResolverFn = func() harnessdispatch.BuiltinResolver {
-	// Unauthenticated, as the agents repository is public, and on the
-	// configured host when GITHUB_SERVER_URL and GITHUB_API_URL agree, as
-	// for fullsend run and dispatch --route.
-	return agentsRepoBuiltinResolver(newConfiguredHostGitHubClient(""), ui.New(os.Stderr))
+	// Authenticated with the token fullsend run composes with
+	// (GH_TOKEN, GITHUB_TOKEN or gh auth), so the ref lookup does not
+	// depend on the anonymous API rate limit. Without a token it falls back
+	// to anonymous access, as the agents repository is public. The client
+	// is on the configured host when GITHUB_SERVER_URL and GITHUB_API_URL
+	// agree, as for fullsend run, so the token never follows GITHUB_API_URL
+	// alone.
+	printer := ui.New(os.Stderr)
+	token, err := resolveToken()
+	if err != nil {
+		printer.StepWarn("Git token not available; resolving built-in agents anonymously, which the API rate limit may refuse")
+	}
+	return agentsRepoBuiltinResolver(newConfiguredHostGitHubClient(token), printer)
 }
 
 // agentsRepoBuiltinResolver resolves built-in agents from the agents

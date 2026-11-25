@@ -236,11 +236,11 @@ Omitting the key inherits the parent's roles. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
 Roles also select which built-in agents the Jira poller considers (see
-[Jira integration](../guides/user/jira-integration.md)). Each role enables
-these built-in agents: `triage` enables triage, `coder` enables code and fix,
-`fix` enables fix, `review` enables review, `retro` enables retro, and
-`prioritize` enables prioritize. A built-in agent that no configured role
-enables is never fetched or dispatched from Jira. Omitting `roles` falls
+[Jira integration](../guides/user/jira-integration.md)). The poller considers
+only the built-in triage and code agents: `triage` enables triage and `coder`
+enables code. Review, fix, retro and prioritize are never fetched or
+dispatched from Jira, whatever the roles. A built-in agent that no configured
+role enables is never fetched or dispatched from Jira. Omitting `roles` falls
 back to the parent's roles or the default roles, which select every built-in
 agent, while an explicit empty list (`roles: []`) selects none, including over
 a parent that lists roles. `roles: null` and a bare `roles:` behave like
@@ -263,10 +263,10 @@ effort, sub-agent models, the trigger and harness settings.
   against this ref. Empty for SHA-pinned or legacy entries.
 - **`enabled`** — Toggle the agent without removing its entry. A
   suppression-only entry (`enabled: false`, no source) disables a built-in or
-  parent-layer agent by name. The Jira poller evaluates every enabled,
-  role-selected built-in agent without an `agents:` registration, so
-  `- name: <agent>` with `enabled: false` is how you opt a built-in agent out
-  of Jira dispatch (see [`roles`](#roles) for role selection).
+  parent-layer agent by name. The Jira poller evaluates the enabled,
+  role-selected built-in triage and code agents without an `agents:`
+  registration, so `- name: <agent>` with `enabled: false` is how you opt one
+  of them out of Jira dispatch (see [`roles`](#roles) for role selection).
 - **`runtime`**, **`model`**, **`effort`** — Per-agent overrides. An
   override-only entry (no source, at least one setting) tunes a built-in
   agent by name.
@@ -292,8 +292,8 @@ effort, sub-agent models, the trigger and harness settings.
   [Choosing when triage and prioritize run](../guides/user/customizing-agents.md#choosing-when-triage-and-prioritize-run)).
   It does not change CEL dispatch: the harness `trigger:` keeps deciding when
   custom agents run and what the Jira poller dispatches for each agent it
-  considers (every enabled, role-selected built-in and every registered
-  agent). A trigger alone
+  considers (every enabled, role-selected built-in triage and code agent and
+  every registered agent). A trigger alone
   makes a valid override-only entry for a built-in agent. Validated when the
   agent list is validated: it must compile and return a boolean. Like an
   invalid `model` or `effort`, an invalid `trigger` makes every agent run in

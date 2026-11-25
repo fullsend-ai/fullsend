@@ -60,10 +60,12 @@ type BuiltinResolver func(ctx context.Context, name string, opts harness.Compose
 // only tunes the agent, ADR 0091) does not replace the built-in harness, so
 // the built-in is listed with the entry's harness: blocks applied. An agent
 // whose last agents: entry disables it is not listed, whether registered
-// or built-in, and each agent is listed at most once. When the config sets
-// roles:, only the built-in agents those roles select are listed (code is
-// selected by coder); agents registered with a source are not scoped by
-// roles.
+// or built-in, and each agent is listed at most once. Only the built-in
+// agents in effectiveDispatchBuiltinAgents (triage and code) are listed;
+// review, fix, retro and prioritize are never dispatched this way. When the
+// config sets roles:, only the built-in agents those roles select are listed
+// (code is selected by coder); agents registered with a source are not
+// scoped by roles or by that set.
 //
 // Unlike ListTriggeredHarnesses, any failure is an error: an agent that
 // cannot be resolved or loaded (registered or built-in) is also logged as an
@@ -78,14 +80,33 @@ func ListEffectiveTriggeredHarnesses(ctx context.Context, configDir string, cfg 
 	return listTriggeredHarnesses(ctx, configDir, cfg, fetchPolicy, builtin)
 }
 
-// effectiveBuiltinAgents returns the built-in agents (config.ValidAgentNames)
-// that registered does not already list, that the configured roles select
-// (config.BuiltinAgentSelected) and that no agents: entry disables, in
-// ValidAgentNames order. An unselected built-in is dropped here, before
-// anything resolves or fetches its harness.
+// effectiveDispatchBuiltinAgents are the built-in agents (a subset of
+// config.ValidAgentNames) a dispatcher with no stage routing, such as the
+// Jira poller, dispatches without an agents: registration. The others are
+// not Jira dispatch targets: review, fix and retro only act on a proposed
+// change, and prioritize has no supported Jira path yet. They are never
+// resolved or fetched, so one that cannot load cannot fail the poll. An
+// agent registered with a source: is not restricted by this list.
+var effectiveDispatchBuiltinAgents = []string{"triage", "code"}
+
+// EffectiveDispatchBuiltinAgents returns the built-in agent names
+// ListEffectiveTriggeredHarnesses may list without an agents: source entry.
+func EffectiveDispatchBuiltinAgents() []string {
+	return slices.Clone(effectiveDispatchBuiltinAgents)
+}
+
+// effectiveBuiltinAgents returns the built-in agents
+// (effectiveDispatchBuiltinAgents) that registered does not already list,
+// that the configured roles select (config.BuiltinAgentSelected) and that no
+// agents: entry disables, in ValidAgentNames order. An unsupported or
+// unselected built-in is dropped here, before anything resolves or fetches
+// its harness.
 func effectiveBuiltinAgents(entries []config.AgentEntry, registered []harness.RegisteredAgent, roles []string) []string {
 	var out []string
 	for _, name := range config.ValidAgentNames() {
+		if !slices.Contains(effectiveDispatchBuiltinAgents, name) {
+			continue
+		}
 		if !config.BuiltinAgentSelected(name, roles) {
 			continue
 		}
@@ -178,7 +199,7 @@ func listTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		path, loadOpts, ok := builtin(ctx, name, composeOpts)
 		if !ok {
 			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping built-in agent %s: its harness could not be resolved\n", workflowcmd.SanitizeAnnotation(name))
-			loadErrs = append(loadErrs, fmt.Errorf("built-in agent %s: harness could not be resolved", name))
+			loadErrs = append(loadErrs, fmt.Errorf("built-in agent %s: harness could not be resolved (check access to fullsend-ai/agents and allowed_remote_resources, or register the agent with a source:)", name))
 			continue
 		}
 		load(name, path, loadOpts)

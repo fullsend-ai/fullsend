@@ -74,16 +74,23 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 6. **Check which agents handle Jira events.** A fresh install needs no
    `agents:` entries. Each poll run considers the following agents:
 
-   - Every built-in agent that `agents:` in `.fullsend/config.yaml` does not
-     disable with `enabled: false`. When the config sets `roles:` (or setup
-     ran with `--agents`), only the built-in agents those roles select are
-     considered: for example `roles: [triage]` leaves out code, `coder` selects
-     code, and an explicit `roles: []` selects no built-in agent. An agent a
-     role does not select is never fetched.
+   - The built-in triage and code agents, unless `agents:` in
+     `.fullsend/config.yaml` disables one with `enabled: false`. Review, fix,
+     retro and prioritize are never dispatched from Jira, so the poller does
+     not fetch them and one that is unavailable cannot fail a poll run. When
+     the config sets `roles:` (or setup ran with `--agents`), only the
+     built-in agents those roles select are considered: for example
+     `roles: [triage]` leaves out code, `coder` selects code, and an explicit
+     `roles: []` selects no built-in agent. An agent a role does not select is
+     never fetched.
      The poller resolves it the same way
      `fullsend run` does: from the `fullsend-ai/agents` release tag that
      matches the fullsend release you run, or from `main` for a development
-     build. It reads the commit that ref points to at the start of the run.
+     build. It reads the commit that ref points to at the start of the run,
+     authenticated with the same GitHub token `fullsend run` uses (`GH_TOKEN`,
+     `GITHUB_TOKEN` or `gh auth`) so the lookup does not depend on the
+     anonymous API rate limit. With no token it falls back to an anonymous
+     lookup.
    - Every agent registered under `agents:` with a `source:` harness. An
      entry with a `source:` that has a built-in agent's name replaces that
      built-in.
@@ -105,17 +112,23 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    | code | A `/fs-code` comment from a human, or the `ready-to-code` label being added | The agents release that follows v0.52.0 ([agents#1842](https://github.com/fullsend-ai/agents/pull/1842)) |
 
    The actor still needs the role the agent requires. See
-   [Actor role resolution](#actor-role-resolution). The default prioritize
-   trigger also matches a `/fs-prioritize` comment on a Jira issue, but
-   prioritize has no Jira support yet
+   [Actor role resolution](#actor-role-resolution). The built-in prioritize
+   agent is not dispatched from Jira: a `/fs-prioritize` comment on a Jira
+   issue produces no dispatch, because prioritize has no Jira support yet
    ([#2266](https://github.com/fullsend-ai/fullsend/issues/2266)). Review,
-   fix and retro do not run from Jira events: see [How it works](#how-it-works).
+   fix and retro do not run from Jira events either: see
+   [How it works](#how-it-works). An agent you register with a `source:` is
+   considered whatever its name, so a custom harness with a valid Jira
+   `trigger:` still dispatches.
 
    To stop a built-in agent from dispatching, add an `agents:` entry with
    its name and `enabled: false`. This disables the agent on the code host
-   as well, not only for Jira. If the poller cannot fetch a built-in harness,
-   for example because `allowed_remote_resources` leaves out the agents
-   repository, it logs an error for that agent and the poll run fails. The
+   as well, not only for Jira. If the poller cannot fetch the triage or code
+   built-in harness, for example because `allowed_remote_resources` leaves out
+   the agents repository or the lookup is refused, it logs an error for that
+   agent and the poll run fails. To poll with no access to the agents
+   repository, register triage and code with a `source:` (a custom source
+   replaces the built-in, which is then not fetched). The
    same holds when it cannot resolve or load any other selected, enabled
    agent. The failure happens before any checkpoint advances, so the next
    run tries again. When a cycle selects issues but no agent matches their

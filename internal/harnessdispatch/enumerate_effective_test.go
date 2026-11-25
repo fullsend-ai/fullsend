@@ -71,7 +71,8 @@ func TestListEffectiveTriggeredHarnesses_NoAgentsListsBuiltins(t *testing.T) {
 	out, err := ListEffectiveTriggeredHarnesses(context.Background(), dir, cfg, nil, stub.resolve)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"triage", "code"}, candidateNames(out))
-	assert.Equal(t, config.ValidAgentNames(), stub.requested, "without roles every built-in is considered once")
+	assert.Equal(t, EffectiveDispatchBuiltinAgents(), stub.requested, "without roles every dispatchable built-in is considered once")
+	assert.Equal(t, []string{"triage", "code"}, EffectiveDispatchBuiltinAgents())
 
 	// The GitHub dispatch path keeps listing only source-registered agents.
 	gh, err := ListTriggeredHarnesses(context.Background(), dir, cfg, nil)
@@ -210,6 +211,24 @@ func TestListEffectiveTriggeredHarnesses_ResolveFailures(t *testing.T) {
 	})
 }
 
+func TestListEffectiveTriggeredHarnesses_UnsupportedBuiltinsNeverListed(t *testing.T) {
+	captureAnnotations(t)
+	dir := t.TempDir()
+	cfg := loadYAMLConfig(t, dir, "version: \"1\"\n")
+	triggers := map[string]string{}
+	for _, name := range config.ValidAgentNames() {
+		triggers[name] = effectiveTestTrigger
+	}
+	// Every built-in outside the dispatchable set is unavailable; none of
+	// them is requested, so none can fail the listing.
+	stub := newBuiltinStub(t, triggers, "review", "fix", "retro", "prioritize")
+
+	out, err := ListEffectiveTriggeredHarnesses(context.Background(), dir, cfg, nil, stub.resolve)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"triage", "code"}, candidateNames(out))
+	assert.Equal(t, []string{"triage", "code"}, stub.requested)
+}
+
 func TestListEffectiveTriggeredHarnesses_RequiresResolver(t *testing.T) {
 	dir := t.TempDir()
 	cfg := loadYAMLConfig(t, dir, "version: \"1\"\n")
@@ -281,7 +300,7 @@ func TestListEffectiveTriggeredHarnesses_Roles(t *testing.T) {
 			out, err := ListEffectiveTriggeredHarnesses(context.Background(), dir, cfg, nil, stub.resolve)
 			require.NoError(t, err)
 			assert.Equal(t, []string{"triage", "code"}, candidateNames(out))
-			assert.Equal(t, config.ValidAgentNames(), stub.requested, "no roles means the default selection")
+			assert.Equal(t, []string{"triage", "code"}, stub.requested, "no roles means the default selection")
 		})
 	}
 
@@ -292,7 +311,7 @@ func TestListEffectiveTriggeredHarnesses_Roles(t *testing.T) {
 		out, err := ListEffectiveTriggeredHarnesses(context.Background(), dir, cfg, nil, stub.resolve)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"code"}, candidateNames(out))
-		assert.Equal(t, []string{"code", "fix"}, stub.requested, "coder also selects fix, which reuses the coder app")
+		assert.Equal(t, []string{"code"}, stub.requested, "coder also selects fix, but fix is not a dispatchable built-in")
 	})
 
 	t.Run("an unselected built-in that cannot load does not fail the poll", func(t *testing.T) {

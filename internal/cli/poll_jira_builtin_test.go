@@ -147,7 +147,7 @@ func TestNewCELMatcher_FreshInstallDispatchesBuiltins(t *testing.T) {
 
 			m, err := newCELMatcher(context.Background(), dir)
 			require.NoError(t, err)
-			assert.Equal(t, config.ValidAgentNames(), *requested, "each built-in is considered once")
+			assert.Equal(t, []string{"triage", "code"}, *requested, "only the Jira-capable built-ins are considered, once each")
 			assert.Equal(t, []string{"triage", "code"}, jiraCandidateNames(m))
 			assert.Equal(t, []string{"triage"}, matchedAgents(t, m, "/fs-triage"))
 			assert.Equal(t, []string{"code"}, matchedAgents(t, m, "/fs-code"))
@@ -214,7 +214,7 @@ agents:
 
 	m, err := newCELMatcher(context.Background(), dir)
 	require.NoError(t, err)
-	assert.Equal(t, config.ValidAgentNames(), *requested)
+	assert.Equal(t, []string{"triage", "code"}, *requested)
 	require.Equal(t, []string{"triage", "code"}, jiraCandidateNames(m))
 	assert.Equal(t, "sonnet", m.Candidates[1].Harness.Model, "harness: block override applies")
 	assert.Equal(t, []string{"triage"}, matchedAgents(t, m, "/fs-triage"))
@@ -385,11 +385,10 @@ func TestAgentsRepoBuiltinResolver_VersionPinned(t *testing.T) {
 
 			dir := filepath.Join(t.TempDir(), ".fullsend")
 			require.NoError(t, os.MkdirAll(dir, 0o755))
-			// The server serves only the triage and code harnesses; an
-			// unresolvable built-in fails the listing, so disable the rest.
-			writeMatcherConfig(t, dir, "version: \"1\"\nallowed_remote_resources:\n  - "+srv.URL+"/\nagents:\n"+
-				"  - name: review\n    enabled: false\n  - name: fix\n    enabled: false\n"+
-				"  - name: retro\n    enabled: false\n  - name: prioritize\n    enabled: false\n")
+			// The server serves only the triage and code harnesses; the
+			// other built-ins are not Jira dispatch targets, so they are never
+			// requested and need no disabling.
+			writeMatcherConfig(t, dir, "version: \"1\"\nallowed_remote_resources:\n  - "+srv.URL+"/\n")
 			cfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: true})
 			require.NoError(t, err)
 
@@ -434,4 +433,208 @@ func TestAgentsRepoBuiltinResolver_Unresolvable(t *testing.T) {
 
 func TestNewJiraBuiltinResolver_Default(t *testing.T) {
 	assert.NotNil(t, newJiraBuiltinResolverFn())
+}
+
+// allJiraBuiltinTriggers gives every built-in a Jira command trigger, so a
+// test shows which of them the matcher leaves out on purpose.
+func allJiraBuiltinTriggers() map[string]string {
+	triggers := defaultJiraBuiltinTriggers()
+	for _, name := range []string{"review", "fix", "retro", "prioritize"} {
+		triggers[name] = jiraCommandTrigger("/fs-" + name)
+	}
+	return triggers
+}
+
+// TestNewCELMatcher_UnsupportedBuiltinsNotDispatched covers the built-ins
+// the Jira matcher never dispatches: review, fix and retro only act on a
+// proposed change and prioritize has no supported Jira path. Their
+// harnesses are not fetched, even when they carry a Jira trigger.
+func TestNewCELMatcher_UnsupportedBuiltinsNotDispatched(t *testing.T) {
+	for name, configYAML := range map[string]string{
+		"default roles":         "version: \"1\"\n",
+		"every role":            "version: \"1\"\nroles: [triage, coder, review, fix, retro, prioritize]\n",
+		"override-only entries": "version: \"1\"\nagents:\n  - name: prioritize\n    runtime: claude\n  - name: review\n    runtime: claude\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeMatcherConfig(t, dir, configYAML)
+			requested := stubJiraBuiltins(t, allJiraBuiltinTriggers())
+
+			m, err := newCELMatcher(context.Background(), dir)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"triage", "code"}, *requested)
+			assert.Equal(t, []string{"triage", "code"}, jiraCandidateNames(m))
+			assert.Empty(t, matchedAgents(t, m, "/fs-prioritize"), "prioritize has no Jira support yet")
+			for _, command := range []string{"/fs-review", "/fs-fix", "/fs-retro"} {
+				assert.Empty(t, matchedAgents(t, m, command), command)
+			}
+			assert.Equal(t, []string{"triage"}, matchedAgents(t, m, "/fs-triage"))
+			assert.Equal(t, []string{"code"}, matchedAgents(t, m, "/fs-code"))
+		})
+	}
+
+	t.Run("an explicitly registered custom agent is still dispatched", func(t *testing.T) {
+		dir := t.TempDir()
+		harnessDir := filepath.Join(dir, "harness")
+		require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "prioritize.yaml"),
+			[]byte(jiraBuiltinTestHarness("prioritize", jiraCommandTrigger("/fs-prioritize"))), 0o644))
+		writeMatcherConfig(t, dir, "version: \"1\"\nagents:\n  - name: prioritize\n    source: harness/prioritize.yaml\n")
+		stubJiraBuiltins(t, nil)
+
+		m, err := newCELMatcher(context.Background(), dir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"prioritize"}, matchedAgents(t, m, "/fs-prioritize"))
+		assert.Equal(t, []string{"triage"}, matchedAgents(t, m, "/fs-triage"))
+	})
+}
+
+// TestNewCELMatcher_UnrelatedBuiltinsCannotBlockPoll shows an unavailable
+// built-in that is not a Jira dispatch target does not fail the poll, while
+// an unavailable Jira-capable built-in still does (and a custom source
+// needs no fetch for the built-in it replaces).
+func TestNewCELMatcher_UnrelatedBuiltinsCannotBlockPoll(t *testing.T) {
+	t.Run("unsupported built-ins unavailable", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMatcherConfig(t, dir, "version: \"1\"\n")
+		stubJiraBuiltins(t, allJiraBuiltinTriggers(), "review", "fix", "retro", "prioritize")
+
+		m, err := newCELMatcher(context.Background(), dir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"triage"}, matchedAgents(t, m, "/fs-triage"))
+		assert.Equal(t, []string{"code"}, matchedAgents(t, m, "/fs-code"))
+	})
+
+	t.Run("a Jira-capable built-in unavailable still fails the poll", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMatcherConfig(t, dir, "version: \"1\"\n")
+		stubJiraBuiltins(t, allJiraBuiltinTriggers(), "triage")
+
+		_, err := newCELMatcher(context.Background(), dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "built-in agent triage: harness could not be resolved")
+		assert.Contains(t, err.Error(), "allowed_remote_resources", "the error says where to look")
+	})
+
+	t.Run("custom sources need no built-in fetch", func(t *testing.T) {
+		dir := t.TempDir()
+		harnessDir := filepath.Join(dir, "harness")
+		require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+		for _, name := range []string{"triage", "code"} {
+			require.NoError(t, os.WriteFile(filepath.Join(harnessDir, name+".yaml"),
+				[]byte(jiraBuiltinTestHarness(name, jiraCommandTrigger("/fs-"+name))), 0o644))
+		}
+		writeMatcherConfig(t, dir, "version: \"1\"\nagents:\n  - name: triage\n    source: harness/triage.yaml\n  - name: code\n    source: harness/code.yaml\n")
+		requested := stubJiraBuiltins(t, nil, config.ValidAgentNames()...)
+
+		m, err := newCELMatcher(context.Background(), dir)
+		require.NoError(t, err)
+		assert.Empty(t, *requested)
+		assert.Equal(t, []string{"triage"}, matchedAgents(t, m, "/fs-triage"))
+		assert.Equal(t, []string{"code"}, matchedAgents(t, m, "/fs-code"))
+	})
+}
+
+// TestNewCELMatcher_RestrictedAgentSourceAccess runs the production
+// resolver against a forge client with no access to the agents repository,
+// and with allowed_remote_resources: [], using a controlled fixture instead
+// of the network.
+func TestNewCELMatcher_RestrictedAgentSourceAccess(t *testing.T) {
+	const sha = "abcdef1234567890abcdef1234567890abcdef12"
+	useResolver := func(t *testing.T, client forge.Client) {
+		t.Helper()
+		orig := newJiraBuiltinResolverFn
+		newJiraBuiltinResolverFn = func() harnessdispatch.BuiltinResolver {
+			return agentsRepoBuiltinResolver(client, ui.New(io.Discard))
+		}
+		t.Cleanup(func() { newJiraBuiltinResolverFn = orig })
+	}
+	writeCustomHarnesses := func(t *testing.T, dir string) {
+		t.Helper()
+		harnessDir := filepath.Join(dir, "harness")
+		require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+		for _, name := range []string{"triage", "code"} {
+			require.NoError(t, os.WriteFile(filepath.Join(harnessDir, name+".yaml"),
+				[]byte(jiraBuiltinTestHarness(name, jiraCommandTrigger("/fs-"+name))), 0o644))
+		}
+	}
+	const customSources = "agents:\n  - name: triage\n    source: harness/triage.yaml\n  - name: code\n    source: harness/code.yaml\n"
+
+	t.Run("custom sources poll with no agents repository access", func(t *testing.T) {
+		dir := t.TempDir()
+		writeCustomHarnesses(t, dir)
+		writeMatcherConfig(t, dir, "version: \"1\"\nallowed_remote_resources: []\n"+customSources)
+		client := &countingRefClient{FakeClient: forge.NewFakeClient()}
+		useResolver(t, client)
+
+		m, err := newCELMatcher(context.Background(), dir)
+		require.NoError(t, err)
+		assert.Zero(t, client.getRef.Load(), "no built-in is looked up")
+		assert.Equal(t, []string{"triage"}, matchedAgents(t, m, "/fs-triage"))
+		assert.Equal(t, []string{"code"}, matchedAgents(t, m, "/fs-code"))
+	})
+
+	t.Run("a built-in with the agents repository not allowed fails the poll", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMatcherConfig(t, dir, "version: \"1\"\nallowed_remote_resources: []\n")
+		client := &countingRefClient{FakeClient: forge.NewFakeClient()}
+		client.Refs["fullsend-ai/agents/heads/main"] = sha
+		client.Refs["fullsend-ai/agents/tags/v0.85.0"] = sha
+		useResolver(t, client)
+
+		_, err := newCELMatcher(context.Background(), dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "harness could not be resolved")
+	})
+
+	t.Run("an unreachable agents repository fails the poll", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMatcherConfig(t, dir, "version: \"1\"\n")
+		useResolver(t, forge.NewFakeClient())
+
+		_, err := newCELMatcher(context.Background(), dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no agents could be loaded")
+	})
+}
+
+// TestNewJiraBuiltinResolver_TokenAuth shows the default resolver sends the
+// configured GitHub token on the agents-ref lookup, and falls back to an
+// anonymous lookup only when no token is available.
+func TestNewJiraBuiltinResolver_TokenAuth(t *testing.T) {
+	var auth atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth.Store(r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	origServer := githubServerBaseURLFn
+	githubServerBaseURLFn = func() string { return srv.URL }
+	t.Cleanup(func() { githubServerBaseURLFn = origServer })
+	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	origAuth := ghAuthTokenFn
+	ghAuthTokenFn = func() ([]byte, error) { return nil, errGitHubTokenMissing }
+	t.Cleanup(func() { ghAuthTokenFn = origAuth })
+
+	lookup := func(t *testing.T) string {
+		t.Helper()
+		auth.Store("")
+		opts := harness.ComposeOpts{WorkspaceRoot: t.TempDir()}
+		_, _, ok := newJiraBuiltinResolverFn()(context.Background(), "triage", opts)
+		assert.False(t, ok, "the fixture server has no agents repository")
+		got, _ := auth.Load().(string)
+		return got
+	}
+
+	t.Run("token present", func(t *testing.T) {
+		t.Setenv("GH_TOKEN", "poll-token")
+		t.Setenv("GITHUB_TOKEN", "")
+		assert.Equal(t, "Bearer poll-token", lookup(t))
+	})
+
+	t.Run("no token", func(t *testing.T) {
+		t.Setenv("GH_TOKEN", "")
+		t.Setenv("GITHUB_TOKEN", "")
+		assert.Empty(t, lookup(t))
+	})
 }
