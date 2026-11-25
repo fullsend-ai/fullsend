@@ -143,7 +143,7 @@ jobs:
           : > "${RUNNER_TEMP}/pr-titles.tsv"
           while read -r pr; do
             gh pr view "${pr}" --json number,title \
-              --jq '"\\(.number)\\t\\(.title)"' >> "${RUNNER_TEMP}/pr-titles.tsv"
+              --jq '"\(.number)\t\(.title)"' >> "${RUNNER_TEMP}/pr-titles.tsv"
           done < <(jq -r 'keys[]' "${RUNNER_TEMP}/release-notes.json")
           bash scripts/render-release-notes.sh \
             "${RUNNER_TEMP}/release-notes.json" \

@@ -44,19 +44,24 @@ write_fixtures '101\tfeat(cli): new thing
 105\tfeat(api)!: breaking change
 ' <<'EOF'
 {
-  "101": {"pr_number": 101, "markdown": "Adds a new CLI flag.", "text": "",
+  "101": {"pr_number": 101, "text": "Adds a new CLI flag.",
+          "markdown": "Adds a new CLI flag. ([#101](https://example.com/pull/101), [@alice](https://example.com/alice))",
           "pr_url": "https://example.com/pull/101", "author": "alice",
           "author_url": "https://example.com/alice"},
-  "102": {"pr_number": 102, "markdown": "Fixes a crash.", "text": "",
+  "102": {"pr_number": 102, "text": "Fixes a crash.",
+          "markdown": "Fixes a crash. ([#102](https://example.com/pull/102), [@bob](https://example.com/bob))",
           "pr_url": "https://example.com/pull/102", "author": "bob",
           "author_url": "https://example.com/bob"},
-  "103": {"pr_number": 103, "markdown": "Renames a package.", "text": "",
+  "103": {"pr_number": 103, "text": "Renames a package.",
+          "markdown": "Renames a package. ([#103](https://example.com/pull/103), [@carol](https://example.com/carol))",
           "pr_url": "https://example.com/pull/103", "author": "carol",
           "author_url": "https://example.com/carol"},
-  "104": {"pr_number": 104, "markdown": "Documents a flag.", "text": "",
+  "104": {"pr_number": 104, "text": "Documents a flag.",
+          "markdown": "Documents a flag. ([#104](https://example.com/pull/104), [@dave](https://example.com/dave))",
           "pr_url": "https://example.com/pull/104", "author": "dave",
           "author_url": "https://example.com/dave"},
-  "105": {"pr_number": 105, "markdown": "Removes a flag.", "text": "",
+  "105": {"pr_number": 105, "text": "Removes a flag.",
+          "markdown": "Removes a flag. ([#105](https://example.com/pull/105), [@erin](https://example.com/erin))",
           "pr_url": "https://example.com/pull/105", "author": "erin",
           "author_url": "https://example.com/erin"}
 }
@@ -94,10 +99,10 @@ check "notes grouped by title type" '### Breaking Changes
 write_fixtures '101\tfeat(cli): new thing
 ' <<'EOF'
 {
-  "101": {"pr_number": 101, "markdown": "Adds a new CLI flag.", "text": "",
+  "101": {"pr_number": 101, "text": "Adds a new CLI flag.",
           "pr_url": "https://example.com/pull/101", "author": "alice",
           "author_url": "https://example.com/alice"},
-  "999": {"pr_number": 999, "markdown": "Old release note.", "text": "",
+  "999": {"pr_number": 999, "text": "Old release note.",
           "pr_url": "https://example.com/pull/999", "author": "mallory",
           "author_url": "https://example.com/mallory"}
 }
@@ -116,10 +121,10 @@ write_fixtures '201\tfix: urgent thing
 202\tfeat: quiet thing
 ' <<'EOF'
 {
-  "201": {"pr_number": 201, "markdown": "The role field is now required.", "text": "",
+  "201": {"pr_number": 201, "text": "The role field is now required.",
           "pr_url": "https://example.com/pull/201", "author": "alice",
           "author_url": "https://example.com/alice", "action_required": true},
-  "202": {"pr_number": 202, "markdown": "Should not appear.", "text": "",
+  "202": {"pr_number": 202, "text": "Should not appear.",
           "pr_url": "https://example.com/pull/202", "author": "bob",
           "author_url": "https://example.com/bob", "do_not_publish": true}
 }
@@ -138,7 +143,8 @@ check "action-required note lands under Urgent Upgrade Notes; do-not-publish dro
 write_fixtures '301\tfeat: multi-line
 ' <<'EOF'
 {
-  "301": {"pr_number": 301, "markdown": "First line.\nSecond line.", "text": "",
+  "301": {"pr_number": 301, "text": "First line.\nSecond line.",
+          "markdown": "First line.\n  Second line. ([#301](https://example.com/pull/301), [@alice](https://example.com/alice))",
           "pr_url": "https://example.com/pull/301", "author": "alice",
           "author_url": "https://example.com/alice"}
 }
@@ -151,6 +157,27 @@ check "multi-line note continuation lines are indented" '### Features
 
 - First line.
   Second line. ([#301](https://example.com/pull/301), [@alice](https://example.com/alice))'
+
+# --- Titles TSV produced the way release.yml produces it ---------------
+
+# release.yml builds the TSV with `gh pr view --json number,title
+# --jq '"\(.number)\t\(.title)"'`. gh's --jq is jq, so simulate it with
+# jq on the same JSON shape and feed the result to the renderer, so the
+# producer and consumer cannot drift apart again.
+printf '{"number": 501, "title": "feat: tsv producer"}\n' \
+  | jq -r '"\(.number)\t\(.title)"' > "${TMP}/titles.tsv"
+cat >"${TMP}/notes.json" <<'EOF'
+{
+  "501": {"pr_number": 501, "text": "Note from the TSV producer test.",
+          "pr_url": "https://example.com/pull/501", "author": "alice",
+          "author_url": "https://example.com/alice"}
+}
+EOF
+printf '501\n' >"${TMP}/merged.txt"
+
+check "titles TSV built with the workflow's jq expression drives section choice" '### Features
+
+- Note from the TSV producer test. ([#501](https://example.com/pull/501), [@alice](https://example.com/alice))'
 
 # --- Empty input ----------------------------------------------------------
 

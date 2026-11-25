@@ -40,18 +40,22 @@ COMMIT_SUBJECTS="${COMMIT_SUBJECTS:-}"
 PR_BODY="${PR_BODY//$'\r'/}"
 
 # Extract the first fenced ```release-note block: lines between the
-# opening ```release-note fence and the next closing fence. The opener
-# must be exactly ```release-note (or ```release-notes) at column 0:
-# the release-notes gatherer only recognizes those exact fence lines,
-# so variants like "```release-note " (trailing space) or
-# "```release-note-foo" would pass here but be silently skipped by the
-# gatherer. They are rejected below instead. The closing fence may be
-# indented; NOTE_TRIMMED strips indentation anyway.
+# opening ```release-note fence and the next closing fence. Both fences
+# must be exactly as the release-notes gatherer recognizes them: the
+# opener exactly ```release-note (or ```release-notes) at column 0, and
+# the closer exactly ``` at column 0 directly after a newline. Variants
+# the gatherer would skip or mis-parse (trailing spaces, an indented
+# closer, a missing closer) are rejected below instead of passing CI and
+# then being silently dropped at release time.
 NOTE=$(awk '
   /^```release-notes?$/ { inblock = 1; next }
-  inblock && /^[ \t]*```/ { exit }
+  inblock && /^```$/ { closed = 1; exit }
   inblock { print }
-' <<<"${PR_BODY}")
+  END { if (inblock && !closed) exit 3 }
+' <<<"${PR_BODY}") || {
+  echo "::error::PR body has a release-note block that is never closed by an unindented fence line. The gatherer would skip or mis-extract it; close the block with a fence line (three backticks) at column 0." >&2
+  exit 1
+}
 
 # Trim each line and drop leading/trailing blank lines, so indented or
 # padded blocks still validate.

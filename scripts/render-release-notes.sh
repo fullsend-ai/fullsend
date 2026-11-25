@@ -56,9 +56,9 @@ ROWS=$(jq -c --argjson allowed "${ALLOWED}" --argjson titles "${TITLES}" '
     | select(.value.pr_number as $n | $allowed | index($n))
     | select(.value.do_not_publish != true)
     | .value
-    | select((.markdown // .text | length) > 0)
+    | select((.text | length) > 0)
     | {number: .pr_number, title: ($titles[.pr_number | tostring] // ""),
-       text: (.markdown // .text), url: .pr_url,
+       text: .text, url: .pr_url,
        author: .author, author_url: .author_url,
        action_required: (.action_required == true)}
   ] | sort_by(.number) | .[]' "${NOTES_JSON}")
@@ -75,7 +75,7 @@ RE_FIX='^fix(\([^)]*\))?!?:'
 RE_REFACTOR='^refactor(\([^)]*\))?!?:'
 
 section_for() {
-  local number=$1 action_required=$2 title=$3
+  local action_required=$1 title=$2
   if [[ "${action_required}" == "true" ]]; then
     echo "urgent"
   elif [[ "${title}" =~ ${RE_BREAKING} ]]; then
@@ -111,7 +111,7 @@ while IFS= read -r line; do
   author=$(jq -r .author <<<"${line}")
   author_url=$(jq -r .author_url <<<"${line}")
   action_required=$(jq -r '.action_required' <<<"${line}")
-  section=$(section_for "${number}" "${action_required}" "${title}")
+  section=$(section_for "${action_required}" "${title}")
   # Indent continuation lines of multi-line notes so they stay inside the
   # bullet.
   formatted=$(printf '%s\n' "${text}" | sed '2,$s/^/  /')

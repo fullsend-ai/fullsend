@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -25,6 +24,11 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # Only the label-sync step needs to write; keep that grant at job
+    # level so checkout and validation run read-only.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       # Check out the PR's base ref, not the PR head: the validator must
       # come from a trusted revision so a PR cannot neuter its own check

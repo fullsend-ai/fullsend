@@ -278,10 +278,20 @@ run_case "quoted 'NONE' (mixed case) fails" fail env PR_BODY="$BODY_QUOTED_NONE_
 run_case "fence with trailing spaces fails" fail env PR_BODY="$BODY_FENCE_TRAILING_SPACES"
 run_case "release-note-foo fence fails" fail env PR_BODY="$BODY_FENCE_VARIANT"
 
-# An indented closing fence must close the block, not swallow the rest
-# of the PR body.
-run_case "indented closing fence passes and stops at the fence" pass \
+BODY_MISSING_CLOSING_FENCE="## Summary
+
+\`\`\`release-note
+Fixed foo.
+
+## Later section
+"
+
+# An indented closing fence is not a closer for the gatherer, so such a
+# block must fail CI instead of being silently skipped at release.
+run_case "indented closing fence fails" fail \
   env PR_BODY="$BODY_INDENTED_CLOSING_FENCE"
+run_case "missing closing fence fails" fail \
+  env PR_BODY="$BODY_MISSING_CLOSING_FENCE"
 
 # Missing or empty blocks fail.
 run_case "no block fails" fail env PR_BODY="$BODY_NO_BLOCK"
