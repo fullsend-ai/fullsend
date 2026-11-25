@@ -1719,10 +1719,22 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ runner.arch }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+
+      - name: Validate cached fullsend CLI for event payload
+        id: payload-cli-cache-validation
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x "${RUNNER_TEMP}/fullsend-cache/fullsend" ]] && "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1; then
+            echo "valid=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "valid=false" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Install fullsend CLI for event payload (vendored)
-        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'vendored'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'vendored' && (steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -1736,7 +1748,7 @@ jobs:
           echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
       - name: Checkout upstream install action for event payload
-        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && (steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true')
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -1748,7 +1760,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Install fullsend CLI for event payload (upstream workflow)
-        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && (steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true')
         uses: ./.workflow-actions/.github/actions/install-fullsend-cli
         with:
           mode: upstream
@@ -1757,7 +1769,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for event payload
-        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit == 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit == 'true' && steps.payload-cli-cache-validation.outputs.valid == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -1768,19 +1780,21 @@ jobs:
           echo "${install_dir}" >> "${GITHUB_PATH}"
 
       - name: Prepare fullsend CLI cache artifact for event payload
-        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        id: payload-cli-cache-prepare
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && (steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true')
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/fullsend-cache"
           cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+          "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1
 
       - name: Save fullsend CLI cache for event payload
-        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && (steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true') && steps.payload-cli-cache-prepare.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ runner.arch }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Build event payload
         id: payload
