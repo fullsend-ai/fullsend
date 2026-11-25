@@ -442,6 +442,12 @@ func TestScanOutputFiles_ReportsFailedQuarantine(t *testing.T) {
 	assert.Contains(t, err.Error(), "could not write sanitized secret.txt")
 	assert.Contains(t, err.Error(), "unredacted output file could not be replaced or removed",
 		"a failed quarantine must reach the joined error")
+
+	var scanErr *outputScanError
+	require.ErrorAs(t, err, &scanErr)
+	assert.True(t, scanErr.failedOn(path),
+		"the file whose write and quarantine both failed must be recorded, so the gate cannot post its unredacted bytes")
+	assert.False(t, scanErr.failedOn(filepath.Join(dir, "other.json")), "a file the scan handled is not recorded")
 }
 
 // TestScanOutputFiles_SanitizerErrorContainsFileAndContinues pins that a

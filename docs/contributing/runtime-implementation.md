@@ -660,22 +660,27 @@ shape — every required field of a review result is still present, and its
 enum-valued fields (`action`, `severity`, `category`) and patterned fields
 (`head_sha`, finding `id`) keep values `review-result.schema.json` accepts —
 instead of being dropped whole or rewritten into a document the schema rejects. A
-key name is treated as block content only when the match starts or ends in it or
-the name itself carries a marker; then it is masked too, because it cannot be
-written back as structure. A value that neither carries a marker nor holds a run
-of that shape keeps its content: nothing distinguishes a quoted marker pair from
-a split block, so the choice is between masking free text and enum values, which
-loses the review, and keeping a fragment too short to be recognized as key
-material. Because one member holds only one line of a body, the values between
-the boundary members are also decided on their joined text: consecutive
-base64-only values are concatenated, and if the result looks like a body line —
-upper case, lower case and a base64-only character — every value in that run is
-masked. That catches a body split into short or digit-free chunks, while an
-object key, a value with punctuation or whitespace, a hex-only run or a lowercase
-word breaks the run. A hex-only run is kept for the same reason the enum values
-are: a PEM body is base64, while a hex run is more likely a commit SHA or a
-finding id. A single isolated fragment below the floor, with no neighbour to join
-it to, is still kept.
+key name is treated as block content only when the match starts or ends in it, the
+name itself carries a marker, or the name is a body line of the same shape a value
+is tested for; then it is masked too, because it cannot be written back as
+structure. A key whose name is base64 body material is key material rather than
+structure, and keeping it would write the body back after the markers were masked,
+where the written-bytes rescan can no longer see the block. A value that neither
+carries a marker nor holds a run of that shape keeps its content: nothing
+distinguishes a quoted marker pair from a split block, so the choice is between
+masking free text and enum values, which loses the review, and keeping a fragment
+too short to be recognized as key material. Because one member holds only one line
+of a body, the values between the boundary members are also decided on their
+joined text: consecutive base64-only values are concatenated, and if the result
+looks like a body line — upper case, lower case and a base64-only character —
+every value in that run is masked. That catches a body split into short or
+digit-free chunks, while an object key, a value with punctuation or whitespace, a
+hex-only run or a lowercase word breaks the run. A key never joins the run: a key
+is structure, and letting one join a group that also holds body material renames
+required schema keys such as `severity` and `file`. A hex-only run is kept for the
+same reason the enum values are: a PEM body is base64, while a hex run is more
+likely a commit SHA or a finding id. A single isolated fragment below the floor,
+with no neighbour to join it to, is still kept.
 `.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
 record framing; a secret that spans records cannot be redacted without
 rewriting that framing, so only the records that carry it are replaced, and a
@@ -744,7 +749,14 @@ post-script runs, posts the result, and the run still fails, so one unreadable
 or unwritable file somewhere else under the run directory cannot turn a
 completed report into silence. A result file the scan replaced with a
 fail-closed marker does not count: the marker is valid JSON, but it is not the
-agent's result, and posting it would report a removal as the review.
+agent's result, and posting it would report a removal as the review. Neither does
+a result file the scan failed *on*: when its write or sanitization failed and the
+quarantine then could not replace or remove it, the unredacted bytes are still on
+disk and still parse, so the gate refuses to post them. The paths the scan could
+not handle are kept internal for that decision and never printed or posted. The
+scan error is joined with the run's own terminal outcome rather than replacing it,
+so a run whose agent also failed still fails with both causes and the post-script
+still receives `FULLSEND_AGENT_EXIT_CODE`.
 
 ## Agent rule layering
 

@@ -255,8 +255,9 @@ type privateKeySpans struct {
 	// covered holds the indexes of the string values that carry part of a block
 	// spanning more than one leaf. Every covered value is replaced whole.
 	covered map[int]bool
-	// maskedKeys holds the indexes of the object keys whose own name carries a
-	// block marker and is therefore block content rather than structure.
+	// maskedKeys holds the indexes of the object keys whose own name carries
+	// block content — a marker, or a run of base64 body material — so the name
+	// is key material rather than structure.
 	maskedKeys map[int]bool
 	// localized counts the blocks that were mapped onto leaves.
 	localized int
@@ -281,9 +282,12 @@ type privateKeySpans struct {
 // values between a quoted marker pair stay readable, so a review result keeps its
 // shape instead of failing schema validation and being dropped (#5705). An object
 // key keeps its name unless the match starts or ends in it, or the name itself
-// carries a block marker: key names are the document's structure, and masking them
-// would drop a required field such as a finding's severity, category or file and
-// make the document fail schema validation.
+// carries block content — a marker or a run of base64 body material: key names are
+// the document's structure, and masking them would drop a required field such as a
+// finding's severity, category or file and make the document fail schema
+// validation. A key name that is itself a body line is not structure, though; it is
+// key material, and leaving it writes the body back after the markers are masked,
+// where the written-bytes rescan can no longer see the block (#5705).
 func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 	spans := privateKeySpans{covered: map[int]bool{}, maskedKeys: map[int]bool{}}
 	for _, match := range privateKeyRe.FindAllIndex(v.decoded.Bytes(), -1) {
@@ -313,7 +317,7 @@ func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 			// neither fragment matches privateKeyMarkerRe on its own.
 			atBoundary := pos == 0 || pos == len(hit)-1
 			if v.keys[i] {
-				if atBoundary || privateKeyMarkerRe.Match(v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end]) {
+				if atBoundary || v.valueCarriesKeyMaterial(i) {
 					spans.maskedKeys[i] = true
 				}
 				continue
@@ -332,9 +336,11 @@ func (v *jsonProvenance) spanningPrivateKeys() privateKeySpans {
 // is short or digit-free; a per-member test then accepts none of them and writes
 // the body back after the markers are masked, where the written-bytes rescan can
 // no longer see the block (#5705). Consecutive candidate segments are therefore
-// decided together. An object key between two values breaks the run, because a
-// key is structure rather than body, and a value with punctuation or whitespace
-// breaks it too: those are structural tokens and free text, not body lines.
+// decided together. An object key between two values breaks the run: a key is
+// structure, and letting one join a run that also holds body material renames
+// required schema keys (severity, category, file) and makes the review fail
+// validation. A key whose own name is a body line is masked on its own instead
+// (spanningPrivateKeys).
 func (v *jsonProvenance) maskSpanBody(hit []int, spans *privateKeySpans) {
 	var group []int
 	flush := func() {
@@ -366,9 +372,9 @@ func (v *jsonProvenance) maskSpanBody(hit []int, spans *privateKeySpans) {
 	flush()
 }
 
-// valueCarriesKeyMaterial reports whether the string value at index i has to be
-// replaced whole: it carries a block marker, or one of its runs holds base64
-// body material.
+// valueCarriesKeyMaterial reports whether the decoded key or string value at
+// index i has to be replaced whole: it carries a block marker, or one of its runs
+// holds base64 body material.
 func (v *jsonProvenance) valueCarriesKeyMaterial(i int) bool {
 	return textCarriesKeyMaterial(v.decoded.Bytes()[v.ranges[i].start:v.ranges[i].end])
 }
@@ -730,7 +736,8 @@ func (v *jsonLineView) spanningRecordPrivateKeys() ([]bool, []Finding) {
 // body split so that every line is short or digit-free is only recognizable once
 // the lines are joined. An object key breaks the run, since a key is structure
 // rather than body, and so does a value with punctuation or whitespace: those are
-// structural tokens and free text, not body lines.
+// structural tokens and free text, not body lines. A key whose own name is a body
+// line carries key material, so its record is covered on its own.
 func (v *jsonLineView) maskMiddleRecordBody(hit []int, covered []bool) {
 	first, last := hit[0], hit[len(hit)-1]
 	var group []int
@@ -759,7 +766,7 @@ func (v *jsonLineView) maskMiddleRecordBody(hit []int, covered []bool) {
 		text := v.decoded.Bytes()[leaf.span.start:leaf.span.end]
 		if leaf.key {
 			flush()
-			if privateKeyMarkerRe.Match(text) {
+			if textCarriesKeyMaterial(text) {
 				covered[leaf.record] = true
 			}
 			continue

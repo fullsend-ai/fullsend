@@ -351,8 +351,9 @@ file whose redacted content cannot be read, written or computed is replaced by
 such a marker and fails the run. If the marker cannot be written and the file
 cannot be removed either, the run's error says the unredacted file is still on
 disk. A private-key block that spans JSON members is handled in place instead:
-the keys keep their names, and each string value that carries block text or
-base64 key material becomes `[REDACTED PRIVATE KEY]`. When a
+object keys keep their names unless a key name is itself a line of the key body,
+and each string value — or key name — that carries block text or base64 key
+material becomes `[REDACTED PRIVATE KEY]`. When a
 replacement happens in a run that still exits 0, the job log says so. On GitHub
 Actions this is an error annotation: fullsend writes a `::error::` workflow
 command whenever the job sets `GITHUB_ACTIONS=true`, and GitHub Actions renders

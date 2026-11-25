@@ -362,6 +362,47 @@ func TestJSONProvenance_KeysAreStructure(t *testing.T) {
 	assert.False(t, spans.covered[5], "free text between the markers is not key material")
 }
 
+// TestSanitizeJSONDocument_BodyLineAsKeyBetweenMarkersMasked pins that a key name
+// which is itself a body line is key material, not structure. Once the boundary
+// markers are masked the written-bytes rescan can no longer see the block, so a
+// body kept in a key name would be written back unmasked (#5705).
+func TestSanitizeJSONDocument_BodyLineAsKeyBetweenMarkersMasked(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	const body = "MIIEowIBAAKCAQEAx7Qz9restOfTheBodyWq1Ez"
+	doc := []byte(`{"` + begin + `":1,"` + body + `":2,"` + end + `":3}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	assert.NotContains(t, string(out), body, "a body line in a key name is key material")
+	assert.NotContains(t, string(out), "BEGIN RSA")
+	assert.NotContains(t, string(out), "END RSA")
+}
+
+// TestSanitizeJSONDocument_StructuralKeysKeepNamesNextToMaterial pins the other
+// side of the same rule: a structural key between the markers keeps its name even
+// when the values around it carry body material. Letting a key join the
+// joined-run test would rename required schema keys and drop the review (#5705).
+func TestSanitizeJSONDocument_StructuralKeysKeepNamesNextToMaterial(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	doc := []byte(`{"` + begin + `":"x","severity":"high","category":"logic-error",` +
+		`"body":"MIIEowIBAAKCAQEAx7Qz9restOfTheBodyWq1Ez","` + end + `":"y"}`)
+
+	out, findings, err := SanitizeJSONDocument(doc, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.True(t, json.Valid(out), "sanitized JSON must stay valid: %s", out)
+	for _, key := range []string{`"severity":`, `"category":`, `"body":`} {
+		assert.Contains(t, string(out), key, "a structural key keeps its name")
+	}
+	assert.NotContains(t, string(out), "x7Qz9restOfTheBodyWq1Ez", "the body material is masked")
+}
+
 // TestSanitizeJSONDocument_FramingSecretInCleanDocumentFailsClosed pins that a
 // document with no leaf findings is still scanned in its written form. A
 // runtime secret spanning two member boundaries is visible only in the raw
@@ -858,6 +899,37 @@ func TestSanitizeJSONLines_QuotedMarkersKeepCleanRecords(t *testing.T) {
 	}
 	assert.Equal(t, `{"event":"normal record one"}`, lines[1], "a record carrying no block content must survive")
 	assert.Equal(t, `{"event":"normal record two"}`, lines[2], "a record carrying no block content must survive")
+}
+
+// TestSanitizeJSONLines_BodyLineAsKeyBetweenMarkersCovered pins the record-level
+// half of the body-in-key rule: a middle record whose key name is itself a body
+// line carries key material and must be replaced, while a clean record between the
+// markers still survives (#5705).
+func TestSanitizeJSONLines_BodyLineAsKeyBetweenMarkersCovered(t *testing.T) {
+	p := OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	const body = "MIIEowIBAAKCAQEAx7Qz9restOfTheBodyWq1Ez"
+	content := []byte(
+		"{\"" + begin + "\":1}\n" +
+			"{\"event\":\"normal record\"}\n" +
+			"{\"" + body + "\":2}\n" +
+			"{\"" + end + "\":3}\n")
+
+	out, findings, err := SanitizeJSONLines(content, p)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+	assert.NotContains(t, string(out), body, "a body line in a key name is key material")
+	assert.NotContains(t, string(out), begin)
+	assert.NotContains(t, string(out), end)
+
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	require.Len(t, lines, 4, "record count must not change")
+	for _, i := range []int{0, 2, 3} {
+		assert.True(t, json.Valid([]byte(lines[i])), "each replaced record must stay valid JSON: %s", lines[i])
+		assert.Contains(t, lines[i], "output removed")
+	}
+	assert.Equal(t, `{"event":"normal record"}`, lines[1], "a record carrying no block content must survive")
 }
 
 // TestSanitizeJSONLines_BodySplitAcrossRecordsCovered pins the other half: a

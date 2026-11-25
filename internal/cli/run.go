@@ -3508,7 +3508,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Collect the sandbox audit trail even when the scan failed: those runs
 		// are the ones where it matters most.
 		if err := collectPostScanSecurityArtifacts(runDir, sandboxName, printer, progressVerbosity, scanErr); err != nil {
-			return err
+			// Join the terminal outcome rather than return the scan failure
+			// alone. A run whose agent also failed keeps its agentFailedError,
+			// so the post-script gate still runs the post-script with
+			// FULLSEND_AGENT_EXIT_CODE set and the run error names both causes
+			// (#5705).
+			return postScanRunError(runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, lastExitCode, agentExitReason, runCount, lastIterElapsed, timeout), err)
 		}
 	}
 
@@ -4326,6 +4331,16 @@ func runTerminalError(hasLoop, validationPassed, timedOut bool, exitCode int, ex
 	return nil
 }
 
+// postScanRunError combines the run's own terminal outcome with the failure of
+// the post-agent output scan and the sandbox audit collection. The scan failure
+// must not replace an agent failure: the post-script gate keys off
+// agentFailedError to run the post-script with FULLSEND_AGENT_EXIT_CODE set, and
+// the run error has to name every cause (#5705). errors.Join keeps each cause
+// reachable through errors.As even when the terminal outcome is nil.
+func postScanRunError(terminalErr, scanErr error) error {
+	return errors.Join(terminalErr, scanErr)
+}
+
 // agentFailedError ends a run without a validation_loop whose agent failed
 // (#8305). The post-script gate tells it apart from other run errors.
 type agentFailedError struct {
@@ -4376,6 +4391,12 @@ func postScriptGate(h *harness.Harness, validationPassed, transcriptErrorOverrid
 		resultFile, ok := agentResultFile(h, outputDir)
 		if !ok {
 			return postScriptDecision{message: "Skipping post-script: the output scan failed and left no result file that parses"}
+		}
+		// A result file the scan could not write or sanitize is only still
+		// parseable because the quarantine could not replace it either: its bytes
+		// were never redacted, so posting it would publish them (#5705).
+		if scanErr.failedOn(resultFile) {
+			return postScriptDecision{message: "Skipping post-script: the output scan could not redact the result file"}
 		}
 		return postScriptDecision{
 			run:     true,
@@ -7309,10 +7330,41 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 		printer.StepDone("Output files clean — no issues found")
 	}
 	if err := errors.Join(writeErrs...); err != nil {
-		return &outputScanError{err: err, files: unreadable + unwritable + unsanitizable}
+		return &outputScanError{
+			err:    err,
+			files:  unreadable + unwritable + unsanitizable,
+			failed: failedOutputPaths(writeErrs),
+		}
 	}
 	return nil
 }
+
+// failedOutputPaths collects the paths of the output files the scan could not
+// handle. The gate needs them to tell a result file that survived the scan from
+// one the scan failed on, and the paths stay internal: they name agent-chosen
+// files, so they never reach a printed line (ADR 0163).
+func failedOutputPaths(errs []error) []string {
+	var paths []string
+	for _, err := range errs {
+		var failure *outputFileFailure
+		if errors.As(err, &failure) {
+			paths = append(paths, failure.path)
+		}
+	}
+	return paths
+}
+
+// outputFileFailure records one output file the scan could not read, sanitize or
+// write, with the path it could not handle. The path is not part of the message
+// the quiet level prints; it is kept so the post-script gate can refuse to post a
+// result file this scan could not redact (#5705).
+type outputFileFailure struct {
+	path string
+	err  error
+}
+
+func (e *outputFileFailure) Error() string { return e.err.Error() }
+func (e *outputFileFailure) Unwrap() error { return e.err }
 
 // postAgentScanFailurePrefix labels a failed post-agent output scan in the run
 // error and in the fixed text the completion comment carries at quiet.
@@ -7327,10 +7379,32 @@ const postAgentScanFailurePrefix = "post-agent output scan failed"
 type outputScanError struct {
 	err   error
 	files int
+	// failed holds the paths of the output files the scan could not handle. The
+	// post-script gate uses it to tell a result file that survived the scan from
+	// one whose write or sanitization failed, which can still parse when the
+	// quarantine could not replace it (#5705). Like every other path here it is
+	// internal: never printed, never posted.
+	failed []string
 }
 
 func (e *outputScanError) Error() string { return e.err.Error() }
 func (e *outputScanError) Unwrap() error { return e.err }
+
+// failedOn reports whether the scan could not handle path, or any directory that
+// contains it, so the bytes at path were never guaranteed redacted.
+func (e *outputScanError) failedOn(path string) bool {
+	for _, failed := range e.failed {
+		if failed == path {
+			return true
+		}
+		// A directory the walk could not open was never scanned, and neither was
+		// anything under it.
+		if strings.HasPrefix(path, failed+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
 
 // QuietStatusDetail is the fixed text the completion comment carries at quiet:
 // how many output files the scan could not handle, never a name or a cause.
@@ -7379,7 +7453,8 @@ func alertOnRecordRemoval(printer *ui.Printer, sanitized []byte) {
 func writeFailure(path, relPath string, writeErr error, unwritable *int) error {
 	*unwritable++
 	quarantineErr := quarantineOutput(path)
-	return errors.Join(fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr), quarantineErr)
+	return &outputFileFailure{path: path, err: errors.Join(
+		fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr), quarantineErr)}
 }
 
 // readFailure records an output file that could not be read. Its bytes cannot be
@@ -7391,7 +7466,8 @@ func writeFailure(path, relPath string, writeErr error, unwritable *int) error {
 func readFailure(path, relPath string, readErr error, unreadable *int) error {
 	*unreadable++
 	quarantineErr := quarantineOutput(path)
-	return errors.Join(fmt.Errorf("could not read %s: %w", relPath, readErr), quarantineErr)
+	return &outputFileFailure{path: path, err: errors.Join(
+		fmt.Errorf("could not read %s: %w", relPath, readErr), quarantineErr)}
 }
 
 // walkFailure records an entry the walk could not open. Nothing under it was
@@ -7406,7 +7482,7 @@ func walkFailure(outputDir, path string, walkErr error, unreadable *int) error {
 	if err != nil {
 		relPath = path
 	}
-	return fmt.Errorf("could not read %s: %w", relPath, walkErr)
+	return &outputFileFailure{path: path, err: fmt.Errorf("could not read %s: %w", relPath, walkErr)}
 }
 
 // sanitizeFailure records a sanitization error and contains the file it could
@@ -7418,7 +7494,8 @@ func walkFailure(outputDir, path string, walkErr error, unreadable *int) error {
 func sanitizeFailure(path, relPath string, scanErr error, unsanitizable *int) error {
 	*unsanitizable++
 	quarantineErr := quarantineOutput(path)
-	return errors.Join(fmt.Errorf("could not sanitize %s: %w", relPath, scanErr), quarantineErr)
+	return &outputFileFailure{path: path, err: errors.Join(
+		fmt.Errorf("could not sanitize %s: %w", relPath, scanErr), quarantineErr)}
 }
 
 // quarantineOutput replaces path with the fail-closed marker, removing it if even
