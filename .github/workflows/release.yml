@@ -121,11 +121,35 @@ jobs:
           # includes bot-authored PRs (agents open many of our PRs). Write
           # outside the checkout: GoReleaser refuses a dirty git tree.
           export BRANCH="${END_SHA}"
+          # Gather as JSON, then render with our own script. The tool
+          # credits a commit to any PR cited as "(#N)" in its message, so
+          # PRs from earlier releases can appear; the renderer keeps only
+          # PRs actually merged in the range (first-parent commits between
+          # PREV and TAG) and groups notes by PR title type, mirroring the
+          # old GoReleaser changelog layout.
           release-notes generate \
             --required-author="" \
             --dependencies=false \
-            --output "${RUNNER_TEMP}/release-notes-body.md" \
+            --format json \
+            --output "${RUNNER_TEMP}/release-notes.json" \
             --org fullsend-ai --repo fullsend
+          # PRs merged in this release: merge commits say "Merge pull
+          # request #N"; squash-merge subjects end with "(#N)".
+          git log --first-parent --format='%s' "${PREV}..${TAG}" \
+            | sed -nE 's/^Merge pull request #([0-9]+).*/\1/p; s/.*\(#([0-9]+)\)$/\1/p' \
+            | sort -u > "${RUNNER_TEMP}/merged-prs.txt"
+          # Titles for the gathered PRs (one cheap API call each; only PRs
+          # with a release-note block reach this list).
+          : > "${RUNNER_TEMP}/pr-titles.tsv"
+          while read -r pr; do
+            gh pr view "${pr}" --json number,title \
+              --jq '"\\(.number)\\t\\(.title)"' >> "${RUNNER_TEMP}/pr-titles.tsv"
+          done < <(jq -r 'keys[]' "${RUNNER_TEMP}/release-notes.json")
+          bash scripts/render-release-notes.sh \
+            "${RUNNER_TEMP}/release-notes.json" \
+            "${RUNNER_TEMP}/merged-prs.txt" \
+            "${RUNNER_TEMP}/pr-titles.tsv" \
+            > "${RUNNER_TEMP}/release-notes-body.md"
           # Prepend the header prepend-release-highlights.sh expects, so
           # the release-highlights step keeps working with the
           # gathered-notes body.

@@ -53,9 +53,11 @@ Add `role: <rolename>` to any harness file that lacks it.
 
 ## `feat` is for end users
 
-The `feat` prefix marks user-facing functionality. End users read the
-release notes to decide whether to upgrade. Reserve `feat` for changes an
-end user would recognize as new capability:
+Commit types classify git history and are gitlint-enforced; the PR-body
+release-note block controls what end users read in the release notes.
+The `feat` prefix still marks user-facing functionality, so the history
+stays meaningful. Reserve `feat` for changes an end user would recognize
+as new capability:
 
 - A new CLI command or flag they can invoke
 - A new behavior they interact with (e.g., the agent now comments on their PR with a new kind of analysis)
@@ -71,7 +73,10 @@ end user would recognize as new capability:
 
 Apply the same discipline to `fix` — bumping a dependency version is `chore`, not `fix`, unless it corrects a user-visible bug. Removing a trailing blank line is `style`, not `fix`.
 
-**When in doubt, prefer `refactor` or `chore` over `feat` or `fix`.** A change miscategorized as `refactor` is harmless — its release-note block can still say what matters. A change miscategorized as `feat` erodes the signal of the release notes.
+**When in doubt, prefer `refactor` or `chore` over `feat` or `fix`.** A
+miscategorized type mislabels the git history, not the release notes —
+the PR-body release-note block decides what users read — but an honest
+history is still worth keeping.
 
 ## Scope
 

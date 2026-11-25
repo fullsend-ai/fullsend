@@ -2,7 +2,10 @@ name: Release Note Check
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    # `labeled` is included so the recovery path for fork PRs works: a
+    # maintainer adding release-note-action-required re-runs this check,
+    # which then accepts the already-present label without a write.
+    types: [opened, synchronize, reopened, edited, labeled]
     branches: [main]
   merge_group:
 
@@ -79,8 +82,17 @@ jobs:
           # without the label the gatherer publishes the note as an
           # ordinary bullet and strips the "action required:" prefix,
           # losing the Urgent Upgrade Notes entry. Fail instead, so a
-          # maintainer must add the label before merge.
+          # maintainer must add the label before merge; the `labeled`
+          # trigger then re-runs this check, which accepts the label
+          # without a write.
           if [[ "${ACTION_REQUIRED:-}" == "1" ]]; then
+            # Already labeled (e.g. a maintainer added the label on a fork
+            # PR): accept it without a write — the fork's read-only token
+            # cannot mutate labels even when the label is present.
+            if gh pr view "${PR_NUMBER}" --json labels \
+                --jq '.labels[].name' | grep -qx release-note-action-required; then
+              exit 0
+            fi
             gh label create release-note-action-required --color b60205 \
               --description "Release-note block starts with 'action required'" --force \
               || echo "::warning::could not create label (it may already exist)"
