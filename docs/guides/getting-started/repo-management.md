@@ -1035,12 +1035,12 @@ What it does:
    | Event | Runs | Who must be authorized |
    |---|---|---|
    | Opened, pushed to, marked ready | Review | The PR author: triage access or higher, or an OWNERS approver or reviewer. A bot author is checked the same way (on a same-repo PR a bot author is trusted) |
-   | Labeled `ready-for-review` | Review of the commit that was the PR head when the label was added, while the label stays on the PR | Whoever added the label (adding labels needs triage access) |
+   | Labeled `ready-for-review` | Review, from the stub run GitHub starts for the label event (its run actor is the labeler), while the label stays on the PR | Whoever added the label (adding labels needs triage access) |
    | Closed or merged | Retro | Whoever closed or merged it: write access |
 
 An outside contributor's fork PR is therefore still not reviewed until
 someone authorized labels it or comments `/fs-review`. A push after the
-label is checked against the PR author, so to review a newer commit of an
+label is checked as the author's, so to review a newer commit of an
 outside contributor's PR, label it again or comment `/fs-review`.
 
 The shim never runs the fork's code or reads anything the fork's run

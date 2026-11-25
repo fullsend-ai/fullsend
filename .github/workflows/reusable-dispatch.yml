@@ -138,9 +138,6 @@ jobs:
     if: ${{ inputs.matrix == '' }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
-      # actions: read lists the fork pull request stub's runs (see "Resolve
-      # fork pull request for workflow_run").
-      actions: read
       contents: read
       id-token: write
       issues: read
@@ -211,11 +208,18 @@ jobs:
       #   - "Determine stage" checking the PR author, labeler or closer the
       #     API reports, as for a same-repo pull_request event.
       # The action the run stands for is rebuilt from API data: closed for a
-      # closed PR; labeled when ready-for-review is on the PR, was added
-      # within FORK_PR_WINDOW seconds before the stub run was created, and
-      # the run's head commit was this PR's head when it was added (so a
-      # later push never runs under someone else's label); otherwise opened,
-      # ready_for_review or synchronize. The window bounds how long one
+      # closed PR; labeled when the newest ready-for-review label event is
+      # within FORK_PR_WINDOW seconds before the stub run was created, the
+      # label is still on the PR, and the stub run's actor is that label
+      # event's actor; otherwise opened, ready_for_review or synchronize.
+      # The run actor (workflow_run.actor) is set by GitHub to whoever
+      # triggered the stub run, so a run whose actor is the labeler is the
+      # one GitHub started for the label event, on the PR head at that time
+      # (and the current-head check above still applies). A push after the
+      # label has the pusher as actor and is checked as the author's. A
+      # fork can only suppress its own label run, which leaves the author
+      # check: it fails closed. A maintainer re-running the author's run
+      # does not change the actor (triggering_actor is not used). The window bounds how long one
       # label or close can start a run: GitHub creates the stub run seconds
       # after the event, and five minutes absorbs Actions event backlog. A
       # closed PR counts only if it closed within the same window. The
@@ -236,6 +240,7 @@ jobs:
           WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           WR_CREATED_AT: ${{ github.event.workflow_run.created_at }}
+          WR_ACTOR: ${{ github.event.workflow_run.actor.login }}
         run: |
           set -euo pipefail
           echo "resolved=false" >> "${GITHUB_OUTPUT}"
@@ -333,28 +338,17 @@ jobs:
               LABEL_EVENT=$(last_event '.event == "labeled" and .label.name == "ready-for-review"')
               LABELED_AT=$(jq -r '.created_at // ""' <<<"${LABEL_EVENT}")
               if [[ -n "${LABELED_AT}" ]] && within "${LABELED_AT}"; then
-                # The label counts only while it is on the PR, and only for the
-                # commit that was this PR's head when it was added: the newest
-                # stub run on this fork branch, from this fork, created before
-                # the label. The label's own stub run is not needed: the head's
-                # push already has a run. A push after the label (even within
-                # the same second), a push whose run started only after the
-                # label, or a commit seeded through another branch, fork or
-                # earlier push, is checked as the author's.
+                # The label counts only while it is on the PR, and only for
+                # the stub run GitHub started for the label event: its actor
+                # is the labeler. Later pushes are checked as the author's.
                 ON_PR=$(jq -r 'any(.labels[]?; .name == "ready-for-review")' "${PR_FILE}")
-                RUNS=$(api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/${STUB_PATH##*/}/runs" \
-                  -f "branch=${WR_HEAD_BRANCH}" -f event=pull_request -f per_page=100)
-                HEAD_AT_LABEL=$(jq -r --argjson hid "${WR_HEAD_REPO_ID}" --arg label "${LABELED_AT}" '
-                  def t: sub("\\.[0-9]+"; "") | fromdateiso8601;
-                  ($label | t) as $l
-                  | [.workflow_runs[]? | select((.head_repository.id // -1) == $hid and (.created_at | t) < $l)]
-                  | sort_by(.created_at) | last | .head_sha // ""' <<<"${RUNS}")
+                LABEL_ACTOR=$(jq -r '.actor.login // ""' <<<"${LABEL_EVENT}")
                 if [[ "${ON_PR}" != "true" ]]; then
                   echo "::warning::Fork pull request #${NUMBER}: ready-for-review was removed; checking the author instead"
-                elif [[ "${HEAD_AT_LABEL}" != "${WR_HEAD_SHA}" ]]; then
-                  echo "::warning::Fork pull request #${NUMBER}: the run's head commit was not the pull request head when ready-for-review was added; checking the author instead"
+                elif [[ -z "${LABEL_ACTOR}" || "${WR_ACTOR,,}" != "${LABEL_ACTOR,,}" ]]; then
+                  echo "::notice::Fork pull request #${NUMBER}: this run was not started by the ready-for-review label; checking the author instead"
                 else
-                  LABELER=$(jq -r '.actor.login // ""' <<<"${LABEL_EVENT}")
+                  LABELER="${LABEL_ACTOR}"
                 fi
               fi
               READY_AT=$(jq -r '.created_at // ""' <<<"$(last_event '.event == "ready_for_review"')")

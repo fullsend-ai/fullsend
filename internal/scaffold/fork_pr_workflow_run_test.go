@@ -155,7 +155,6 @@ const (
 	forkHeadSHA    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	recentTime     = "2026-11-24T09:58:30Z" // 90 s before the run
 	oldTime        = "2026-11-20T08:00:00Z"
-	otherSHA       = "dddddddddddddddddddddddddddddddddddddddd"
 )
 
 func forkPRStepEnv(runnerTemp string) map[string]string {
@@ -172,6 +171,7 @@ func forkPRStepEnv(runnerTemp string) map[string]string {
 		"WR_HEAD_BRANCH":    "fix-typo",
 		"WR_HEAD_SHA":       forkHeadSHA,
 		"WR_CREATED_AT":     forkRunCreated,
+		"WR_ACTOR":          "contributor",
 		"RUNNER_TEMP":       runnerTemp,
 	}
 }
@@ -236,15 +236,7 @@ func mustJSON(t *testing.T, v any) string {
 // file fails the call.
 const forkPRGHStub = `#!/usr/bin/env bash
 printf '%s\n' "$*" >> "${GH_LOG:-gh.log}"
-filter=""
-args=("$@")
-for i in "${!args[@]}"; do
-  [[ "${args[$i]}" == "--jq" ]] && filter="${args[$((i+1))]}"
-done
 case "$*" in
-  *"/actions/workflows/"*"/runs"*)
-    [[ -f runs.json ]] || exit 1
-    if [[ -n "$filter" ]]; then jq -r "$filter" runs.json; else cat runs.json; fi ;;
   *"/issues/"*"/events"*) cat events.json ;;
   *"/pulls/"[0-9]*) cat pr.json ;;
   *"/pulls"*)
@@ -253,17 +245,6 @@ case "$*" in
   *) exit 1 ;;
 esac
 `
-
-// stubRun is one fullsend-fork-pr.yaml run on the fork branch.
-type stubRun struct {
-	created string
-	sha     string
-	repoID  int
-}
-
-func (r stubRun) json() map[string]any {
-	return map[string]any{"created_at": r.created, "head_sha": r.sha, "head_repository": map[string]any{"id": r.repoID}}
-}
 
 func TestResolveForkPullRequestStep(t *testing.T) {
 	requireBash4(t)
@@ -290,15 +271,15 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		env      map[string]string
-		list     []forkPR
-		pr       *forkPR
-		events   []map[string]any
-		runs     []stubRun // stub runs on the fork branch, as the runs API lists them
-		want     map[string]string
-		wantSkip string
-		wantWarn string
+		name       string
+		env        map[string]string
+		list       []forkPR
+		pr         *forkPR
+		events     []map[string]any
+		want       map[string]string
+		wantSkip   string
+		wantWarn   string
+		wantNotice string
 	}{
 		{name: "stub run that failed", env: map[string]string{"WR_CONCLUSION": "failure"}, wantSkip: "did not succeed"},
 		{name: "stub run held for approval", env: map[string]string{"WR_CONCLUSION": "action_required"}, wantSkip: "did not succeed"},
@@ -328,75 +309,52 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			want: map[string]string{"resolved": "true", "state": "open", "action": "synchronize"},
 		},
 		{
-			name: "ready-for-review label within the window", list: []forkPR{labeledPR}, pr: &labeledPR,
+			// The stub run GitHub started for the label event: its actor is
+			// the labeler, and its head is the PR head at the label.
+			name: "label run by the labeler", list: []forkPR{labeledPR}, pr: &labeledPR,
+			env:    map[string]string{"WR_ACTOR": "triager"},
 			events: []map[string]any{labeled(oldTime, "old-labeler"), labeled(labelTime, "triager")},
 			want:   map[string]string{"resolved": "true", "labeler": "triager"},
 		},
 		{
 			// The events API documents no order: the newest event wins.
 			name: "label events in reverse order", list: []forkPR{labeledPR}, pr: &labeledPR,
+			env:    map[string]string{"WR_ACTOR": "triager"},
 			events: []map[string]any{labeled(labelTime, "triager"), labeled(oldTime, "old-labeler")},
 			want:   map[string]string{"resolved": "true", "labeler": "triager"},
 		},
 		{
-			name: "ready-for-review label outside the window", list: []forkPR{labeledPR}, pr: &labeledPR,
+			// No run history is needed: a PR opened before install, or whose
+			// earlier runs expired, still gets the label route.
+			name: "label on a PR with no earlier stub runs", list: []forkPR{labeledPR}, pr: &labeledPR,
+			env:    map[string]string{"WR_ACTOR": "triager"},
+			events: []map[string]any{labeled(labelTime, "triager")},
+			want:   map[string]string{"resolved": "true", "labeler": "triager", "action": "synchronize"},
+		},
+		{
+			// The author pushes within the window after a maintainer's label:
+			// the run's actor is the author, so it is checked as the author's.
+			// A maintainer re-running that run keeps the original actor.
+			name: "author push after the label", list: []forkPR{labeledPR}, pr: &labeledPR,
+			events:     []map[string]any{labeled(labelTime, "triager")},
+			want:       map[string]string{"resolved": "true", "labeler": "", "action": "synchronize"},
+			wantNotice: "this run was not started by the ready-for-review label",
+		},
+		{
+			name: "labeler's run but the label is outside the window", list: []forkPR{labeledPR}, pr: &labeledPR,
+			env:    map[string]string{"WR_ACTOR": "triager"},
 			events: []map[string]any{labeled(oldTime, "triager")},
 			want:   map[string]string{"resolved": "true", "labeler": "", "action": "synchronize"},
 		},
 		{
 			name: "label after the run", list: []forkPR{labeledPR}, pr: &labeledPR,
+			env:    map[string]string{"WR_ACTOR": "triager"},
 			events: []map[string]any{labeled("2026-11-24T10:05:00Z", "triager")},
 			want:   map[string]string{"resolved": "true", "labeler": ""},
 		},
 		{
-			// The outside author pushes 2 minutes after a maintainer's label:
-			// the labeled head was another commit, so the push is checked as
-			// the author's, not under the label.
-			name: "push after the label", list: []forkPR{labeledPR}, pr: &labeledPR,
-			events: []map[string]any{labeled(labelTime, "triager")},
-			runs: []stubRun{{oldTime, otherSHA, 222},
-				{"2026-11-24T09:59:00Z", forkHeadSHA, 222}, {"2026-11-24T10:00:00Z", forkHeadSHA, 222}},
-			want:     map[string]string{"resolved": "true", "labeler": "", "action": "synchronize"},
-			wantWarn: "was not the pull request head when ready-for-review was added",
-		},
-		{
-			// The commit was seeded earlier through another fork's PR on a
-			// branch of the same name: only this fork's runs count.
-			name: "head seeded through another fork", list: []forkPR{labeledPR}, pr: &labeledPR,
-			events:   []map[string]any{labeled(labelTime, "triager")},
-			runs:     []stubRun{{oldTime, forkHeadSHA, 333}, {"2026-11-24T09:50:00Z", otherSHA, 222}, {"2026-11-24T09:59:00Z", forkHeadSHA, 222}},
-			want:     map[string]string{"resolved": "true", "labeler": ""},
-			wantWarn: "was not the pull request head when ready-for-review was added",
-		},
-		{
-			// The commit was the head earlier, then force-pushed away before
-			// the label and pushed back after it.
-			name: "head earlier but not when labeled", list: []forkPR{labeledPR}, pr: &labeledPR,
-			events:   []map[string]any{labeled(labelTime, "triager")},
-			runs:     []stubRun{{"2026-11-24T09:50:00Z", forkHeadSHA, 222}, {"2026-11-24T09:56:00Z", otherSHA, 222}, {"2026-11-24T09:59:00Z", forkHeadSHA, 222}},
-			want:     map[string]string{"resolved": "true", "labeler": ""},
-			wantWarn: "was not the pull request head when ready-for-review was added",
-		},
-		{
-			// The outside author pushes 2 s after the label: that push's run
-			// starts after the label, so the labeled head is the earlier
-			// commit and the push is checked as the author's.
-			name: "push seconds after the label", list: []forkPR{labeledPR}, pr: &labeledPR,
-			events:   []map[string]any{labeled(labelTime, "triager")},
-			runs:     []stubRun{{"2026-11-24T09:40:00Z", otherSHA, 222}, {"2026-11-24T09:57:02Z", forkHeadSHA, 222}},
-			want:     map[string]string{"resolved": "true", "labeler": ""},
-			wantWarn: "was not the pull request head when ready-for-review was added",
-		},
-		{
-			// The label's own stub run, seconds after it, is ignored; the
-			// head's earlier run shows it was the PR head at the label.
-			name: "labeled head with the label's own run", list: []forkPR{labeledPR}, pr: &labeledPR,
-			events: []map[string]any{labeled(labelTime, "triager")},
-			runs:   []stubRun{{"2026-11-24T09:57:02Z", forkHeadSHA, 222}, {"2026-11-24T09:40:00Z", forkHeadSHA, 222}, {"2026-11-24T09:30:00Z", otherSHA, 222}},
-			want:   map[string]string{"resolved": "true", "labeler": "triager"},
-		},
-		{
 			name: "label added then removed", list: []forkPR{open}, pr: &open,
+			env:      map[string]string{"WR_ACTOR": "triager"},
 			events:   []map[string]any{labeled(labelTime, "triager"), {"event": "unlabeled", "created_at": recentTime, "label": map[string]any{"name": "ready-for-review"}, "actor": map[string]any{"login": "triager"}}},
 			want:     map[string]string{"resolved": "true", "labeler": ""},
 			wantWarn: "ready-for-review was removed",
@@ -445,20 +403,10 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			if events == nil {
 				events = []map[string]any{}
 			}
-			runs := tc.runs
-			if runs == nil {
-				// The head commit was already the PR head before any label.
-				runs = []stubRun{{oldTime, forkHeadSHA, 222}}
-			}
-			runList := make([]any, 0, len(runs))
-			for _, r := range runs {
-				runList = append(runList, r.json())
-			}
 			files := map[string]string{
 				"bin/gh":      forkPRGHStub,
 				"pulls.json":  mustJSON(t, list),
 				"events.json": mustJSON(t, events),
-				"runs.json":   mustJSON(t, map[string]any{"workflow_runs": runList}),
 			}
 			if tc.pr != nil {
 				files["pr.json"] = mustJSON(t, tc.pr.json())
@@ -480,6 +428,10 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 			} else {
 				assert.NotContains(t, got.stdout, "::warning::")
 			}
+			if tc.wantNotice != "" {
+				assert.Contains(t, got.stdout, "::notice::")
+				assert.Contains(t, got.stdout, tc.wantNotice)
+			}
 			for k, v := range tc.want {
 				assert.Equal(t, v, got.outputs[k], "output %s", k)
 			}
@@ -490,23 +442,20 @@ func TestResolveForkPullRequestStep(t *testing.T) {
 	}
 }
 
-// The PR lookup filters on the fork owner and branch, and the step uses the
-// read-only GITHUB_TOKEN it is given: it never mints a token.
 // A fork branch name with a slash reaches the head= filter unchanged (gh
-// encodes the query), and a label in the window lists the stub's runs for
-// the head SHA with the pull_request event.
-func TestResolveForkPullRequestStepSlashedBranchAndRunLookup(t *testing.T) {
+// encodes the query), and the label route needs no run history.
+func TestResolveForkPullRequestStepSlashedBranch(t *testing.T) {
 	requireBash4(t)
 	pr := forkPR{number: 7, state: "open", sha: forkHeadSHA, created: oldTime, labels: []string{"ready-for-review"}}
 	env := forkPRStepEnv(t.TempDir())
 	env["WR_HEAD_BRANCH"] = "feature/x"
+	env["WR_ACTOR"] = "triager"
 	files := map[string]string{
 		"bin/gh":     forkPRGHStub,
 		"pulls.json": mustJSON(t, []any{pr.json()}),
 		"pr.json":    mustJSON(t, pr.json()),
 		"events.json": mustJSON(t, []any{map[string]any{"event": "labeled", "created_at": "2026-11-24T09:57:00Z",
 			"label": map[string]any{"name": "ready-for-review"}, "actor": map[string]any{"login": "triager"}}}),
-		"runs.json": mustJSON(t, map[string]any{"workflow_runs": []any{stubRun{oldTime, forkHeadSHA, 222}.json()}}),
 	}
 	ghLog := filepath.Join(t.TempDir(), "gh.log")
 	env["GH_LOG"] = ghLog
@@ -515,9 +464,11 @@ func TestResolveForkPullRequestStepSlashedBranchAndRunLookup(t *testing.T) {
 	log, err := os.ReadFile(ghLog)
 	require.NoError(t, err)
 	assert.Contains(t, string(log), "-f head=contributor:feature/x")
-	assert.Contains(t, string(log), "--method GET repos/acme/widgets/actions/workflows/fullsend-fork-pr.yaml/runs -f branch=feature/x -f event=pull_request -f per_page=100")
+	assert.NotContains(t, string(log), "actions/workflows", "the label route reads no run history")
 }
 
+// The PR lookup filters on the fork owner and branch, and the step uses the
+// read-only GITHUB_TOKEN it is given: it never mints a token.
 func TestResolveForkPullRequestStepLookup(t *testing.T) {
 	requireBash4(t)
 	open := forkPR{number: 7, state: "open", sha: forkHeadSHA, created: oldTime}
@@ -863,7 +814,7 @@ func TestForkPRWorkflowRunWiring(t *testing.T) {
 		}
 	}
 	assert.Less(t, order["fork-pr"], order["bash-route"])
-	assert.Equal(t, "read", route.Permissions["actions"], "the label check lists the stub's runs")
+	assert.NotContains(t, route.Permissions, "actions", "the route job reads no Actions run history")
 
 	// A fork push gets the same review dedup and skip note as a same-repo
 	// synchronize, after "Determine stage" rebuilt its action.
