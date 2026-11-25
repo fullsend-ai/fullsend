@@ -119,41 +119,50 @@ func inferenceAuthHas(auth, method string) bool {
 // methods (a list, for example [openai-api-key, vertex-wif]), so a
 // repository can keep the fullsend-managed credentials of more than one
 // method. A mix is held as the methods joined by commas, and a scalar may
-// spell a mix the same way ("openai-api-key,vertex-wif"), which is what
-// `fullsend repos set` writes.
+// spell a mix the same way ("openai-api-key,vertex-wif"). The scalar is
+// the one form fullsend writes, both from `fullsend repos set` and when it
+// rewrites the whole manifest, so a selection has one on-disk spelling; a
+// list is still accepted on load.
 type InferenceAuthSelection string
 
-// UnmarshalYAML accepts a scalar or a list of scalars.
+// UnmarshalYAML accepts a scalar or a list of scalars. Entries are trimmed.
+// An empty list and an empty list entry are rejected: an empty selection
+// would otherwise silently inherit the parent level's selection.
 func (s *InferenceAuthSelection) UnmarshalYAML(n *yaml.Node) error {
+	badForm := fmt.Errorf("line %d: inference.auth must be an inference authentication method or a list of methods", n.Line)
 	switch n.Kind {
 	case yaml.ScalarNode:
 		var v string
 		if err := n.Decode(&v); err != nil {
-			return err
+			return badForm
+		}
+		if strings.Contains(v, ",") {
+			parts := strings.Split(v, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			v = strings.Join(parts, ",")
 		}
 		*s = InferenceAuthSelection(v)
 		return nil
 	case yaml.SequenceNode:
 		var vs []string
 		if err := n.Decode(&vs); err != nil {
-			return err
+			return badForm
+		}
+		if len(vs) == 0 {
+			return fmt.Errorf("line %d: inference.auth list must name at least one method", n.Line)
+		}
+		for i := range vs {
+			vs[i] = strings.TrimSpace(vs[i])
+			if vs[i] == "" {
+				return fmt.Errorf("line %d: inference.auth list must not contain an empty entry", n.Line)
+			}
 		}
 		*s = InferenceAuthSelection(strings.Join(vs, ","))
 		return nil
 	}
-	return fmt.Errorf("line %d: inference.auth must be an inference authentication method or a list of methods", n.Line)
-}
-
-// MarshalYAML writes a single method as a scalar and a mix as a list.
-func (s InferenceAuthSelection) MarshalYAML() (any, error) {
-	if !strings.Contains(string(s), ",") {
-		return string(s), nil
-	}
-	methods := strings.Split(string(s), ",")
-	for i := range methods {
-		methods[i] = strings.TrimSpace(methods[i])
-	}
-	return methods, nil
+	return badForm
 }
 
 // InferenceSettings is the nested inference block in repos.yaml. It may

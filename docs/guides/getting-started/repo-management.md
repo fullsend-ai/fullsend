@@ -287,7 +287,10 @@ example `auth: [openai-api-key, vertex-wif]` for an OpenAI API key
 parent with Vertex sub-agents. Install provisions and keeps the
 credentials of every listed method, and deletes only the fullsend-managed
 secrets that no listed method uses. With `repos set`, pass the list as a
-comma-separated value (`openai-api-key,vertex-wif`). See
+comma-separated value (`openai-api-key,vertex-wif`); fullsend writes a mix
+in that form. The order is ignored. A mix needs a fullsend CLI at or above
+the release that ships mixed selections, because older CLIs reject such a
+manifest. See
 [fullsend repos § Inference credentials](../../cli/repos.md#inference-credentials).
 
 Set the selection with `repos set` at the level you want:

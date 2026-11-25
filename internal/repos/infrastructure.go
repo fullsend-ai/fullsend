@@ -227,9 +227,9 @@ func usesVertexCredentials(auth string) bool {
 
 // usesOpenAIKeyRoute reports whether auth makes FULLSEND_OPENAI_API_KEY the
 // OpenAI credential: the selection includes openai-api-key but not
-// openai-wif. With openai-wif also selected the runtime prefers the WIF
-// identifiers and the key is a fallback, so identifiers are expected
-// there rather than residual.
+// openai-wif. With openai-wif also selected the runtime uses the WIF
+// identifiers whenever they are set and never falls back to the key, so
+// identifiers are expected there rather than residual.
 func usesOpenAIKeyRoute(auth string) bool {
 	return inferenceAuthHas(auth, InferenceAuthOpenAIAPIKey) && !inferenceAuthHas(auth, InferenceAuthOpenAIWIF)
 }

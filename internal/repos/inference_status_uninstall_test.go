@@ -297,9 +297,11 @@ func TestUninstall_RemovesAllManagedInferenceSecretsIdempotently(t *testing.T) {
 		{"github missing auth", ForgeGitHub, ""},
 		{"github invalid auth", ForgeGitHub, "bogus"},
 		{"github openai", ForgeGitHub, InferenceAuthOpenAIAPIKey},
+		{"github mix", ForgeGitHub, mixKeyVertex},
 		{"gitlab missing auth", ForgeGitLab, ""},
 		{"gitlab invalid auth", ForgeGitLab, "bogus"},
 		{"gitlab vertex", ForgeGitLab, InferenceAuthVertexWIF},
+		{"gitlab mix", ForgeGitLab, mixKeyVertex},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := newInstalledFakeClient("acme/api")

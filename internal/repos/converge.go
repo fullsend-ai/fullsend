@@ -383,21 +383,26 @@ func openAIKeyDefect(p forge.SecretProtection) string {
 // excuse another method's missing secret. Both results are empty when the
 // repository's credentials are usable.
 func missingInferenceCredentials(components []ComponentStatus, cfg ConvergeConfig, auth string) (missing, inputs []string) {
-	if inferenceAuthHas(auth, InferenceAuthOpenAIAPIKey) && !openAIInputsSupplied(cfg, auth) &&
-		!hasComponent(components, "secret:"+forge.SecretOpenAIAPIKey) {
-		missing = append(missing, forge.SecretOpenAIAPIKey)
-		inputs = append(inputs, inferenceInputFlags(InferenceAuthOpenAIAPIKey))
+	groups := []struct {
+		method   string
+		supplied bool
+	}{
+		{InferenceAuthOpenAIAPIKey, openAIInputsSupplied(cfg, auth)},
+		{InferenceAuthVertexWIF, vertexInputsSupplied(cfg, auth)},
 	}
-	if inferenceAuthHas(auth, InferenceAuthVertexWIF) && !vertexInputsSupplied(cfg, auth) {
+	for _, g := range groups {
+		if !inferenceAuthHas(auth, g.method) || g.supplied {
+			continue
+		}
 		var absent []string
-		for _, name := range requiredSecrets {
+		for _, name := range requiredInferenceSecretsForAuth(g.method) {
 			if !hasComponent(components, "secret:"+name) {
 				absent = append(absent, name)
 			}
 		}
 		if len(absent) > 0 {
 			missing = append(missing, absent...)
-			inputs = append(inputs, inferenceInputFlags(InferenceAuthVertexWIF))
+			inputs = append(inputs, inferenceInputFlags(g.method))
 		}
 	}
 	return missing, inputs
@@ -1324,8 +1329,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// The openai-api-key route is unreachable while WIF identifiers
 		// stay active, because the runtime prefers WIF. Reject before
 		// writes; the identifiers are user-owned and never auto-deleted.
-		// A mix that also selects openai-wif expects the identifiers and
-		// keeps the key as a fallback.
+		// A mix that also selects openai-wif expects the identifiers; the
+		// key is kept but the runtime does not use it while they are set.
 		if usesOpenAIKeyRoute(d.resolved.InferenceAuth) {
 			if residualErr := checkNoResidualOpenAIWIF(ctx, d); residualErr != nil {
 				result.Results[i] = ConvergeResult{

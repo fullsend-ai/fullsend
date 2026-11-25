@@ -3,12 +3,12 @@ package repos
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -39,8 +39,6 @@ github:
       inference:
         auth: openai-api-key, openai-wif
     - name: acme/web
-      inference:
-        auth: []
 `)
 	m, err := LoadManifest(context.Background(), path)
 	require.NoError(t, err)
@@ -51,25 +49,54 @@ github:
 
 	api, ok := m.ResolveConfig("acme", "api")
 	require.True(t, ok)
-	assert.ElementsMatch(t, []string{InferenceAuthOpenAIAPIKey, InferenceAuthOpenAIWIF}, inferenceAuthMethods(api.InferenceAuth))
-	// An empty list inherits; a narrower level replaces the inherited mix.
+	assert.Equal(t, mixKeyWIF, api.InferenceAuth, "entries are trimmed on load")
+	// A narrower level replaces the inherited mix; an entry without a
+	// selection inherits it.
 	web, ok := m.ResolveConfig("acme", "web")
 	require.True(t, ok)
 	assert.Equal(t, mixVertexWIF, web.InferenceAuth)
 }
 
-func TestInferenceAuthMix_RejectsNonScalarElements(t *testing.T) {
-	_, err := LoadManifest(context.Background(), writeInferenceManifest(t, `version: 1
+func TestInferenceAuthMix_RejectsMalformedSelections(t *testing.T) {
+	for name, tc := range map[string]struct {
+		auth string
+		want string
+	}{
+		"mapping":          {"\n      method: vertex-wif", "list of methods"},
+		"sequence element": {"[[vertex-wif]]", "list of methods"},
+		"empty list":       {"[]", "at least one method"},
+		"empty entry":      {`[""]`, "empty entry"},
+		"blank entry":      {`[vertex-wif, " "]`, "empty entry"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadManifest(context.Background(), writeInferenceManifest(t, `version: 1
 defaults:
   inference:
-    auth:
-      method: vertex-wif
+    auth: `+tc.auth+`
 github:
   repos:
     - name: acme/api
 `))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+
+	// A non-string scalar is not a method: the manifest is rejected, and
+	// the error names the value.
+	m, err := LoadManifest(context.Background(), writeInferenceManifest(t, `version: 1
+defaults:
+  inference:
+    auth: 1
+github:
+  repos:
+    - name: acme/api
+`))
+	if err == nil {
+		err = m.Validate()
+	}
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "list of methods")
+	assert.Contains(t, err.Error(), `"1"`)
 }
 
 func TestInferenceAuthMix_MarshalRoundTrip(t *testing.T) {
@@ -85,17 +112,7 @@ func TestInferenceAuthMix_MarshalRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	out := string(data)
 	assert.Contains(t, out, "auth: openai-wif\n", "a single method stays a scalar")
-	assert.NotContains(t, out, "auth: openai-api-key,", "a mix is written as a list")
-
-	var doc struct {
-		Defaults struct {
-			Inference struct {
-				Auth []string `yaml:"auth"`
-			} `yaml:"inference"`
-		} `yaml:"defaults"`
-	}
-	require.NoError(t, yaml.Unmarshal(data, &doc))
-	assert.Equal(t, []string{InferenceAuthOpenAIAPIKey, InferenceAuthVertexWIF}, doc.Defaults.Inference.Auth)
+	assert.Contains(t, out, "auth: "+mixKeyVertex+"\n", "a mix is written as the comma scalar `repos set` writes")
 
 	reloaded, err := LoadManifest(context.Background(), writeInferenceManifest(t, out))
 	require.NoError(t, err)
@@ -112,8 +129,14 @@ func TestInferenceAuthMix_SetManifestValueAcceptsCommaList(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, mixKeyVertex, resolved.InferenceAuth)
 
+	before, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
 	_, err = SetManifestValue(path, "defaults.inference.auth", "vertex-wif,vertex")
 	require.Error(t, err, "every listed method is validated")
+	assert.Contains(t, err.Error(), `"vertex" is not a valid inference authentication method`)
+	after, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	assert.Equal(t, string(before), string(after), "a rejected set leaves the manifest unchanged")
 }
 
 func TestInferenceAuthMix_Validate(t *testing.T) {
@@ -130,6 +153,7 @@ func TestInferenceAuthMix_Validate(t *testing.T) {
 
 	err = ValidateInferenceAuth("k", "vertex-wif,")
 	require.Error(t, err, "an empty entry is not a method")
+	assert.Contains(t, err.Error(), `k "" is not a valid inference authentication method`)
 }
 
 func TestInferenceAuthMix_OpenAIWIFRejectedInGitLabMix(t *testing.T) {
@@ -397,8 +421,8 @@ func TestConverge_MixUnconsumedInputRejected(t *testing.T) {
 
 func TestConverge_MixOpenAIKeyWithWIFAcceptsIdentifiersAndKeepsGCP(t *testing.T) {
 	// An installed vertex-wif repository with OpenAI WIF identifiers moves
-	// to an OpenAI WIF parent with an API key fallback: the identifiers are
-	// expected (not residual), and nothing selected is deleted.
+	// to an OpenAI WIF parent that also keeps an API key: the identifiers
+	// are expected (not residual), and nothing selected is deleted.
 	fc, _ := installedOpenAISwitchFixture(t)
 	setOpenAIWIFVariables(fc, "acme/api", openAIWIFVariables...)
 	m := newConvergeManifest("acme/api")
