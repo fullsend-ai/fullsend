@@ -189,6 +189,57 @@ EOF
 
 check "empty notes render an empty body" ''
 
+# --- PRs without a release note -------------------------------------------
+
+# A merged PR absent from the notes JSON (no release-note block) must be
+# listed under "PRs Without Release Notes" instead of vanishing, and a
+# warning must go to stderr.
+printf '601\tfix: has note\n602\tchore: no block\n' > "${TMP}/titles.tsv"
+cat >"${TMP}/notes.json" <<'EOF'
+{
+  "601": {"pr_number": 601, "text": "Has a note.",
+          "pr_url": "https://example.com/pull/601", "author": "alice",
+          "author_url": "https://example.com/alice"}
+}
+EOF
+printf '601\n602\n' > "${TMP}/merged.txt"
+
+actual=$("${SCRIPT}" "${TMP}/notes.json" "${TMP}/merged.txt" "${TMP}/titles.tsv" 2>"${TMP}/stderr")
+expected='### Bug Fixes
+
+- Has a note. ([#601](https://example.com/pull/601), [@alice](https://example.com/alice))
+
+### PRs Without Release Notes
+
+- #602 chore: no block'
+if [[ "${actual}" == "${expected}" ]]; then
+  echo "ok   — merged PR without a note is listed, not dropped"
+else
+  fail "merged PR without a note is listed, not dropped" "${expected}" "${actual}"
+fi
+if grep -q "PRs merged in the range have no release note" "${TMP}/stderr"; then
+  echo "ok   — missing-note warning goes to stderr"
+else
+  echo "FAIL — missing-note warning goes to stderr"
+  cat "${TMP}/stderr"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# A non-empty range that gathered zero notes must warn.
+printf '701\tfeat: nothing\n' > "${TMP}/titles.tsv"
+printf '{}' > "${TMP}/notes.json"
+printf '701\n' > "${TMP}/merged.txt"
+
+"${SCRIPT}" "${TMP}/notes.json" "${TMP}/merged.txt" "${TMP}/titles.tsv" \
+  >"${TMP}/stdout" 2>"${TMP}/stderr"
+if grep -q "Zero release notes gathered" "${TMP}/stderr"; then
+  echo "ok   — zero notes from a non-empty range warns"
+else
+  echo "FAIL — zero notes from a non-empty range warns"
+  cat "${TMP}/stderr"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # --- Missing files --------------------------------------------------------
 
 if "${SCRIPT}" "${TMP}/missing.json" "${TMP}/merged.txt" "${TMP}/titles.tsv" 2>/dev/null; then

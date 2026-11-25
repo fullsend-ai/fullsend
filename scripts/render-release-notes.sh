@@ -47,6 +47,12 @@ TITLES=$(jq -Rn '
     | .[$parts[0]] = ($parts[1] // "")
   )' "${TITLES_TSV}")
 
+# Merged PRs that the tool returned no note for (no release-note block
+# in the body). They are listed in the output under "PRs Without Release
+# Notes" so they do not vanish from the release silently.
+MISSING=$(jq -Rn --argjson allowed "${ALLOWED}" --slurpfile notes "${NOTES_JSON}" '
+  $allowed - ($notes[0] | keys | map(tonumber))')
+
 # One JSON object per line for each published note: number, title,
 # text, PR URL, author, author URL, action-required flag. Notes for PRs
 # outside the merged set, notes marked do-not-publish, and empty notes
@@ -62,6 +68,18 @@ ROWS=$(jq -c --argjson allowed "${ALLOWED}" --argjson titles "${TITLES}" '
        author: .author, author_url: .author_url,
        action_required: (.action_required == true)}
   ] | sort_by(.number) | .[]' "${NOTES_JSON}")
+
+# Warn (to stderr, so it lands in the log, not the notes) when PRs
+# merged in the range produced no note, or when a non-empty range
+# gathered zero notes at all. Release Note Check is not a required
+# status check, so this is the only signal that a change is about to
+# drop out of the release.
+if [[ -n "${MISSING}" ]] && [[ "${MISSING}" != "[]" ]]; then
+  echo "::warning::$(jq length <<<"${MISSING}") PRs merged in the range have no release note and will only be listed under 'PRs Without Release Notes'." >&2
+fi
+if [[ -z "${ROWS}" ]] && [[ -n "${ALLOWED}" ]] && [[ "${ALLOWED}" != "[]" ]]; then
+  echo "::warning::Zero release notes gathered from a range containing $(jq length <<<"${ALLOWED}") merged PRs." >&2
+fi
 
 # Section for a note, in priority order. Action-required notes always go
 # under Urgent Upgrade Notes; otherwise the PR title type decides, with
@@ -126,3 +144,16 @@ for section in "${SECTIONS[@]}"; do
     echo
   fi
 done
+
+# Merged PRs the tool returned no note for (no release-note block in the
+# body — e.g. everything merged before the block became mandatory).
+# Listing them keeps the PR visible in the release instead of dropping
+# it silently; the warning above tells the releaser to look.
+if [[ -n "${MISSING}" ]] && [[ "${MISSING}" != "[]" ]]; then
+  echo "### PRs Without Release Notes"
+  echo
+  jq -r --argjson titles "${TITLES}" '
+    .[]
+    | "- #\(.) \($titles[tostring] // "")"' <<<"${MISSING}"
+  echo
+fi

@@ -26,13 +26,12 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # Note: permissions are granted at job scope, so every step in this
-    # job — including checkout and validation — runs with a token that can
-    # write to PRs on same-repo runs (fork tokens are downgraded by
-    # GitHub). Only the label-sync step below actually writes.
     permissions:
       contents: read
-      pull-requests: write
+    outputs:
+      # Consumed by the sync-action-required-label job below; empty when
+      # the note is not action-required (or the bootstrap skip ran).
+      action-required: ${{ steps.check.outputs.action-required }}
     steps:
       # Check out the PR's base ref, not the PR head: the validator must
       # come from a trusted revision so a PR cannot neuter its own check
@@ -74,15 +73,25 @@ jobs:
           # The script appends action-required=1 to GITHUB_OUTPUT when the
           # accepted note starts with "action required".
 
-      # The release-notes gatherer lists a note under "Urgent Upgrade
-      # Notes" only when the PR carries this label (it also strips the
-      # "action required:" prefix from the note text), so keep the label in
-      # sync with the check result.
+  # The release-notes gatherer lists a note under "Urgent Upgrade
+  # Notes" only when the PR carries this label (it also strips the
+  # "action required:" prefix from the note text), so keep the label in
+  # sync with the check result. This is the only job with
+  # pull-requests: write; the validation job above stays read-only.
+  sync-action-required-label:
+    if: github.event_name == 'pull_request'
+    needs: release-note-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
       - name: Sync action-required label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          ACTION_REQUIRED: ${{ steps.check.outputs.action-required }}
+          ACTION_REQUIRED: ${{ needs.release-note-check.outputs.action-required }}
         run: |
           set -euo pipefail
           # Fork PRs run with a read-only token and cannot create or add
@@ -105,7 +114,7 @@ jobs:
               --description "Release-note block starts with 'action required'" --force \
               || echo "::warning::could not create label (it may already exist)"
             if ! gh pr edit "${PR_NUMBER}" --add-label release-note-action-required; then
-              echo "::error::This PR needs the release-note-action-required label (its release-note block starts with 'action required'), but the label could not be added (fork PR with a read-only token). A maintainer must add it before merge."
+              echo "::error::This PR needs the release-note-action-required label (its release-note block starts with 'action required'), but the label could not be added — the token cannot write (a fork PR) or the API call failed. A maintainer must add it before merge."
               exit 1
             fi
           else

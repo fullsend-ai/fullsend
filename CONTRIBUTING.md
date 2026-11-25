@@ -44,8 +44,9 @@ contribution.
   same checks in a container that matches the CI runner, so local results
   predict CI (see [`hack/ci-local`](hack/ci-local/README.md)).
 - Every PR must carry a `release-note` block in its body — the PR template
-  provides one with a `NONE` default. CI rejects a PR whose block is missing
-  or empty. See [COMMITS.md](COMMITS.md#release-notes) for how to write it.
+  provides one with a `NONE` default. The Release Note Check workflow
+  rejects a PR whose block is missing or empty. See
+  [COMMITS.md](COMMITS.md#release-notes) for how to write it.
 - **If your PR introduces a breaking change**, the PR title and every breaking
   commit's subject must carry the `!` suffix (e.g., `feat(harness)!: require
   role field`), and the PR's `release-note` block must start with

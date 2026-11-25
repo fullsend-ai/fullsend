@@ -290,11 +290,16 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   a shipped release is bad, cut a new patch or RC. Only a blocked final
   may be deleted (see "When a release run fails").
 - **The changelog** is gathered from `release-note` blocks in merged PR
-  bodies (see COMMITS.md, "Release notes"). The release workflow runs the
-  Kubernetes `release-notes` tool over the tag range and passes the
-  result to GoReleaser via `--release-notes`, so PR bodies — not commit
-  subjects — are the source of release-note entries. NONE blocks are
-  skipped. The published body starts with a `## Changelog` header
+  bodies (see COMMITS.md, "Release notes"). A read-only
+  `gather-release-notes` job runs the Kubernetes `release-notes` tool
+  over the tag range and passes the result to the signing job (and then
+  GoReleaser via `--release-notes`) as an artifact, so PR bodies — not
+  commit subjects — are the source of release-note entries. NONE blocks
+  are skipped. The gather fails if a merged PR's body was edited after
+  merge (the published note would differ from the reviewed one); a
+  maintainer must review such edits before releasing. Merged PRs with
+  no block are listed under **PRs Without Release Notes** instead of
+  vanishing. The published body starts with a `## Changelog` header
   (prepended by the workflow so `prepend-release-highlights.sh` keeps
   working), followed by **Urgent Upgrade Notes** (PRs labeled
   `release-note-action-required`, applied automatically when a PR's
