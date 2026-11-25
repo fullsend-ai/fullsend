@@ -261,21 +261,31 @@ repository.
 
 ### Verification
 
-Phase 1 is deterministic — when a mapping is configured, it produces
-hints, not final answers. When no mapping is configured, Phase 1 is
-skipped entirely.
+Verification checks the resolver's result before it is accepted. The
+checks are deterministic scripts shipped with the skill, run against
+the resolver's output and the pinned source snapshots:
 
-Phase 2 is LLM-based with evidence — the cited evidence must exist in
-the pinned source at the recorded commit SHA. This applies whether
-Phase 2 confirms a Phase 1 hint, overrides it, or resolves without
-hints.
+- **Citation check:** every repository in the result carries cited
+  evidence, and each citation exists verbatim in the pinned source at
+  the recorded commit SHA. This holds regardless of how the result was
+  produced — a confirmed hint, an overridden hint, or a cold
+  resolution.
+- **Schema check:** the result matches the resolver output contract —
+  resolved repositories with full details, or unresolved with reason
+  and candidates.
+- **Inventory check:** when the group maintains an inventory, every
+  resolved repository is in it — checked before any Jira write.
 
-All checks are deterministic scripts shipped with the skill. What
-remains LLM judgment is only identifying the repositories and choosing
-the evidence to cite. A check only binds if it runs: the consuming
-pipeline executes the verification scripts on the resolver output
-before accepting a result. Platform-side enforcement of the same
-checks is future work as more consumers adopt the skill.
+Configuration and input validation happen before resolution starts
+(see Inputs and delivery): malformed declarations, unfetchable
+sources, and unresolvable repository mentions are hard failures, not
+verification outcomes.
+
+What remains LLM judgment is only identifying the repositories and
+choosing the evidence to cite. A check only binds if it runs: the
+consuming pipeline executes the verification scripts on the resolver
+output before accepting a result. Platform-side enforcement of the
+same checks is future work as more consumers adopt the skill.
 
 ### The resolution skill
 
