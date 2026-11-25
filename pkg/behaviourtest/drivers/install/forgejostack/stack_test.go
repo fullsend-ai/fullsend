@@ -268,8 +268,11 @@ type forgejoOpts struct {
 	failCreate  bool
 }
 
-// startFakeForgejo serves f on 127.0.0.1 and returns its port.
-func startFakeForgejo(t *testing.T, f *fakeForgejo) int {
+// startFakeForgejo serves f on 127.0.0.1 and returns its port and client.
+// The server's client has its own transport, so another parallel test's
+// httptest.Server.Close cannot interrupt Start's requests via the shared
+// http.DefaultTransport.
+func startFakeForgejo(t *testing.T, f *fakeForgejo) (int, *http.Client) {
 	t.Helper()
 	f.t = t
 	srv := httptest.NewServer(f.handler())
@@ -278,12 +281,15 @@ func startFakeForgejo(t *testing.T, f *fakeForgejo) int {
 	require.NoError(t, err)
 	port, err := strconv.Atoi(portStr)
 	require.NoError(t, err)
-	return port
+	client := srv.Client()
+	client.Timeout = 30 * time.Second
+	return port, client
 }
 
-func testConfig(engine Engine, port int) Config {
+func testConfig(engine Engine, port int, client *http.Client) Config {
 	return Config{
 		Engine:        engine,
+		HTTPClient:    client,
 		SocketPath:    "/run/user/1000/podman/podman.sock",
 		Port:          port,
 		Name:          "stack-test",
@@ -296,11 +302,11 @@ func testConfig(engine Engine, port int) Config {
 func TestStart_ReadyAndTeardown(t *testing.T) {
 	t.Parallel()
 	ff := &fakeForgejo{healthAfter: 2, runStatuses: []string{"", "http-500", "running", "success"}}
-	port := startFakeForgejo(t, ff)
+	port, client := startFakeForgejo(t, ff)
 	engine := newFakeEngine()
 	var logs []string
 	var logMu sync.Mutex
-	cfg := testConfig(engine, port)
+	cfg := testConfig(engine, port, client)
 	cfg.Logf = func(format string, args ...any) {
 		logMu.Lock()
 		defer logMu.Unlock()
@@ -529,7 +535,7 @@ func TestStart_Failures(t *testing.T) {
 			if ff.runStatuses == nil {
 				ff.runStatuses = []string{"success"}
 			}
-			port := startFakeForgejo(t, ff)
+			port, client := startFakeForgejo(t, ff)
 			engine := newFakeEngine()
 			if tc.setup != nil {
 				tc.setup(engine)
@@ -538,7 +544,7 @@ func TestStart_Failures(t *testing.T) {
 				// Exercise the teardown error path with a wrapped error.
 				engine.removeErr = fmt.Errorf("removing: %w", engine.removeErr)
 			}
-			s, err := Start(context.Background(), testConfig(engine, port))
+			s, err := Start(context.Background(), testConfig(engine, port, client))
 			require.Error(t, err)
 			assert.Nil(t, s)
 			for _, want := range tc.wantErr {
@@ -552,9 +558,9 @@ func TestStart_Failures(t *testing.T) {
 func TestTeardown_ReportsEveryError(t *testing.T) {
 	t.Parallel()
 	ff := &fakeForgejo{runStatuses: []string{"success"}}
-	port := startFakeForgejo(t, ff)
+	port, client := startFakeForgejo(t, ff)
 	engine := newFakeEngine()
-	s, err := Start(context.Background(), testConfig(engine, port))
+	s, err := Start(context.Background(), testConfig(engine, port, client))
 	require.NoError(t, err)
 
 	engine.stopErr = errors.New("stop timed out")
@@ -572,9 +578,9 @@ func TestTeardown_ReportsEveryError(t *testing.T) {
 func TestTeardown_StopFailureRemovesRunnerBeforeListing(t *testing.T) {
 	t.Parallel()
 	ff := &fakeForgejo{runStatuses: []string{"success"}}
-	port := startFakeForgejo(t, ff)
+	port, client := startFakeForgejo(t, ff)
 	engine := newFakeEngine()
-	s, err := Start(context.Background(), testConfig(engine, port))
+	s, err := Start(context.Background(), testConfig(engine, port, client))
 	require.NoError(t, err)
 
 	// A runner that survives a failed stop can start one more job
