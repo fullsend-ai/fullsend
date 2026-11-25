@@ -320,9 +320,9 @@ of the consuming pipeline — for epic-creator, under `config/`:
 
 ```
 config/
-  repositories.yaml   # declared sources (id, url, ref, paths, role)
-                      # and consumer settings such as the Jira field
-                      # ID for the resolved repository
+  resolver.yaml       # the resolver's configuration: declared sources
+                      # (id, url, ref, paths, role) and consumer
+                      # settings such as the Jira field ID
   _schema/            # JSON Schema files validating every config
                       # input
 ```
