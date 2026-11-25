@@ -428,7 +428,7 @@ type reposInstallConfig struct {
 	inferenceProjectNumber string // derived from the GCP project; not a CLI flag
 
 	// openAIAPIKey is written as FULLSEND_OPENAI_API_KEY to selected
-	// repos whose inference.auth is openai-api-key. Command-line only:
+	// repos whose inference.auth includes openai-api-key. Command-line only:
 	// never persisted to the manifest and never logged.
 	openAIAPIKey string
 
@@ -528,8 +528,9 @@ When no repos are specified, all manifest repos are converged. Credentials
 are required only for the forges of the selected repos.
 
 Every selected repo must resolve an inference authentication method
-(inference.auth: vertex-wif, openai-api-key or openai-wif) from its manifest
-entry, its forge section, or defaults; there is no implicit default.
+(inference.auth: vertex-wif, openai-api-key or openai-wif, or a list mixing
+them) from its manifest entry, its forge section, or defaults; there is no
+implicit default.
 
 Infrastructure values come from each repository's effective configuration
 (the managed config from repos.yaml layered over its config_base preset), so
@@ -548,8 +549,10 @@ without a WIF provider one is derived from the project number);
 openai-api-key writes FULLSEND_OPENAI_API_KEY (from --openai-api-key, GitHub
 and GitLab). Existing secrets are reused when no values are supplied;
 supplied values replace them. A repo missing its credentials with no values
-supplied fails before any write. After switching methods, the other
-method's Fullsend-managed secrets are removed once the new ones are written.
+supplied fails before any write. A mix of methods provisions and keeps the
+credentials of every selected method, each checked on its own. After
+switching methods, the secrets no selected method uses are removed once the
+new ones are written.
 
 openai-wif (OpenAI Workload Identity Federation, GitHub only) needs no
 secret. The repo must have a complete set of OpenAI WIF identifiers: the
@@ -631,7 +634,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().BoolVar(&opts.reactivateSchedules, "reactivate-schedules", false, "reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted)")
 	cmd.Flags().StringVar(&opts.inferenceProject, "vertex-project", "", "GCP project ID written as FULLSEND_GCP_PROJECT_ID for Vertex AI inference; must match config.inference.project when repos.yaml or the preset declares one; never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "vertex-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}) written as FULLSEND_GCP_WIF_PROVIDER instead of deriving per-repo providers; must match config.inference.wif_provider when declared; never written to repos.yaml")
-	cmd.Flags().StringVar(&opts.openAIAPIKey, "openai-api-key", "", "OpenAI API key written as FULLSEND_OPENAI_API_KEY to selected repos whose inference.auth is openai-api-key; command-line only, never written to repos.yaml and never logged")
+	cmd.Flags().StringVar(&opts.openAIAPIKey, "openai-api-key", "", "OpenAI API key written as FULLSEND_OPENAI_API_KEY to selected repos whose inference.auth includes openai-api-key; command-line only, never written to repos.yaml and never logged")
 	cmd.Flags().StringVar(&opts.jiraToken, "jira-token", "", "Jira API token written as FULLSEND_JIRA_TOKEN to selected repos whose tracker.jira.poll.enabled is true; required on the first Jira-enabled install unless client credentials are supplied, an omitted value keeps the existing secret; command-line only, never written to repos.yaml and never logged")
 	cmd.Flags().StringVar(&opts.jiraEmail, "jira-email", "", "Jira account email written as FULLSEND_JIRA_EMAIL to selected repos whose tracker.jira.poll.enabled is true (optional); an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.jiraClientID, "jira-client-id", "", "Atlassian service account OAuth 2.0 client ID written as FULLSEND_JIRA_CLIENT_ID to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml")

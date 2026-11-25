@@ -45,11 +45,11 @@ gitlab:
 	require.NoError(t, err)
 	require.NoError(t, m.Validate())
 
-	assert.Equal(t, InferenceAuthVertexWIF, m.Defaults.Inference.Auth)
-	assert.Equal(t, InferenceAuthOpenAIAPIKey, m.GitHub.Inference.Auth)
-	assert.Equal(t, InferenceAuthVertexWIF, m.GitHub.Repos[0].Inference.Auth)
+	assert.Equal(t, InferenceAuthVertexWIF, string(m.Defaults.Inference.Auth))
+	assert.Equal(t, InferenceAuthOpenAIAPIKey, string(m.GitHub.Inference.Auth))
+	assert.Equal(t, InferenceAuthVertexWIF, string(m.GitHub.Repos[0].Inference.Auth))
 	assert.Empty(t, m.GitHub.Repos[1].Inference.Auth)
-	assert.Equal(t, InferenceAuthVertexWIF, m.GitLab.Inference.Auth)
+	assert.Equal(t, InferenceAuthVertexWIF, string(m.GitLab.Inference.Auth))
 }
 
 func TestInferenceAuth_ValidateRejectsInvalidValues(t *testing.T) {
@@ -181,8 +181,8 @@ func TestInferenceAuth_Resolution(t *testing.T) {
 			}
 			for _, tt := range tests {
 				t.Run(tt.name, func(t *testing.T) {
-					platform := &PlatformConfig{Inference: InferenceSettings{Auth: tt.platform}, Repos: tt.entries}
-					m := &Manifest{Version: 1, Defaults: DefaultsConfig{Inference: InferenceSettings{Auth: tt.defaults}}}
+					platform := &PlatformConfig{Inference: InferenceSettings{Auth: InferenceAuthSelection(tt.platform)}, Repos: tt.entries}
+					m := &Manifest{Version: 1, Defaults: DefaultsConfig{Inference: InferenceSettings{Auth: InferenceAuthSelection(tt.defaults)}}}
 					if forgeName == ForgeGitHub {
 						m.GitHub = platform
 					} else {

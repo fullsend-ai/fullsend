@@ -342,7 +342,7 @@ Secrets and variables are deployed on the target repository.
 **Target repo secrets:**
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
-- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
+- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is or includes `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
 - `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos
   whose `inference.gateway.auth` is `api-key` (set by the repository admin,
   not by `github setup`)
@@ -478,7 +478,7 @@ access instead of Maintainer.
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
 - `FULLSEND_GCP_SERVICE_ACCOUNT` — service account the agent job impersonates when `inference.service_account` is declared (GitLab `vertex-wif` only); install removes it as obsolete when the key is not declared, and uninstall removes it
-- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for projects whose `inference.auth` is `openai-api-key` (masked CI/CD variable written by `repos install --openai-api-key`; the job maps it to `OPENAI_API_KEY`, and an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used)
+- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for projects whose `inference.auth` is or includes `openai-api-key` (masked CI/CD variable written by `repos install --openai-api-key`; the job maps it to `OPENAI_API_KEY`, and an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used)
 - `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for projects whose `inference.gateway.auth` is `api-key` (masked CI/CD variable set by the project admin; the job passes it to the runner under its own name)
 
 Per-repo installation (`internal/repos`) writes the inference secrets and variables directly rather than through layer orchestration.

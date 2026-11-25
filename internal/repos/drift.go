@@ -272,9 +272,10 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 		// supported, but not installer-owned. They configure the OpenAI
 		// provider for openai-wif repositories and for OpenAI WIF
 		// sub-agents of a vertex-wif parent, where they do not override
-		// the Vertex authentication. On an openai-api-key route they are
-		// retained drift: the runtime would still prefer them over the key.
-		if (cfg.InferenceAuth == InferenceAuthOpenAIWIF || cfg.InferenceAuth == InferenceAuthVertexWIF) &&
+		// the Vertex authentication. On an openai-api-key route (without
+		// openai-wif also selected) they are retained drift: the runtime
+		// would still prefer them over the key.
+		if usesVertexCredentials(cfg.InferenceAuth) && !usesOpenAIKeyRoute(cfg.InferenceAuth) &&
 			slices.Contains(openAIWIFVariables, name) {
 			continue
 		}
