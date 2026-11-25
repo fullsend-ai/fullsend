@@ -645,8 +645,10 @@ temporary directory, removed after the pull), so the image can be a private pack
 shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
 harnesses; on other agents a private image is denied and sandbox creation fails. The package must also
 allow Actions access from the repository. If the pull fails, the runner logs a warning and the
-OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
-on other registries the runner adds no credentials. See
+OpenShell gateway attempts its own unauthenticated pull, so public images keep working. On GitLab CI
+the runner pulls an image on the instance's container registry (`CI_REGISTRY`) the same way, with the
+job's `CI_REGISTRY_USER` and `CI_REGISTRY_PASSWORD`. For images on other registries the runner adds
+no credentials. See
 [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
 
 Every mint sets `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and

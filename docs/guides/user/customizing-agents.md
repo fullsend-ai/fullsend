@@ -386,6 +386,8 @@ agents, whose shipped workflows grant `packages: read`. On GitHub Actions,
 `fullsend run` pulls the image with the job's workflow token
 (`GH_WORKFLOW_TOKEN`) before it creates the sandbox. Prerequisites and
 failure behaviour: [GitHub Packages credentials](../../cli/run.md#github-packages-credentials).
+On GitLab CI, an image on the instance's container registry (`CI_REGISTRY`) is
+pulled with the job's `CI_REGISTRY_USER` and `CI_REGISTRY_PASSWORD`.
 
 ### Adding executables
 
