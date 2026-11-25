@@ -178,21 +178,25 @@ declared source fetched through the same mechanism as architecture
 context. Groups that do not maintain a mapping still get full
 resolution through Phase 2.
 
-### Repository inventory (optional)
+### Repository inventory
 
-Configuration groups may declare an approved repository inventory — the list of
-repositories this group is allowed to touch. The inventory is
-optional, like the component mapping, but its role is the opposite:
-the mapping provides hints, the inventory is a boundary. When
-configured, every resolved repository must be in the inventory,
-checked by the deterministic layer in code before any Jira write. A
-resolution outside the inventory is rejected — it never reaches the
-epic.
+The repository inventory is the boundary of repositories a group is
+allowed to touch: every resolved repository must be in it, checked by
+the deterministic layer in code before any Jira write. A resolution
+outside the inventory is rejected — it never reaches the epic.
 
-The inventory is a separate declared source from the component
-mapping, with the same structure (`id`, `url`, `ref`, `paths`) and
-`role: authoritative`. Groups that do not maintain one rely on the
-evidence requirement, the trust boundary, and the downstream gates.
+The inventory defaults to the repositories described in the
+architecture context's structured data: a repository described there
+is in the boundary, and the boundary exists as soon as the
+architecture context does — no separate file to create or populate.
+Describing a repository in the architecture context is a deliberate
+act by the group, so this default is meaningful, not a placeholder.
+
+A group for which described does not mean approved — repositories
+described as dependencies but not contribution targets — may declare
+an explicit inventory that narrows the boundary. The explicit
+declaration is a refinement, not a prerequisite: the default applies
+until it is overridden.
 
 ### Architecture context
 
