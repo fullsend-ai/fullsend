@@ -216,6 +216,13 @@ hash. Refs are resolved to a commit SHA at load time. If the content
 changes between resolution and verification, the integrity check
 rejects the result.
 
+The loader contract is fixed: a source URL is credential-free HTTPS
+or `self`; declared paths are canonicalized within the source root,
+and a declaration whose paths escape it (`..` segments) is a
+configuration error; refs are resolved to a commit SHA before any
+content is read. A compromised configuration can point the loader at
+a declared source, but not outside one.
+
 An architecture context may include structured component data:
 repository organization, name, URL, release ref, component type,
 tier, cross-references to other components, and discovery
@@ -398,7 +405,12 @@ The resolved repository is written to a configurable Jira field on the
 epic. The field is a URL type. The written value uses one canonical
 form — `https://<host>/<org>/<name>`, no `.git`, lowercase host, no
 trailing slash — and the deterministic layer normalizes to it before
-writing. Jira URL fields match on exact value only in JQL, so any
+writing. A repository URL that cannot be normalized to this form —
+one carrying a query string, fragment, userinfo, or `..` traversal
+segments — is a hard error, never a value written as-is; the
+accepted character set is fixed by the normative schemas
+([#9851](https://github.com/fullsend-ai/fullsend/issues/9851)).
+Jira URL fields match on exact value only in JQL, so any
 variation (SSH form, `.git` suffix, trailing slash) would make epics
 invisible to the agents polling for them.
 
@@ -454,7 +466,11 @@ decomposition:
 
 The flag is an environment variable, delivered as a CI variable in
 GitLab. Unset means off — the production default — so runs without
-the variable keep legacy behavior regardless of forge. It can be
+the variable keep legacy behavior regardless of forge. The flag
+recognizes two values, `true` and `false`; any other non-empty value
+is a hard configuration error before the run starts, matching the
+inputs-section stance — a malformed flag never silently selects
+legacy behavior. It can be
 overridden per pipeline run — for example, to test resolution on a
 single strategy without enabling it for all runs. It is not per-repo
 or per-team. If a strategy touches multiple repos, resolution applies
