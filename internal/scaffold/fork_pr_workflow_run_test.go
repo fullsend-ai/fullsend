@@ -697,11 +697,24 @@ func TestBuildEventPayloadWorkflowRun(t *testing.T) {
 	require.NoError(t, os.WriteFile(event, []byte(`{"action":"completed","workflow_run":{"event":"pull_request","pull_requests":[]}}`), 0o644))
 	prJSON := `{"number":7,"html_url":"https://github.com/acme/widgets/pull/7","head":{"ref":"fix-typo","sha":"` + forkHeadSHA + `","repo":{"full_name":"contributor/widgets"}},"base":{"ref":"main","repo":{"full_name":"acme/widgets"}}}`
 	script := extractReusableDispatchStepScript(t, "route", "Build event payload")
+	// The step normalizes the event through the dispatch CLI before
+	// embedding it (AISDLC-505), so stub the CLI the way the CEL route
+	// step's test does and forward the event action the caller passes.
+	bin := filepath.Join(dir, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	stub := "#!/bin/sh\nprintf '%s\\n' '{\"actor\":{\"id\":\"octobot\",\"login\":\"octobot\",\"type\":\"Bot\"}}'\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(stub), 0o755))
 	out := filepath.Join(dir, "output")
 	require.NoError(t, os.WriteFile(out, nil, 0o644))
 	cmd := exec.Command("bash", "-c", script)
 	cmd.Dir = dir
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GITHUB_OUTPUT=" + out, "GITHUB_EVENT_PATH=" + event, "PR_HEAD_JSON=" + prJSON}
+	cmd.Env = []string{
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GITHUB_OUTPUT=" + out,
+		"GITHUB_EVENT_PATH=" + event,
+		"PR_HEAD_JSON=" + prJSON,
+		"EVENT_ACTION=completed",
+	}
 	b, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(b))
 	raw, err := os.ReadFile(out)
@@ -709,15 +722,19 @@ func TestBuildEventPayloadWorkflowRun(t *testing.T) {
 	lines := strings.Split(string(raw), "\n")
 	require.GreaterOrEqual(t, len(lines), 2)
 	var payload struct {
-		Issue       any            `json:"issue"`
-		Comment     any            `json:"comment"`
-		PullRequest map[string]any `json:"pull_request"`
+		Issue           any            `json:"issue"`
+		Comment         any            `json:"comment"`
+		PullRequest     map[string]any `json:"pull_request"`
+		NormalizedEvent map[string]any `json:"_normalized_event"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(lines[1]), &payload))
 	assert.Nil(t, payload.Issue)
 	assert.Nil(t, payload.Comment)
 	assert.EqualValues(t, 7, payload.PullRequest["number"])
 	assert.Equal(t, forkHeadSHA, payload.PullRequest["head"].(map[string]any)["sha"])
+	// The stubbed dispatch CLI's normalized event rides in the payload the
+	// stage jobs write to the dispatch file `fullsend run` reads.
+	assert.Equal(t, "octobot", payload.NormalizedEvent["actor"].(map[string]any)["login"])
 }
 
 // The wiring around the steps: the resolve step runs only on workflow_run
