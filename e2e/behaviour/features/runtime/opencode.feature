@@ -35,7 +35,7 @@ Feature: OpenCode runtime runs an agent unattended
       """
     And an issue
     When the issue is labeled "ready-for-opencode-security-disabled"
-    Then the harness "opencode-security-disabled" workflow fails reporting "OpenCode requires security.enabled: true"
+    Then the harness "opencode-security-disabled" workflow fails with "OpenCode requires security.enabled: true" in its logs
 
   @requires:capability:runtime-opencode
   Scenario: opencode run selects the runtime, calls a pattern-allowed tool, and reports metrics
