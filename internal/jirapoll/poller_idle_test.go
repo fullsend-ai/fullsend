@@ -563,3 +563,25 @@ func TestDetectChangesMaxSeenReachesUpdated(t *testing.T) {
 		})
 	}
 }
+
+// processIssue hands back an issue's records together with its checkpoint
+// and adds nothing to the cycle itself, so Run takes or leaves an issue's
+// records as one unit.
+func TestProcessIssueReturnsRecordsAsOneUnit(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	addTriageComment(mc, "PROJ-1", "501", now.Add(-2*time.Minute))
+	addTriageComment(mc, "PROJ-1", "502", now.Add(-time.Minute))
+	p := idleTestPoller(mc, t)
+
+	pc, err := p.processIssue(context.Background(), idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Minute)))
+	if err != nil {
+		t.Fatalf("processIssue() error: %v", err)
+	}
+	if len(p.dispatches) != 0 {
+		t.Errorf("processIssue added %d records to the cycle, want 0", len(p.dispatches))
+	}
+	if pc.issueKey != "PROJ-1" || pc.t.IsZero() || len(pc.records) != 2 {
+		t.Errorf("processIssue() = key %q, checkpoint %v, %d records; want PROJ-1, a checkpoint and both comments' records", pc.issueKey, pc.t, len(pc.records))
+	}
+}

@@ -147,7 +147,9 @@ func (p *Poller) Run(ctx context.Context) error {
 	// Step 4: Process each selected issue. Checkpoint advances are not
 	// committed to Jira here — detectChanges/routing only compute the
 	// candidate checkpoint per issue; processIssue returns it (zero if
-	// there's nothing to advance) and Step 6 below commits it only after
+	// there's nothing to advance) together with the issue's records, this
+	// loop adds the two to the cycle as one unit, and Step 6 below commits
+	// the checkpoint only after
 	// Step 5's dispatch-file write has durably succeeded. Committing here
 	// instead would mean a local write failure permanently loses every
 	// event this cycle found: the checkpoint would already be past them in
@@ -155,8 +157,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	var pending []pendingCheckpoint
 	var processErrors int
 	for _, issue := range selected {
-		start := len(p.dispatches)
-		checkpoint, err := p.processIssue(ctx, issue)
+		pc, err := p.processIssue(ctx, issue)
 		if err != nil {
 			var rle *roleLoadError
 			if errors.As(err, &rle) {
@@ -166,7 +167,8 @@ func (p *Poller) Run(ctx context.Context) error {
 			processErrors++
 			continue
 		}
-		pending = append(pending, pendingCheckpoint{issueKey: issue.Key, t: checkpoint, records: p.dispatches[start:len(p.dispatches):len(p.dispatches)]})
+		p.dispatches = append(p.dispatches, pc.records...)
+		pending = append(pending, pc)
 	}
 	if processErrors > 0 && processErrors == len(selected) {
 		return fmt.Errorf("all %d selected issues failed to process", processErrors)
@@ -288,9 +290,10 @@ func (p *Poller) Run(ctx context.Context) error {
 	return nil
 }
 
-// pendingCheckpoint holds a computed lastCheck value for an issue, deferred
-// until the dispatch file write succeeds (see Run), together with the
-// dispatch records the issue produced this cycle. A zero t means there is
+// pendingCheckpoint is what one look at an issue produced: its dispatch
+// records and the lastCheck value to commit once the dispatch file write
+// succeeds (see Run). Run takes or leaves it whole, so an issue's records
+// never go out without its checkpoint or in part. A zero t means there is
 // no checkpoint to advance.
 type pendingCheckpoint struct {
 	issueKey       string
@@ -500,27 +503,30 @@ func selectRandom(items []jira.Issue, n int) []jira.Issue {
 	return items[:n]
 }
 
-// processIssue confirms write access, detects changes, converts, routes,
-// and dispatches. It returns the checkpoint value the caller should advance
-// lastCheck to once the dispatch file has been durably written (zero if
-// there is nothing to advance) — it does not commit the checkpoint itself.
-func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (time.Time, error) {
+// processIssue confirms write access, detects changes, converts and
+// matches. It returns the issue's dispatch records with the checkpoint value
+// the caller should advance lastCheck to once the dispatch file has been
+// durably written (zero if there is nothing to advance). It neither adds the
+// records to the cycle nor commits the checkpoint: the caller takes the
+// result whole or not at all.
+func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (pendingCheckpoint, error) {
+	pc := pendingCheckpoint{issueKey: issue.Key}
 	// Confirm write access before reading the issue's comments and history
 	// (ADR 0085, Decision item 1). A failure yields no records: Run warns
 	// and goes on, and a cycle in which every issue fails ends in an error.
 	if err := p.checkWriteAccess(ctx, issue.Key); err != nil {
-		return time.Time{}, fmt.Errorf("check write access to %s: %w", issue.Key, err)
+		return pendingCheckpoint{}, fmt.Errorf("check write access to %s: %w", issue.Key, err)
 	}
 
 	// Read lastCheck.
 	lastCheck, err := p.readLastCheck(ctx, issue.Key)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read lastCheck for %s: %w", issue.Key, err)
+		return pendingCheckpoint{}, fmt.Errorf("read lastCheck for %s: %w", issue.Key, err)
 	}
 	// Detect changes.
 	result, err := p.detectChanges(ctx, issue, lastCheck)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("detect changes for %s: %w", issue.Key, err)
+		return pendingCheckpoint{}, fmt.Errorf("detect changes for %s: %w", issue.Key, err)
 	}
 
 	// The checkpoint is result.maxSeen and nothing else. maxSeen already
@@ -534,9 +540,9 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (time.Time,
 	// lastCheck, skip the advance entirely (return zero) rather than
 	// regressing the checkpoint; the next cycle re-detects the same
 	// in-margin activity — a harmless, self-correcting duplicate.
-	checkpoint := result.maxSeen
-	if !checkpoint.After(lastCheck) {
-		checkpoint = time.Time{}
+	pc.t = result.maxSeen
+	if !pc.t.After(lastCheck) {
+		pc.t = time.Time{}
 	}
 
 	if len(result.events) == 0 {
@@ -544,7 +550,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (time.Time,
 		// with unsupported fields; the checkpoint (zero if nothing was
 		// seen at all) still needs to advance past them so the poller
 		// does not re-scan the same updates every cycle.
-		return checkpoint, nil
+		return pc, nil
 	}
 
 	// Deduplicate.
@@ -587,9 +593,9 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (time.Time,
 	if err := p.resolveEventRoles(ctx, events); err != nil {
 		var rle *roleLoadError
 		if errors.As(err, &rle) {
-			return time.Time{}, err
+			return pendingCheckpoint{}, err
 		}
-		return time.Time{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
+		return pendingCheckpoint{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
 	}
 
 	// Convert, match harness triggers, dispatch. An event that fails
@@ -637,11 +643,11 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (time.Time,
 				p.eventsMatchErrors++
 				continue
 			}
-			p.dispatches = append(p.dispatches, records...)
+			pc.records = append(pc.records, records...)
 		}
 	}
 
-	return checkpoint, nil
+	return pc, nil
 }
 
 // deduplicate removes duplicate events based on their Key().

@@ -732,17 +732,17 @@ func TestProcessIssue_CheckpointNeverRegresses(t *testing.T) {
 			Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
 		},
 	}
-	checkpoint, err := p.processIssue(context.Background(), issue)
+	pc, err := p.processIssue(context.Background(), issue)
 	if err != nil {
 		t.Fatalf("processIssue() error: %v", err)
 	}
 	// The clamp puts maxSeen ~10s before now, which is before the stored
 	// lastCheck — the returned checkpoint must be zero (skip advance), not
 	// an earlier-than-stored value.
-	if !checkpoint.IsZero() && checkpoint.Before(storedLastCheck) {
-		t.Errorf("checkpoint %v regresses behind stored lastCheck %v; expected zero (skip)", checkpoint, storedLastCheck)
+	if !pc.t.IsZero() && pc.t.Before(storedLastCheck) {
+		t.Errorf("checkpoint %v regresses behind stored lastCheck %v; expected zero (skip)", pc.t, storedLastCheck)
 	}
-	if len(p.dispatches) == 0 {
+	if len(pc.records) == 0 {
 		t.Error("expected the comment after lastCheck to still dispatch")
 	}
 }
@@ -1072,7 +1072,7 @@ func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
 		JiraBaseURL: "https://acme.atlassian.net",
 		JiraProject: "PROJ",
 	})
-	if _, err := p.processIssue(context.Background(), jira.Issue{
+	pc, err := p.processIssue(context.Background(), jira.Issue{
 		ID:  "10042",
 		Key: "PROJ-123",
 		Fields: jira.IssueFields{
@@ -1080,13 +1080,14 @@ func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
 			Reporter: jira.User{AccountID: "reporter-id"},
 			Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		// seed a lastCheck so it's not a first poll
 		_ = lastCheck
 		t.Fatalf("processIssue() error: %v", err)
 	}
-	if len(p.dispatches) != maxEventsPerIssue {
-		t.Errorf("dispatched %d records, want capped at %d", len(p.dispatches), maxEventsPerIssue)
+	if len(pc.records) != maxEventsPerIssue {
+		t.Errorf("dispatched %d records, want capped at %d", len(pc.records), maxEventsPerIssue)
 	}
 }
 
