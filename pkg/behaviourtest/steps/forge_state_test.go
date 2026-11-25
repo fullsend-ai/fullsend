@@ -183,6 +183,29 @@ func TestThenTargetCommentContains(t *testing.T) {
 	require.ErrorContains(t, thenTargetCommentContains(w, targetIssue, "x"), "listing comments on issue #7")
 }
 
+func TestThenNoTargetCommentContains(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{
+		7: {
+			{Body: "unrelated"},
+			{Body: "<!-- fullsend:agent-status:123 -->\nTriage finished"},
+		},
+		8: {{Body: "<!-- fullsend:review -->\nLooks good"}},
+	}}
+	w := forgeStateWorld(f)
+
+	require.NoError(t, thenNoTargetCommentContains(w, targetIssue, "Looks good"))
+	require.NoError(t, thenNoTargetCommentContains(w, targetPullRequest, "Previous run"))
+	require.ErrorContains(t, thenNoTargetCommentContains(w, targetIssue, "Triage finished"),
+		`a comment on issue #7 contains "Triage finished"`)
+
+	require.ErrorContains(t, thenNoTargetCommentContains(&world.World{}, targetIssue, "x"), "no issue created")
+
+	f.err = errors.New("HTTP 403")
+	require.ErrorContains(t, thenNoTargetCommentContains(w, targetIssue, "x"), "listing comments on issue #7")
+}
+
 func TestThenIssueCommentCountContains(t *testing.T) {
 	t.Parallel()
 

@@ -41,7 +41,11 @@ type Config struct {
 	MaxTrustedLeadingLines int
 }
 
-func (c Config) maxSize() int {
+// EffectiveMaxSize returns the size limit a comment body is capped at:
+// cfg.MaxSize when set, DefaultMaxSize otherwise. It is the one place the
+// fallback lives, so every door that caps a body — sticky's own create and
+// update paths and the CLI's posting doors — agrees by construction.
+func (c Config) EffectiveMaxSize() int {
 	if c.MaxSize > 0 {
 		return c.MaxSize
 	}
@@ -140,7 +144,7 @@ func prepareBody(body string, cfg Config) (string, error) {
 	// The create path has no history trimming (the update path that used
 	// to cap the assembled body is gone), so cap the body before
 	// creating: an oversized single result would otherwise fail the post.
-	markedBody = TruncateBody(markedBody, cfg.maxSize())
+	markedBody = TruncateBody(markedBody, cfg.EffectiveMaxSize())
 
 	// Trusted leading lines carry the projection payload the next run's
 	// prior-review fetch reads back, so the size cap must never cut any
@@ -153,7 +157,7 @@ func prepareBody(body string, cfg Config) (string, error) {
 	// unescaped is exactly what is refused cut. Refuse to post instead.
 	if prefix, _, trusted := splitTrusted(body, cfg); trusted > 0 &&
 		!strings.HasPrefix(markedBody, cfg.Marker+"\n"+prefix) {
-		return "", fmt.Errorf("comment body exceeds the %d-byte size cap without room for the trusted leading line(s) intact; refusing to post a partial marker line", cfg.maxSize())
+		return "", fmt.Errorf("comment body exceeds the %d-byte size cap without room for the trusted leading line(s) intact; refusing to post a partial marker line", cfg.EffectiveMaxSize())
 	}
 	return markedBody, nil
 }
@@ -245,7 +249,7 @@ var legacyDetailsRe = regexp.MustCompile(`(?s)<details>\s*<summary>Previous [^<]
 //
 // Deprecated: no posting path calls this anymore — sticky comments were
 // removed (#9334) and every result is posted as a new comment. It is kept
-// only until a cleanup deletes the history-folding machinery.
+// only until the cleanup deletes the history-folding machinery (#9517).
 func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	// When history is disabled, replace the body entirely. We still
 	// need to preserve the footer from the old body if configured.
@@ -262,8 +266,8 @@ func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 		if footer != "" {
 			result += "\n\n" + footer
 		}
-		if len(result) > cfg.maxSize() {
-			result = TruncateBody(result, cfg.maxSize())
+		if len(result) > cfg.EffectiveMaxSize() {
+			result = TruncateBody(result, cfg.EffectiveMaxSize())
 		}
 		return result
 	}
@@ -347,13 +351,13 @@ func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 
 	combined := newBody + formatHistory(entries) + footerStr
 
-	for len(combined) > cfg.maxSize() && len(entries) > 0 {
+	for len(combined) > cfg.EffectiveMaxSize() && len(entries) > 0 {
 		entries = entries[:len(entries)-1]
 		combined = newBody + formatHistory(entries) + footerStr
 	}
 
-	if len(combined) > cfg.maxSize() {
-		combined = TruncateBody(combined, cfg.maxSize())
+	if len(combined) > cfg.EffectiveMaxSize() {
+		combined = TruncateBody(combined, cfg.EffectiveMaxSize())
 	}
 
 	return combined

@@ -345,13 +345,23 @@ if [[ "${status}" == "ok" ]]; then
   fi
   # --keep-history=false is deprecated and, on a fullsend that has this
   # change, has no effect: the all-clear is posted as a new comment at the
-  # end of the thread, following any earlier findings. It stays for
-  # runners pinned to an older CLI by the repository's fullsend-ref. With
-  # no comment in the result the all-clear is the summary alone.
+  # end of the thread, following any earlier findings. It is passed only
+  # when the runner's CLI still lists it: a fullsend pinned between #6966
+  # and this change honours it (the all-clear replaces the earlier
+  # findings comment instead of stacking collapsed history blocks), while
+  # a CLI that has removed the flag must never see it — this script is
+  # rendered once into each repository and never regenerated, and an
+  # unknown flag would fail the run under `set -euo pipefail`. With no
+  # comment in the result the all-clear is the summary alone.
   # The format is chosen here, never taken from the result file.
   body_format='**%s**\n\n%s\n'
   [[ -n "${comment}" ]] || body_format='**%s**\n%s'
-  # shellcheck disable=SC2059
+  keep_history_args=''
+  if [[ "${help_text}" == *--keep-history* ]]; then
+    keep_history_args='--keep-history=false'
+  fi
+  # shellcheck disable=SC2059,SC2086
+  # (SC2086: an empty keep_history_args passes no flag at all)
   printf "${body_format}" "${summary}" "${comment}" \
     | fullsend issues post-comment \
         --tracker github \
@@ -359,7 +369,7 @@ if [[ "${status}" == "ok" ]]; then
         --number "${NUMBER}" \
         --marker "${MARKER}" \
         --only-if-exists \
-        --keep-history=false \
+        ${keep_history_args} \
         --result -
   exit 0
 fi

@@ -1040,6 +1040,42 @@ func TestRunIssuesPostComment_JiraSecondRunAppends(t *testing.T) {
 	assert.NotContains(t, string(comments[1].Body), "Previous run")
 }
 
+func TestRunIssuesPostComment_JiraLeavesLegacyMarkerCommentUntouched(t *testing.T) {
+	// Criterion 4's Jira leg: a legacy marker comment (the marker in the
+	// visible body, from before markers moved to comment properties) is
+	// never migrated or edited — a new run appends beside it, so the
+	// append contract holds on the Jira door too.
+	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	ctx := context.Background()
+	const marker = "<!-- test:agent -->"
+
+	_, err = tc.CreateComment(ctx, "PROJ", 42, tracker.Body(marker+"\nearlier findings"))
+	require.NoError(t, err)
+	before, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, before, 1)
+	seeded := string(before[0].Body)
+	assert.Contains(t, seeded, "earlier findings")
+
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerJira,
+		project:     "PROJ",
+		number:      42,
+		marker:      marker,
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "new result",
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 2, "the new run appends a new comment")
+	assert.Equal(t, seeded, string(comments[0].Body), "the legacy marker comment is left untouched")
+	assert.Contains(t, string(comments[1].Body), "new result")
+}
+
 func TestRunIssuesPostComment_JiraTruncatesOversizedBody(t *testing.T) {
 	// Pins the Jira door's create-path size cap: runIssuesPostComment
 	// caps stickyCfg.MaxSize at jira.MaxMarkdownBytes, and the fake
@@ -1670,6 +1706,19 @@ func TestRunIssuesPostComment_PersistentSelfFailureErrorsAndPostsNothing(t *test
 	assert.Contains(t, err.Error(), "502 Bad Gateway", "the error must name the cause")
 	assert.Equal(t, len(selfLookupBackoff)+1, tc.calls)
 	require.Len(t, comments, 1, "no comment may be created")
+}
+
+func TestRunIssuesPostComment_NormalPostIgnoresSelfLookupFailure(t *testing.T) {
+	// The other side of the narrowing: a post without --only-if-exists
+	// never resolves the posting identity, so an identity outage cannot
+	// block posting. A regression re-adding an unconditional
+	// GetAuthenticatedUser fails here (the lookup is down for this test).
+	err, comments, tc := postAfterCommentBy(t, testBot, false, 1000)
+	require.NoError(t, err)
+	assert.Zero(t, tc.calls, "a normal post never resolves the posting identity")
+	require.Len(t, comments, 2, "the result is appended with the identity lookup down")
+	assert.NotContains(t, string(comments[0].Body), "new result", "the earlier comment is left unchanged")
+	assert.Contains(t, string(comments[1].Body), "new result")
 }
 
 func TestRunIssuesPostComment_EmptySelfErrors(t *testing.T) {

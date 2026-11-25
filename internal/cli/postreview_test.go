@@ -484,7 +484,7 @@ func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "Looks good")
 }
 
-func TestPostReviewContent_PreservesHistoryWhenPublishingDiffHash(t *testing.T) {
+func TestPostReviewContent_LeavesPriorCommentUntouchedWhenPublishingDiffHash(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
 	fc.PullRequestHeadSHA = "abc123def456"

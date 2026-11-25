@@ -897,13 +897,11 @@ func warnKeepHistoryDeprecated(cmd *cobra.Command) {
 // truncateForPost caps a comment body at cfg's size limit before it is
 // created. The create path has no history trimming (the update path that
 // used to cap the assembled body is gone with sticky comments, #9334), so
-// an oversized single result would otherwise fail the post.
+// an oversized single result would otherwise fail the post. The cap and
+// its default live in sticky.Config.EffectiveMaxSize, so this door and
+// sticky's own paths agree by construction.
 func truncateForPost(body string, cfg sticky.Config) string {
-	maxSize := cfg.MaxSize
-	if maxSize <= 0 {
-		maxSize = sticky.DefaultMaxSize
-	}
-	return sticky.TruncateBody(body, maxSize)
+	return sticky.TruncateBody(body, cfg.EffectiveMaxSize())
 }
 
 // ownJiraComments returns the comments whose author account ID is exactly

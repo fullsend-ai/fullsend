@@ -279,6 +279,11 @@ func publishReviewSkip(ctx context.Context, client forge.Client, owner, repo str
 	return err
 }
 
+// supersedeReviewSkip edits the bot's earlier skip notes in place — unlike
+// the append-only publishReviewSkip — because superseding marks history
+// rather than reporting a new event: the thread keeps one skip note per app
+// (each saying which commit it was superseded by) instead of a chain of
+// them.
 func supersedeReviewSkip(ctx context.Context, client forge.Client, owner, repo string, pr int, headSHA, appSet, appClientID string) error {
 	if !hexSHARe.MatchString(headSHA) {
 		headSHA = "unknown head"

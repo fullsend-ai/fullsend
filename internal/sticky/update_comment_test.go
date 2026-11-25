@@ -3,6 +3,8 @@ package sticky
 import (
 	"context"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -39,6 +41,31 @@ func TestUpdateComment_ReplacesBodyOfCommentCreatedThisRun(t *testing.T) {
 	assert.Equal(t, created.ID, client.UpdatedComments[0].CommentID, "the comment created this run is the one updated")
 }
 
+// TestUpdateComment_DryRunPrintsTheNoticeAndTouchesNothing pins the dry-run
+// branch: it prints the notice naming the comment and returns nil without
+// reaching the forge. The shipped doors call UpdateComment only outside dry
+// run today, so this locks the branch down for future wiring.
+func TestUpdateComment_DryRunPrintsTheNoticeAndTouchesNothing(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
+	var out strings.Builder
+	printer := ui.New(&out)
+
+	created, err := client.CreateIssueComment(context.Background(), "o", "r", 1, "<!-- test -->\nFirst.")
+	require.NoError(t, err)
+
+	cfg := Config{Marker: "<!-- test -->", DryRun: true}
+	err = UpdateComment(context.Background(), client, "o", "r", created.ID, "Second.", cfg, printer)
+
+	require.NoError(t, err, "a dry run succeeds without touching the forge")
+	assert.Contains(t, out.String(), "Dry run", "the dry-run notice prints")
+	assert.Contains(t, out.String(), strconv.Itoa(created.ID), "the notice names the comment")
+	assert.Empty(t, client.UpdatedComments, "a dry run never edits a comment")
+	comments := client.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Equal(t, "<!-- test -->\nFirst.", comments[0].Body, "the existing body stands untouched")
+}
+
 func TestUpdateComment_RequiresTheCreatedCommentID(t *testing.T) {
 	client := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
@@ -71,6 +98,43 @@ func TestUpdateComment_TrustedLeadingLineTooLargeForSizeCapIsRefused(t *testing.
 	err = UpdateComment(context.Background(), client, "o", "r", created.ID, body, cfg, printer)
 
 	require.Error(t, err, "UpdateComment must refuse rather than write a partial trusted line")
+	assert.Contains(t, err.Error(), "size cap")
+	assert.Equal(t, "<!-- test -->\nFirst.", client.IssueComments["o/r/1"][0].Body,
+		"the comment keeps the body it had: nothing partial is written")
+}
+
+// TestUpdateComment_TrustedLeadingLinesThirdLineCutBySizeCapIsRefused
+// mirrors Post's triple-line case (the review approve path passes
+// MaxTrustedLeadingLines=3): a cut landing inside the third trusted line,
+// past the first line the single-line guard checks, must refuse here too,
+// so a regression in the shared splitTrusted handling breaks both doors'
+// tests instead of staying green on the update path.
+func TestUpdateComment_TrustedLeadingLinesThirdLineCutBySizeCapIsRefused(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	created, err := client.CreateIssueComment(context.Background(), "o", "r", 1, "<!-- test -->\nFirst.")
+	require.NoError(t, err)
+
+	hashLine := "<!-- fullsend:review-diff-hash:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -->"
+	headLine := "<!-- fullsend:review-head:0123456789abcdef0123456789abcdef01234567 -->"
+	trusted := regexp.MustCompile(`^(?:<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->|<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->|<!-- fullsend:review-head:[0-9a-fA-F]{40,64} -->)$`)
+	// The same cap shape as the create path's triple-line case: room for
+	// the runner marker, the truncation note and the first two trusted
+	// lines plus most of the third, so the cut lands inside the
+	// projection line.
+	cfg := Config{
+		Marker:                 "<!-- fullsend:review-agent -->",
+		TrustedLeadingLine:     trusted,
+		MaxTrustedLeadingLines: 3,
+		MaxSize:                len("<!-- fullsend:review-agent -->\n"+hashLine+"\n"+headLine+"\n"+trustedLine) + 20,
+	}
+	body := hashLine + "\n" + headLine + "\n" + trustedLine + "\n\n" + strings.Repeat("x", 200)
+
+	err = UpdateComment(context.Background(), client, "o", "r", created.ID, body, cfg, printer)
+
+	require.Error(t, err, "UpdateComment must refuse rather than write a partial third trusted line")
 	assert.Contains(t, err.Error(), "size cap")
 	assert.Equal(t, "<!-- test -->\nFirst.", client.IssueComments["o/r/1"][0].Body,
 		"the comment keeps the body it had: nothing partial is written")

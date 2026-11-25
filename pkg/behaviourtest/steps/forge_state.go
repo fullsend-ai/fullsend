@@ -32,6 +32,7 @@ const (
 	stepLastIssueCommentContains           = `^the last comment on the issue contains "([^"]+)"$`
 	stepLastIssueCommentContainingContains = `^the last comment on the issue containing "([^"]+)" contains "([^"]+)"$`
 	stepIssueCommentOtherThanLastContains  = `^a comment on the issue other than the last contains "([^"]+)"$`
+	stepNoTargetCommentContains            = `^no comment on the (issue|pull request) contains "([^"]+)"$`
 )
 
 // registerForgeStateSteps binds Then steps that assert what agent
@@ -60,6 +61,9 @@ func registerForgeStateSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^a comment on the (`+targetAlternation+`) contains "([^"]+)"$`, func(ctx context.Context, target, text string) (context.Context, error) {
 		return ctx, thenTargetCommentContains(world.FromContext(ctx), target, text)
+	})
+	sc.Step(stepNoTargetCommentContains, func(ctx context.Context, target, text string) (context.Context, error) {
+		return ctx, thenNoTargetCommentContains(world.FromContext(ctx), target, text)
 	})
 	sc.Step(stepIssueCommentCountContains, func(ctx context.Context, count, text string) (context.Context, error) {
 		n, err := strconv.Atoi(count)
@@ -201,6 +205,23 @@ func thenTargetCommentContains(w *world.World, target, text string) error {
 		}
 	}
 	return fmt.Errorf("no comment on %s #%d contains %q (%d comments checked)", target, number, text, len(comments))
+}
+
+// thenNoTargetCommentContains asserts that no comment on the scenario's
+// issue or pull request contains text — the inverse of
+// thenTargetCommentContains, pinning an absence (no folded "Previous run"
+// sections beside the appended result).
+func thenNoTargetCommentContains(w *world.World, target, text string) error {
+	comments, number, err := listTargetComments(w, target)
+	if err != nil {
+		return err
+	}
+	for _, c := range comments {
+		if strings.Contains(c.Body, text) {
+			return fmt.Errorf("a comment on %s #%d contains %q:\n%s", target, number, text, c.Body)
+		}
+	}
+	return nil
 }
 
 // thenIssueCommentCountContains asserts that exactly count comments on

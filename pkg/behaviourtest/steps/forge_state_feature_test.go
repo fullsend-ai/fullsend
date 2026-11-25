@@ -42,6 +42,7 @@ func TestTriageReRunAppendFeature_StepsMatchPatterns(t *testing.T) {
 		regexp.MustCompile(stepLastIssueCommentContains),
 		regexp.MustCompile(stepLastIssueCommentContainingContains),
 		regexp.MustCompile(stepIssueCommentOtherThanLastContains),
+		regexp.MustCompile(stepNoTargetCommentContains),
 	}
 	var commentAssertions []string
 	for _, step := range steps {
@@ -51,7 +52,7 @@ func TestTriageReRunAppendFeature_StepsMatchPatterns(t *testing.T) {
 			}
 		}
 	}
-	require.Len(t, commentAssertions, 4, "the scenario's four comment assertions, each matching exactly one pattern")
+	require.Len(t, commentAssertions, 5, "the scenario's five comment assertions, each matching exactly one pattern")
 
 	// The marker-scoped assertion matches its own pattern, never the
 	// any-kind last-comment one.
