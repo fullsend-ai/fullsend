@@ -45,6 +45,12 @@ func TestRenderJiraPollCaller(t *testing.T) {
 			"FULLSEND_JIRA_CLIENT_SECRET": "${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}",
 		}, wf.Jobs["poll"].Secrets, "the poll job receives the Jira credential choices")
 		assert.Equal(t, "15", wf.Jobs["poll"].With["timeout_minutes"], "the caller sets the reusable poll timeout")
+		// The jira-poll driver keeps no per-issue lock (ADR 0085), so this
+		// group is what keeps two poll cycles from overlapping.
+		require.NotNil(t, wf.Jobs["poll"].Concurrency, "the poll job queues its runs")
+		assert.Equal(t, "${{ github.workflow }}-poll", wf.Jobs["poll"].Concurrency.Group)
+		assert.Equal(t, "!!bool", wf.Jobs["poll"].Concurrency.CancelInProgress.Tag)
+		assert.Equal(t, "false", wf.Jobs["poll"].Concurrency.CancelInProgress.Value, "a queued cycle waits; it is not cancelled")
 		assert.Equal(t, "${{ needs.poll.outputs.matrix }}", wf.Jobs["dispatch"].With["matrix"])
 		for _, name := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
 			assert.Equal(t, "${{ secrets."+name+" }}", wf.Jobs["dispatch"].Secrets[name],
