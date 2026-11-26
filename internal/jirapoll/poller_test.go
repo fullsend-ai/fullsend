@@ -64,9 +64,8 @@ type mockClient struct {
 	roleActorsCalls int            // GetProjectRoleActors call count
 	userGroupsCalls map[string]int // accountID -> GetUserGroups call count
 
-	// Per-issue call counts, so a test can show an issue cost nothing.
-	// Writes and deletes are counted because a lock is written and then
-	// deleted, which the end state cannot show.
+	// Per-issue call counts, so a test can show an issue cost nothing,
+	// including a write or a delete that the end state would not show.
 	listCommentsCalls   map[string]int // issueKey -> ListComments calls
 	listChangelogCalls  map[string]int // issueKey -> ListChangelog calls
 	propertySetCalls    map[string]int // issueKey -> SetEntityProperty calls
@@ -1484,8 +1483,15 @@ func TestRunIgnoresLegacyLock(t *testing.T) {
 	if mc.propertyDeleteCalls["PROJ-123"] != 0 {
 		t.Errorf("deleted %d properties, want 0", mc.propertyDeleteCalls["PROJ-123"])
 	}
-	if _, ok := mc.properties["PROJ-123"][writeCheckPropertyKey("acme", "platform")]; !ok {
-		t.Error("the write-access check wrote no property")
+	var checked string
+	if err := json.Unmarshal(mc.properties["PROJ-123"][writeCheckPropertyKey("acme", "platform")], &checked); err != nil {
+		t.Fatalf("write-check property: %v", err)
+	}
+	if _, err := time.Parse(time.RFC3339, checked); err != nil {
+		t.Errorf("write-check property = %q, want an RFC 3339 time: %v", checked, err)
+	}
+	if n := mc.propertySetCalls["PROJ-123"]; n != 2 {
+		t.Errorf("wrote %d properties, want 2: one write check and one lastCheck", n)
 	}
 }
 
@@ -1542,6 +1548,12 @@ func TestRunWriteAccessCheck(t *testing.T) {
 		}
 		if mc.listCommentsCalls["PROJ-2"] == 0 {
 			t.Error("PROJ-2 was not read")
+		}
+		if !storedLastCheckAt(t, mc, "PROJ-1").IsZero() {
+			t.Error("the denied issue's lastCheck advanced, so its request would not be retried")
+		}
+		if storedLastCheckAt(t, mc, "PROJ-2").IsZero() {
+			t.Error("the served issue's lastCheck was not committed")
 		}
 		if want := "WARNING: processing PROJ-1: check write access to PROJ-1"; !strings.Contains(logs.String(), want) {
 			t.Errorf("log lacks %q:\n%s", want, logs)
