@@ -18,6 +18,27 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
 
+func TestLoadJiraPollSettings_ExplicitSourceKeepsURLValidation(t *testing.T) {
+	dir := writeJiraPollConfig(t, `tracker:
+  jira:
+    base_url: http://127.0.0.1:8080
+    project: PROJ
+    poll:
+      enabled: true
+entity_sources:
+  legacy_tracker:
+    projects: [PROJ]
+    query: ''
+agents:
+  - name: triage
+    entities:
+      source: [legacy_tracker]
+`)
+	_, err := loadJiraPollSettings(dir, "", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be an https URL")
+}
+
 func writeJiraPollConfig(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()

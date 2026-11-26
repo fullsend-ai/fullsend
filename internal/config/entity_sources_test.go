@@ -440,6 +440,32 @@ agents:
 		assert.Equal(t, []string{"A", "B"}, scope.Projects)
 		assert.Equal(t, "https://other.atlassian.net", scope.Connection.BaseURL)
 	})
+	t.Run("explicit source keeps translated connection URL validation", func(t *testing.T) {
+		for _, jira := range []string{
+			"base_url: http://127.0.0.1:8080\n    project: PROJ",
+			"base_url: https://example.atlassian.net\n    api_url: http://localhost:8080\n    project: PROJ",
+		} {
+			r := parseEntityConfig(t, `tracker:
+  jira:
+    `+jira+`
+    poll:
+      enabled: true
+entity_sources:
+  legacy_tracker:
+    projects: [A]
+    query: ''
+agents:
+  - name: triage
+    entities:
+      source: [legacy_tracker]
+`)
+			ec, err := ResolveEntityConfig(r, nil)
+			require.NoError(t, err)
+			_, err = ec.JiraDiscoveryScope()
+			require.Error(t, err, jira)
+			assert.Contains(t, err.Error(), "must be an https URL")
+		}
+	})
 	t.Run("replacement connection must stay jira", func(t *testing.T) {
 		r := parseEntityConfig(t, "tracker:\n  jira:\n    base_url: https://example.atlassian.net\n    project: PROJ\nconnections:\n  legacy_tracker:\n    kind: github\n")
 		_, err := ResolveEntityConfig(r, nil)
@@ -757,6 +783,7 @@ func TestValidateGitHubQuery(t *testing.T) {
 		"type:Bug state:closed",
 		`label:"team@example.com" milestone:"release@v2"`,
 		`label:"@backend" milestone:"@release" label:@triage`,
+		`created:"2024-01-01" updated:">=2024-01-01" closed:"2024-01-01 10:00:00"`,
 	} {
 		assert.NoError(t, ValidateGitHubQuery(q, EntityKindWorkItem), q)
 	}
@@ -765,29 +792,33 @@ func TestValidateGitHubQuery(t *testing.T) {
 		assert.NoError(t, ValidateGitHubQuery(q, ""), q)
 	}
 	for q, want := range map[string]string{
-		"open":                  "bare text",
-		"is:open NOT label:bug": "NOT is not supported",
-		"repo:a/b":              "set the source's repositories",
-		"sort:updated":          "adapter-owned",
-		"in:title foo":          "not supported",
-		"assignee:@me":          "viewer-relative",
-		`author:"@me"`:          "viewer-relative",
-		"created:>=@today":      "viewer-relative",
-		"created:>2024-01-01x":  "absolute date",
-		"-no:label":             "-no: is not supported",
-		"no:reviewer":           "no:reviewer is not supported",
-		"is:draft":              "is:draft is not supported",
-		"state:merged":          "state:merged is not supported",
-		"draft:maybe":           "true or false",
-		"(is:open":              "incomplete",
-		"is:open)":              "unbalanced",
-		"()":                    "empty parentheses",
-		"is:open AND":           "incomplete",
-		"OR is:open":            "must join",
-		`label:"open`:           "unterminated",
-		"label:":                "needs a value",
-		"draft:true":            "applies to change_proposal",
-		"is:issue":              "applies to work_item",
+		"open":                   "bare text",
+		"is:open NOT label:bug":  "NOT is not supported",
+		"repo:a/b":               "set the source's repositories",
+		"sort:updated":           "adapter-owned",
+		"in:title foo":           "not supported",
+		"assignee:@me":           "viewer-relative",
+		`author:"@me"`:           "viewer-relative",
+		"created:>=@today":       "viewer-relative",
+		"created:>2024-01-01x":   "absolute date",
+		"-no:label":              "-no: is not supported",
+		"no:reviewer":            "no:reviewer is not supported",
+		"is:draft":               "is:draft is not supported",
+		"state:merged":           "state:merged is not supported",
+		"state:issue":            "state:issue is not supported",
+		"state:pr":               "state:pr is not supported",
+		`created:"@today"`:       "viewer-relative",
+		`created:">2024-01-01x"`: "absolute date",
+		"draft:maybe":            "true or false",
+		"(is:open":               "incomplete",
+		"is:open)":               "unbalanced",
+		"()":                     "empty parentheses",
+		"is:open AND":            "incomplete",
+		"OR is:open":             "must join",
+		`label:"open`:            "unterminated",
+		"label:":                 "needs a value",
+		"draft:true":             "applies to change_proposal",
+		"is:issue":               "applies to work_item",
 	} {
 		kind := EntityKindWorkItem
 		if q == "is:issue" {

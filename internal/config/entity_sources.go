@@ -617,10 +617,15 @@ func checkGitHubTerm(tok, kind string) error {
 				return fmt.Errorf("GitHub query: state:%s is not supported", value)
 			}
 			restriction = EntityKindChangeProposal
-		case "issue":
+		case "issue", "pr":
+			// issue and pr are kind assertions for is:, not states.
+			if q == "state" {
+				return fmt.Errorf("GitHub query: state:%s is not supported", value)
+			}
 			restriction = EntityKindWorkItem
-		case "pr":
-			restriction = EntityKindChangeProposal
+			if lower == "pr" {
+				restriction = EntityKindChangeProposal
+			}
 		default:
 			return fmt.Errorf("GitHub query: %s:%s is not supported", q, value)
 		}
@@ -635,7 +640,7 @@ func checkGitHubTerm(tok, kind string) error {
 			return fmt.Errorf("GitHub query: draft: must be true or false")
 		}
 	}
-	if githubDateQualifiers[q] && !githubDateRe.MatchString(value) {
+	if githubDateQualifiers[q] && !githubDateRe.MatchString(strings.Trim(value, `"`)) {
 		return fmt.Errorf("GitHub query: %s:%s must be an absolute date, comparison, or range", q, value)
 	}
 	if kind != "" && restriction != "" && restriction != kind {
@@ -842,6 +847,24 @@ func derefTargets(t *ConnectionAllowedTargets) ConnectionAllowedTargets {
 	return *t.clone()
 }
 
+// validateJiraConnectionURLs checks only the tracker.jira connection URLs, so
+// they stay validated when the lookup scope's project and query errors are
+// discarded. A missing base_url is reported where the connection is used.
+func validateJiraConnectionURLs(j *JiraTrackingConfig) error {
+	if j == nil {
+		return nil
+	}
+	if j.BaseURL != "" {
+		if err := validateJiraURL("base_url", j.BaseURL); err != nil {
+			return err
+		}
+	}
+	if j.APIURL != "" {
+		return validateJiraURL("api_url", j.APIURL)
+	}
+	return nil
+}
+
 // translateLegacyTracker translates the effective (whole-block layered)
 // tracker setting into the legacy_tracker connection and, for a complete
 // Jira declaration, the legacy_tracker lookup source. Explicit entries of
@@ -890,7 +913,14 @@ func (ec *EntityConfig) translateLegacyTracker(t *TrackingConfig, explicitConns 
 		if source != nil || ec.legacySourceErr != nil {
 			ec.Diagnostics = append(ec.Diagnostics, fmt.Sprintf("entity_sources.%s replaces the lookup scope translated from tracker.%s", LegacyTrackerName, provider))
 		}
+		// The explicit source replaces the translated lookup scope, so its
+		// project and query errors no longer apply. The translated
+		// connection is still in use unless an explicit connection replaced
+		// it, so its URL errors must survive.
 		ec.legacySourceErr = nil
+		if _, ok := explicitConns[LegacyTrackerName]; !ok && provider == TrackingProviderJira {
+			ec.legacySourceErr = validateJiraConnectionURLs(t.Jira)
+		}
 		return
 	}
 	if source != nil {
