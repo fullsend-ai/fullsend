@@ -1723,7 +1723,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ runner.arch }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Validate cached fullsend CLI for event payload
         id: payload-cli-cache-validation
@@ -1763,6 +1763,10 @@ jobs:
           sparse-checkout: |
             .github/actions/install-fullsend-cli/
           sparse-checkout-cone-mode: false
+          # Like every other checkout in this file: the job token must not
+          # persist into .git/config of the sparse checkout and stay
+          # available to later steps running with elevated permissions.
+          persist-credentials: false
 
       - name: Install fullsend CLI for event payload (upstream workflow)
         if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && (steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true')
@@ -1802,7 +1806,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ runner.arch }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Build event payload
         id: payload
@@ -1881,6 +1885,20 @@ jobs:
           # unverifiable binary and continuing would reopen a silent
           # no-event path).
           PAYLOAD_NORM_ERR=".payload-normalize.stderr"
+          # gha_text makes a value safe inside a ::notice::/::warning::/::error::
+          # message: it drops control characters (CR/LF included), encodes %
+          # and breaks up ::. Copied verbatim into each CEL route step that
+          # prints workflow commands, since steps share no shell state; the
+          # payload step needs it for the same reason — the captured stderr
+          # can echo untrusted event fields, and this job holds
+          # id-token: write.
+          gha_text() {
+            local v
+            v=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')
+            v=${v//\%/%25}
+            while [[ "${v}" == *::* ]]; do v=${v//::/: :}; done
+            printf '%s' "${v}"
+          }
           NORMALIZED_EVENT=$(fullsend dispatch \
             --input-driver gha-event \
             --config-dir .fullsend \
@@ -1889,18 +1907,21 @@ jobs:
             NORM_ERR_TEXT="$(tr '\r\n' '  ' < "${PAYLOAD_NORM_ERR}")"
             NORM_ERR_TEXT="${NORM_ERR_TEXT% }"
             if [[ -n "${NORM_ERR_TEXT}" ]]; then
-              echo "::error::Failed to normalize the event for the routed stage: ${NORM_ERR_TEXT}"
+              echo "::error::Failed to normalize the event for the routed stage: $(gha_text "${NORM_ERR_TEXT}")"
             else
               echo "::error::Failed to normalize the event for the routed stage"
             fi
-            cat "${PAYLOAD_NORM_ERR}" >&2 || true
+            # Prefixed: the runner parses :: commands on stderr as well,
+            # and this job holds id-token: write.
+            sed 's/^/ /' "${PAYLOAD_NORM_ERR}" >&2 || true
             rm -f "${PAYLOAD_NORM_ERR}"
             exit 1
           }
           # The CLI's stderr carries success-path diagnostics too (a
           # denied bot role is a warning, not an error), so it reaches
-          # the log before the scratch file goes.
-          cat "${PAYLOAD_NORM_ERR}" >&2 || true
+          # the log before the scratch file goes — prefixed like the
+          # failure path, so no replayed line may start a command.
+          sed 's/^/ /' "${PAYLOAD_NORM_ERR}" >&2 || true
           rm -f "${PAYLOAD_NORM_ERR}"
           EVENT_PAYLOAD=$(printf '%s' "${EVENT_PAYLOAD}" \
             | jq -c --argjson normalized "${NORMALIZED_EVENT}" '._normalized_event = $normalized')

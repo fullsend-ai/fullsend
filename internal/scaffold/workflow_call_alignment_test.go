@@ -1274,6 +1274,7 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 		Run             string            `yaml:"run"`
 		If              string            `yaml:"if"`
 		Env             map[string]string `yaml:"env"`
+		With            map[string]any    `yaml:"with"`
 		ContinueOnError any               `yaml:"continue-on-error"`
 	}
 	type workflowJob struct {
@@ -1310,6 +1311,12 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 		"the payload step must pass the event action so the normalizer resolves the transition")
 	assert.Contains(t, payload.Run, "--config-dir .fullsend",
 		"the payload step must resolve the repository config the same way the routed stages do")
+	assert.Contains(t, payload.Run, "--input-driver gha-event",
+		"the payload step must pin the GitHub event driver: the CLI's default flips to forgejo-event under FORGEJO_ACTIONS/GITEA_ACTIONS, and the payload must normalize the GitHub event, not the Forgejo one")
+	assert.Contains(t, payload.If, "steps.route.outputs.stage != ''",
+		"the payload step must gate on the routed stage like the job-level `stage` output, so no stage job runs without its payload")
+	assert.Contains(t, payload.If, "steps.agent-check.outputs.skipped != 'true'",
+		"the payload step must gate on the agent-check guard like the ladder and the job-level `stage` output, so a skipped agent check runs no payload work")
 
 	// A fork PR's workflow_run must reach the normalization as the rebuilt
 	// pull_request event — the raw workflow_run event is not one the event
@@ -1358,6 +1365,17 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 			"step %q must gate on the review-skip guard like the job-level `stage` output, so an unchanged-diff synchronize push with the review skipped runs no payload work", step.Name)
 	}
 
+	// The ladder's upstream checkout is new code, not legacy debt: like the
+	// twelve other checkouts in this file it must not leave the job token
+	// in .git/config of the sparse checkout, where later steps running with
+	// elevated permissions could read it.
+	for _, step := range ladder {
+		if step.Name == "Checkout upstream install action for event payload" {
+			assert.Equal(t, false, step.With["persist-credentials"],
+				"the payload ladder's upstream checkout must set persist-credentials: false like every other checkout in this file")
+		}
+	}
+
 	// Main's #9663 hardened every CLI ladder; the payload ladder mirrors that
 	// shape: a restored cache entry is validated before it is exposed, an
 	// invalid entry re-runs the install, the artifact is proven with
@@ -1394,6 +1412,18 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 		"the save must be gated on the prepare outcome (main #9663)")
 	assert.Equal(t, 2, strings.Count(string(content), "fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ runner.arch }}-"),
 		"both payload ladder cache keys must carry runner.arch so an entry restored across architectures is not exposed (main #9663)")
+
+	// The three CLI ladders (CEL route, payload, harness-dispatch; restore
+	// and save each) share one cache-key schema — mode, runner.arch, a
+	// hashFiles segment, the trusted workflow SHA — so in upstream mode,
+	// where hashFiles resolves empty, they share one saved CLI instead of
+	// the route job paying a second source build per non-sharing ladder.
+	// The hunk's own comment declares the keys stay in sync; this freezes
+	// the shared shape so drift fails the suite instead of staying
+	// invisible.
+	keyRe := regexp.MustCompile(`(?m)^\s*key: fullsend-cli-\$\{\{ steps\.[a-z-]+\.outputs\.mode \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ hashFiles\('[^']+'\) \}\}-\$\{\{ \(github\.event_name == 'pull_request'`)
+	assert.Len(t, keyRe.FindAllString(string(content), -1), 6,
+		"all six CLI ladder cache keys (CEL route, payload and harness-dispatch, restore and save each) must carry the shared schema: mode, runner.arch, a hashFiles segment and the trusted workflow SHA")
 }
 
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch

@@ -136,6 +136,18 @@ func isForgejoActionsRunner() bool {
 	return os.Getenv("FORGEJO_ACTIONS") == "true" || os.Getenv("GITEA_ACTIONS") == "true"
 }
 
+// requireLoadedEvent fails closed on a driver that produced no event and no
+// error: --print-event would otherwise marshal a nil event as null, the
+// route job would embed _normalized_event = null, and the stage jobs would
+// run with no event instead of failing — inverting the fail-closed policy
+// the payload step exists to enforce.
+func requireLoadedEvent(event *normevent.Event, driver string) error {
+	if event == nil {
+		return fmt.Errorf("input driver %q loaded no event", driver)
+	}
+	return nil
+}
+
 func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	route := strings.ToLower(strings.TrimSpace(opts.route))
 	if _, ok := routableAgents[route]; opts.route != "" && !ok {
@@ -198,6 +210,9 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 		return fmt.Errorf("unknown input driver %q", inDriver)
 	}
 	if err != nil {
+		return err
+	}
+	if err := requireLoadedEvent(event, inDriver); err != nil {
 		return err
 	}
 

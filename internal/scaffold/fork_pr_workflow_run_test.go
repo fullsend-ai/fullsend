@@ -894,6 +894,66 @@ func TestBuildEventPayloadFailsClosedWithCLIError(t *testing.T) {
 		"the CLI's stderr must ride on the failure annotation, so a binary too old for --print-event shows its cause in the checks UI")
 }
 
+// The failure annotation sanitizes the CLI's stderr the way the CEL route
+// steps do (gha_text: control characters dropped, % encoded, :: broken up):
+// the captured stderr can echo untrusted event fields — an actor login, a
+// repo or title — and the route job holds id-token: write, so a %0A that
+// survives the CR/LF fold must not terminate the workflow command and forge
+// further commands or annotations.
+func TestBuildEventPayloadSanitizesCLIErrorAnnotation(t *testing.T) {
+	dir := t.TempDir()
+	prEvent := `{"action":"opened","pull_request":{"number":7,"html_url":"https://github.com/acme/widgets/pull/7",` +
+		`"head":{"ref":"fix-typo","sha":"` + forkHeadSHA + `","repo":{"full_name":"acme/widgets"}},` +
+		`"base":{"ref":"main","repo":{"full_name":"acme/widgets"}}},"sender":{"login":"writer","type":"User"}}`
+	event := filepath.Join(dir, "event.json")
+	require.NoError(t, os.WriteFile(event, []byte(prEvent), 0o644))
+	script := extractReusableDispatchStepScript(t, "route", "Build event payload")
+	bin := filepath.Join(dir, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	// stderr carries a %0A sequence, a ::workflow-command:: lookalike, a
+	// control byte and a line that itself starts with a workflow command:
+	// none may reach the annotation as-is, and no replayed line may start
+	// a command on stderr, where the runner parses them too.
+	stub := "#!/bin/sh\n" +
+		"printf 'Error: line1\\nline2 %%0A ::error::forged\\001\\n::error::replay-forged\\n' >&2\n" +
+		"exit 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(stub), 0o755))
+	out := filepath.Join(dir, "output")
+	require.NoError(t, os.WriteFile(out, nil, 0o644))
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = []string{
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GITHUB_OUTPUT=" + out,
+		"GITHUB_EVENT_NAME=pull_request",
+		"GITHUB_EVENT_PATH=" + event,
+		"PR_HEAD_JSON=",
+		"EVENT_ACTION=opened",
+	}
+	b, err := cmd.CombinedOutput()
+	require.Error(t, err, "the payload step must fail closed when the CLI cannot normalize the event")
+	// The CR/LF fold turns the newline into a space, gha_text drops the
+	// control byte, encodes % and breaks :: up.
+	assert.Contains(t, string(b),
+		"::error::Failed to normalize the event for the routed stage: Error: line1 line2 %250A : :error: :forged",
+		"the annotation must carry the CLI's stderr sanitized like the CEL route steps: control characters dropped, % encoded, :: broken up")
+	assert.NotContains(t, string(b),
+		"routed stage: Error: line1 line2 %0A",
+		"an unsanitized %0A must not reach the annotation: it decodes into a newline on the runner and could forge workflow commands in the id-token-holding job")
+	// The raw replay to the log prefixes each line, so the forged command
+	// stays visible but cannot start a line: the runner parses workflow
+	// commands on stderr as well as stdout (ScriptHandler wires
+	// ErrorDataReceived through its own command-processing OutputManager).
+	assert.Contains(t, string(b),
+		" ::error::replay-forged",
+		"the replayed stderr must reach the log with its line-start prefix, keeping the diagnostics visible")
+	assert.NotContains(t, string(b),
+		"\n::error::replay-forged",
+		"no replayed line may begin with a workflow command: the runner parses stderr for commands in the id-token-holding job")
+	assert.Equal(t, 2, strings.Count(script, "sed 's/^/ /' \"${PAYLOAD_NORM_ERR}\" >&2 || true"),
+		"both stderr replays (failure and success path) must prefix each line so no replayed line can start a workflow command")
+}
+
 // The wiring around the steps: the resolve step runs only on workflow_run
 // and before "Determine stage", the payload and Finalize steps read the
 // resolved PR, the review and retro groups fall back to its number, and

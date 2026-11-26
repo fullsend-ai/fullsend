@@ -219,6 +219,22 @@ func TestRunDispatch_PrintEventRejectsRoute(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot be combined with --route")
 }
 
+// TestRequireLoadedEventFailsClosed pins the nil-event guard behind
+// --print-event: a driver that produced no event and no error must fail the
+// command, not marshal null — the route job would embed
+// _normalized_event = null and the stage jobs would run with no event,
+// silently inverting the fail-closed policy.
+func TestRequireLoadedEventFailsClosed(t *testing.T) {
+	err := requireLoadedEvent(nil, "gha-event")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gha-event",
+		"the error must name the driver that loaded no event")
+	assert.Contains(t, err.Error(), "no event")
+
+	require.NoError(t, requireLoadedEvent(&normevent.Event{}, "gha-event"),
+		"a loaded event passes the guard")
+}
+
 // TestRunDispatch_PrintEventIgnoresOutputDriver pins the documented
 // contract that --output-driver is ignored under --print-event: the command
 // prints the loaded event's normalized form as one JSON object, never the
