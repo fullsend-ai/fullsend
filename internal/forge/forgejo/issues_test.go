@@ -406,7 +406,7 @@ func TestListOpenIssues_FiltersPullRequestsAndLabels(t *testing.T) {
 	all, err := c.ListOpenIssues(ctx, "o", "r")
 	require.NoError(t, err)
 	assert.Len(t, all, 2*issuePageSize+3-26-1, "closed issues and the pull request are excluded")
-	assert.Equal(t, 2, f.count("GET /forgejo/api/v1/repos/o/r/issues"), "the listing paginates")
+	assert.Equal(t, 3, f.count("GET /forgejo/api/v1/repos/o/r/issues"), "the listing paginates until an empty page")
 
 	both, err := c.ListOpenIssues(ctx, "o", "r", "bug", "ready")
 	require.NoError(t, err)
@@ -423,10 +423,20 @@ func TestListOpenIssues_FiltersPullRequestsAndLabels(t *testing.T) {
 	assert.Empty(t, none)
 }
 
+// laterPage reports whether the request asks for a page after the first.
+func laterPage(r *http.Request) bool {
+	p, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	return p > 1
+}
+
 func TestListOpenIssues_ExcludesPullRequestsTheServerReturns(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "issues", r.URL.Query().Get("type"))
 		assert.Equal(t, "open", r.URL.Query().Get("state"))
+		if laterPage(r) {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		_, _ = w.Write([]byte(`[{"number":1,"labels":[]},{"number":2,"pull_request":{"merged":false}}]`))
 	}))
 	defer srv.Close()
@@ -549,6 +559,10 @@ func TestIssues_LabelWriteFailures(t *testing.T) {
 	// The labels are resolved but applying them fails.
 	c = stubServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
+			if laterPage(r) {
+				writeJSON(w, http.StatusOK, []issueLabel{})
+				return
+			}
 			writeJSON(w, http.StatusOK, []issueLabel{{ID: 3, Name: "x"}})
 			return
 		}
@@ -618,8 +632,51 @@ func TestIssues_LabelListingPaginates(t *testing.T) {
 	}
 	last := "l" + strconv.Itoa(issuePageSize+4)
 	require.NoError(t, c.EnsureLabel(ctx, "o", "r", last))
-	assert.Equal(t, 2, f.count("GET /api/v1/repos/o/r/labels"))
+	assert.Equal(t, 3, f.count("GET /api/v1/repos/o/r/labels"), "the listing paginates until an empty page")
 	assert.Zero(t, f.count("POST "), "a label on a later page is found, not duplicated")
+}
+
+// TestIssues_ServerClampsPageSize covers a server whose maximum response
+// size is below the requested limit: every page is short, yet the listings
+// must continue to the end rather than stop at the first page.
+func TestIssues_ServerClampsPageSize(t *testing.T) {
+	ctx := context.Background()
+	const serverMax = 10
+	f := &fakeIssues{issues: map[int]*fakeIssue{}, comments: map[int]*fakeComment{}, nextID: 100}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if l, _ := strconv.Atoi(q.Get("limit")); l > serverMax {
+			q.Set("limit", strconv.Itoa(serverMax))
+			r.URL.RawQuery = q.Encode()
+		}
+		f.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(srv.URL+"/", "secret-token", srv.Client())
+	require.NoError(t, err)
+
+	for i := range 3*serverMax + 5 {
+		f.labels = append(f.labels, issueLabel{ID: int64(i + 1), Name: "l" + strconv.Itoa(i)})
+	}
+	last := "l" + strconv.Itoa(3*serverMax+4)
+	require.NoError(t, c.EnsureLabel(ctx, "o", "r", last))
+	assert.Zero(t, f.count("POST "), "a label beyond the first clamped page is found, not duplicated")
+
+	for n := 1; n <= 2*serverMax+3; n++ {
+		f.issues[n] = &fakeIssue{title: "t" + strconv.Itoa(n), state: "open"}
+	}
+	issues, err := c.ListOpenIssues(ctx, "o", "r")
+	require.NoError(t, err)
+	assert.Len(t, issues, 2*serverMax+3)
+
+	for i := range 2*serverMax + 3 {
+		f.issues[1].timeline = append(f.issues[1].timeline, map[string]any{
+			"type": "label", "body": "1", "label": map[string]any{"id": 1, "name": "l" + strconv.Itoa(i)},
+		})
+	}
+	events, err := c.ListIssueLabelEvents(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	assert.Len(t, events, 2*serverMax+3)
 }
 
 func TestFindLabel_PrefersExactMatch(t *testing.T) {

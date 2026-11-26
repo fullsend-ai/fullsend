@@ -17,8 +17,10 @@ import (
 // the client's configured instance; there is no fallback to another forge.
 
 const (
-	// issuePageSize is the page size of every issue, label, and timeline
-	// listing, the Forgejo API's default maximum.
+	// issuePageSize is the page size requested for every issue, label, and
+	// timeline listing, the Forgejo API's default maximum. A server may
+	// clamp it lower (its [api] MAX_RESPONSE_ITEMS setting), so a short
+	// page does not mark the last page; a listing ends at an empty page.
 	issuePageSize = 50
 	// maxIssuePages bounds the open-issue and timeline listings, so a
 	// server that ignores the page parameter cannot keep the client
@@ -115,7 +117,7 @@ func (c *LiveClient) listLabels(ctx context.Context, owner, repo string) ([]issu
 			return nil, fmt.Errorf("listing labels of %q/%q: %w", owner, repo, err)
 		}
 		out = append(out, labels...)
-		if len(labels) < issuePageSize {
+		if len(labels) == 0 {
 			return out, nil
 		}
 	}
@@ -274,7 +276,7 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 			}
 			out = append(out, r.toIssue())
 		}
-		if len(issues) < issuePageSize {
+		if len(issues) == 0 {
 			return out, nil
 		}
 	}
@@ -325,7 +327,7 @@ func (c *LiveClient) ListIssueLabelEvents(ctx context.Context, owner, repo strin
 				CreatedAt:  e.CreatedAt,
 			})
 		}
-		if len(events) < issuePageSize {
+		if len(events) == 0 {
 			return out, nil
 		}
 	}
