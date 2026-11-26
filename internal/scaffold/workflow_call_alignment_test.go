@@ -1265,10 +1265,11 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 // job) runs neither the ladder nor the payload step.
 func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 	type workflowStep struct {
-		Name            string `yaml:"name"`
-		Run             string `yaml:"run"`
-		If              string `yaml:"if"`
-		ContinueOnError any    `yaml:"continue-on-error"`
+		Name            string            `yaml:"name"`
+		Run             string            `yaml:"run"`
+		If              string            `yaml:"if"`
+		Env             map[string]string `yaml:"env"`
+		ContinueOnError any               `yaml:"continue-on-error"`
 	}
 	type workflowJob struct {
 		Steps []workflowStep `yaml:"steps"`
@@ -1304,6 +1305,21 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 		"the payload step must pass the event action so the normalizer resolves the transition")
 	assert.Contains(t, payload.Run, "--config-dir .fullsend",
 		"the payload step must resolve the repository config the same way the routed stages do")
+
+	// A fork PR's workflow_run must reach the normalization as the rebuilt
+	// pull_request event — the raw workflow_run event is not one the event
+	// loader maps, and normalizing it fails the route job for exactly the
+	// stages this workflow serves. Same rebuild as the CEL route step.
+	assert.Contains(t, payload.Run, `== "workflow_run"`,
+		"the payload step must branch on the workflow_run trigger before normalizing")
+	assert.Contains(t, payload.Run, `GITHUB_EVENT_NAME="pull_request"`,
+		"the payload step must normalize the rebuilt pull_request event for a fork PR's workflow_run")
+	assert.Equal(t, "${{ steps.fork-pr.outputs.pr_file }}", payload.Env["FORK_PR_FILE"],
+		"the rebuild must read the PR the resolve step fetched from the API")
+	assert.Equal(t, "${{ steps.bash-route.outputs.event_action }}", payload.Env["ROUTED_ACTION"],
+		"the rebuild must carry the routed action")
+	assert.Equal(t, "${{ steps.bash-route.outputs.event_sender }}", payload.Env["ROUTED_SENDER"],
+		"the rebuild must carry the routed sender")
 
 	for _, step := range ladder {
 		switch v := step.ContinueOnError.(type) {
@@ -1567,6 +1583,48 @@ func TestOwnersCheckoutRefPin(t *testing.T) {
 				"should find at least one checkout step with OWNERS in sparse-checkout")
 		})
 	}
+}
+
+// TestReusableDispatchSparseCheckoutNoDuplicates pins every checkout's
+// sparse-checkout list in reusable-dispatch.yml to one entry per path:
+// duplicate entries are dead weight a rebase can quietly accumulate on top
+// of a list main already carries.
+func TestReusableDispatchSparseCheckoutNoDuplicates(t *testing.T) {
+	type workflowStep struct {
+		Name string `yaml:"name"`
+		With struct {
+			SparseCheckout string `yaml:"sparse-checkout"`
+		} `yaml:"with"`
+	}
+	type workflowJob struct {
+		Steps []workflowStep `yaml:"steps"`
+	}
+	var workflow struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+	content := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	var checked int
+	for job, j := range workflow.Jobs {
+		for _, step := range j.Steps {
+			if step.With.SparseCheckout == "" {
+				continue
+			}
+			checked++
+			seen := map[string]bool{}
+			for _, line := range strings.Split(step.With.SparseCheckout, "\n") {
+				entry := strings.TrimSpace(line)
+				if entry == "" {
+					continue
+				}
+				assert.False(t, seen[entry],
+					"job %q step %q lists sparse-checkout entry %q twice", job, step.Name, entry)
+				seen[entry] = true
+			}
+		}
+	}
+	require.NotZero(t, checked, "should find sparse-checkout lists to check")
 }
 
 // TestShimScaffoldBranchFilter validates that the shim template skips dispatch
