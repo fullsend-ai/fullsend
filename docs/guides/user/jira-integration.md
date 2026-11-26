@@ -1459,7 +1459,7 @@ These properties are namespaced per target repo, so multiple repos can poll the 
 
 Three edge cases of checkpoint tracking are worth knowing:
 
-- **First enable on an existing backlog.** Every issue starts with an unset `lastCheck`, so on the first poll of an issue the poller has no checkpoint to filter by. Activity is instead bounded by a fixed 24-hour backfill window (not currently configurable): an `opened` event is emitted only for issues created within the window, and only comments and changelog entries from within the window produce events. Backlog issues with no activity (including comment edits) inside the window are silently checkpointed without dispatching. If you want the initial rollout scoped even tighter, narrow the candidate set with a custom `--jql`.
+- **First enable on an existing backlog.** Every issue starts with an unset `lastCheck`, so on the first poll of an issue the poller has no checkpoint to filter by. Activity is instead bounded by a fixed 24-hour backfill window (not currently configurable): an `opened` event is emitted only for issues created within the window, and only comments and changelog entries from within the window produce events. Backlog issues with no activity (including comment edits) inside the window are not returned by the search, so nothing is dispatched for them. If you want the initial rollout scoped even tighter, narrow `tracker.jira.poll.query`.
 - **Resuming after a gap longer than 24 hours permanently drops events in the
   gap.** The same 24-hour backfill window that bounds a first poll also bounds
   resumption. When the poller reads a stored `lastCheck` older than
@@ -1468,13 +1468,14 @@ Three edge cases of checkpoint tracking are worth knowing:
   issue's entire history), but it cannot distinguish a malicious rewind from a
   legitimate long stop. Any Jira activity between the true checkpoint and the
   clamped value is silently skipped. The cycle succeeds, and the only evidence
-  is in the run log: an issue that is selected logs
-  `WARNING: lastCheck for <KEY> ("<timestamp>") predates the backfill window; clamping to <floor>`,
-  and an issue that is skipped, because its `updated` time is more than a second
-  after its `lastCheck` but still older than the window, is named in one
-  `WARNING: activity filter: …` line per cycle that contains the same phrase
-  `predates the backfill window`. Activity on such an issue may have been
-  missed. Treat either line as an alert, not noise. Because detection
+  is in the run log, and only for an issue that changed again within the
+  window: when it is selected it logs
+  `WARNING: lastCheck for <KEY> ("<timestamp>") predates the backfill window; clamping to <floor>`.
+  An issue whose last change is older than the window is not returned by the
+  search, so activity on it that fell out of the window leaves no line in the
+  log. The `WARNING: activity filter: …` line that contains the same phrase
+  `predates the backfill window` now appears only for an issue at the very
+  edge of the window. Treat either line as an alert, not noise. Because detection
   is checkpoint-based, ordinary cron jitter and occasional skipped ticks are
   harmless (schedule accuracy affects latency, not correctness); the guarantee
   simply ends at 24 hours. A realistic trigger: **GitHub disables scheduled
@@ -1559,7 +1560,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | `Jira polling is disabled` and no dispatches | `tracker.jira.poll.enabled` is not `true` | Set `tracker.jira.poll.enabled: true` |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `tracker.jira.poll.query` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
-| Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap may have been permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
+| Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap may have been permanently lost. An issue with no change inside the window is not returned by the search and leaves no log line, so its lost events are not reported. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
 | GitLab Jira dispatch fails with `does not accept Jira work items` | The project's scaffold predates Jira dispatch | Rerun `fullsend repos install` for the project and merge the scaffold update. See [GitLab runtime](#gitlab-runtime) |
 | `WARNING: skipping event … for issue …: normalized event: …` in the poll log | The poller could not map the Jira event to a valid normalized event (for example a non-numeric issue id, or an author with neither an `accountId` nor a `name`) | The event is never dispatched: the checkpoint advances past it (for a GitLab target, once the issue's other dispatches succeed; until then each retry logs the warning again, see [Failures](#failures)) — unless *every* event of the cycle was dropped (failed validation or failed matching), in which case the poll fails and no checkpoint advances (see the next two rows). For an author with neither `accountId` nor `name`, a comment from another account maps cleanly and re-triggers. A non-numeric issue id belongs to the issue, so no new activity on it maps; report it to fullsend with the log line, which names the raw id Jira sent (an id the Jira UI does not show). An issue served without a `labels` field is treated as unlabeled, not skipped |
 | The poll fails with `all N events this cycle failed normalized-event validation` | Every event of the cycle was dropped for failing normalized-event validation — either a systemic cause (a Jira response-shape change, or an adapter gap) or the cycle's one event being bad: the guard counts events, not issues, so a single bad event in a one-event cycle is "every event" | No checkpoint was advanced, so the events are retried next cycle — and, while the dropped events are the cycle's only activity, every cycle: the red runs repeat until the events age past the first-poll backfill floor (24h by default) or another selected issue produces a valid event. Read the per-event `WARNING: skipping event …` lines above the error for the cause; if they name one cause for every issue, the Jira response shape may have changed — report it to fullsend with the log lines |
