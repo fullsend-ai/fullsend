@@ -229,10 +229,29 @@ var jqlOrderByRe = regexp.MustCompile(`(?i)\border\s+by\b`)
 // value is not split. An empty predicate (a query that is only an
 // ORDER BY clause) yields `project = "<project>"` plus the ORDER BY.
 func ScopeJQLToProject(project, query string) string {
+	return ScopeJQLToProjects([]string{project}, query)
+}
+
+// ScopeJQLToProjects scopes query to exactly projects the way
+// ScopeJQLToProject scopes it to one project. A one-item set yields the
+// same JQL as ScopeJQLToProject; a larger set uses
+// `project in ("<A>", "<B>") AND (<predicate>)`. The caller validates the
+// keys and the predicate's parentheses (see ValidJiraProjectKey and
+// JQLParensBalanced): this function only formats.
+func ScopeJQLToProjects(projects []string, query string) string {
 	predicate, orderBy := splitJQLOrderBy(query)
 	predicate = strings.TrimSpace(predicate)
-	// Quote the key so a reserved-word key (AND, OR, IN) stays a value.
-	scoped := fmt.Sprintf("project = %q", project)
+	// Quote each key so a reserved-word key (AND, OR, IN) stays a value.
+	quoted := make([]string, len(projects))
+	for i, project := range projects {
+		quoted[i] = fmt.Sprintf("%q", project)
+	}
+	var scoped string
+	if len(quoted) == 1 {
+		scoped = "project = " + quoted[0]
+	} else {
+		scoped = "project in (" + strings.Join(quoted, ", ") + ")"
+	}
 	if predicate != "" {
 		scoped += " AND (" + predicate + ")"
 	}
@@ -463,6 +482,12 @@ func cloneTracking(src *TrackingConfig) *TrackingConfig {
 // followed by uppercase letters, digits, or underscores.
 var jiraProjectKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
+// ValidJiraProjectKey reports whether key is a Jira project key in the
+// form tracker.jira.project accepts (see jiraProjectKeyRe).
+func ValidJiraProjectKey(key string) bool {
+	return jiraProjectKeyRe.MatchString(key)
+}
+
 // validPathSegments reports whether p is a slash-separated path with at
 // least minSegments segments and no empty segment.
 func validPathSegments(p string, minSegments int) bool {
@@ -561,16 +586,17 @@ func (j *JiraTrackingConfig) ValidateConnection() error {
 	if !jiraProjectKeyRe.MatchString(j.Project) {
 		return fmt.Errorf("tracker.jira: project %q must be a Jira project key (for example PROJ)", j.Project)
 	}
-	if j.Poll != nil && !jqlParensBalanced(j.Poll.Query) {
+	if j.Poll != nil && !JQLParensBalanced(j.Poll.Query) {
 		return fmt.Errorf("tracker.jira: poll.query has unbalanced parentheses: the query is wrapped in parentheses to scope it to the project")
 	}
 	return nil
 }
 
-// jqlParensBalanced reports whether the parentheses of query, ignoring
+// JQLParensBalanced reports whether the parentheses of query, ignoring
 // those inside quoted strings, are balanced and never close before they
-// open.
-func jqlParensBalanced(query string) bool {
+// open. A query that passes cannot close the parenthesis ScopeJQLToProjects
+// wraps it in, so it cannot widen the project scope.
+func JQLParensBalanced(query string) bool {
 	quoted := quotedRanges(query)
 	depth := 0
 	for i := 0; i < len(query); i++ {

@@ -274,9 +274,9 @@ func (m *stubMatcher) Match(_ context.Context, event *normevent.Event) ([]Dispat
 func TestNew(t *testing.T) {
 	mc := newMockClient()
 	p := New(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 	if p.opts.M != 50 {
 		t.Errorf("M = %d, want default 50", p.opts.M)
@@ -296,10 +296,10 @@ func TestRunEmptyPoll(t *testing.T) {
 	outputPath := filepath.Join(dir, "dispatches.json")
 
 	p := newTestPoller(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	err := p.Run(context.Background())
@@ -328,10 +328,10 @@ func TestRun_AuthPreflightFailure(t *testing.T) {
 	outputPath := filepath.Join(dir, "dispatches.json")
 
 	p := newTestPoller(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	err := p.Run(context.Background())
@@ -364,9 +364,9 @@ func TestRun_AuthPreflightInactiveAccount(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 
 	err := p.Run(context.Background())
@@ -391,10 +391,10 @@ func TestRun_AuthPreflightSuccess(t *testing.T) {
 	outputPath := filepath.Join(dir, "dispatches.json")
 
 	p := newTestPoller(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	err := p.Run(context.Background())
@@ -454,10 +454,10 @@ func TestRunHappyPath_CommentWithSlashCommand(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -531,10 +531,10 @@ func TestRun_InvalidEventNotDispatched(t *testing.T) {
 
 			outputPath := filepath.Join(t.TempDir(), "dispatches.json")
 			p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-				TargetRepo:  "acme/platform",
-				JiraBaseURL: "https://acme.atlassian.net",
-				JiraProject: "PROJ",
-				OutputPath:  outputPath,
+				TargetRepo:   "acme/platform",
+				JiraBaseURL:  "https://acme.atlassian.net",
+				JiraProjects: []string{"PROJ"},
+				OutputPath:   outputPath,
 			})
 			logBuf := captureLog(t)
 			err := p.Run(context.Background())
@@ -606,9 +606,9 @@ func TestRunDispatchWriteFailure_NoCheckpointCommitted(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 		// A path under a nonexistent directory: os.WriteFile fails.
 		OutputPath: filepath.Join(t.TempDir(), "no-such-dir", "dispatches.json"),
 	})
@@ -658,10 +658,10 @@ func TestRunCheckpointRespectsSafetyMargin(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   filepath.Join(t.TempDir(), "dispatches.json"),
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -699,9 +699,9 @@ func TestProcessIssue_CheckpointNeverRegresses(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 	if err := p.advanceLastCheck(context.Background(), "PROJ-123", storedLastCheck); err != nil {
 		t.Fatalf("seed lastCheck: %v", err)
@@ -760,9 +760,9 @@ func TestRun_NoActorEventSkippedWithoutRoster(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 	logBuf := captureLog(t)
 	if err := p.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "failed normalized-event validation") {
@@ -808,9 +808,9 @@ func TestRunRoleLoadFailure_FailsCycle(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 
 	if err := p.Run(context.Background()); err == nil {
@@ -846,7 +846,7 @@ func TestDetectChanges_EditedCommentAttributedToEditor(t *testing.T) {
 		},
 	}
 
-	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProjects: []string{"PROJ"}})
 	issue := jira.Issue{
 		ID:  "10042",
 		Key: "PROJ-123",
@@ -903,7 +903,7 @@ func TestEditedComment_IsEntityAssigneeFollowsEditor(t *testing.T) {
 				Author:       jira.User{AccountID: tc.author, AccountType: "atlassian"},
 				UpdateAuthor: jira.User{AccountID: tc.editor, AccountType: "atlassian"},
 			}}
-			p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+			p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProjects: []string{"PROJ"}})
 			issue := jira.Issue{
 				ID:  "10042",
 				Key: "PROJ-123",
@@ -957,7 +957,7 @@ func TestDetectChanges_CarriesAssignee(t *testing.T) {
 		},
 	}
 
-	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProjects: []string{"PROJ"}})
 	issue := jira.Issue{
 		ID:  "10042",
 		Key: "PROJ-123",
@@ -1068,9 +1068,9 @@ func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
 	mc.roleMembership = map[string]string{"u1": "Developers"}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 	if _, err := p.processIssue(context.Background(), jira.Issue{
 		ID:  "10042",
@@ -1135,10 +1135,10 @@ func TestRunLabelChange(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"code"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -1203,10 +1203,10 @@ func TestRunBotFiltering(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -1286,10 +1286,10 @@ func TestRunSelfAuthoredEventsFiltered(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -1398,10 +1398,10 @@ func TestRunHumanFollowupAlongsideSelfAuthored(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -1509,10 +1509,10 @@ func TestRunLockContention(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -1577,7 +1577,7 @@ func TestRunStaleLock(t *testing.T) {
 	p := newTestPoller(mc, router, Options{
 		TargetRepo:     "acme/platform",
 		JiraBaseURL:    "https://acme.atlassian.net",
-		JiraProject:    "PROJ",
+		JiraProjects:   []string{"PROJ"},
 		OutputPath:     outputPath,
 		StaleThreshold: 15 * time.Minute,
 	})
@@ -1685,13 +1685,19 @@ func TestFilterLockedErrorsWhenAllLockReadsFail(t *testing.T) {
 // against JQL injection even though the key is already validated upstream.
 func TestSearchCandidatesQuotesProjectKey(t *testing.T) {
 	mc := newMockClient()
-	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ"})
+	p := newTestPoller(mc, nil, Options{JiraProjects: []string{"PROJ"}})
 
-	if _, err := p.searchCandidates(context.Background()); err != nil {
+	jql, err := p.searchJQL()
+	if err != nil {
+		t.Fatalf("searchJQL() error: %v", err)
+	}
+	if _, err := p.searchCandidates(context.Background(), jql); err != nil {
 		t.Fatalf("searchCandidates() error: %v", err)
 	}
 
-	want := `project = "PROJ" AND statusCategory != Done ORDER BY updated DESC`
+	// The default predicate is config.DefaultJiraPollQuery, scoped exactly
+	// as the CLI's tracker.jira.poll default is.
+	want := `project = "PROJ" AND (statusCategory != Done) ORDER BY updated DESC`
 	if mc.lastQuery != want {
 		t.Errorf("JQL = %q, want %q", mc.lastQuery, want)
 	}
@@ -1706,9 +1712,9 @@ func TestSearchCandidatesBoundsBySettingM(t *testing.T) {
 	for i := range mc.searchResult {
 		mc.searchResult[i] = jira.Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1)}
 	}
-	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ", M: 50})
+	p := newTestPoller(mc, nil, Options{JiraProjects: []string{"PROJ"}, M: 50})
 
-	candidates, err := p.searchCandidates(context.Background())
+	candidates, err := p.searchCandidates(context.Background(), `project = "PROJ"`)
 	if err != nil {
 		t.Fatalf("searchCandidates() error: %v", err)
 	}
@@ -1758,10 +1764,10 @@ func TestRunNoChangesSinceLastCheck(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -1830,10 +1836,10 @@ func TestRunMultipleEvents(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -2002,9 +2008,9 @@ func TestDetectChanges_FirstPoll(t *testing.T) {
 	mc := newMockClient()
 
 	p := New(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 
 	issue := jira.Issue{
@@ -2055,9 +2061,9 @@ func TestDetectChanges_FirstPoll_BackfillWindow(t *testing.T) {
 	}
 
 	p := New(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 
 	issue := jira.Issue{
@@ -2133,9 +2139,9 @@ func TestDetectChanges_EditedComment(t *testing.T) {
 	}
 
 	p := New(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 
 	issue := jira.Issue{
@@ -2182,9 +2188,9 @@ func TestDetectChanges_FirstPoll_UnparseableCreated(t *testing.T) {
 	mc := newMockClient()
 
 	p := New(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 
 	issue := jira.Issue{
@@ -2243,9 +2249,9 @@ func TestDetectChanges_CommentTimestampFallbacks(t *testing.T) {
 	}
 
 	p := New(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 
 	issue := jira.Issue{
@@ -2315,9 +2321,9 @@ func TestDetectChanges_StatusChange(t *testing.T) {
 	mc.statuses["Open"] = jira.Status{Name: "Open", StatusCategory: jira.StatusCategory{Key: "new"}}
 
 	p := New(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 
 	issue := jira.Issue{
@@ -2515,9 +2521,9 @@ func TestDetectChanges_UnsupportedFieldAdvancesMaxSeen(t *testing.T) {
 	}
 
 	p := New(mc, nil, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 
 	issue := jira.Issue{
@@ -2669,10 +2675,10 @@ func TestRunFirstPoll_NoLockProperty(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -2737,10 +2743,10 @@ func TestRunUnsupportedChangelogField_AdvancesLastCheck(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -2826,10 +2832,10 @@ func TestRunPerActorGroupResolution(t *testing.T) {
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
 	})
 
 	if err := p.Run(context.Background()); err != nil {
@@ -2837,7 +2843,7 @@ func TestRunPerActorGroupResolution(t *testing.T) {
 	}
 
 	// Verify the actor was resolved to "write" (Developers role) via group.
-	if role, ok := p.roleMembership["group-member-user"]; !ok {
+	if role, ok := membershipOf(p, "PROJ")["group-member-user"]; !ok {
 		t.Error("expected group-member-user to be in roleMembership")
 	} else if role != "Developers" {
 		t.Errorf("roleMembership[group-member-user] = %q, want %q", role, "Developers")
@@ -2917,17 +2923,17 @@ func TestRunPerActorGroupResolution_HighestPriorityWins(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   filepath.Join(t.TempDir(), "dispatches.json"),
 	})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	if role := p.roleMembership["dual-group-user"]; role != "Administrators" {
+	if role := membershipOf(p, "PROJ")["dual-group-user"]; role != "Administrators" {
 		t.Errorf("roleMembership[dual-group-user] = %q, want %q (highest priority)", role, "Administrators")
 	}
 }
@@ -2978,17 +2984,17 @@ func TestRunPerActorGroupResolution_DirectPlusGroupPriority(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   filepath.Join(t.TempDir(), "dispatches.json"),
 	})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	if role := p.roleMembership["dev-and-admin-user"]; role != "Administrators" {
+	if role := membershipOf(p, "PROJ")["dev-and-admin-user"]; role != "Administrators" {
 		t.Errorf("roleMembership[dev-and-admin-user] = %q, want %q (direct Developers + group Administrators should upgrade)", role, "Administrators")
 	}
 }
@@ -3033,17 +3039,17 @@ func TestRunPerActorGroupResolution_NoGroupMatch(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   filepath.Join(t.TempDir(), "dispatches.json"),
 	})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	if _, ok := p.roleMembership["outsider-user"]; ok {
+	if _, ok := membershipOf(p, "PROJ")["outsider-user"]; ok {
 		t.Error("expected outsider-user to NOT be in roleMembership")
 	}
 }
@@ -3115,10 +3121,10 @@ func TestRunPerActorGroupResolution_APIError(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   filepath.Join(t.TempDir(), "dispatches.json"),
 	})
 
 	// Should fail closed: even one actor's lookup failure fails this
@@ -3129,7 +3135,7 @@ func TestRunPerActorGroupResolution_APIError(t *testing.T) {
 	}
 
 	// group-user-fail should NOT be in roleMembership (API failed).
-	if _, ok := p.roleMembership["group-user-fail"]; ok {
+	if _, ok := membershipOf(p, "PROJ")["group-user-fail"]; ok {
 		t.Error("expected group-user-fail to NOT be in roleMembership after API error")
 	}
 }
@@ -3170,10 +3176,10 @@ func TestRunPerActorGroupResolution_AllActorsAPIError(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   filepath.Join(t.TempDir(), "dispatches.json"),
 	})
 
 	// Should fail because ALL actors have errors and only 1 issue → all failed.

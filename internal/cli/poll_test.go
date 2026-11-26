@@ -158,7 +158,7 @@ trigger: |
 func TestValidateJiraPollArgs(t *testing.T) {
 	fullsendDir := t.TempDir()
 
-	settings := jiraPollSettings{baseURL: "https://acme.atlassian.net", project: "PROJ", jql: `project = "PROJ"`, enabled: true}
+	settings := jiraPollSettings{baseURL: "https://acme.atlassian.net", project: "PROJ", query: config.DefaultJiraPollQuery, enabled: true}
 
 	tests := []struct {
 		name           string
@@ -783,16 +783,16 @@ authorization:
 	require.NoError(t, err)
 
 	args := jiraPollArgs{
-		jira:       jiraPollSettings{baseURL: "https://jira.example.com", apiURL: config.DefaultJiraAPIURL, project: "PROJ", jql: "project = PROJ", enabled: true},
+		jira:       jiraPollSettings{baseURL: "https://jira.example.com", apiURL: config.DefaultJiraAPIURL, project: "PROJ", query: `labels = "fullsend"`, enabled: true},
 		targetRepo: "group/sub/repo", outputPath: "out.json", fullsendDir: dir,
 	}
 	opts := jiraPollOptions(args, m, noJiraEnv)
 	assert.Equal(t, jirapoll.Options{
-		TargetRepo:  "group/sub/repo",
-		JiraBaseURL: "https://jira.example.com",
-		JiraProject: "PROJ",
-		JQL:         "project = PROJ",
-		OutputPath:  "out.json",
+		TargetRepo:   "group/sub/repo",
+		JiraBaseURL:  "https://jira.example.com",
+		JiraProjects: []string{"PROJ"},
+		JQL:          `labels = "fullsend"`,
+		OutputPath:   "out.json",
 		Authorization: jirapoll.Authorization{
 			Configured:      true,
 			Write:           jirapoll.ActorList{Groups: []string{"devs"}},
