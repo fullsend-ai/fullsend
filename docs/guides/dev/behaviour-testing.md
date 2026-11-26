@@ -424,6 +424,7 @@ once `the pull request head branch matches` has found it.
 | `the pull request has been closed` | The pull request is closed, merged or not |
 | `a comment on the issue contains "<text>"` | Some issue comment contains the text, such as a sticky marker like `<!-- fullsend:agent-status:` |
 | `a comment on the pull request contains "<text>"` | Some pull request comment contains the text |
+| `no comment on the issue contains "<text>"` | No comment on the issue contains the text — the inverse of `a comment on the issue contains`, pinning that a re-run appended its result without folding anything into the earlier comments (`no comment on the pull request contains "<text>"` is the pull-request form) |
 | `the issue has <n> comments containing "<text>"` | Exactly <n> comments on the issue contain the text |
 | `the last comment on the issue contains "<text>"` | The last (newest) comment on the issue contains the text |
 | `the last comment on the issue containing "<marker>" contains "<text>"` | The newest comment on the issue carrying the marker (an agent's result marker) contains the text |
