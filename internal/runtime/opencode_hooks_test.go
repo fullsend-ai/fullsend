@@ -135,6 +135,23 @@ func TestReadOpenCodeTraceID(t *testing.T) {
 	assert.Equal(t, "trace-id", traceID)
 }
 
+func TestReadOpenCodeTraceIDFailure(t *testing.T) {
+	t.Run("exec error", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		traceID, err := readOpenCodeTraceID("sb")
+		require.ErrorContains(t, err, "reading OpenCode trace ID")
+		assert.Empty(t, traceID)
+	})
+	t.Run("nonzero exit", func(t *testing.T) {
+		work := t.TempDir()
+		fakeOpenshellOpenCode(t, filepath.Join(work, "log"), filepath.Join(work, "store"))
+		t.Setenv("FULLSEND_OPENCODE_TEST_FAIL", "FULLSEND_TRACE_ID")
+		traceID, err := readOpenCodeTraceID("sb")
+		require.ErrorContains(t, err, "reading OpenCode trace ID: exited 41")
+		assert.Empty(t, traceID)
+	})
+}
+
 func TestOpenCodeBootstrapHookFailure(t *testing.T) {
 	for _, tt := range []struct {
 		failure string
@@ -145,6 +162,7 @@ func TestOpenCodeBootstrapHookFailure(t *testing.T) {
 		{hookInterpreterSep, "resolving python3 for the hooks"},
 		{"sys.version_info", "checking the hook interpreter version"},
 		{"fullsend-env-sep", "reading the harness hook environment"},
+		{"FULLSEND_TRACE_ID", "reading OpenCode trace ID"},
 		{`printf '%s' "$HOME"`, "reading OpenCode command HOME"},
 		{"rm -rf -- '/sandbox/opencode-config/plugins'", "resetting OpenCode hook plugins"},
 		{"rm -rf -- '/sandbox/opencode-config/agent'", "clearing OpenCode bootstrap overrides"},
