@@ -286,14 +286,12 @@ func handleSearch(w http.ResponseWriter, r *http.Request, s *State) {
 		return
 	}
 
-	// Like Jira, return each requested entity property an issue has.
+	// Like Jira, return each requested entity property an issue has. A
+	// body the mock cannot read names no properties, as before.
 	var req struct {
 		Properties []string `json:"properties"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad search body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	s.mu.Lock()
 	issues := make([]jira.Issue, 0, len(s.issues))

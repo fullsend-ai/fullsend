@@ -1520,7 +1520,7 @@ The two repos checkpoint independently and can process the same Jira comment —
 
 Each repo's poller runs its own JQL query and gets its own top-M (default 50) candidate window. The cap is per-poller, not global — three repos polling the same project each see up to 50 candidates per cycle, not 50 shared across all three.
 
-However, more pollers against the same Jira project means more API calls per cycle. Each poller independently reads an entity property per candidate for the activity filter, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
+However, more pollers against the same Jira project means more API calls per cycle. Each poller independently runs its search, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
 
 - **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so it skips issues that belong to other repos.
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.
