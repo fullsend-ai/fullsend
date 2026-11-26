@@ -539,6 +539,41 @@ func TestResolveEntityConfig_DefaultConnectionWithoutOrigin(t *testing.T) {
 	assert.Contains(t, err.Error(), "is not declared under connections")
 }
 
+func TestResolveEntityConfig_ForgeConnectionWithoutBaseURL(t *testing.T) {
+	// An ordinary named forge connection needs its own base_url, with or
+	// without a configuration origin.
+	named := "connections:\n  other:\n    kind: github\n" +
+		"entity_sources:\n  s:\n    connection: other\n    repositories: [owner/repo]\n    query: 'is:open'\n"
+	for _, origin := range []*ConfigOrigin{nil, githubOrigin} {
+		_, err := ResolveEntityConfig(parseEntityConfig(t, named), origin)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "needs an explicit base_url")
+	}
+
+	// A provider-default connection with explicit repositories takes its
+	// host from the origin, so without one the source is not usable.
+	defaults := "entity_sources:\n  s:\n    connection: github\n    repositories: [owner/repo]\n    query: 'is:open'\n" +
+		"agents:\n  - name: triage\n    entities:\n      source: [s]\n"
+	r := parseEntityConfig(t, defaults)
+	ec, err := ResolveEntityConfig(r, nil)
+	require.NoError(t, err)
+	assert.True(t, ec.Sources["s"].NeedsOrigin)
+	_, err = ec.AgentBindings("triage", map[string]string{"source": EntityKindWorkItem, "target": EntityKindWorkItem})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no trusted configuration origin")
+
+	declared := "connections:\n  github:\n    kind: github\n" + defaults
+	ec, err = ResolveEntityConfig(parseEntityConfig(t, declared), nil)
+	require.NoError(t, err)
+	assert.True(t, ec.Sources["s"].NeedsOrigin)
+	_, err = ec.AgentBindings("triage", map[string]string{"source": EntityKindWorkItem, "target": EntityKindWorkItem})
+	require.Error(t, err)
+
+	ec, err = ResolveEntityConfig(parseEntityConfig(t, declared), githubOrigin)
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com", ec.Sources["s"].Connection.BaseURL)
+}
+
 func TestCheckUniformSourceBindings(t *testing.T) {
 	base := `connections:
   jira1:

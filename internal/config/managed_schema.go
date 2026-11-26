@@ -242,9 +242,9 @@ func harnessBlockEntry(data []byte) (string, bool) {
 // ManagedConfigSchemaDependent reports whether data, a per-repo
 // configuration document, declares anything the known schema versions do
 // not all read the same way: tracker, create_issues, a harness: block on
-// an agents: entry, or entity-source configuration. A document without them renders identically, and is
-// read identically, under every known schema. Blank or unparseable content
-// is not schema-dependent.
+// an agents: entry, or entity-source configuration. A document without them
+// renders identically, and is read identically, under every known schema.
+// Blank or unparseable content is not schema-dependent.
 func ManagedConfigSchemaDependent(data []byte) bool {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil || doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {

@@ -65,13 +65,17 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    `.fullsend/config.yaml`: set `base_url`, `project`, and
    `poll.enabled: true`, plus `poll.query` if you want a narrower candidate
    set. The poller reads these settings only from the config. See
-   [Custom JQL](#custom-jql). To poll several Jira projects, you can instead
-   declare a `jira` connection and an
+   [Custom JQL](#custom-jql). To poll several Jira projects, keep the
+   `tracker.jira` block (its `base_url` supplies the Jira site) and add an
    [`entity_sources`](../../reference/config-reference.md#entity_sources)
-   entry with a `projects` list, and bind it in an agent's
-   `entities.source` list. The poller then searches all of that source's
-   projects in one query. `fullsend repos install` still manages the scheduled
-   workflow from `tracker.jira.poll.enabled`.
+   entry named `legacy_tracker` with a `projects` list, then bind
+   `legacy_tracker` in every enabled agent's `entities.source` list. The
+   poller then searches all of that source's projects in one query. Do not
+   declare a separate `jira` connection: the poller refuses sources on
+   explicit Jira connections because it reuses the job's Jira credentials
+   only for the connection translated from `tracker.jira`.
+   `fullsend repos install` still manages the scheduled workflow from
+   `tracker.jira.poll.enabled`.
 5. **Run `fullsend repos install`** with either `--jira-token` (and optional
    `--jira-email`) or `--jira-client-id` and `--jira-client-secret`. On GitHub,
    install writes the scheduled workflow; on GitLab, it creates the pipeline

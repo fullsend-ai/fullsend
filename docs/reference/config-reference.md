@@ -610,8 +610,14 @@ enabled that an enabled agent binds in its `entities.source` list, and passes
 the source's whole `projects` list to the search. Sources bound only to other
 slots are not polled. The selected sources must share one Jira connection
 and one query, and their projects are combined. Sources with different
-connections or queries fail as unsupported. The poller uses the job's Jira
-credentials for the selected connection. The removed `--jira-url`,
+connections or queries fail as unsupported. The poller reuses the job's Jira
+credentials only for the connection translated from `tracker.jira`, so a
+selected source on an explicit Jira connection is refused. Configure the
+source on the `legacy_tracker` connection instead. Because the poller
+applies one merged scope and does not yet apply each agent's own
+`entities.source` binding, every enabled agent must bind the same
+`entities.source` list when explicit sources are selected. Agents whose lists
+differ, or that have no `entities.source` list, fail as unsupported. The removed `--jira-url`,
 `--jira-project`, and `--jql` flags are rejected, and environment variables
 such as `JIRA_BASE_URL` are not read. The poller authenticates with the
 shared Jira client: `FULLSEND_JIRA_TOKEN` is required and

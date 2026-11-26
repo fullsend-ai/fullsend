@@ -950,8 +950,17 @@ func (ec *EntityConfig) resolveSource(name string, s EntitySource) (ResolvedEnti
 				return out, fmt.Errorf("entity_sources.%s: repository %q must be a canonical repository path (owner/repo or group/project)", name, repo)
 			}
 		}
-		if conn.BaseURL == "" && ec.Origin != nil && conn.Name != ec.Origin.Provider {
-			return out, fmt.Errorf("entity_sources.%s: connection %q needs an explicit base_url: only the configuration origin's provider-default connection takes the clone host", name, connName)
+		if conn.BaseURL == "" {
+			switch {
+			case ec.Origin != nil && conn.Name == ec.Origin.Provider:
+				// The origin fills the clone host.
+			case ec.Origin == nil && isReservedProvider(conn.Name):
+				// A provider-default connection takes the clone host from
+				// the configuration origin; defer until one is supplied.
+				out.NeedsOrigin = true
+			default:
+				return out, fmt.Errorf("entity_sources.%s: connection %q needs an explicit base_url: only the configuration origin's provider-default connection takes the clone host", name, connName)
+			}
 		}
 	}
 	if err := validateSourceQuery(conn.Kind, "", out.Query); err != nil {
