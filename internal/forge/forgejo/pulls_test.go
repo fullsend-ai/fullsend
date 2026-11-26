@@ -651,6 +651,16 @@ func TestDotSegmentsAreRejected(t *testing.T) {
 	assert.ErrorContains(t, err, "refusing request")
 	_, err = c.GetPullRequestHeadSHA(ctx, "o", ".", 1)
 	assert.ErrorContains(t, err, "refusing request")
+	// An encoded slash must not hide a dot segment: it decodes to one when a
+	// proxy decodes %2F before normalizing.
+	_, err = c.GetCombinedStatus(ctx, "o", "r", "../other")
+	assert.ErrorContains(t, err, "refusing request")
+	_, err = c.GetCombinedStatus(ctx, "o", "r", "a/../b")
+	assert.ErrorContains(t, err, "refusing request")
+	_, err = c.GetPullRequestHeadSHA(ctx, "o/..", "r", 1)
+	assert.ErrorContains(t, err, "refusing request")
+	_, err = c.GetPullRequestHeadSHA(ctx, "o", "../x", 1)
+	assert.ErrorContains(t, err, "refusing request")
 	assert.Empty(t, f.reqs(), "a dot segment makes no request")
 
 	_, err = c.GetBranchRef(ctx, "o", "r", "feature/..x/v1.0")

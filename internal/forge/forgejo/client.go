@@ -136,14 +136,18 @@ func redactedString(rawURL string) string {
 // segment, escaped or not. url.PathEscape leaves such a segment unchanged,
 // so an owner, repository, or branch name made of one would otherwise let a
 // proxy that normalizes dot segments send the request to another API route.
-// No request is made for such a URL.
+// A segment is also checked after decoding, split on "/", so an encoded
+// slash ("..%2Fother") cannot hide a dot segment from a proxy that decodes
+// it before normalizing. No request is made for such a URL.
 func rejectDotSegments(u *url.URL) error {
 	for _, seg := range strings.Split(u.EscapedPath(), "/") {
 		if dec, err := url.PathUnescape(seg); err == nil {
 			seg = dec
 		}
-		if seg == "." || seg == ".." {
-			return fmt.Errorf("refusing request: URL path has a %q segment", seg)
+		for _, part := range strings.Split(seg, "/") {
+			if part == "." || part == ".." {
+				return fmt.Errorf("refusing request: URL path has a %q segment", part)
+			}
 		}
 	}
 	return nil
