@@ -49,7 +49,7 @@ func newDispatchCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Input driver: gha-event, json (default: gha-event when GITHUB_EVENT_PATH is set)")
+	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Input driver: gha-event, forgejo-event, json (default: forgejo-event on a Forgejo Actions runner, else gha-event when GITHUB_EVENT_PATH is set)")
 	cmd.Flags().StringVar(&outputDriver, "output-driver", "gha-matrix", "Output driver: gha-matrix, json")
 	cmd.Flags().StringVar(&inputFile, "input-file", "", "JSON input file for json driver (use - for stdin)")
 	cmd.Flags().StringVar(&configDir, "config-dir", ".fullsend", "Fullsend config directory")
@@ -119,6 +119,13 @@ func newDispatchRouteOpts(opts dispatchOpts, route string, event *normevent.Even
 	}
 }
 
+// isForgejoActionsRunner reports whether the process runs in a Forgejo
+// Actions job. Forgejo runners set FORGEJO_ACTIONS (and GITEA_ACTIONS on
+// older runners) to "true".
+func isForgejoActionsRunner() bool {
+	return os.Getenv("FORGEJO_ACTIONS") == "true" || os.Getenv("GITEA_ACTIONS") == "true"
+}
+
 func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	route := strings.ToLower(strings.TrimSpace(opts.route))
 	if _, ok := routableAgents[route]; opts.route != "" && !ok {
@@ -127,9 +134,14 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 
 	inDriver := opts.inputDriver
 	if inDriver == "" {
-		if os.Getenv("GITHUB_EVENT_PATH") != "" {
+		switch {
+		case isForgejoActionsRunner():
+			// Forgejo runners also set GITHUB_EVENT_PATH; their payloads
+			// must not be mapped as GitHub events.
+			inDriver = "forgejo-event"
+		case os.Getenv("GITHUB_EVENT_PATH") != "":
 			inDriver = "gha-event"
-		} else {
+		default:
 			return fmt.Errorf("input driver required (set --input-driver or GITHUB_EVENT_PATH)")
 		}
 	}
@@ -159,6 +171,13 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 			EventName:   opts.eventName,
 			EventAction: opts.eventAction,
 			Forge:       client,
+		})
+	case "forgejo-event":
+		// No verified Forgejo permission lookup is wired yet, so the actor
+		// role is none and the authorization gate denies the event.
+		event, err = input.LoadForgejoEvent(ctx, input.ForgejoEventOptions{
+			Repository: opts.repository,
+			EventName:  opts.eventName,
 		})
 	case "json":
 		event, err = input.LoadJSONEvent(opts.inputFile)
