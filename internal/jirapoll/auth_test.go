@@ -113,7 +113,7 @@ func authTestPoller(mc *mockClient, m EventMatcher, auth Authorization) *Poller 
 	return newTestPoller(mc, m, Options{
 		TargetRepo:    "acme/platform",
 		JiraBaseURL:   "https://acme.atlassian.net",
-		JiraProject:   "PROJ",
+		JiraProjects:  []string{"PROJ"},
 		N:             50,
 		Authorization: auth,
 	})
@@ -606,10 +606,10 @@ func TestRunAuth_ListsAuthorizeIssueOpened(t *testing.T) {
 func TestResolveRole_ListsApplyToNonCommandEvents(t *testing.T) {
 	p := &Poller{
 		opts: Options{
-			JiraProject:   "PROJ",
+			JiraProjects:  []string{"PROJ"},
 			Authorization: Authorization{Configured: true, Triage: ActorList{Accounts: []string{"t"}}},
 		},
-		roleMembership: map[string]string{"t": "Administrators"},
+		rosters: testRosters("PROJ", map[string]string{"t": "Administrators"}),
 	}
 	opened := JiraEvent{Type: "opened", IssueKey: "PROJ-1", Reporter: jira.User{AccountID: "t"}}
 	if got := p.toNormalizedEvent(opened).Actor.Role; got != "triage" {
@@ -664,22 +664,42 @@ func TestRoleSourceFor(t *testing.T) {
 	}
 }
 
-func TestEnsureRoleStructure_NoProjectKey(t *testing.T) {
+func TestEnsureRoleStructure_ProjectOutsideSet(t *testing.T) {
 	mc := newMockClient()
-	p := &Poller{client: mc}
-	if err := p.ensureRoleStructure(context.Background()); err != nil {
-		t.Fatalf("ensureRoleStructure() error: %v", err)
-	}
-	if err := p.ensureRoleStructure(context.Background()); err != nil {
-		t.Fatalf("ensureRoleStructure() second call error: %v", err)
+	p := &Poller{client: mc, opts: Options{JiraProjects: []string{"PROJ"}}}
+	for _, project := range []string{"OTHER", ""} {
+		roster, err := p.ensureRoleStructure(context.Background(), project)
+		if err != nil {
+			t.Fatalf("ensureRoleStructure(%q) error: %v", project, err)
+		}
+		if roster != nil {
+			t.Errorf("ensureRoleStructure(%q) returned a roster for a project outside the set", project)
+		}
 	}
 	if mc.roleActorsCalls != 0 {
-		t.Errorf("GetProjectRoleActors called %d times without a project key, want 0", mc.roleActorsCalls)
+		t.Errorf("GetProjectRoleActors called %d times for projects outside the set, want 0", mc.roleActorsCalls)
+	}
+}
+
+func TestEnsureRoleStructure_LoadsOncePerProject(t *testing.T) {
+	mc := newMockClient()
+	p := &Poller{client: mc, opts: Options{JiraProjects: []string{"PROJ"}}}
+	for range 2 {
+		roster, err := p.ensureRoleStructure(context.Background(), "PROJ")
+		if err != nil {
+			t.Fatalf("ensureRoleStructure() error: %v", err)
+		}
+		if roster == nil {
+			t.Fatal("ensureRoleStructure() returned no roster for a project in the set")
+		}
+	}
+	if mc.roleActorsCalls != 1 {
+		t.Errorf("GetProjectRoleActors called %d times, want 1 per project per cycle", mc.roleActorsCalls)
 	}
 }
 
 func TestRoleLoadError(t *testing.T) {
-	err := &roleLoadError{err: errAdminOnly}
+	err := &roleLoadError{project: "PROJ", err: errAdminOnly}
 	if err.Error() != errAdminOnly.Error() {
 		t.Errorf("Error() = %q", err.Error())
 	}

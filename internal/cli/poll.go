@@ -344,15 +344,15 @@ type jiraPollSettings struct {
 	baseURL string // tracker.jira.base_url: the Jira site URL
 	apiURL  string // tracker.jira.api_url, or its default
 	project string // tracker.jira.project
-	jql     string // tracker.jira.poll.query (or the default) scoped to project
+	query   string // tracker.jira.poll.query, or the default; the poller scopes it to project
 	enabled bool   // tracker.jira.poll.enabled is true
 }
 
 // loadJiraPollSettings reads the Jira site, API gateway, project, and poll
 // settings from tracker.jira in the effective config.yaml. The config is
 // the only source of these settings: base_url and project are required,
-// api_url and poll.query fall back to their defaults, and the JQL is always
-// the query scoped to the project as `project = "<project>" AND (<query>)`
+// api_url and poll.query fall back to their defaults, and the poller always
+// scopes the query to the project as `project = "<project>" AND (<query>)`
 // with any ORDER BY last. The removed --jira-url, --jira-project, and --jql
 // flags are rejected with a pointer to the config fields, and environment
 // variables such as JIRA_BASE_URL are not read.
@@ -386,7 +386,7 @@ func loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jql string) (jiraPo
 		baseURL: jiraCfg.BaseURL,
 		apiURL:  jiraCfg.EffectiveAPIURL(),
 		project: jiraCfg.Project,
-		jql:     jiraCfg.PollJQL(),
+		query:   jiraCfg.PollQuery(),
 		enabled: jiraCfg.PollEnabled(),
 	}, nil
 }
@@ -656,9 +656,12 @@ func jiraPollOptions(args jiraPollArgs, matcher *celMatcher, getenv func(string)
 	return jirapoll.Options{
 		TargetRepo:  args.targetRepo,
 		JiraBaseURL: args.jira.baseURL,
-		JiraProject: args.jira.project,
-		JQL:         args.jira.jql,
-		OutputPath:  args.outputPath,
+		// tracker.jira.project is the poller's one-item project set; the
+		// poller scopes the query to it, so the search JQL is
+		// config.JiraTrackingConfig.PollJQL's.
+		JiraProjects: []string{args.jira.project},
+		JQL:          args.jira.query,
+		OutputPath:   args.outputPath,
 
 		Authorization: jiraPollAuthorization(matcher.jiraAuth, getenv),
 	}

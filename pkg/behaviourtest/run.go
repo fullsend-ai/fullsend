@@ -84,6 +84,11 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		}
 	})
 
+	// A driver that hosts agent definitions (forgejo-dev) points the CLI
+	// processes started below at them, so built-in agents never resolve
+	// from GitHub.
+	applyAgentSourceEnv(t, driver)
+
 	// The driver supplies its own default concurrency and description,
 	// so the runner never reads a pool layout (a non-pool driver such as
 	// forgejo-dev has none).

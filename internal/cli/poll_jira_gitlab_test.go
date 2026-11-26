@@ -22,7 +22,7 @@ import (
 )
 
 func TestValidateJiraGitLabPollArgs(t *testing.T) {
-	settings := jiraPollSettings{baseURL: "https://acme.atlassian.net", project: "PROJ", jql: `project = "PROJ"`, enabled: true}
+	settings := jiraPollSettings{baseURL: "https://acme.atlassian.net", project: "PROJ", query: "statusCategory != Done", enabled: true}
 	base := jiraPollGitLabFlags{
 		projectPath: "group/sub/project",
 		gitlabURL:   "https://gitlab.com",

@@ -41,11 +41,14 @@ const entityLimitCursor = "fullsend:result-cap"
 // read at different revisions.
 //
 // The adapter never applies a narrowing filter, so every page it returns is
-// unfiltered. It reads labels, assignees, reactions, label applications, and
-// a pull request's changed files and commits. Other collections, and text the
-// content-safety filter must process first (title and body), are reported
-// unsupported, which can never read as empty. Actor roles are left unknown
-// for the authorized entity view (#9584) to resolve.
+// unfiltered. It reads labels, assignees, reactions, label applications, an
+// issue's comments, and a pull request's changed files, commits, reviews,
+// reviewers, and current approvals. Other collections are reported
+// unsupported, which can never read as empty. Text the content-safety filter
+// must process first (title, body, and comment and review text and commands)
+// stays unknown.
+// Actor roles are left unknown for the authorized entity view (#9584) to
+// resolve.
 //
 // An EntityAdapter is not safe for concurrent use.
 type EntityAdapter struct {
@@ -291,6 +294,13 @@ type entityCollection struct {
 	// revision, so only a read that fits in one page (one GraphQL response)
 	// is consistent. A longer read reports a limit after its first page.
 	singlePage bool
+	// extra selects a second connection, read in the same response. Its
+	// members are merged with the page's, so the read reports a limit,
+	// without members, unless both connections fit in one page.
+	extra string
+	// only, when set, is the one entity kind the adapter reads the
+	// collection for. For other kinds the read is unsupported.
+	only normentity.Kind
 }
 
 // entityActorSelection selects an Actor with the fields entityActor maps.
@@ -315,6 +325,67 @@ var entityCollections = map[entityacquire.Need]entityCollection{
 			... on LabeledEvent { id createdAt label { name } actor ` + entityActorSelection + ` }
 			... on UnlabeledEvent { id createdAt label { name } }`,
 	},
+	// A current approval is a user's latest opinionated review when it is an
+	// approval: a later comment does not withdraw it, and a dismissed review
+	// is no longer an approval. Review submissions are not shown to advance
+	// updatedAt, so the read must fit in one page.
+	entityacquire.NeedCurrentApprovals: {
+		field: "latestOpinionatedReviews", counted: true, singlePage: true,
+		nodes: "state submittedAt author " + entityActorSelection,
+	},
+	// Reviewers are the current review requests merged with each user's
+	// latest submitted review standing.
+	entityacquire.NeedReviewers: {
+		field: "reviewRequests", counted: true, singlePage: true,
+		nodes: `requestedReviewer {
+			__typename
+			... on User { login databaseId }
+			... on Bot { login databaseId }
+			... on Mannequin { login }
+			... on Team { databaseId name }
+		}`,
+		extra: "latestReviews(first: $first) { totalCount pageInfo { hasNextPage } nodes { state submittedAt author " + entityActorSelection + " } }",
+	},
+	// Comments are an issue's comments, which are unthreaded. A pull
+	// request's comments also include review-thread comments, which this
+	// connection does not return, so they are not read. Comment edits are not
+	// shown to advance updatedAt, so the read must fit in one page.
+	entityacquire.NeedComments: {
+		field: "comments", counted: true, singlePage: true, only: normentity.KindWorkItem,
+		nodes: "id url createdAt lastEditedAt author " + entityActorSelection + " editor " + entityActorSelection,
+	},
+	// Reviews are a pull request's submitted reviews: a pending review is not
+	// an action. Review submissions are not shown to advance updatedAt, so the
+	// read must fit in one page.
+	entityacquire.NeedReviews: {
+		field: "reviews", args: "states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED], ",
+		counted: true, singlePage: true,
+		nodes: "id state submittedAt lastEditedAt author " + entityActorSelection + " editor " + entityActorSelection,
+	},
+}
+
+// gqlEntityConn is one page of a collection connection.
+type gqlEntityConn struct {
+	TotalCount *int `json:"totalCount"`
+	PageInfo   struct {
+		HasNextPage     bool   `json:"hasNextPage"`
+		EndCursor       string `json:"endCursor"`
+		HasPreviousPage bool   `json:"hasPreviousPage"`
+		StartCursor     string `json:"startCursor"`
+	} `json:"pageInfo"`
+	Nodes []gqlEntityNode `json:"nodes"`
+}
+
+// fitsOnePage reports whether a forward counted connection page holds the
+// whole connection.
+func (c *gqlEntityConn) fitsOnePage() bool {
+	return !c.PageInfo.HasNextPage && c.TotalCount != nil && *c.TotalCount == len(c.Nodes)
+}
+
+// gqlReviewSubject is a requested reviewer: an actor or a team.
+type gqlReviewSubject struct {
+	gqlEntityActor
+	Name string `json:"name"`
 }
 
 type gqlEntityNode struct {
@@ -332,6 +403,13 @@ type gqlEntityNode struct {
 	Label     *struct {
 		Name string `json:"name"`
 	} `json:"label"`
+	State             string            `json:"state"`
+	SubmittedAt       string            `json:"submittedAt"`
+	Author            *gqlEntityActor   `json:"author"`
+	RequestedReviewer *gqlReviewSubject `json:"requestedReviewer"`
+	URL               string            `json:"url"`
+	LastEditedAt      *string           `json:"lastEditedAt"`
+	Editor            *gqlEntityActor   `json:"editor"`
 }
 
 // ReadPage reads one page of one collection.
@@ -343,7 +421,7 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 		return nil, fmt.Errorf("github entity page read: kind %s does not match entity kind %s", req.Kind, a.kind)
 	}
 	coll, ok := entityCollections[req.Need]
-	if !ok || !req.Need.AppliesTo(a.kind) {
+	if !ok || !req.Need.AppliesTo(a.kind) || (coll.only != "" && coll.only != a.kind) {
 		return nil, fmt.Errorf("%w: github %s %s", entityacquire.ErrUnsupported, a.kind, req.Need)
 	}
 	if req.Cursor == entityLimitCursor {
@@ -366,6 +444,10 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 	if coll.backward {
 		window, pageInfo = "last: $first, before: $cursor", "hasPreviousPage startCursor"
 	}
+	extra := ""
+	if coll.extra != "" {
+		extra = "extra: " + coll.extra
+	}
 	q := fmt.Sprintf(`query($owner: String!, $name: String!, $number: Int!, $first: Int!, $cursor: String) {
 	repository(owner: $owner, name: $name) {
 		issueOrPullRequest(number: $number) {
@@ -379,10 +461,11 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 					pageInfo { %s }
 					nodes { %s }
 				}
+				%s
 			}
 		}
 	}
-}`, typename, revField, coll.field, coll.args, window, count, pageInfo, coll.nodes)
+}`, typename, revField, coll.field, coll.args, window, count, pageInfo, coll.nodes, extra)
 	var cursor any
 	if req.Cursor != "" {
 		cursor = req.Cursor
@@ -391,20 +474,12 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 		Data struct {
 			Repository *struct {
 				IssueOrPullRequest *struct {
-					Typename   string `json:"__typename"`
-					ID         string `json:"id"`
-					UpdatedAt  string `json:"updatedAt"`
-					HeadRefOid string `json:"headRefOid"`
-					Conn       *struct {
-						TotalCount *int `json:"totalCount"`
-						PageInfo   struct {
-							HasNextPage     bool   `json:"hasNextPage"`
-							EndCursor       string `json:"endCursor"`
-							HasPreviousPage bool   `json:"hasPreviousPage"`
-							StartCursor     string `json:"startCursor"`
-						} `json:"pageInfo"`
-						Nodes []gqlEntityNode `json:"nodes"`
-					} `json:"conn"`
+					Typename   string         `json:"__typename"`
+					ID         string         `json:"id"`
+					UpdatedAt  string         `json:"updatedAt"`
+					HeadRefOid string         `json:"headRefOid"`
+					Conn       *gqlEntityConn `json:"conn"`
+					Extra      *gqlEntityConn `json:"extra"`
 				} `json:"issueOrPullRequest"`
 			} `json:"repository"`
 		} `json:"data"`
@@ -430,6 +505,18 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 	if g.Conn == nil {
 		return nil, fmt.Errorf("github entity %s read: no %s connection", req.Need, coll.field)
 	}
+	var extraNodes []gqlEntityNode
+	if coll.extra != "" {
+		if g.Extra == nil {
+			return nil, fmt.Errorf("github entity %s read: no second connection", req.Need)
+		}
+		if !g.Conn.fitsOnePage() || !g.Extra.fitsOnePage() {
+			// A member's standing depends on both connections, so no member
+			// of a partial read is a sound witness.
+			return nil, fmt.Errorf("%w: github %s span more than one page, and changes to them do not advance the source revision", entityacquire.ErrLimit, req.Need)
+		}
+		extraNodes = g.Extra.Nodes
+	}
 	page := &entityacquire.Page{Revision: entityRevision(a.kind, g.UpdatedAt, g.HeadRefOid)}
 	more, next := g.Conn.PageInfo.HasNextPage, g.Conn.PageInfo.EndCursor
 	if coll.backward {
@@ -447,7 +534,7 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 			clear(a.labelEvents)
 		}
 	}
-	page.Members, err = a.entityMembers(req.Need, g.Conn.Nodes)
+	page.Members, err = a.entityMembers(req.Need, g.Conn.Nodes, extraNodes)
 	if err != nil {
 		return nil, fmt.Errorf("github entity %s read: %w", req.Need, err)
 	}
@@ -474,8 +561,9 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 	return page, nil
 }
 
-// entityMembers builds the page fragment for need from the page's nodes.
-func (a *EntityAdapter) entityMembers(need entityacquire.Need, nodes []gqlEntityNode) (*normentity.Entity, error) {
+// entityMembers builds the page fragment for need from the page's nodes and
+// the nodes of its second connection, if any.
+func (a *EntityAdapter) entityMembers(need entityacquire.Need, nodes, extra []gqlEntityNode) (*normentity.Entity, error) {
 	frag := &normentity.Entity{}
 	switch need {
 	case entityacquire.NeedLabels:
@@ -535,8 +623,296 @@ func (a *EntityAdapter) entityMembers(need entityacquire.Need, nodes []gqlEntity
 			return nil, err
 		}
 		frag.LabelApplications.Known = apps
+	case entityacquire.NeedCurrentApprovals:
+		approvals, err := currentApprovals(nodes)
+		if err != nil {
+			return nil, err
+		}
+		frag.CurrentApprovals.Known = approvals
+	case entityacquire.NeedReviewers:
+		reviewers, err := reviewers(nodes, extra)
+		if err != nil {
+			return nil, err
+		}
+		frag.Reviewers.Known = reviewers
+	case entityacquire.NeedComments:
+		comments, err := comments(nodes)
+		if err != nil {
+			return nil, err
+		}
+		frag.Comments.Known = comments
+	case entityacquire.NeedReviews:
+		reviews, err := reviews(nodes)
+		if err != nil {
+			return nil, err
+		}
+		frag.Reviews.Known = reviews
 	}
 	return frag, nil
+}
+
+// textAction maps the shared members of a comment or review record created
+// at createdAt. The actor is the source-authenticated editor of the current
+// revision when the record was edited, otherwise its author: an edited
+// record never borrows its author's attribution. The text and command need
+// the content-safety filter, which this adapter does not run, so they stay
+// unknown.
+func textAction(n gqlEntityNode, createdAt string) (normentity.TextAction, error) {
+	if n.ID == "" {
+		return normentity.TextAction{}, errors.New("record without an ID")
+	}
+	created, ok := entityTimestamp(createdAt).Value()
+	if !ok {
+		return normentity.TextAction{}, fmt.Errorf("record %q without a valid time", n.ID)
+	}
+	act := normentity.Action{
+		ID:        n.ID,
+		CreatedAt: created,
+		RevisedAt: normentity.Known(created),
+		Actor:     recordActor(n.Author),
+		// The entity author is not read with comments or reviews.
+		IsEntityAuthor: normentity.Unknown[bool](normentity.ReasonNotLoaded),
+	}
+	if n.LastEditedAt != nil {
+		act.Actor = recordActor(n.Editor)
+		revised, ok := entityTimestamp(*n.LastEditedAt).Value()
+		switch {
+		case !ok:
+			act.RevisedAt = normentity.Unknown[normentity.Timestamp](normentity.ReasonFailed)
+		case revised < created:
+			// An edit before submission (a pending review's) is not a
+			// revision time the contract can represent.
+			act.RevisedAt = normentity.Unknown[normentity.Timestamp](normentity.ReasonUnsupported)
+		default:
+			act.RevisedAt = normentity.Known(revised)
+		}
+	}
+	return normentity.TextAction{
+		Action:  act,
+		Text:    normentity.Unknown[string](normentity.ReasonUnsupported),
+		Command: normentity.Unknown[string](normentity.ReasonUnsupported),
+	}, nil
+}
+
+// compareActions orders actions by creation time, then ID in byte order.
+func compareActions(x, y normentity.Action) int {
+	if c := strings.Compare(string(x.CreatedAt), string(y.CreatedAt)); c != 0 {
+		return c
+	}
+	return strings.Compare(x.ID, y.ID)
+}
+
+// comments maps an issue's comments, which are unthreaded, sorted by
+// creation time, then ID.
+func comments(nodes []gqlEntityNode) ([]normentity.Comment, error) {
+	out := make([]normentity.Comment, 0, len(nodes))
+	for _, n := range nodes {
+		ta, err := textAction(n, n.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("comment: %w", err)
+		}
+		c := normentity.Comment{TextAction: ta, ThreadID: normentity.Null[string](), URL: normentity.Unknown[string](normentity.ReasonFailed)}
+		if n.URL != "" {
+			c.URL = normentity.Known(n.URL)
+		}
+		out = append(out, c)
+	}
+	slices.SortStableFunc(out, func(x, y normentity.Comment) int { return compareActions(x.Action, y.Action) })
+	return out, nil
+}
+
+// reviewStates maps a submitted GitHub review state to a review disposition.
+var reviewStates = map[string]normentity.ReviewState{
+	"APPROVED":          normentity.ReviewApproved,
+	"CHANGES_REQUESTED": normentity.ReviewChangesRequested,
+	"COMMENTED":         normentity.ReviewCommented,
+	"DISMISSED":         normentity.ReviewDismissed,
+}
+
+// reviews maps a pull request's submitted reviews, created at submission and
+// sorted by submission time, then ID. GitHub orders reviews by creation, which
+// for a review drafted while pending precedes its submission.
+func reviews(nodes []gqlEntityNode) ([]normentity.Review, error) {
+	out := make([]normentity.Review, 0, len(nodes))
+	for _, n := range nodes {
+		if n.State == "PENDING" {
+			// The query selects submitted reviews only; a pending review is
+			// not an action.
+			return nil, errors.New("pending review among submitted reviews")
+		}
+		ta, err := textAction(n, n.SubmittedAt)
+		if err != nil {
+			return nil, fmt.Errorf("review: %w", err)
+		}
+		state := normentity.Unknown[normentity.ReviewState](normentity.ReasonUnsupported)
+		if st, ok := reviewStates[n.State]; ok {
+			state = normentity.Known(st)
+		}
+		out = append(out, normentity.Review{TextAction: ta, ReviewState: state})
+	}
+	slices.SortStableFunc(out, func(x, y normentity.Review) int { return compareActions(x.Action, y.Action) })
+	return out, nil
+}
+
+// currentApprovals returns the approvals among the latest opinionated review
+// of each user, sorted by actor ID.
+func currentApprovals(nodes []gqlEntityNode) ([]normentity.CurrentApproval, error) {
+	approvals := make([]normentity.CurrentApproval, 0, len(nodes))
+	ids := map[string]bool{}
+	for _, n := range nodes {
+		switch n.State {
+		case "APPROVED":
+		case "CHANGES_REQUESTED", "COMMENTED", "DISMISSED":
+			continue
+		default:
+			// A pending review is not submitted, and an unknown state may
+			// be an approval: either could hide the user's current one.
+			return nil, fmt.Errorf("unexpected latest review state %q", n.State)
+		}
+		actor := recordActor(n.Author)
+		if id, ok := actor.ID.Value(); ok {
+			if ids[id] {
+				return nil, fmt.Errorf("more than one current approval by actor %s", id)
+			}
+			ids[id] = true
+		}
+		approvals = append(approvals, normentity.CurrentApproval{
+			Actor:      actor,
+			ApprovedAt: entityTimestamp(n.SubmittedAt),
+			// The entity author is not read with reviews.
+			IsEntityAuthor: normentity.Unknown[bool](normentity.ReasonNotLoaded),
+		})
+	}
+	slices.SortStableFunc(approvals, func(x, y normentity.CurrentApproval) int {
+		return compareActorIDs(x.Actor, y.Actor)
+	})
+	return approvals, nil
+}
+
+// reviewerStates maps a submitted GitHub review state to a reviewer standing.
+var reviewerStates = map[string]normentity.ReviewerState{
+	"APPROVED":          normentity.ReviewerApproved,
+	"CHANGES_REQUESTED": normentity.ReviewerChangesRequested,
+	"COMMENTED":         normentity.ReviewerReviewed,
+	"DISMISSED":         normentity.ReviewerDismissed,
+}
+
+// reviewers merges the current review requests with each user's latest
+// submitted review, sorted by subject kind, then ID. A requested reviewer
+// with no submitted review is unreviewed. One whose review was requested
+// again after a submitted review has an unknown standing: the request does
+// not withdraw the earlier review, and GitHub reports no combined state. A
+// subject whose kind or ID is unresolved cannot be matched across the two
+// connections, so its standing is unknown too.
+func reviewers(requests, latest []gqlEntityNode) ([]normentity.Reviewer, error) {
+	out := make([]normentity.Reviewer, 0, len(requests)+len(latest))
+	// index maps a subject's kind and ID to its position in out.
+	index := map[[2]string]int{}
+	add := func(r normentity.Reviewer) error {
+		kind, kok := r.Subject.Kind.Value()
+		id, iok := r.Subject.ID.Value()
+		if !kok || !iok {
+			r.State = normentity.Unknown[normentity.ReviewerState](normentity.ReasonUnsupported)
+			out = append(out, r)
+			return nil
+		}
+		key := [2]string{string(kind), id}
+		if _, dup := index[key]; dup {
+			return fmt.Errorf("duplicate reviewer %s %s", kind, id)
+		}
+		index[key] = len(out)
+		out = append(out, r)
+		return nil
+	}
+	for _, n := range requests {
+		s := n.RequestedReviewer
+		var subject normentity.ReviewerSubject
+		switch {
+		case s == nil:
+			// A deleted account or a reviewer GitHub does not report.
+			subject.Actor = recordActor(nil)
+		case s.Typename == "Team":
+			if s.DatabaseID == nil || *s.DatabaseID <= 0 {
+				return nil, errors.New("team reviewer without an ID")
+			}
+			subject.Actor = normentity.Actor{
+				ID:   normentity.Known(strconv.FormatInt(*s.DatabaseID, 10)),
+				Kind: normentity.Known(normentity.ActorTeam),
+			}
+			subject.Name = normentity.Unknown[string](normentity.ReasonUnsupported)
+			if s.Name != "" {
+				subject.Name = normentity.Known(s.Name)
+			}
+		default:
+			subject.Actor = recordActor(&s.gqlEntityActor)
+		}
+		if err := add(normentity.Reviewer{Subject: subject, State: normentity.Known(normentity.ReviewerUnreviewed)}); err != nil {
+			return nil, err
+		}
+	}
+	requested := len(out)
+	for _, n := range latest {
+		if n.State == "PENDING" {
+			// A pending review is not submitted, so it gives no standing.
+			return nil, errors.New("pending review among latest submitted reviews")
+		}
+		state := normentity.Unknown[normentity.ReviewerState](normentity.ReasonUnsupported)
+		if st, ok := reviewerStates[n.State]; ok {
+			state = normentity.Known(st)
+		}
+		actor := recordActor(n.Author)
+		kind, _ := actor.Kind.Value()
+		id, _ := actor.ID.Value()
+		// Only resolved subjects are indexed, so a match is resolved.
+		if i, ok := index[[2]string{string(kind), id}]; ok && i < requested {
+			out[i].State = normentity.Unknown[normentity.ReviewerState](normentity.ReasonUnsupported)
+			continue
+		}
+		if err := add(normentity.Reviewer{Subject: normentity.ReviewerSubject{Actor: actor}, State: state}); err != nil {
+			return nil, err
+		}
+	}
+	slices.SortStableFunc(out, func(x, y normentity.Reviewer) int {
+		return compareSubjects(x.Subject.Actor, y.Subject.Actor)
+	})
+	return out, nil
+}
+
+// compareSubjects orders reviewer subjects by kind, then ID. Subjects whose
+// kind or ID is unresolved follow, in their source order.
+func compareSubjects(x, y normentity.Actor) int {
+	xk, xkok := x.Kind.Value()
+	yk, ykok := y.Kind.Value()
+	_, xiok := x.ID.Value()
+	_, yiok := y.ID.Value()
+	xok, yok := xkok && xiok, ykok && yiok
+	switch {
+	case xok && yok && xk != yk:
+		return strings.Compare(string(xk), string(yk))
+	case xok && yok:
+		return compareActorIDs(x, y)
+	case xok:
+		return -1
+	case yok:
+		return 1
+	}
+	return 0
+}
+
+// compareActorIDs orders actors by ID in byte order. Actors whose ID is
+// unresolved follow, in their source order.
+func compareActorIDs(x, y normentity.Actor) int {
+	xid, xok := x.ID.Value()
+	yid, yok := y.ID.Value()
+	switch {
+	case xok && yok:
+		return strings.Compare(xid, yid)
+	case xok:
+		return -1
+	case yok:
+		return 1
+	}
+	return 0
 }
 
 // labelApplications returns the most recent application of each currently

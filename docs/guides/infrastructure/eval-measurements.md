@@ -231,7 +231,10 @@ list. When `--output-dir` sits inside `--target-repo` (GitLab layout),
    GitHub Actions injects `GH_TOKEN` for that `GetRef`. GitLab CI has no
    GitHub token by default; because `agents` is public, `GetRef` still runs
    unauthenticated (~60 req/hr per IP). On busy shared runners, export
-   `GH_TOKEN` / `GITHUB_TOKEN` to avoid rate-limit skips.
+   `GH_TOKEN` / `GITHUB_TOKEN` to avoid rate-limit skips. When
+   `FULLSEND_FORGEJO_URL` is set, the manifest is instead read from the
+   configured Forgejo repository at its pinned commit SHA and GitHub is never
+   contacted (see [Agent definitions from a Forgejo instance](../../cli/run.md#agent-definitions-from-a-forgejo-instance)).
 
 Managed GHA/GitLab scaffolds deliberately **do not** pass `--fullsend-dir` into
 `eval-measure`: that flag would prefer `${FULLSEND_DIR}/eval/measurements/`

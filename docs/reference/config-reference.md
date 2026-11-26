@@ -426,6 +426,11 @@ include the raw-content prefixes for the same two repositories on that host:
 `https://<host>/fullsend-ai/agents/raw/`. GitHub Actions sets this variable on
 every runner. No other path on that host is added.
 
+A Forgejo agent-definition source (`FULLSEND_FORGEJO_URL`) is never added to
+the defaults. To resolve built-in agents from it, list
+`<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/` here (see
+[Agent definitions from a Forgejo instance](../cli/run.md#agent-definitions-from-a-forgejo-instance)).
+
 In the layered config system, this field uses union-with-deny-all semantics:
 omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See

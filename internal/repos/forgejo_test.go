@@ -98,6 +98,21 @@ func TestForgejoManifest_RejectsTokenField(t *testing.T) {
 	assert.ErrorContains(t, err, "token")
 }
 
+func TestValidateForgejoURLAndSplitForgejoPath(t *testing.T) {
+	assert.NoError(t, ValidateForgejoURL("f", "https://git.example.com/forgejo"))
+	assert.NoError(t, ValidateForgejoURL("f", "http://127.0.0.1:3000/"))
+	assert.ErrorContains(t, ValidateForgejoURL("f", "http://git.example.com"), "f \"http://git.example.com\" must use https")
+
+	owner, repo, ok := SplitForgejoPath("fullsend-ai/agents")
+	assert.True(t, ok)
+	assert.Equal(t, "fullsend-ai", owner)
+	assert.Equal(t, "agents", repo)
+	for _, bad := range []string{"agents", "a/b/c", "../agents", "a/.."} {
+		_, _, ok := SplitForgejoPath(bad)
+		assert.False(t, ok, bad)
+	}
+}
+
 func TestForgejoTokenEnvVar(t *testing.T) {
 	assert.Equal(t, "FULLSEND_FORGEJO_HOME_TOKEN", ForgejoTokenEnvVar("home"))
 	assert.Equal(t, "FULLSEND_FORGEJO_CODE_BERG_TOKEN", ForgejoTokenEnvVar("code-berg"))

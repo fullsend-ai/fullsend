@@ -8159,8 +8159,8 @@ func validateRepoNames(repos []string) error {
 // and any fetch dependencies from URL-based agent resolution.
 func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg config.ConfigReader, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
 	if orgCfg == nil || len(orgCfg.AgentEntries()) == 0 {
-		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
-			return path, deps, nil
+		if path, deps, ok, err := agentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); err != nil || ok {
+			return path, deps, wrapAgentsRepoFallbackErr(agentName, err)
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: no config and agents-repo fallback unavailable", agentName)
 	}
@@ -8180,8 +8180,8 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 
 	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agentName)
 	if entry == nil {
-		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
-			return path, deps, nil
+		if path, deps, ok, err := agentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); err != nil || ok {
+			return path, deps, wrapAgentsRepoFallbackErr(agentName, err)
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: not in config and agents-repo fallback unavailable", agentName)
 	}
@@ -8189,8 +8189,8 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		// An override-only entry tunes a built-in agent (any setting
 		// HasSettings counts) but registers no harness: the built-in still
 		// comes from the agents repo, exactly as if the entry were absent.
-		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
-			return path, deps, nil
+		if path, deps, ok, err := agentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); err != nil || ok {
+			return path, deps, wrapAgentsRepoFallbackErr(agentName, err)
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: config entry has no source (it only tunes the built-in agent) and agents-repo fallback unavailable", agentName)
 	}
@@ -8211,6 +8211,15 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	}
 	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agentName))
 	return resolved.Path, nil, nil
+}
+
+// wrapAgentsRepoFallbackErr names agentName in an agentsRepoFallback error,
+// and returns nil for a nil error.
+func wrapAgentsRepoFallbackErr(agentName string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("resolving agent %q: %w", agentName, err)
 }
 
 func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.AgentEntry {
@@ -8264,6 +8273,13 @@ func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, for
 	normalizedName := strings.ToLower(agentName)
 	if !defaultAgentsRepoKnownAgents[normalizedName] {
 		return "", false
+	}
+	// A configured Forgejo source replaces fullsend-ai/agents on GitHub.
+	if src, err := forgejoAgentsSourceFn(); err != nil {
+		printer.StepWarn(fmt.Sprintf("Forgejo agent definitions: %v", err))
+		return "", false
+	} else if src != nil {
+		return forgejoMeasurementManifest(ctx, src, agentName, composeOpts, printer)
 	}
 	path, _, ok := fetchPinnedAgentsRepoFile(ctx, "eval/measurements/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "eval measurement manifest for "+agentName)
 	return path, ok
@@ -8492,6 +8508,9 @@ func readAgentsRepoFileAtRef(ctx context.Context, forgeClient forge.Client, relP
 // host through that host (see agentsRepoHostFileFetcher and
 // agentsRepoHostTreeFetcher). It leaves opts unchanged otherwise.
 func useAgentsRepoHostFetch(opts *harness.ComposeOpts, forgeClient forge.Client) {
+	if useConfiguredForgejoAgentsRepoFetch(opts) {
+		return
+	}
 	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
 	if hostPrefix != "" && strings.HasPrefix(opts.SourceURL, hostPrefix) {
 		opts.FetchFile = agentsRepoHostFileFetcher(forgeClient, hostPrefix, opts.FetchPolicy)

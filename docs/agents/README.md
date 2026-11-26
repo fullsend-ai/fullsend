@@ -13,7 +13,10 @@ Custom agents can be registered via the `agents:` field in the repository-local
 
 Built-in agents resolve automatically through repository configuration or the
 [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repository
-fallback. Additional agents, such as Scribe, are opt-in and must be added
+fallback. When `FULLSEND_FORGEJO_URL` is set, a configured Forgejo instance
+replaces that GitHub fallback (see
+[Agent definitions from a Forgejo instance](../cli/run.md#agent-definitions-from-a-forgejo-instance)).
+Additional agents, such as Scribe, are opt-in and must be added
 explicitly with `fullsend agent add`.
 
 | Agent | Summary |

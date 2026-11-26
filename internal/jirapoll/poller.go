@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
@@ -47,13 +49,6 @@ type DispatchRecord struct {
 // normal per-cycle volume so it only trips on a flood.
 const maxEventsPerIssue = 100
 
-// validProjectKey matches Jira Cloud project keys: 2–10 uppercase
-// alphanumeric characters, starting with a letter. Jira Cloud only allows
-// uppercase letters and digits in project keys (the driver is Cloud-only;
-// Data Center's jira.projectkey.pattern is admin-customizable and not
-// supported here). Validated before interpolation into JQL.
-var validProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}$`)
-
 // Poller discovers Jira events and dispatches agent stages.
 type Poller struct {
 	client              JiraClient
@@ -61,10 +56,7 @@ type Poller struct {
 	opts                Options
 	dispatches          []DispatchRecord
 	sleepFn             func(context.Context, time.Duration) // overridable for testing
-	roleMembership      map[string]string                    // accountID → Jira project role name
-	roleGroups          map[string][]string                  // Jira role name → group IDs for per-actor resolution
-	roleGroupsChecked   map[string]bool                      // accountID → group membership already fetched this cycle
-	rolesLoaded         bool                                 // project role roster loaded (or skipped for a missing project key) this cycle
+	rosters             map[string]*projectRoster            // project key → role roster loaded this cycle
 	userGroups          map[string][]jira.UserGroupInfo      // accountID → GetUserGroups result, cached per cycle
 	statusCategoryCache map[string]string                    // status name → statusCategory key, reset each cycle
 	selfAccountID       string                               // authenticated Jira account from GetMyself; used to classify self-authored events as bot
@@ -114,11 +106,16 @@ func (p *Poller) Run(ctx context.Context) error {
 	p.eventsSeen, p.eventsInvalid, p.eventsMatchErrors = 0, 0, 0
 	p.unmatched = nil
 	p.statusCategoryCache = make(map[string]string)
-	p.roleMembership = make(map[string]string)
-	p.roleGroups = make(map[string][]string)
-	p.roleGroupsChecked = make(map[string]bool)
-	p.rolesLoaded = false
+	p.rosters = make(map[string]*projectRoster)
 	p.userGroups = make(map[string][]jira.UserGroupInfo)
+
+	// Validate the project set and build the scoped search before the
+	// first Jira request, so an empty or malformed set (or a predicate that
+	// could escape the scope) never reaches Jira.
+	jql, err := p.searchJQL()
+	if err != nil {
+		return fmt.Errorf("invalid poll scope: %w", err)
+	}
 
 	// Auth preflight: verify credentials before any discovery, lock, or
 	// checkpoint operations. Without this, bad credentials cause Jira to
@@ -139,7 +136,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	p.selfAccountID = userID(*myself)
 
 	// Step 1: Execute JQL to get candidate issues.
-	candidates, err := p.searchCandidates(ctx)
+	candidates, err := p.searchCandidates(ctx, jql)
 	if err != nil {
 		return fmt.Errorf("search candidates: %w", err)
 	}
@@ -153,14 +150,15 @@ func (p *Poller) Run(ctx context.Context) error {
 	// Step 3: Randomly select min(N, len(unlocked)) candidates.
 	selected := selectRandom(unlocked, p.opts.N)
 
-	// The project role roster (GET /project/{key}/role, which Jira Cloud
-	// serves only with the Administer Projects permission) is not loaded
-	// here. processIssue loads it on first use, only when an event needs
-	// project-role resolution (see roleSourceFor), so a setup whose jira
-	// authorization entry uses the lists, or only label triggers under
-	// the jira_editors rule, never calls it. A load FAILURE fails the whole
-	// cycle (see ensureRoleStructure), leaving checkpoints untouched so
-	// the next cron run retries.
+	// The project role rosters (GET /project/{key}/role, which Jira Cloud
+	// serves only with the Administer Projects permission) are not loaded
+	// here. processIssue loads an issue project's roster on first use,
+	// only when an event needs project-role resolution (see roleSourceFor),
+	// so a setup whose jira authorization entry uses the lists, or only
+	// label triggers under the jira_editors rule, never calls it. A load
+	// FAILURE for any project fails the whole cycle (see
+	// ensureRoleStructure), leaving checkpoints untouched so the next cron
+	// run retries.
 
 	// Step 4: Process each selected issue. Checkpoint advances are not
 	// committed to Jira here — detectChanges/routing only compute the
@@ -178,7 +176,7 @@ func (p *Poller) Run(ctx context.Context) error {
 		if err != nil {
 			var rle *roleLoadError
 			if errors.As(err, &rle) {
-				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, rle.err)
+				return fmt.Errorf("load project roles for %s: %w", rle.project, rle.err)
 			}
 			log.Printf("WARNING: processing %s: %v", issue.Key, err)
 			processErrors++
@@ -324,52 +322,61 @@ type pendingCheckpoint struct {
 // for them.
 const maxRolePriority = 2
 
-// loadRoleStructure loads the project role structure (direct users and
-// group assignments) without enumerating group members. Direct user
-// actors are added to roleMembership immediately; group IDs are stored
-// in roleGroups for lazy per-actor resolution in resolveActorRoles.
-func (p *Poller) loadRoleStructure(ctx context.Context, projectKey string) error {
+// projectRoster is one Jira project's role roster for the current cycle.
+// Each project in Options.JiraProjects has its own, so a role granted in
+// one project never applies to an issue in another.
+type projectRoster struct {
+	membership    map[string]string   // accountID → Jira project role name
+	groups        map[string][]string // Jira role name → group IDs for per-actor resolution
+	groupsChecked map[string]bool     // accountID → group-based roles already resolved this cycle
+}
+
+// loadRoleStructure loads the role structure of projectKey (direct users
+// and group assignments) without enumerating group members. Direct user
+// actors go into the roster's membership immediately; group IDs are stored
+// in its groups for lazy per-actor resolution in resolveActorRoles.
+func (p *Poller) loadRoleStructure(ctx context.Context, projectKey string) (*projectRoster, error) {
 	actors, err := p.client.GetProjectRoleActors(ctx, projectKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if p.roleMembership == nil {
-		p.roleMembership = make(map[string]string)
-	}
-	if p.roleGroups == nil {
-		p.roleGroups = make(map[string][]string)
+	roster := &projectRoster{
+		membership:    make(map[string]string),
+		groups:        make(map[string][]string),
+		groupsChecked: make(map[string]bool),
 	}
 	for roleName, ra := range actors {
 		for aid := range ra.DirectUsers {
-			existing, ok := p.roleMembership[aid]
+			existing, ok := roster.membership[aid]
 			if !ok || jira.RolePriority(roleName) > jira.RolePriority(existing) {
-				p.roleMembership[aid] = roleName
+				roster.membership[aid] = roleName
 			}
 		}
 		if len(ra.GroupIDs) > 0 {
-			p.roleGroups[roleName] = ra.GroupIDs
+			roster.groups[roleName] = ra.GroupIDs
 		}
 	}
-	return nil
+	return roster, nil
 }
 
-// resolveActorRoles resolves group-based role membership for the given
-// actors, each of whom is below maxRolePriority (the caller filters).
-// A direct role assignment doesn't rule out also belonging to a
+// resolveActorRoles resolves group-based role membership in roster for
+// the given actors, each of whom is below maxRolePriority (the caller
+// filters). A direct role assignment doesn't rule out also belonging to a
 // higher-priority group, so this always fetches and checks group
 // membership rather than skipping actors who already have some role.
-// For each actor, it calls GetUserGroups to retrieve the actor's group
-// memberships and cross-references them with the groups assigned to
-// each project role (stored in roleGroups), upgrading roleMembership
-// only if a higher-priority match is found.
+// For each actor, it calls GetUserGroups (cached per cycle across
+// projects) to retrieve the actor's group memberships and cross-references
+// them with the groups assigned to each of the project's roles (stored in
+// roster.groups), upgrading roster.membership only if a higher-priority
+// match is found.
 //
 // Any lookup failure — partial or total — propagates an error so the
 // issue is retried next cycle, rather than silently leaving the failed
 // actor's role unresolved (defaulting to "external" in resolveRole) and
 // dispatching their event anyway with a possibly-wrong, unrecoverable
 // privilege downgrade for this cycle.
-func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error {
-	if len(p.roleGroups) == 0 || len(actorIDs) == 0 {
+func (p *Poller) resolveActorRoles(ctx context.Context, roster *projectRoster, actorIDs []string) error {
+	if len(roster.groups) == 0 || len(actorIDs) == 0 {
 		return nil
 	}
 	var lastErr error
@@ -382,16 +389,16 @@ func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error
 			errorCount++
 			continue
 		}
-		p.roleGroupsChecked[aid] = true
+		roster.groupsChecked[aid] = true
 		userGroupIDs := make(map[string]bool, len(groups))
 		for _, g := range groups {
 			userGroupIDs[g.GroupID] = true
 		}
-		for roleName, groupIDs := range p.roleGroups {
+		for roleName, groupIDs := range roster.groups {
 			for _, gid := range groupIDs {
 				if userGroupIDs[gid] {
-					if existing := p.roleMembership[aid]; jira.RolePriority(roleName) > jira.RolePriority(existing) {
-						p.roleMembership[aid] = roleName
+					if existing := roster.membership[aid]; jira.RolePriority(roleName) > jira.RolePriority(existing) {
+						roster.membership[aid] = roleName
 					}
 					break
 				}
@@ -404,17 +411,77 @@ func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error
 	return nil
 }
 
-// searchCandidates executes JQL and collects up to M results.
-func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
-	jql := p.opts.JQL
-	if jql == "" {
-		if !validProjectKey.MatchString(p.opts.JiraProject) {
-			return nil, fmt.Errorf("invalid Jira project key %q: must match %s", p.opts.JiraProject, validProjectKey.String())
-		}
-		jql = fmt.Sprintf("project = %q AND statusCategory != Done ORDER BY updated DESC", p.opts.JiraProject)
+// validateProjectSet checks that projects is a non-empty set of distinct
+// Jira project keys, each in the form tracker.jira.project accepts. Keys
+// are validated before they are interpolated into JQL.
+func validateProjectSet(projects []string) error {
+	if len(projects) == 0 {
+		return errors.New("no Jira project keys: the poller needs at least one project to scope its search to")
 	}
+	for i, key := range projects {
+		if !config.ValidJiraProjectKey(key) {
+			return fmt.Errorf("invalid Jira project key %q: must be an uppercase letter followed by uppercase letters, digits, or underscores", key)
+		}
+		if slices.Contains(projects[:i], key) {
+			return fmt.Errorf("duplicate Jira project key %q", key)
+		}
+	}
+	return nil
+}
 
-	return p.client.SearchIssues(ctx, jql, p.opts.M)
+// searchJQL returns the JQL every search runs: the configured predicate
+// (or config.DefaultJiraPollQuery) scoped to exactly Options.JiraProjects,
+// with a trailing ORDER BY kept last (see config.ScopeJQLToProjects). The
+// scoping clause is applied outside the predicate's parentheses, and a
+// predicate whose parentheses do not balance is rejected, so no predicate
+// (an OR, or its own project clause) can widen the search beyond the set.
+// It makes no Jira request.
+func (p *Poller) searchJQL() (string, error) {
+	if err := validateProjectSet(p.opts.JiraProjects); err != nil {
+		return "", err
+	}
+	query := p.opts.JQL
+	if strings.TrimSpace(query) == "" {
+		query = config.DefaultJiraPollQuery
+	}
+	if !config.JQLParensBalanced(query) {
+		return "", errors.New("the JQL predicate has unbalanced parentheses: it is wrapped in parentheses to scope it to the project set")
+	}
+	return config.ScopeJQLToProjects(p.opts.JiraProjects, query), nil
+}
+
+// searchCandidates runs the scoped search jql once, so the M limit and the
+// client's pagination budget apply across the whole project set, and
+// drops repeated rows of the same canonical issue (see uniqueIssues).
+func (p *Poller) searchCandidates(ctx context.Context, jql string) ([]jira.Issue, error) {
+	issues, err := p.client.SearchIssues(ctx, jql, p.opts.M)
+	if err != nil {
+		return nil, err
+	}
+	return uniqueIssues(issues), nil
+}
+
+// uniqueIssues keeps the first row of each canonical issue: its numeric
+// ID, which stays the same when an issue moves between projects of the
+// set, or its key when Jira serves no ID. Jira can return the same issue
+// twice when results shift between the pages of one search; processing it
+// once per cycle keeps its lock, checkpoint and dispatches single.
+func uniqueIssues(issues []jira.Issue) []jira.Issue {
+	seen := make(map[string]bool, len(issues))
+	unique := issues[:0:0]
+	for _, issue := range issues {
+		id := "id:" + issue.ID
+		if issue.ID == "" {
+			id = "key:" + issue.Key
+		}
+		if seen[id] {
+			log.Printf("WARNING: search returned %s more than once; processing it once this cycle", issue.Key)
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, issue)
+	}
+	return unique
 }
 
 // filterLocked removes locked issues and cleans up stale locks. If every

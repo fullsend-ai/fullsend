@@ -255,9 +255,9 @@ func (l *jiraLifecycle) comment(accountID, displayName, body string) {
 // runJiraPoll for GitHub and runJiraPollGitLab for GitLab.
 func (l *jiraLifecycle) options() jirapoll.Options {
 	opts := jirapoll.Options{
-		TargetRepo:  l.repo,
-		JiraBaseURL: lifecycleJiraBaseURL,
-		JiraProject: "PROJ",
+		TargetRepo:   l.repo,
+		JiraBaseURL:  lifecycleJiraBaseURL,
+		JiraProjects: []string{"PROJ"},
 	}
 	if l.host == jirapoll.TargetForgeGitLab {
 		opts.TargetForge = jirapoll.TargetForgeGitLab

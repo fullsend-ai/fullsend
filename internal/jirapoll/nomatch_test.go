@@ -81,10 +81,10 @@ func TestRun_WarnsWhenSelectedWorkMatchesNoAgent(t *testing.T) {
 			out := captureAnnotations(t)
 			captureLog(t)
 			opts := Options{
-				TargetRepo:  "acme/platform",
-				TargetForge: target,
-				JiraBaseURL: "https://acme.atlassian.net",
-				JiraProject: "PROJ",
+				TargetRepo:   "acme/platform",
+				TargetForge:  target,
+				JiraBaseURL:  "https://acme.atlassian.net",
+				JiraProjects: []string{"PROJ"},
 			}
 			if target == TargetForgeGitLab {
 				opts.GitLabURL = "https://gitlab.example.com"
@@ -142,10 +142,10 @@ func TestRun_NoMatchWarningSkipped(t *testing.T) {
 			out := captureAnnotations(t)
 			captureLog(t)
 			p := newTestPoller(noMatchClient(tt.body), tt.matcher, Options{
-				TargetRepo:  "acme/platform",
-				JiraBaseURL: "https://acme.atlassian.net",
-				JiraProject: "PROJ",
-				OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+				TargetRepo:   "acme/platform",
+				JiraBaseURL:  "https://acme.atlassian.net",
+				JiraProjects: []string{"PROJ"},
+				OutputPath:   filepath.Join(t.TempDir(), "dispatches.json"),
 			})
 			if err := p.Run(context.Background()); err != nil {
 				t.Fatalf("Run() error: %v", err)
@@ -165,10 +165,10 @@ func TestRun_NoMatchWarningSkipped(t *testing.T) {
 		mc.comments = map[string][]jira.Comment{}
 		setLastCheck(mc, "PROJ-123", "acme", "platform", time.Now().Truncate(time.Second))
 		p := newTestPoller(mc, &reportingMatcher{}, Options{
-			TargetRepo:  "acme/platform",
-			JiraBaseURL: "https://acme.atlassian.net",
-			JiraProject: "PROJ",
-			OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+			TargetRepo:   "acme/platform",
+			JiraBaseURL:  "https://acme.atlassian.net",
+			JiraProjects: []string{"PROJ"},
+			OutputPath:   filepath.Join(t.TempDir(), "dispatches.json"),
 		})
 		if err := p.Run(context.Background()); err != nil {
 			t.Fatalf("Run() error: %v", err)

@@ -55,9 +55,9 @@ func TestRun_InvalidEventSkippedWithoutRoster(t *testing.T) {
 			}
 
 			p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}}, Options{
-				TargetRepo:  "acme/platform",
-				JiraBaseURL: "https://acme.atlassian.net",
-				JiraProject: "PROJ",
+				TargetRepo:   "acme/platform",
+				JiraBaseURL:  "https://acme.atlassian.net",
+				JiraProjects: []string{"PROJ"},
 			})
 			logBuf := captureLog(t)
 			if err := p.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "failed normalized-event validation") {
@@ -116,9 +116,9 @@ func TestRun_MixedInvalidEventsCycleSucceeds(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 	logBuf := captureLog(t)
 	if err := p.Run(context.Background()); err != nil {
@@ -201,9 +201,9 @@ func TestRun_NilLabelsTreatedAsUnlabeled(t *testing.T) {
 	}
 
 	p := newTestPoller(&rawSearchClient{mc}, &stubMatcher{agents: []string{"code"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 	logBuf := captureLog(t)
 	if err := p.Run(context.Background()); err != nil {
@@ -291,9 +291,9 @@ func TestRun_MatcherErrEventsDroppedNotLost(t *testing.T) {
 
 	t.Run("all events fail matching", func(t *testing.T) {
 		p := newTestPoller(newClient(), &stubMatcher{agents: []string{"code"}, err: fmt.Errorf("matcher: trigger evaluation failed")}, Options{
-			TargetRepo:  "acme/platform",
-			JiraBaseURL: "https://acme.atlassian.net",
-			JiraProject: "PROJ",
+			TargetRepo:   "acme/platform",
+			JiraBaseURL:  "https://acme.atlassian.net",
+			JiraProjects: []string{"PROJ"},
 		})
 		logBuf := captureLog(t)
 		err := p.Run(context.Background())
@@ -316,9 +316,9 @@ func TestRun_MatcherErrEventsDroppedNotLost(t *testing.T) {
 
 	t.Run("one issue's events fail matching", func(t *testing.T) {
 		p := newTestPoller(newClient(), &errOnStatusMatcher{stubMatcher: stubMatcher{agents: []string{"code"}}, failStatus: "10042"}, Options{
-			TargetRepo:  "acme/platform",
-			JiraBaseURL: "https://acme.atlassian.net",
-			JiraProject: "PROJ",
+			TargetRepo:   "acme/platform",
+			JiraBaseURL:  "https://acme.atlassian.net",
+			JiraProjects: []string{"PROJ"},
 		})
 		logBuf := captureLog(t)
 		if err := p.Run(context.Background()); err != nil {
@@ -353,9 +353,9 @@ func TestRun_MatcherErrEventsDroppedNotLost(t *testing.T) {
 		mc := newClient()
 		mc.searchResult[1].ID = "not-a-number" // PROJ-123's events fail validation; PROJ-122's fail matching
 		p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}, err: fmt.Errorf("matcher: trigger evaluation failed")}, Options{
-			TargetRepo:  "acme/platform",
-			JiraBaseURL: "https://acme.atlassian.net",
-			JiraProject: "PROJ",
+			TargetRepo:   "acme/platform",
+			JiraBaseURL:  "https://acme.atlassian.net",
+			JiraProjects: []string{"PROJ"},
 		})
 		logBuf := captureLog(t)
 		const wantErr = "all 4 events this cycle were dropped before dispatch (2 failed normalized-event validation, 2 failed matching)"
@@ -390,10 +390,9 @@ func TestRun_MatcherErrEventsDroppedNotLost(t *testing.T) {
 // through a custom tracker.jira.poll.query, and on a legacy Server/Data
 // Center deployment whose project key is a single character (which the
 // config gate's jiraProjectKeyRe accepts) through the scoped default query
-// too: the CLI always sets a JQL, so the project-key check in
-// searchCandidates (which runs only with no JQL at all) never intercepts
-// it. The mock serves the issue regardless of the JQL, as Jira does for
-// either query.
+// too: the poller's project-set check accepts the same keys as that gate,
+// so it never intercepts it. The mock serves the issue regardless of the
+// JQL, as Jira does for either query.
 func TestRun_MalformedKeyEventSkipped(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
@@ -429,9 +428,9 @@ func TestRun_MalformedKeyEventSkipped(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 	logBuf := captureLog(t)
 	if err := p.Run(context.Background()); err != nil {
@@ -486,9 +485,9 @@ func TestRun_LoneBadEventFailsEveryCycle(t *testing.T) {
 	}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	})
 	for cycle := 1; cycle <= 2; cycle++ {
 		logBuf := captureLog(t)
