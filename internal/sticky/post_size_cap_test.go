@@ -3,7 +3,6 @@ package sticky
 import (
 	"context"
 	"io"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -81,12 +80,9 @@ func TestPost_TrustedLeadingLinesThirdLineCutBySizeCapIsRefused(t *testing.T) {
 	client.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
 
-	hashLine := "<!-- fullsend:review-diff-hash:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -->"
-	headLine := "<!-- fullsend:review-head:0123456789abcdef0123456789abcdef01234567 -->"
-	trusted := regexp.MustCompile(`^(?:<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->|<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->|<!-- fullsend:review-head:[0-9a-fA-F]{40,64} -->)$`)
 	cfg := Config{
 		Marker:                 "<!-- fullsend:review-agent -->",
-		TrustedLeadingLine:     trusted,
+		TrustedLeadingLine:     trustedLinesRe,
 		MaxTrustedLeadingLines: 3,
 		// Room for the runner marker, the truncation note and the first
 		// two trusted lines plus most of the third: the cut lands inside
@@ -110,12 +106,9 @@ func TestPost_TrustedLeadingLinesWithinSizeCapPostsIntact(t *testing.T) {
 	client.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
 
-	hashLine := "<!-- fullsend:review-diff-hash:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -->"
-	headLine := "<!-- fullsend:review-head:0123456789abcdef0123456789abcdef01234567 -->"
-	trusted := regexp.MustCompile(`^(?:<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->|<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->|<!-- fullsend:review-head:[0-9a-fA-F]{40,64} -->)$`)
 	cfg := Config{
 		Marker:                 "<!-- fullsend:review-agent -->",
-		TrustedLeadingLine:     trusted,
+		TrustedLeadingLine:     trustedLinesRe,
 		MaxTrustedLeadingLines: 3,
 		MaxSize:                len("<!-- fullsend:review-agent -->\n"+hashLine+"\n"+headLine+"\n"+trustedLine) + 80,
 	}

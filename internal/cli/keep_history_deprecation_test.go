@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/tracker"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // The keepHistoryDeprecationWarning snippet every door must print when
@@ -114,4 +120,30 @@ func TestPostReviewCmd_KeepHistoryWarnsOnExplicitFlag(t *testing.T) {
 		"an explicit --keep-history must warn on stderr")
 	assert.NotContains(t, run(), keepHistoryDeprecationWarning,
 		"the default flag value must not warn")
+}
+
+func TestRunIssuesPostComment_KeepHistoryWarnsOnConfigPath(t *testing.T) {
+	// The config route: with no explicit --keep-history, resolveKeepHistory
+	// reads config.yaml through --fullsend-dir, and every door prints the
+	// same shared notice when that resolution fails. The flag-path tests
+	// above pin warnKeepHistoryDeprecated; this pins the config leg, so a
+	// regression dropping the StepWarn (issues.go, postcomment.go and
+	// postreview.go carry the same branch) fails here.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("{{{"), 0o644))
+
+	var out bytes.Buffer
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerGitHub,
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- fullsend:test -->",
+		fullsendDir: dir,
+		testClient:  tracker.NewForgeClient(forge.NewFakeClient()),
+		testPrinter: ui.New(&out),
+		testBody:    "comment body",
+	}
+	require.NoError(t, runIssuesPostComment(context.Background(), cfg))
+	assert.Contains(t, out.String(), "keep_history is deprecated and unused",
+		"a config.yaml that cannot load must still print the keep_history deprecation warning")
 }

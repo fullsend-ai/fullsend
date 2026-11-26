@@ -3,7 +3,6 @@ package sticky
 import (
 	"context"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -117,16 +116,13 @@ func TestUpdateComment_TrustedLeadingLinesThirdLineCutBySizeCapIsRefused(t *test
 	created, err := client.CreateIssueComment(context.Background(), "o", "r", 1, "<!-- test -->\nFirst.")
 	require.NoError(t, err)
 
-	hashLine := "<!-- fullsend:review-diff-hash:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -->"
-	headLine := "<!-- fullsend:review-head:0123456789abcdef0123456789abcdef01234567 -->"
-	trusted := regexp.MustCompile(`^(?:<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->|<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->|<!-- fullsend:review-head:[0-9a-fA-F]{40,64} -->)$`)
 	// The same cap shape as the create path's triple-line case: room for
 	// the runner marker, the truncation note and the first two trusted
 	// lines plus most of the third, so the cut lands inside the
 	// projection line.
 	cfg := Config{
 		Marker:                 "<!-- fullsend:review-agent -->",
-		TrustedLeadingLine:     trusted,
+		TrustedLeadingLine:     trustedLinesRe,
 		MaxTrustedLeadingLines: 3,
 		MaxSize:                len("<!-- fullsend:review-agent -->\n"+hashLine+"\n"+headLine+"\n"+trustedLine) + 20,
 	}

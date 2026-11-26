@@ -134,6 +134,18 @@ var trustedLineRe = regexp.MustCompile(`^<!-- fullsend:review-findings-v2:[A-Za-
 
 const trustedLine = "<!-- fullsend:review-findings-v2:eyJhIjoxfQ== -->"
 
+// The review door's other two trusted leading lines (the diff-hash and
+// head markers), and the anchored pattern that accepts any of the three,
+// which the size-cap tests hand out as the caller's TrustedLeadingLine.
+// They live here beside trustedLine/trustedLineRe so the marker
+// vocabulary is defined once: a vocab change is one edit, not lockstep
+// copies per test.
+const hashLine = "<!-- fullsend:review-diff-hash:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -->"
+
+const headLine = "<!-- fullsend:review-head:0123456789abcdef0123456789abcdef01234567 -->"
+
+var trustedLinesRe = regexp.MustCompile(`^(?:<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->|<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->|<!-- fullsend:review-head:[0-9a-fA-F]{40,64} -->)$`)
+
 func TestNeutralizeBody_TrustedLeadingLine(t *testing.T) {
 	cfg := Config{TrustedLeadingLine: trustedLineRe}
 	escaped := "&lt;!-- fullsend:review-findings-v2:eyJhIjoxfQ== -->"

@@ -166,15 +166,17 @@ func TestGeneratedPostScriptOkDryRunPostsNothing(t *testing.T) {
 	}
 }
 
-// TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists runs the
-// live ok path (no dry run) against a stub `fullsend` on PATH that records
-// its arguments. The script must delegate the "is there an earlier findings
+// TestGeneratedPostScriptOkAppendsViaOnlyIfExists runs the live ok path
+// (no dry run) against a stub `fullsend` on PATH that records its
+// arguments. The script must delegate the "is there an earlier findings
 // comment" decision to `fullsend issues post-comment --only-if-exists`
-// rather than reimplementing it with raw API calls in shell. The stub's
-// --help lists both --only-if-exists and --keep-history, a CLI of this
-// change's generation: the deprecated flag is still listed, so it is
-// passed (a runner pinned between #6966 and this change honours it).
-func TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists(t *testing.T) {
+// rather than reimplementing it with raw API calls in shell — and with
+// this change's CLI the all-clear that follows is appended as a new
+// comment (only a runner pinned between #6966 and this change still
+// replaces in place). The stub's --help lists both --only-if-exists and
+// --keep-history, a CLI of this change's generation: the deprecated flag
+// is still listed, so it is passed (a pinned runner honours it).
+func TestGeneratedPostScriptOkAppendsViaOnlyIfExists(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not installed; the generated post-script needs it")
 	}
