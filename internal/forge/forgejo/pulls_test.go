@@ -39,6 +39,11 @@ type fakePulls struct {
 
 func (f *fakePulls) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path, ok := strings.CutPrefix(r.URL.EscapedPath(), fakePrefix+"/api/v1/repos/o/r")
+	if !ok {
+		// Another repository is keyed "METHOD @owner/repo".
+		path, ok = strings.CutPrefix(r.URL.EscapedPath(), fakePrefix+"/api/v1/repos/")
+		path = "@" + path
+	}
 	req := pullsRequest{Method: r.Method, Path: path, Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization")}
 	data, _ := io.ReadAll(r.Body)
 	if len(data) > 0 {
@@ -156,6 +161,13 @@ func TestBranchOperations(t *testing.T) {
 func TestCreateChangeProposal(t *testing.T) {
 	ctx := context.Background()
 	f, c := newFakePulls(t)
+	forkOf := func(parent string) http.HandlerFunc {
+		return respond(200, map[string]any{"fork": true, "parent": map[string]any{"full_name": parent}})
+	}
+	f.handle("GET @fork/r", forkOf("o/r"))
+	f.handle("GET @stranger/r", forkOf("o/r"))
+	f.handle("GET @plain/r", respond(200, map[string]any{"fork": false}))
+	f.handle("GET @elsewhere/r", forkOf("someone/else"))
 	f.handle("POST /pulls", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -189,15 +201,32 @@ func TestCreateChangeProposal(t *testing.T) {
 	cp, err = c.CreateCrossRepoChangeProposal(ctx, "o", "r", "fork", "r", "t", "b", "feat", "main")
 	require.NoError(t, err)
 	assert.Equal(t, "fork/r", cp.HeadRepo)
-	assert.Equal(t, "fork:feat", f.reqs()[3].Body["head"])
+	assert.Equal(t, "GET", f.reqs()[3].Method, "the head repository is looked up first")
+	assert.Equal(t, "fork:feat", f.reqs()[4].Body["head"])
 
 	_, err = c.CreateCrossRepoChangeProposal(ctx, "o", "r", "stranger", "r", "t", "b", "feat", "main")
 	assert.ErrorContains(t, err, `opened from "stranger/other"`)
 
 	cp, err = c.CreateCrossRepoChangeProposal(ctx, "o", "r", "O", "R", "t", "b", "same", "main")
 	require.NoError(t, err)
-	assert.Equal(t, "same", f.reqs()[5].Body["head"], "the base repository itself is a same-repo pull request")
+	assert.Equal(t, "same", f.reqs()[7].Body["head"], "the base repository itself is a same-repo pull request")
 	assert.Equal(t, 7, cp.Number)
+
+	posts := func() (n int) {
+		for _, r := range f.reqs() {
+			if r.Method == "POST" && r.Path == "/pulls" {
+				n++
+			}
+		}
+		return n
+	}
+	before := posts()
+	for _, head := range [][2]string{{"plain", "r"}, {"elsewhere", "r"}, {"missing", "r"}} {
+		_, err = c.CreateCrossRepoChangeProposal(ctx, "o", "r", head[0], head[1], "t", "b", "feat", "main")
+		assert.Error(t, err, head[0])
+	}
+	assert.ErrorContains(t, err, "looking up head repository")
+	assert.Equal(t, before, posts(), "a head that is not a fork of the base opens no pull request")
 
 	n := len(f.reqs())
 	_, err = c.CreateCrossRepoChangeProposal(ctx, "o", "r", "o", "r-fork", "t", "b", "feat", "main")
@@ -650,4 +679,22 @@ func TestClassify(t *testing.T) {
 	assert.True(t, forge.IsAlreadyExists(classify(conflict, forge.ErrAlreadyExists)))
 	assert.True(t, forge.IsForbidden(classify(&APIError{StatusCode: 403}, nil)))
 	assert.Equal(t, error(&APIError{StatusCode: 422}), classify(&APIError{StatusCode: 422}, forge.ErrConflict))
+}
+
+func TestDotSegmentsAreRejected(t *testing.T) {
+	ctx := context.Background()
+	f, c := newFakePulls(t)
+
+	_, err := c.GetBranchRef(ctx, "o", "r", "../../../x/y")
+	assert.ErrorContains(t, err, "refusing request")
+	assert.Error(t, c.DeleteBranch(ctx, "o", "r", "a/./b"))
+	_, err = c.GetPullRequestHeadSHA(ctx, "..", "r", 1)
+	assert.ErrorContains(t, err, "refusing request")
+	_, err = c.GetPullRequestHeadSHA(ctx, "o", ".", 1)
+	assert.ErrorContains(t, err, "refusing request")
+	assert.Empty(t, f.reqs(), "a dot segment makes no request")
+
+	_, err = c.GetBranchRef(ctx, "o", "r", "feature/..x/v1.0")
+	assert.True(t, forge.IsNotFound(err), "dots inside a segment are ordinary: %v", err)
+	assert.Len(t, f.reqs(), 1)
 }

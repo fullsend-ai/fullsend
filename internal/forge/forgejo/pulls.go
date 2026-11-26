@@ -185,14 +185,36 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 	return &cp, nil
 }
 
+// checkHeadFork verifies, before a pull request is opened, that
+// headOwner/headRepo exists and is a fork of baseOwner/baseRepo.
+func (c *LiveClient) checkHeadFork(ctx context.Context, baseOwner, baseRepo, headOwner, headRepo string) error {
+	var out struct {
+		Fork   bool `json:"fork"`
+		Parent *struct {
+			FullName string `json:"full_name"`
+		} `json:"parent"`
+	}
+	if err := c.do(ctx, http.MethodGet, c.repoURL(headOwner, headRepo, ""), nil, &out); err != nil {
+		return fmt.Errorf("looking up head repository %q/%q: %w", headOwner, headRepo, classify(err, nil))
+	}
+	base := baseOwner + "/" + baseRepo
+	if !out.Fork || out.Parent == nil || !strings.EqualFold(out.Parent.FullName, base) {
+		return fmt.Errorf("head repository %q/%q is not a fork of %q", headOwner, headRepo, base)
+	}
+	return nil
+}
+
 // CreateCrossRepoChangeProposal opens a pull request into
 // baseOwner/baseRepo from headBranch of headOwner/headRepo. Forgejo names
 // the head as "owner:branch" and resolves it to that owner's fork of the
 // base repository, so a fork owned by the base repository's owner cannot
 // be named: that case returns an error wrapping forge.ErrNotSupported
-// without making a request. When Forgejo resolves the head to a repository
-// other than headOwner/headRepo, the pull request it opened is reported in
-// an error rather than returned.
+// without making a request. Before opening the pull request, it checks
+// that headOwner/headRepo is a fork of the base repository and returns an
+// error without creating anything when it is not. If Forgejo still
+// resolves the head to a repository other than headOwner/headRepo (for
+// example, the owner has several forks), the pull request it opened is
+// reported in an error rather than returned.
 func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*forge.ChangeProposal, error) {
 	if strings.EqualFold(baseOwner, headOwner) {
 		if strings.EqualFold(baseRepo, headRepo) {
@@ -200,6 +222,9 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 		}
 		return nil, fmt.Errorf("creating pull request from %q/%q into %q/%q: Forgejo cannot name a head fork owned by the base repository's owner: %w",
 			headOwner, headRepo, baseOwner, baseRepo, forge.ErrNotSupported)
+	}
+	if err := c.checkHeadFork(ctx, baseOwner, baseRepo, headOwner, headRepo); err != nil {
+		return nil, err
 	}
 	pr, err := c.createPull(ctx, baseOwner, baseRepo, title, body, headOwner+":"+headBranch, baseBranch)
 	if err != nil {

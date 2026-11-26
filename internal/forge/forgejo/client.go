@@ -130,6 +130,23 @@ func redactedString(rawURL string) string {
 	return redactURL(u)
 }
 
+// rejectDotSegments returns an error when the path of u has a "." or ".."
+// segment, escaped or not. url.PathEscape leaves such a segment unchanged,
+// so an owner, repository, or branch name made of one would otherwise let a
+// proxy that normalizes dot segments send the request to another API route.
+// No request is made for such a URL.
+func rejectDotSegments(u *url.URL) error {
+	for _, seg := range strings.Split(u.EscapedPath(), "/") {
+		if dec, err := url.PathUnescape(seg); err == nil {
+			seg = dec
+		}
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("refusing request: URL path has a %q segment", seg)
+		}
+	}
+	return nil
+}
+
 // send sends an API request and returns the response body, read up to
 // limit bytes. When strict is set, a body over limit is an error. A 404
 // maps to forge.ErrNotFound and any other non-2xx status to *APIError.
@@ -145,6 +162,9 @@ func (c *LiveClient) send(ctx context.Context, method, rawURL string, body any, 
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, reader)
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
+	}
+	if err := rejectDotSegments(req.URL); err != nil {
+		return nil, err
 	}
 	req.Header.Set("Accept", accept)
 	if body != nil {
