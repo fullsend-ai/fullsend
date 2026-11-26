@@ -1022,7 +1022,10 @@ lists — the trusted-bot checks in a triage or review pre-script and in
 The command is not available inside the agent sandbox (the helper listens
 on the runner's loopback): an agent-side step, such as a triage step or a
 prior-risk lookup, gets the answer from the pre-script, which can resolve
-each comment's role and stage it for the sandbox.
+each comment's role and stage it for the sandbox. The helper's loopback
+listener also serves an unauthenticated `/healthz` liveness probe — the
+only endpoint the bearer token does not guard, so an operator can check
+that a run's helper is up; every other path requires the token.
 
 ### Dispatch inputs
 
