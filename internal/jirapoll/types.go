@@ -65,7 +65,6 @@ type Options struct {
 	OutputPath              string           // Path to write dispatch records JSON
 	M                       int              // Max candidate issues per cycle (default: 50)
 	N                       int              // Max issues to process per cycle (default: 5)
-	StaleThreshold          time.Duration    // Lock stale threshold (default: 900s)
 	FirstPollBackfillWindow time.Duration    // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
 
 	// Authorization holds the jira authorization provider from
@@ -166,15 +165,4 @@ func (e JiraEvent) Key() string {
 		return fmt.Sprintf("label-%s-%s-%s-%d", e.IssueKey, e.ChangedLabel, e.LabelAction, e.UpdatedAt.Unix())
 	}
 	return fmt.Sprintf("%s-%s-%d", e.Type, e.IssueKey, e.UpdatedAt.Unix())
-}
-
-// LockValue is stored in the Jira entity property for coordination.
-type LockValue struct {
-	ID string `json:"id"` // Poll cycle UUID
-	TS string `json:"ts"` // RFC3339 timestamp
-	// Phase is reserved for the two-phase (pending → running) lock handoff
-	// described by ADR 0063. Today it is always written as "pending" and
-	// never read: lock ownership through dispatch scheduling is a tracked
-	// follow-up (see the KNOWN LIMITATION notes in processIssue).
-	Phase string `json:"phase"` // "pending" or "running"
 }

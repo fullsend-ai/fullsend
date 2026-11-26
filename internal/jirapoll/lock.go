@@ -11,22 +11,23 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // escapeKeySegment escapes dots in an owner/repo segment so the
 // dot-delimited property key can't be forged by two different target
 // repos. Without it, "a.b/c" and "a/b.c" both collapse to
-// fullsend.poll.a.b.c.*, silently sharing a lock and checkpoint namespace
+// fullsend.poll.a.b.c.*, silently sharing a checkpoint namespace
 // (a cross-repo event-loss bug). Dot-free segments (the common case,
 // including every GitHub owner) are unchanged.
 func escapeKeySegment(s string) string {
 	return strings.ReplaceAll(s, ".", "%2E")
 }
 
-// lockPropertyKey returns the entity property key for locks.
-func lockPropertyKey(owner, repo string) string {
-	return fmt.Sprintf("fullsend.poll.%s.%s.lock", escapeKeySegment(owner), escapeKeySegment(repo))
+// writeCheckPropertyKey returns the entity property key the write-access
+// check writes. Earlier versions kept a lock at the ".lock" key of the same
+// namespace; the driver no longer reads or writes it (ADR 0085).
+func writeCheckPropertyKey(owner, repo string) string {
+	return fmt.Sprintf("fullsend.poll.%s.%s.writeCheck", escapeKeySegment(owner), escapeKeySegment(repo))
 }
 
 // lastCheckPropertyKey returns the entity property key for lastCheck.
@@ -37,7 +38,7 @@ func lastCheckPropertyKey(owner, repo string) string {
 // gitlabPropertyKeyPrefix returns the entity property key prefix for a
 // GitLab target. It adds a "gitlab" segment and the instance (host plus any
 // path prefix of a self-managed URL) ahead of the project path, so a GitLab
-// project never shares lock or checkpoint state with a GitHub repository,
+// project never shares checkpoint state with a GitHub repository,
 // or with a project of the same path on another GitLab instance. Every
 // segment has its dots escaped, so these keys always have four segments
 // between "fullsend.poll." and the suffix, while GitHub keys have two.
@@ -56,14 +57,26 @@ func gitlabInstanceSegment(gitlabURL string) string {
 	return strings.ToLower(u.Host) + strings.TrimRight(u.Path, "/")
 }
 
-// lockKey returns the lock entity property key for the poller's target.
-// GitHub targets keep the original fullsend.poll.{owner}.{repo} namespace.
-func (p *Poller) lockKey() string {
+// writeCheckKey returns the write-check entity property key for the
+// poller's target. GitHub targets keep the original
+// fullsend.poll.{owner}.{repo} namespace.
+func (p *Poller) writeCheckKey() string {
 	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
 	if p.opts.TargetForge == TargetForgeGitLab {
-		return gitlabPropertyKeyPrefix(gitlabInstanceSegment(p.opts.GitLabURL), owner, repo) + ".lock"
+		return gitlabPropertyKeyPrefix(gitlabInstanceSegment(p.opts.GitLabURL), owner, repo) + ".writeCheck"
 	}
-	return lockPropertyKey(owner, repo)
+	return writeCheckPropertyKey(owner, repo)
+}
+
+// checkWriteAccess confirms the poller can write to an issue before it reads
+// the issue's comments and history, as the lock write used to (ADR 0085,
+// Decision item 1). Without it, a credential that can read but not write
+// would dispatch an issue's requests and then fail to commit its
+// checkpoint, so every cycle would dispatch them again. It writes the check
+// time to the write-check property, which nothing reads; entity property
+// writes do not move the issue's updated value.
+func (p *Poller) checkWriteAccess(ctx context.Context, issueKey string) error {
+	return p.client.SetEntityProperty(ctx, issueKey, p.writeCheckKey(), time.Now().UTC().Format(time.RFC3339))
 }
 
 // lastCheckKey returns the lastCheck entity property key for the poller's
@@ -85,103 +98,6 @@ func splitOwnerRepo(slug string) (string, string) {
 	return slug[:idx], slug[idx+1:]
 }
 
-// attemptLock tries to acquire a lock on the issue using write-then-verify.
-// Returns true if the lock was acquired successfully.
-func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool, error) {
-	propKey := p.lockKey()
-
-	// Re-check for a live lock immediately before writing. filterLocked's
-	// read of this issue can be tens of seconds stale by the time we reach
-	// here (earlier candidates in the same cycle still being processed,
-	// role-membership fetches), so without this check a late arriver would
-	// overwrite an active holder's lock outright and both pollers would
-	// proceed to dispatch. This is not a compare-and-swap — Jira entity
-	// properties don't support one — so a lock written in the gap between
-	// this read and our SetEntityProperty below can still be clobbered;
-	// that narrower race is the one write-then-verify below is meant to
-	// catch via the jitter/re-read.
-	existing, err := p.readLock(ctx, issueKey)
-	if err != nil {
-		return false, fmt.Errorf("check existing lock: %w", err)
-	}
-	if existing != nil && !isLockStale(*existing, p.opts.StaleThreshold) {
-		return false, nil
-	}
-
-	lock := LockValue{
-		ID:    lockID,
-		TS:    time.Now().UTC().Format(time.RFC3339),
-		Phase: "pending",
-	}
-
-	if err := p.client.SetEntityProperty(ctx, issueKey, propKey, lock); err != nil {
-		return false, fmt.Errorf("set lock property: %w", err)
-	}
-
-	// Jitter sleep: 500-1500ms to allow concurrent pollers to write.
-	jitter := time.Duration(500+randutil.IntN(1000)) * time.Millisecond
-	p.sleepFn(ctx, jitter)
-
-	// Re-read and verify our UUID still holds.
-	raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
-	if err != nil {
-		// The write succeeded but verification failed. Best-effort release
-		// the lock we just wrote so a transient read error doesn't leak it
-		// until the stale-lock threshold expires.
-		if releaseErr := p.releaseLock(ctx, issueKey, lockID); releaseErr != nil {
-			log.Printf("WARNING: releasing lock on %s after verify failure: %v", issueKey, releaseErr)
-		}
-		return false, fmt.Errorf("verify lock: %w", err)
-	}
-	if len(raw) == 0 {
-		return false, nil
-	}
-
-	var current LockValue
-	if err := json.Unmarshal(raw, &current); err != nil {
-		// Same anomaly class as the read-error path above: our write
-		// succeeded, so a corrupt read-back must not leak the lock until
-		// the stale threshold expires. releaseLock compares the lock ID
-		// before deleting, so this is safe even if the content isn't ours.
-		if releaseErr := p.releaseLock(ctx, issueKey, lockID); releaseErr != nil {
-			log.Printf("WARNING: releasing lock on %s after unmarshal failure: %v", issueKey, releaseErr)
-		}
-		return false, fmt.Errorf("unmarshal lock: %w", err)
-	}
-
-	return current.ID == lockID, nil
-}
-
-// releaseLock removes the lock from the issue. When expectedID is non-empty,
-// the lock is only deleted if its ID still matches, preventing a slow poller
-// from deleting a lock that a faster concurrent poller has already replaced.
-func (p *Poller) releaseLock(ctx context.Context, issueKey, expectedID string) error {
-	propKey := p.lockKey()
-
-	if expectedID != "" {
-		raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
-		if err != nil {
-			if errors.Is(err, forge.ErrNotFound) {
-				return nil // already gone
-			}
-			return fmt.Errorf("read lock before release: %w", err)
-		}
-		var current LockValue
-		if err := json.Unmarshal(raw, &current); err != nil {
-			return fmt.Errorf("unmarshal lock before release: %w", err)
-		}
-		if current.ID != expectedID {
-			// current.ID comes from an attacker-writable entity property;
-			// log it quoted so a crafted id with newlines can't forge
-			// audit-log lines.
-			log.Printf("lock on %s owned by %q, not %q; skipping release", issueKey, current.ID, expectedID)
-			return nil
-		}
-	}
-
-	return p.client.DeleteEntityProperty(ctx, issueKey, propKey)
-}
-
 // readLastCheck reads the lastCheck timestamp for an issue, clamped as
 // loadLastCheck describes, and logs a WARNING when it clamps.
 func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time, error) {
@@ -194,6 +110,8 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 		log.Printf("WARNING: lastCheck for %s is in the future (%q); treating as unset", issueKey, lc.raw)
 	case clampFloor:
 		log.Printf("WARNING: lastCheck for %s (%q) predates the backfill window; clamping to %s", issueKey, lc.raw, lc.value.UTC().Format(time.RFC3339))
+	case clampInvalid:
+		log.Printf("WARNING: lastCheck for %s is not a timestamp; treating as unset", issueKey)
 	}
 	return lc.value, nil
 }
@@ -202,9 +120,10 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 type lastCheckClamp int
 
 const (
-	clampNone   lastCheckClamp = iota
-	clampFuture                // stored beyond clock skew ahead; treated as unset
-	clampFloor                 // stored before the backfill window; floored to its start
+	clampNone    lastCheckClamp = iota
+	clampFuture                 // stored beyond clock skew ahead; treated as unset
+	clampFloor                  // stored before the backfill window; floored to its start
+	clampInvalid                // stored value is not a timestamp; treated as unset
 )
 
 // storedLastCheck is a lastCheck as loadLastCheck read it.
@@ -232,16 +151,22 @@ func (p *Poller) loadLastCheck(ctx context.Context, issueKey string) (storedLast
 		return storedLastCheck{}, nil
 	}
 
+	// A value that is not a timestamp is treated as unset, like a future
+	// one below: the issue gets one first-poll look bounded by the backfill
+	// window and the next checkpoint advance overwrites it. Returning an
+	// error instead would fail the issue on every pick and never save a
+	// valid value (#9766). raw stays empty so the attacker-writable value
+	// is never logged.
 	var ts string
 	if err := json.Unmarshal(raw, &ts); err != nil {
-		return storedLastCheck{}, fmt.Errorf("unmarshal lastCheck: %w", err)
+		return storedLastCheck{clamp: clampInvalid}, nil
 	}
 
 	// RFC3339Nano also accepts fraction-less RFC3339 strings, so this
 	// single parse covers values stored before the Nano switch too.
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
-		return storedLastCheck{}, fmt.Errorf("parse lastCheck: %w", err)
+		return storedLastCheck{clamp: clampInvalid}, nil
 	}
 
 	// lastCheck lives in an issue entity property writable by anyone with
@@ -273,47 +198,4 @@ func (p *Poller) loadLastCheck(ctx context.Context, issueKey string) (storedLast
 // advanceLastCheck updates the lastCheck timestamp for an issue.
 func (p *Poller) advanceLastCheck(ctx context.Context, issueKey string, t time.Time) error {
 	return p.client.SetEntityProperty(ctx, issueKey, p.lastCheckKey(), t.UTC().Format(time.RFC3339Nano))
-}
-
-// isLockStale checks if a lock has exceeded the stale threshold. The lock
-// timestamp is attacker-writable (issue entity property), so both a
-// corrupt/unparseable value and one dated in the future are treated as
-// stale (reclaimable): otherwise a future-dated ts gives time.Since a
-// negative value that never exceeds the threshold, permanently wedging the
-// issue with no way to recover but manual deletion.
-func isLockStale(lock LockValue, threshold time.Duration) bool {
-	t, err := time.Parse(time.RFC3339, lock.TS)
-	if err != nil {
-		return true
-	}
-	age := time.Since(t)
-	// A small negative age is normal clock skew from a peer that just
-	// wrote the lock; only a ts more than one threshold ahead of now is
-	// treated as corrupt/tampered and reclaimable.
-	if age < -threshold {
-		return true
-	}
-	return age > threshold
-}
-
-// readLock reads the lock value for an issue. Returns nil if no lock exists.
-func (p *Poller) readLock(ctx context.Context, issueKey string) (*LockValue, error) {
-	propKey := p.lockKey()
-
-	raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
-	if err != nil {
-		if errors.Is(err, forge.ErrNotFound) {
-			return nil, nil // no lock property yet
-		}
-		return nil, fmt.Errorf("get lock property: %w", err)
-	}
-	if len(raw) == 0 {
-		return nil, nil
-	}
-
-	var lock LockValue
-	if err := json.Unmarshal(raw, &lock); err != nil {
-		return nil, fmt.Errorf("unmarshal lock: %w", err)
-	}
-	return &lock, nil
 }
