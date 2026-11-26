@@ -1365,14 +1365,15 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 			"step %q must gate on the review-skip guard like the job-level `stage` output, so an unchanged-diff synchronize push with the review skipped runs no payload work", step.Name)
 	}
 
-	// The ladder's upstream checkout is new code, not legacy debt: like the
-	// twelve other checkouts in this file it must not leave the job token
-	// in .git/config of the sparse checkout, where later steps running with
-	// elevated permissions could read it.
+	// The ladder's upstream checkout is new code, not legacy debt: it must
+	// not leave the job token in .git/config of the sparse checkout, where
+	// later steps running with elevated permissions could read it; the
+	// sibling upstream-install checkouts that still omit the flag are
+	// recorded as follow-ups.
 	for _, step := range ladder {
 		if step.Name == "Checkout upstream install action for event payload" {
 			assert.Equal(t, false, step.With["persist-credentials"],
-				"the payload ladder's upstream checkout must set persist-credentials: false like every other checkout in this file")
+				"the payload ladder's upstream checkout must set persist-credentials: false so the job token does not persist into .git/config of the sparse checkout")
 		}
 	}
 

@@ -912,7 +912,7 @@ func TestBuildEventPayloadSanitizesCLIErrorAnnotation(t *testing.T) {
 	require.NoError(t, os.MkdirAll(bin, 0o755))
 	// stderr carries a %0A sequence, a ::workflow-command:: lookalike, a
 	// control byte and a line that itself starts with a workflow command:
-	// none may reach the annotation as-is, and no replayed line may start
+	// none may reach the annotation as-is, and no replayed line may forge
 	// a command on stderr, where the runner parses them too.
 	stub := "#!/bin/sh\n" +
 		"printf 'Error: line1\\nline2 %%0A ::error::forged\\001\\n::error::replay-forged\\n' >&2\n" +
@@ -940,18 +940,21 @@ func TestBuildEventPayloadSanitizesCLIErrorAnnotation(t *testing.T) {
 	assert.NotContains(t, string(b),
 		"routed stage: Error: line1 line2 %0A",
 		"an unsanitized %0A must not reach the annotation: it decodes into a newline on the runner and could forge workflow commands in the id-token-holding job")
-	// The raw replay to the log prefixes each line, so the forged command
-	// stays visible but cannot start a line: the runner parses workflow
-	// commands on stderr as well as stdout (ScriptHandler wires
-	// ErrorDataReceived through its own command-processing OutputManager).
+	// The raw replay to the log goes through gha_text line by line, so
+	// the forged command stays visible but cannot survive as one: the
+	// runner parses workflow commands on stderr as well as stdout
+	// (ScriptHandler wires ErrorDataReceived through its own
+	// command-processing OutputManager) and trims leading whitespace
+	// before the :: check, so a line-start prefix would not stop a
+	// command.
 	assert.Contains(t, string(b),
-		" ::error::replay-forged",
-		"the replayed stderr must reach the log with its line-start prefix, keeping the diagnostics visible")
+		": :error: :replay-forged",
+		"the replayed stderr must reach the log sanitized, keeping the diagnostics visible")
 	assert.NotContains(t, string(b),
-		"\n::error::replay-forged",
-		"no replayed line may begin with a workflow command: the runner parses stderr for commands in the id-token-holding job")
-	assert.Equal(t, 2, strings.Count(script, "sed 's/^/ /' \"${PAYLOAD_NORM_ERR}\" >&2 || true"),
-		"both stderr replays (failure and success path) must prefix each line so no replayed line can start a workflow command")
+		"::error::replay-forged",
+		"no replayed line may carry a workflow command unsanitized: the runner parses stderr for commands in the id-token-holding job")
+	assert.Equal(t, 2, strings.Count(script, "gha_replay \"${PAYLOAD_NORM_ERR}\" || true"),
+		"both stderr replays (failure and success path) must sanitize each line through gha_text so no replayed line can forge a workflow command")
 }
 
 // The wiring around the steps: the resolve step runs only on workflow_run
