@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -740,25 +741,57 @@ func TestRunCycleTimeLimitLeavesRestForNextCycle(t *testing.T) {
 	}
 }
 
-// A cycle that serves no selected issue because of the time limits fails, so
-// a poller blocked by slow issues shows as a failed run.
-func TestRunTimeLimitsServingNothingFailCycle(t *testing.T) {
-	t.Run("cycle limit on the first issue", func(t *testing.T) {
+// slowSearchClient holds SearchIssues until the call's context ends. It then
+// fails with the context's error or, when late is set, returns the rows,
+// like a search whose last page arrives just after the time limit.
+type slowSearchClient struct {
+	*mockClient
+	late bool
+}
+
+func (c slowSearchClient) SearchIssues(ctx context.Context, jql string, limit int) ([]jira.Issue, error) {
+	<-ctx.Done()
+	if !c.late {
+		return nil, ctx.Err()
+	}
+	return c.mockClient.SearchIssues(context.Background(), jql, limit)
+}
+
+// Reaching the cycle time limit is not a failure by itself: the cycle exits
+// normally, even when it finished no issue. A cycle in which every issue it
+// read failed or timed out ends in an error, so a poller blocked by slow
+// issues shows as a failed run (ADR 0085, Decision item 3).
+func TestRunTimeLimitOutcomes(t *testing.T) {
+	t.Run("the cycle limit cuts off the first issue: normal exit", func(t *testing.T) {
 		logs := captureLog(t)
 		mc := newMockClient()
 		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true}, 100*time.Millisecond, time.Hour)
-		err := p.Run(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "cycle time limit was reached with none of the 2 selected issues served (1 tried)") {
-			t.Fatalf("Run() error = %v, want the cycle-limit failure", err)
+		if err := p.Run(context.Background()); err != nil {
+			t.Fatalf("Run() error: %v", err)
 		}
-		if want := "1 selected issue(s) not read"; !strings.Contains(logs.String(), want) {
-			t.Errorf("log lacks %q:\n%s", want, logs)
+		for _, want := range []string{"cycle time limit cut off reading PROJ-1", "1 selected issue(s) not read"} {
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("log lacks %q:\n%s", want, logs)
+			}
 		}
 		if mc.listCommentsCalls["PROJ-2"] != 0 {
 			t.Error("read PROJ-2 after the cycle limit")
 		}
+		if len(p.dispatches) != 0 || !storedLastCheckAt(t, mc, "PROJ-1").IsZero() {
+			t.Errorf("dispatched %d and saved a lastCheck for an issue that was not finished", len(p.dispatches))
+		}
 	})
-	t.Run("every issue over the per-issue limit", func(t *testing.T) {
+
+	t.Run("a slow issue, then the cycle limit: error", func(t *testing.T) {
+		mc := newMockClient()
+		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true, "PROJ-2": true}, 450*time.Millisecond, 300*time.Millisecond)
+		err := p.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "all 1 issues read before the 450ms cycle time limit failed or timed out; the other 1 selected issues wait") {
+			t.Fatalf("Run() error = %v, want the failure of a cycle blocked by a slow issue", err)
+		}
+	})
+
+	t.Run("every issue over the per-issue limit: error", func(t *testing.T) {
 		mc := newMockClient()
 		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true, "PROJ-2": true}, time.Hour, 20*time.Millisecond)
 		err := p.Run(context.Background())
@@ -766,6 +799,40 @@ func TestRunTimeLimitsServingNothingFailCycle(t *testing.T) {
 			t.Fatalf("Run() error = %v, want the all-failed guard", err)
 		}
 	})
+
+	for _, late := range []bool{false, true} {
+		name := "the search fails at the cycle limit: normal exit"
+		want := "cycle time limit was reached during the search; no issue was read this cycle"
+		if late {
+			name = "the search returns after the cycle limit: normal exit"
+			want = "2 selected issue(s) not read"
+		}
+		t.Run(name, func(t *testing.T) {
+			logs := captureLog(t)
+			mc := newMockClient()
+			timeLimitPoller(t, mc, nil, time.Hour, time.Hour) // fills mc with the two issues
+			out := filepath.Join(t.TempDir(), "dispatches.json")
+			p := newTestPoller(slowSearchClient{mc, late}, &stubMatcher{agents: []string{"triage"}}, Options{
+				TargetRepo:     "acme/platform",
+				JiraBaseURL:    "https://acme.atlassian.net",
+				JiraProject:    "PROJ",
+				OutputPath:     out,
+				CycleTimeLimit: 50 * time.Millisecond,
+			})
+			if err := p.Run(context.Background()); err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("log lacks %q:\n%s", want, logs)
+			}
+			if mc.listCommentsCalls["PROJ-1"]+mc.listCommentsCalls["PROJ-2"] != 0 {
+				t.Error("read an issue after the cycle limit")
+			}
+			if data, err := os.ReadFile(out); err != nil || string(data) != "[]\n" {
+				t.Errorf("dispatch file = %q, %v; want an empty batch", data, err)
+			}
+		})
+	}
 }
 
 // When the caller's context ends, the cycle stops with that error and does

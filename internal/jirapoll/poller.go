@@ -138,7 +138,14 @@ func (p *Poller) Run(ctx context.Context) error {
 	// Step 1: Execute JQL to get candidate issues.
 	candidates, err := p.searchCandidates(readCtx)
 	if err != nil {
-		return fmt.Errorf("search candidates: %w", err)
+		if ctx.Err() != nil || !errors.Is(readCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("search candidates: %w", err)
+		}
+		// The cycle time limit includes the search. Reaching it stops the
+		// reading and the cycle exits normally (ADR 0085, Decision item 3):
+		// no issue was read, so nothing is dispatched or committed.
+		log.Printf("WARNING: the %s cycle time limit was reached during the search; no issue was read this cycle", p.opts.CycleTimeLimit)
+		candidates = nil
 	}
 
 	// Step 2: Drop the issues with nothing new since their lastCheck
@@ -171,7 +178,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	// contributes neither records nor a checkpoint, so its requests stay
 	// eligible next cycle.
 	var pending []pendingCheckpoint
-	var processErrors, tried int
+	var failed, tried int
 	for _, issue := range selected {
 		if readCtx.Err() != nil {
 			break
@@ -187,15 +194,17 @@ func (p *Poller) Run(ctx context.Context) error {
 			case ctx.Err() != nil:
 				// The caller ended the cycle; reported after the loop.
 			case errors.Is(readCtx.Err(), context.DeadlineExceeded):
+				// Not a failure: the issue is unfinished and waits.
 				log.Printf("WARNING: the %s cycle time limit cut off reading %s; it waits for the next cycle", p.opts.CycleTimeLimit, issue.Key)
 			case issueTimedOut:
 				log.Printf("WARNING: reading %s took longer than %s; none of its records were taken and its lastCheck was not advanced", issue.Key, p.opts.IssueTimeLimit)
+				failed++
 			case errors.As(err, &rle):
 				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, rle.err)
 			default:
 				log.Printf("WARNING: processing %s: %v", issue.Key, err)
+				failed++
 			}
-			processErrors++
 			continue
 		}
 		p.dispatches = append(p.dispatches, pc.records...)
@@ -209,13 +218,16 @@ func (p *Poller) Run(ctx context.Context) error {
 	if left := len(selected) - tried; left > 0 {
 		log.Printf("WARNING: the %s cycle time limit was reached with %d selected issue(s) not read; they wait for the next cycle", p.opts.CycleTimeLimit, left)
 	}
-	// A cycle that served no selected issue fails, so a poller blocked by
-	// failing or slow issues shows as a failed run.
-	if len(selected) > 0 && len(pending) == 0 {
-		if processErrors == len(selected) {
-			return fmt.Errorf("all %d selected issues failed to process", processErrors)
+	// A cycle in which every issue it read failed or timed out ends in an
+	// error, so a poller blocked by failing or slow issues shows as a failed
+	// run. Reaching the cycle time limit is not a failure by itself: what
+	// was finished is dispatched and committed below, and the rest waits
+	// (ADR 0085, Decision item 3).
+	if failed > 0 && len(pending) == 0 {
+		if failed == len(selected) {
+			return fmt.Errorf("all %d selected issues failed to process", failed)
 		}
-		return fmt.Errorf("the %s cycle time limit was reached with none of the %d selected issues served (%d tried)", p.opts.CycleTimeLimit, len(selected), tried)
+		return fmt.Errorf("all %d issues read before the %s cycle time limit failed or timed out; the other %d selected issues wait for the next cycle", failed, p.opts.CycleTimeLimit, len(selected)-failed)
 	}
 
 	// Step 5: Write dispatch records.
