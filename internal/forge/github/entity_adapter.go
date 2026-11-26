@@ -44,8 +44,9 @@ const entityLimitCursor = "fullsend:result-cap"
 // unfiltered. It reads labels, assignees, reactions, label applications, and
 // a pull request's changed files, commits, reviewers, and current approvals.
 // Other collections, and text the content-safety filter must process first
-// (title and body), are reported unsupported, which can never read as empty. Actor roles are left unknown
-// for the authorized entity view (#9584) to resolve.
+// (title and body), are reported unsupported, which can never read as empty.
+// Actor roles are left unknown for the authorized entity view (#9584) to
+// resolve.
 //
 // An EntityAdapter is not safe for concurrent use.
 type EntityAdapter struct {
