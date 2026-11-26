@@ -131,9 +131,10 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    replaces the built-in, which is then not fetched). The
    same holds when it cannot resolve or load any other selected, enabled
    agent. The failure happens before any checkpoint advances, so the next
-   run tries again. When a cycle selects issues but no agent matches their
-   events, it logs a
-   `jira-poll: selected N issue(s) but no agent matched` warning. That
+   run tries again. When a cycle selects issues but no agent matches a
+   `/fs-*` command or a label change on them, it logs a
+   `jira-poll: selected N issue(s) but no agent matched` warning. Ordinary
+   comments never trigger it. That
    warning names each event and the agents considered. See
    [Troubleshooting](#troubleshooting).
 
@@ -1766,7 +1767,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | `jira: OAuth token request to "https://auth.atlassian.com/oauth/token" with FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET: unexpected status 401 (invalid_client)` | The service account's OAuth 2.0 client ID or secret is wrong, expired, or revoked | Create a new OAuth 2.0 credential for the service account and update `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` with `repos install --jira-client-id --jira-client-secret` |
 | `jira: set either FULLSEND_JIRA_TOKEN or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both` | Both credential types are set | Keep one. `repos install` removes the other set when you supply new credentials |
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
-| `::warning::jira-poll: selected N issue(s) but no agent matched any of their events` | The poller evaluated events on the selected issues, but none matched an agent. The warning lists each issue key and event, for example `PROJ-1 (comment_added /fs-code)`, and the agents considered | If the agent is missing from the list, check that it is not disabled under `agents:`. Otherwise, compare the event with the agent's harness `trigger:`, and check that the actor has the role the agent requires. See [Actor role resolution](#actor-role-resolution) |
+| `::warning::jira-poll: selected N issue(s) but no agent matched any of their events` | The poller evaluated a `/fs-*` command or label change on the selected issues, but none matched an agent (ordinary comments are not counted). The warning lists each issue key and event, for example `PROJ-1 (comment_added /fs-code)`, and the agents considered | If the agent is missing from the list, check that it is not disabled under `agents:`. Otherwise, compare the event with the agent's harness `trigger:`, and check that the actor has the role the agent requires. See [Actor role resolution](#actor-role-resolution) |
 | `list triggered harnesses: no agents could be loaded` or `list triggered harnesses: some agents could not be loaded` | The poller could not fetch or load the harness of every agent it considers (`no agents`) or of at least one of them (`some agents`). The poller fails in both cases, so an event only the unavailable agent could match is not dropped. One cause is a network failure reaching the `fullsend-ai/agents` repository. Another is an `allowed_remote_resources` list that leaves it out | Check the `::error::harness dispatch: skipping` lines for each agent. No checkpoint advances, so the next poll run retries the same events |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. The built-in agents post with the poller's own `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`. Confirm that a custom agent which posts comments or labels uses the same credential, not another account's token. Human follow-up, including `/fs-triage`, still dispatches |

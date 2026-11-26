@@ -618,7 +618,10 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 				p.eventsMatchErrors++
 				continue
 			}
-			if len(records) == 0 {
+			// Only an event that looks like a request (a /fs-* command
+			// or a label change) feeds the no-match warning; an ordinary
+			// comment is expected to match no agent.
+			if len(records) == 0 && looksLikeRequest(&ne) {
 				p.unmatched = append(p.unmatched, unmatchedEvent{issueKey: event.IssueKey, event: describeEvent(&ne)})
 			}
 			p.dispatches = append(p.dispatches, records...)

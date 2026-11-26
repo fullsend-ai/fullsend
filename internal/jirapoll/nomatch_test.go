@@ -132,6 +132,10 @@ func TestRun_NoMatchWarningSkipped(t *testing.T) {
 			matcher: &reportingMatcher{suppressed: true},
 			body:    "/fs-code",
 		},
+		"ordinary comment is not a request": {
+			matcher: &reportingMatcher{candidates: []string{"triage"}},
+			body:    "thanks, that makes sense",
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -233,6 +237,26 @@ func TestWarnNoMatch_BoundsEventList(t *testing.T) {
 	}
 	if !strings.Contains(got, "Agents considered: none.") {
 		t.Errorf("warning missing the empty candidate list: %q", got)
+	}
+}
+
+func TestLooksLikeRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		ne   normevent.Event
+		want bool
+	}{
+		{"slash command", normevent.Event{Transition: normevent.Transition{Kind: normevent.TransitionCommentAdded, Comment: &normevent.Comment{Command: "/fs-code"}}}, true},
+		{"ordinary comment", normevent.Event{Transition: normevent.Transition{Kind: normevent.TransitionCommentAdded, Comment: &normevent.Comment{Body: "thanks"}}}, false},
+		{"label change", normevent.Event{Transition: normevent.Transition{Kind: normevent.TransitionLabelChanged, Label: &normevent.LabelChange{Name: "ready-to-code", Action: "added"}}}, true},
+		{"opened", normevent.Event{Transition: normevent.Transition{Kind: normevent.TransitionOpened}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeRequest(&tt.ne); got != tt.want {
+				t.Errorf("looksLikeRequest() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

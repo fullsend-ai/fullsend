@@ -50,6 +50,17 @@ func describeEvent(ne *normevent.Event) string {
 	return desc
 }
 
+// looksLikeRequest reports whether an event reads as a request for an agent:
+// a comment carrying a /fs-* slash command, or a label change (a trigger
+// label). Other events, such as an ordinary comment, are expected to match
+// no agent, so they are not counted toward the no-match warning.
+func looksLikeRequest(ne *normevent.Event) bool {
+	if ne.Transition.Comment != nil && ne.Transition.Comment.Command != "" {
+		return true
+	}
+	return ne.Transition.Label != nil
+}
+
 // warnNoMatch writes a ::warning:: annotation when the cycle selected
 // issues and evaluated events on them, but no agent matched any event, so
 // nothing was dispatched (#9503). It names each unmatched event (bounded by
