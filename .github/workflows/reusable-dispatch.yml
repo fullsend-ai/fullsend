@@ -186,9 +186,6 @@ jobs:
             .fullsend/bin/fullsend
             /OWNERS
             /OWNERS_ALIASES
-            .defaults/action.yml
-            .fullsend/.defaults/action.yml
-            .fullsend/bin/
           sparse-checkout-cone-mode: false
 
       # Fork pull requests arrive as workflow_run: the shim's trigger on the
@@ -1806,6 +1803,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ inputs.event_action }}
+          # A fork PR's workflow_run is normalized as the pull_request event
+          # "Resolve fork pull request for workflow_run" rebuilt, the same
+          # rebuild the CEL route step does: the raw workflow_run event is
+          # not one the event loader maps.
+          FORK_PR_FILE: ${{ steps.fork-pr.outputs.pr_file }}
+          ROUTED_ACTION: ${{ steps.bash-route.outputs.event_action }}
+          ROUTED_SENDER: ${{ steps.bash-route.outputs.event_sender }}
           # The bot-role lookup `fullsend dispatch` applies to GitHub bot
           # actors resolves its mint URL from config or this env var, the
           # same channel the CEL route and harness-dispatch steps use, so
@@ -1833,6 +1837,24 @@ jobs:
           if [[ -z "${EVENT_PAYLOAD}" || "${EVENT_PAYLOAD}" == "null" ]]; then
             echo "::error::Event payload is empty after extraction"
             exit 1
+          fi
+
+          # A fork PR's workflow_run event is not one the event loader maps
+          # (it knows the webhook events, and a workflow_run payload has no
+          # pull_request): rebuild the pull_request event from the resolved
+          # fork PR and the trusted routed action and sender — the same
+          # rebuild the CEL route step does — so the normalization below
+          # sees the event the routed stage stands for instead of failing
+          # closed on every eligible fork-PR review/retro.
+          if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_run" ]]; then
+            FORK_PR_EVENT="$(dirname "${FORK_PR_FILE}")/event.json"
+            jq -n --slurpfile pr "${FORK_PR_FILE}" --arg action "${ROUTED_ACTION}" --arg sender "${ROUTED_SENDER}" '
+              {action: $action, pull_request: $pr[0],
+               repository: $pr[0].base.repo,
+               sender: {login: $sender, type: (if ($sender | endswith("[bot]")) then "Bot" else "User" end)}}' > "${FORK_PR_EVENT}"
+            export GITHUB_EVENT_PATH="${FORK_PR_EVENT}"
+            export GITHUB_EVENT_NAME="pull_request"
+            EVENT_ACTION="${ROUTED_ACTION}"
           fi
 
           # Embed the event's complete normalized form so the built-in stage
