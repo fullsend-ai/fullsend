@@ -193,3 +193,6 @@ Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios aga
 - [ ] Forgejo SCM, Forgejo Actions CI, and `forgejo-dev` install drivers (selection, not-implemented SCM/CI stubs, and the managed stack lifecycle; see [Forgejo drivers](#forgejo-drivers))
 - [ ] Tekton CI driver
 - [ ] Non-GitHub install backends
+
+For the current test coverage level of each platform, see
+[Test verification and CI coverage](../../reference/platform-capability-matrix.md#test-verification-and-ci-coverage).
