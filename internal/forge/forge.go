@@ -1915,8 +1915,10 @@ type GitHubExtensions interface {
 
 	// IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
 	// "PullRequest") and node ID of issue or pull request number in
-	// owner/repo. The node ID is in GitHub's new global-ID format, so
-	// long-lived issues and pull requests report the same ID from this
+	// owner/repo. The node ID is in GitHub's new global-ID format, which
+	// GitHub documents for github.com — on GitHub Enterprise Server the
+	// ID format follows the server — so on github.com long-lived issues
+	// and pull requests report the same ID from this
 	// lookup as newly created ones. REST and webhook node_id payloads
 	// still return the legacy format on older objects, and which
 	// canonical format every producer can emit is not settled (see the

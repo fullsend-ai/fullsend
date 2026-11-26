@@ -17,9 +17,11 @@ const maxCommentActorResponseBytes = 1 << 20
 
 // IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
 // "PullRequest") and node ID of issue or pull request number in owner/repo.
-// The node ID is in GitHub's new global-ID format (nextGlobalIDHeader), so
-// long-lived issues and pull requests report the same ID from this lookup
-// as newly created ones. REST and webhook node_id payloads still return
+// The node ID is in GitHub's new global-ID format (nextGlobalIDHeader),
+// which GitHub documents for github.com — on GitHub Enterprise Server the
+// ID format follows the server — so on github.com long-lived issues and
+// pull requests report the same ID from this lookup as newly created ones.
+// REST and webhook node_id payloads still return
 // the legacy format on older objects, and which canonical format every
 // producer can emit is not settled (see the normalized-entity spec,
 // docs/normative/normalized-entity/v1/README.md).
@@ -52,10 +54,12 @@ type graphqlActor struct {
 	Login    string `json:"login"`
 }
 
-// nextGlobalIDHeader asks GitHub's GraphQL API to return node IDs in the
-// new global-ID format on every node, new or old, so the entity IDs this
-// package produces are in that format for long-lived and newly created
-// entities alike. REST and webhook node_id payloads still return the
+// nextGlobalIDHeader asks GitHub's GraphQL API on github.com to return
+// node IDs in the new global-ID format on every node, new or old, so the
+// entity IDs this package produces are in that format for long-lived and
+// newly created entities alike on github.com. GitHub documents the header
+// for github.com only, and on GitHub Enterprise Server the ID format
+// follows the server. REST and webhook node_id payloads still return the
 // legacy format on older objects, so a producer reading IDs from those
 // emits the legacy format, and which canonical format every producer can
 // emit is not settled (see the normalized-entity spec,
@@ -157,10 +161,10 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (forge.
 
 // graphqlQuery runs one GraphQL query against the client's GraphQL endpoint
 // and decodes its data into out. A transport error, a non-200 status or a
-// GraphQL error fails; a NOT_FOUND GraphQL error is returned wrapped in
-// forge.ErrNotFound, the sentinel the forge.GitHubExtensions doc comments
-// promise for a missing node. Extra headers (e.g. nextGlobalIDHeader) are
-// set on the request.
+// GraphQL error fails; a NOT_FOUND GraphQL error in any position is
+// returned wrapped in forge.ErrNotFound, the sentinel the
+// forge.GitHubExtensions doc comments promise for a missing node. Extra
+// headers (e.g. nextGlobalIDHeader) are set on the request.
 func (c *LiveClient) graphqlQuery(ctx context.Context, query string, variables map[string]any, out any, headers ...requestHeader) error {
 	resp, err := c.do(ctx, http.MethodPost, c.graphqlEndpoint(), map[string]any{"query": query, "variables": variables}, headers...)
 	if err != nil {
@@ -185,8 +189,14 @@ func (c *LiveClient) graphqlQuery(ctx context.Context, query string, variables m
 		return fmt.Errorf("decode graphql response: %w", err)
 	}
 	if len(envelope.Errors) > 0 {
-		if envelope.Errors[0].Type == "NOT_FOUND" {
-			return fmt.Errorf("%w: %s", forge.ErrNotFound, envelope.Errors[0].Message)
+		// A NOT_FOUND in any position — not only the first error — maps
+		// to the sentinel, so a response carrying additional errors, or
+		// null data with NOT_FOUND in a secondary position, still reads
+		// as "absent" rather than "failed" to callers that distinguish.
+		for _, e := range envelope.Errors {
+			if e.Type == "NOT_FOUND" {
+				return fmt.Errorf("%w: %s", forge.ErrNotFound, e.Message)
+			}
 		}
 		return fmt.Errorf("graphql query: %s", envelope.Errors[0].Message)
 	}

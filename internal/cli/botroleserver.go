@@ -111,7 +111,7 @@ func (h *botRoleHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "entity is not the one this run handles"})
 		return
 	}
-	// One GitHub comment lookup runs under githubGraphQLTimeout (tighter
+	// One GitHub comment lookup runs under githubGraphQLTimeout (looser
 	// than the run-start entity call's botRoleEntityTimeout, which sits on
 	// the critical path before a pre-script), so a slow lookup cannot
 	// outlive the bounds the WriteTimeout and botRoleCmdTimeout comments
