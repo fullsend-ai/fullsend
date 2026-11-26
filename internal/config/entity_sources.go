@@ -478,6 +478,10 @@ var githubQualifierKind = map[string]string{
 
 var githubDateQualifiers = map[string]bool{"created": true, "updated": true, "closed": true, "merged": true}
 
+// githubIdentityQualifiers take a user identity, where a leading "@" selects
+// a viewer-relative value such as @me.
+var githubIdentityQualifiers = map[string]bool{"author": true, "assignee": true}
+
 // githubDateRe matches an absolute date or timestamp, optionally with a
 // comparison, or an inclusive range whose open end may be *.
 var githubDateRe = regexp.MustCompile(`^((>=|<=|>|<)?\d{4}-\d{2}-\d{2}([T ][0-9:]+(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?|(\d{4}-\d{2}-\d{2}\S*|\*)\.\.(\d{4}-\d{2}-\d{2}\S*|\*))$`)
@@ -590,10 +594,10 @@ func checkGitHubTerm(tok, kind string) error {
 	if value == "" {
 		return fmt.Errorf("GitHub query: %s: needs a value", q)
 	}
-	// Viewer-relative and relative tokens (@me, @today) start with "@"
-	// (or sit inside a date comparison). A literal "@" inside a label or
-	// milestone value is metadata, not a relative identity.
-	if unquoted := strings.Trim(value, `"`); strings.HasPrefix(unquoted, "@") || (githubDateQualifiers[q] && strings.Contains(unquoted, "@")) {
+	// Viewer-relative identities (@me) are rejected on identity qualifiers
+	// and relative dates (@today) on date qualifiers. A literal "@" in a
+	// label or milestone value is metadata, not a relative value.
+	if unquoted := strings.Trim(value, `"`); (githubIdentityQualifiers[q] && strings.HasPrefix(unquoted, "@")) || (githubDateQualifiers[q] && strings.Contains(unquoted, "@")) {
 		return fmt.Errorf("GitHub query: %s:%s: viewer-relative and relative values are not supported", q, value)
 	}
 	lower := strings.ToLower(strings.Trim(value, `"`))
@@ -753,7 +757,14 @@ func ResolveEntityConfig(r PerRepoConfigReader, origin *ConfigOrigin) (*EntityCo
 
 	ec.translateLegacyTracker(r.IssueTracking(), explicitConns, explicitSources)
 
-	for name, c := range explicitConns {
+	for _, name := range sortedKeys(explicitConns) {
+		c := explicitConns[name]
+		// ParsePerRepoConfig does not validate connections semantically
+		// and callers may resolve without Validate, so check each
+		// effective explicit connection before it enters the model.
+		if err := validateSecretConnection(name, c); err != nil {
+			return nil, err
+		}
 		kind := c.Kind
 		if kind == "" && isReservedProvider(name) {
 			kind = name

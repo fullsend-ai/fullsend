@@ -282,6 +282,18 @@ func TestResolveEntityConfig_ValidationErrors(t *testing.T) {
 		"duplicate binding": {
 			body: "agents:\n  - name: code\n    entities:\n      source: [native, native]\n", wantErr: "duplicate scope",
 		},
+		"explicit connection non-https base_url": {
+			body: "connections:\n  ghe:\n    kind: github\n    base_url: http://github.example.com\nentity_sources:\n  s:\n    connection: ghe\n    repositories: [a/b]\n    query: ''\n", wantErr: "must be an https URL",
+		},
+		"explicit connection embedded credentials": {
+			body: "connections:\n  jira1:\n    kind: jira\n    base_url: https://user:pw@example.atlassian.net\n", wantErr: "without credentials",
+		},
+		"explicit connection reserved name kind mismatch": {
+			body: "connections:\n  github:\n    kind: gitlab\n", wantErr: "reserved provider-default connection",
+		},
+		"explicit connection invalid allowed_targets": {
+			body: "connections:\n  ghe:\n    kind: github\n    base_url: https://github.example.com\n    allowed_targets:\n      groups: [g]\n", wantErr: "accepts only orgs and repos",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, err := ParsePerRepoConfig([]byte(tc.body))
@@ -744,6 +756,7 @@ func TestValidateGitHubQuery(t *testing.T) {
 		"created:>=2024-01-01 updated:2024-01-01..2024-02-01 closed:<2024-03-01T10:00:00Z",
 		"type:Bug state:closed",
 		`label:"team@example.com" milestone:"release@v2"`,
+		`label:"@backend" milestone:"@release" label:@triage`,
 	} {
 		assert.NoError(t, ValidateGitHubQuery(q, EntityKindWorkItem), q)
 	}
