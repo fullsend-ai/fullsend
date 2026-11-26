@@ -146,15 +146,16 @@ func (p *Poller) loadLastCheck(ctx context.Context, issueKey string) (storedLast
 		}
 		return storedLastCheck{}, fmt.Errorf("get lastCheck property: %w", err)
 	}
-	return p.parseLastCheck(raw)
+	return p.parseLastCheck(raw), nil
 }
 
 // parseLastCheck parses and clamps a stored lastCheck value without
 // logging, so the activity filter can report the clamps once per cycle
-// instead of once per issue. An empty value is unset.
-func (p *Poller) parseLastCheck(raw json.RawMessage) (storedLastCheck, error) {
+// instead of once per issue. An empty value is unset, and so is one that is
+// not a timestamp.
+func (p *Poller) parseLastCheck(raw json.RawMessage) storedLastCheck {
 	if len(raw) == 0 {
-		return storedLastCheck{}, nil
+		return storedLastCheck{}
 	}
 
 	// A value that is not a timestamp is treated as unset, like a future
@@ -165,14 +166,14 @@ func (p *Poller) parseLastCheck(raw json.RawMessage) (storedLastCheck, error) {
 	// is never logged.
 	var ts string
 	if err := json.Unmarshal(raw, &ts); err != nil {
-		return storedLastCheck{clamp: clampInvalid}, nil
+		return storedLastCheck{clamp: clampInvalid}
 	}
 
 	// RFC3339Nano also accepts fraction-less RFC3339 strings, so this
 	// single parse covers values stored before the Nano switch too.
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
-		return storedLastCheck{clamp: clampInvalid}, nil
+		return storedLastCheck{clamp: clampInvalid}
 	}
 
 	// lastCheck lives in an issue entity property writable by anyone with
@@ -193,12 +194,12 @@ func (p *Poller) parseLastCheck(raw json.RawMessage) (storedLastCheck, error) {
 	const clockSkew = 2 * time.Minute
 	if t.After(now.Add(clockSkew)) {
 		lc.value, lc.clamp = time.Time{}, clampFuture
-		return lc, nil
+		return lc
 	}
 	if floor := now.Add(-p.opts.FirstPollBackfillWindow); t.Before(floor) {
 		lc.value, lc.clamp = floor, clampFloor
 	}
-	return lc, nil
+	return lc
 }
 
 // advanceLastCheck updates the lastCheck timestamp for an issue.

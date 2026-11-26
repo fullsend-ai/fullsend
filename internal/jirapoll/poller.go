@@ -481,17 +481,13 @@ func (p *Poller) filterActive(issues []jira.Issue) []jira.Issue {
 // processIssue's read clamps it (ADR 0160, Decision item 1). The search's
 // value only decides whether to skip the issue; processing reads lastCheck
 // from the issue again. It fails open: an issue whose lastCheck the search
-// did not return or that cannot be parsed, or that has no usable updated
+// did not return or that is not a timestamp, or that has no usable updated
 // value, is active, so neither a search that drops the property nor an
-// editor writing garbage can hide an issue. A parse error is not reported
-// here; processIssue reports it if the issue is picked. A clamped
-// lastCheck is added to clamped instead of logged, so a quiet project logs
-// one line per cycle rather than one per idle issue.
+// editor writing garbage can hide an issue. A clamped lastCheck is added to
+// clamped instead of logged, so a quiet project logs one line per cycle
+// rather than one per idle issue.
 func (p *Poller) hasNewActivity(issue jira.Issue, clamped *clampReport) bool {
-	lc, err := p.parseLastCheck(issue.Properties[p.lastCheckKey()])
-	if err != nil {
-		return true
-	}
+	lc := p.parseLastCheck(issue.Properties[p.lastCheckKey()])
 	updated, updatedErr := parseJiraTimestamp(issue.Fields.Updated)
 	active := lc.value.IsZero() || updatedErr != nil || updated.After(lc.value)
 	switch lc.clamp {
