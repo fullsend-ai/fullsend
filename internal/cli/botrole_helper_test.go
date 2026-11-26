@@ -322,6 +322,25 @@ func TestStartBotRoleHelperService_MasksTokenInActionsLog(t *testing.T) {
 	assert.Contains(t, stderr, "::add-mask::"+env.token+"\n")
 }
 
+// startBotRoleHelperService clears the entity when it has no comment
+// lookup: the helper would refuse every ask, so no script may be handed an
+// entity it can never ask about (the production caller already passes an
+// empty entity on that path; this pins the defense-in-depth guard so it
+// cannot be deleted unnoticed).
+func TestStartBotRoleHelperService_NoCommentsClearsEntity(t *testing.T) {
+	var env botRoleHelperEnv
+	captureStderr(t, func() {
+		var shutdown func()
+		var err error
+		env, shutdown, err = startBotRoleHelperService(&fakeBotRoleResolver{}, "fullsend-ai/agents", testEntityID, nil)
+		require.NoError(t, err)
+		t.Cleanup(shutdown)
+	})
+	assert.Empty(t, env.entity, "no comment lookup means no entity may reach a script: the helper refuses every ask")
+	assert.NotEmpty(t, env.url)
+	assert.NotEmpty(t, env.token)
+}
+
 // githubCommentActors reads a comment's current-revision actor and the
 // entity it is on from GitHub GraphQL: the last editor when the comment
 // was edited, its author otherwise; a Bot actor in its REST login form.
@@ -414,6 +433,22 @@ func TestBotRoleCommentLookup_OnlyGitHubRunsWithAResolvedEntity(t *testing.T) {
 		assert.NotNil(t, comments)
 	})
 
+	// The canonical entity ID names the source host, which comes from
+	// GITHUB_SERVER_URL: on GitHub Enterprise Server that is the server's
+	// own host, not github.com. The API-base half of GHES support (serving
+	// GraphQL from the configured GITHUB_API_URL) is covered by the fake
+	// server every subtest here uses; this pins the other half.
+	t.Run("GHES server URL host in the entity ID", func(t *testing.T) {
+		useFakeGitHubGraphQL(t, "I_kwDOAgents9602", nil)
+		t.Setenv("GITHUB_SERVER_URL", "https://ghe.corp.example")
+		t.Setenv("REPO_FULL_NAME", "fullsend-ai/agents")
+		t.Setenv("ISSUE_NUMBER", "9602")
+		t.Setenv("PR_NUMBER", "")
+		entity, comments := botRoleCommentLookup(context.Background(), "github", "github", printer)
+		assert.Equal(t, "fullsend:entity:v1:github:ghe.corp.example:work_item:I_kwDOAgents9602", entity)
+		assert.NotNil(t, comments)
+	})
+
 	for name, tc := range map[string]struct {
 		forge, tracker, repo, issue string
 		unreachable                 bool
@@ -447,7 +482,12 @@ func TestBotRoleCommentLookup_OnlyGitHubRunsWithAResolvedEntity(t *testing.T) {
 // so it runs under the tighter botRoleEntityTimeout instead of the 30s the
 // helper's own per-request lookups keep: a slow GitHub API ends the call on
 // that deadline and the run continues with no trusted lookup — failing
-// closed — instead of delaying the script's start.
+// closed — instead of delaying the script's start. The bound is asserted
+// by its outcome, not by elapsed time: the slow API below answers with a
+// valid entity after 250ms, so an unbounded (or much larger) call would
+// resolve the entity and fail the empty assertion; a call cut short by the
+// 50ms deadline leaves it empty. A wall-clock assertion here would flake
+// under CI load and couple the test to machine speed.
 func TestBotRoleCommentLookup_EntityCallBounded(t *testing.T) {
 	printer := ui.New(io.Discard)
 	orig := botRoleEntityTimeout
@@ -468,11 +508,8 @@ func TestBotRoleCommentLookup_EntityCallBounded(t *testing.T) {
 	t.Setenv("ISSUE_NUMBER", "9602")
 	t.Setenv("PR_NUMBER", "")
 
-	start := time.Now()
 	entity, comments := botRoleCommentLookup(context.Background(), "github", "github", printer)
-	assert.Less(t, time.Since(start), 250*time.Millisecond,
-		"the run-start entity call must end on the botRoleEntityTimeout deadline, not wait out a slow API")
-	assert.Empty(t, entity, "a run whose entity call timed out gets no trusted lookup")
+	assert.Empty(t, entity, "a run whose entity call ended on the botRoleEntityTimeout deadline gets no trusted lookup")
 	assert.Nil(t, comments)
 	select {
 	case <-asked:

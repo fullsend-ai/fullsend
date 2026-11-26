@@ -11,6 +11,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/botidentity"
 )
 
 // Acceptance tests for #9602 (ADR 0107): `fullsend bot-role` is the
@@ -163,18 +165,95 @@ func TestBotRoleCmd_LookupFailureDistinctFromNoMatch(t *testing.T) {
 		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 		require.Error(t, err)
 		assert.Empty(t, stdout)
+		assert.ErrorIs(t, err, botidentity.ErrLookup, "an unreachable helper is a lookup that did not complete")
 	})
 }
 
 // Outside a `fullsend run` job the helper environment is absent; the
-// command must fail rather than answer, so a caller fails closed.
+// command must fail rather than answer, so a caller fails closed. Each
+// missing-variable guard runs under test, and both classify as
+// botidentity.ErrLookup like the helper's own refusals, so an importing
+// caller needs no special case for a local failure.
 func TestBotRoleCmd_MissingHelperEnvFailsClosed(t *testing.T) {
-	t.Setenv(botRoleScriptEnvURL, "")
-	t.Setenv(botRoleScriptEnvToken, "")
+	for name, tc := range map[string]struct{ url, token string }{
+		"both helper variables empty": {"", ""},
+		"URL set with an empty token": {"http://127.0.0.1:1/bot-role", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(botRoleScriptEnvURL, tc.url)
+			t.Setenv(botRoleScriptEnvToken, tc.token)
+
+			stdout, _, err := runBotRoleForScripts(t, commentArgs...)
+			require.Error(t, err, "without the runner-side lookup a script must not get an answer")
+			assert.Empty(t, stdout)
+			assert.ErrorIs(t, err, botidentity.ErrLookup, "a local failure must classify like a lookup failure")
+		})
+	}
+}
+
+// The client refuses a helper URL that is not the helper's loopback
+// address before any request — and the bearer token — is sent: the helper
+// binds 127.0.0.1 only, and a script that overrides
+// FULLSEND_BOT_ROLE_URL must not be able to direct the token to an
+// external host, so the client's send policy matches the helper's binding
+// policy.
+func TestBotRoleCmd_RefusesNonLoopbackHelperURL(t *testing.T) {
+	t.Setenv(botRoleScriptEnvURL, "http://example.invalid/bot-role")
+	t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
 
 	stdout, _, err := runBotRoleForScripts(t, commentArgs...)
-	require.Error(t, err, "without the runner-side lookup a script must not get an answer")
+	require.Error(t, err, "a non-loopback helper URL must be refused before the token is sent")
 	assert.Empty(t, stdout)
+	assert.ErrorIs(t, err, botidentity.ErrLookup)
+	assert.Contains(t, err.Error(), "loopback", "the refusal names the policy, not a transport failure")
+}
+
+// The remaining fail-closed branches of the command's contract, each
+// distinguishable from no_match by a non-zero exit and empty stdout: a
+// malformed helper URL, a 200 answer the shared parser rejects, and an
+// answer over the response cap (truncated by the read bound, so the
+// parser rejects it rather than trusting a partial outcome).
+func TestBotRoleCmd_FailClosedBranches(t *testing.T) {
+	t.Run("malformed helper URL", func(t *testing.T) {
+		t.Setenv(botRoleScriptEnvURL, "http://127.0.0.1\x7f/bot-role")
+		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+
+		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
+		require.Error(t, err, "a malformed helper URL must fail the command")
+		assert.Empty(t, stdout)
+		assert.ErrorIs(t, err, botidentity.ErrLookup)
+	})
+
+	t.Run("helper answers an unparseable 200 body", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("not json"))
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv(botRoleScriptEnvURL, srv.URL)
+		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+
+		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
+		require.Error(t, err, "a 200 answer the parser rejects must fail the command, never print a guessed outcome")
+		assert.Empty(t, stdout)
+		assert.ErrorIs(t, err, botidentity.ErrLookup)
+	})
+
+	t.Run("helper answer over the response cap", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			body := append([]byte(`{"outcome":"no_match","padding":"`), bytes.Repeat([]byte("a"), 70<<10)...)
+			_, _ = w.Write(body)
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv(botRoleScriptEnvURL, srv.URL)
+		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+
+		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
+		require.Error(t, err, "an answer over the 64 KiB cap is truncated and must fail, never print a partial outcome")
+		assert.Empty(t, stdout)
+		assert.ErrorIs(t, err, botidentity.ErrLookup)
+	})
 }
 
 // The command asks about one comment on one entity; it takes no login and

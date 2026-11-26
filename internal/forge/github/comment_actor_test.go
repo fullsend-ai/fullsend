@@ -155,3 +155,30 @@ func TestCommentActor(t *testing.T) {
 		})
 	}
 }
+
+// A NOT_FOUND GraphQL error maps to the forge.ErrNotFound sentinel from any
+// position in the envelope, not only the first error, so a response
+// carrying additional errors — or null data with NOT_FOUND in a secondary
+// position — still reads as "absent" to callers that distinguish it from
+// "failed".
+func TestGraphQLQuery_NOT_FOUNDInSecondaryPosition(t *testing.T) {
+	for name, body := range map[string]string{
+		"secondary position": `{"data":null,"errors":[{"message":"first failure","type":"INTERNAL"},{"message":"gone","type":"NOT_FOUND"}]}`,
+		"third of three":     `{"data":null,"errors":[{"message":"a","type":"X"},{"message":"b","type":"Y"},{"message":"gone","type":"NOT_FOUND"}]}`,
+		"only error":         `{"data":null,"errors":[{"message":"gone","type":"NOT_FOUND"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := graphqlServer(t, http.StatusOK, body)
+			_, _, err := c.IssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, forge.ErrNotFound, "a NOT_FOUND in any position must keep the sentinel")
+		})
+	}
+
+	t.Run("no NOT_FOUND keeps the generic error", func(t *testing.T) {
+		c, _ := graphqlServer(t, http.StatusOK, `{"data":null,"errors":[{"message":"a","type":"X"},{"message":"b","type":"Y"}]}`)
+		_, _, err := c.IssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, forge.ErrNotFound)
+	})
+}
