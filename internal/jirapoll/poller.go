@@ -687,6 +687,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (pendingChe
 	// A cycle in which every event fails validation fails the whole
 	// cycle in Run instead, holding the checkpoints so those events
 	// are retried.
+	var records []issueRecord
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
 		p.eventsSeen++
@@ -715,7 +716,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (pendingChe
 		}
 
 		if p.matcher != nil {
-			records, matchErr := p.matcher.Match(ctx, &ne)
+			matched, matchErr := p.matcher.Match(ctx, &ne)
 			if matchErr != nil {
 				// Counted beside validation failures so an
 				// all-matcher-error cycle fails the run at the
@@ -725,10 +726,16 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (pendingChe
 				p.eventsMatchErrors++
 				continue
 			}
-			pc.records = append(pc.records, records...)
+			for _, record := range matched {
+				records = append(records, issueRecord{record: record, at: event.UpdatedAt})
+			}
 		}
 	}
 
+	// One issue contributes at most 250 records and, on the GitHub target,
+	// 768 KB (ADR 0085, Decision item 3). The checkpoint advances past
+	// whatever is dropped, as with the event cap above.
+	pc.records = p.capIssueRecords(issue.Key, records)
 	return pc, nil
 }
 
