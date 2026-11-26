@@ -687,3 +687,26 @@ func TestRoleLoadError(t *testing.T) {
 		t.Error("Unwrap() did not return the cause")
 	}
 }
+
+func TestRunAuth_JiraProjectMembersOptOut(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleErr = errAdminOnly
+	mc.searchResult = []jira.Issue{authTestIssue("PROJ-1", now)}
+	mc.comments["PROJ-1"] = []jira.Comment{
+		authTestComment("1", "stranger", "/fs-code please", now.Add(-10*time.Minute)),
+	}
+	m := newGateMatcher(harnessdispatch.AuthOptions{SkipJiraActorAuthorization: true})
+	p := authTestPoller(mc, m, Authorization{Configured: true, SkipActorAuthorization: true})
+	if err := p.Run(t.Context()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	assertAgents(t, p, "stranger", "code", "triage")
+	if mc.roleActorsCalls != 0 || len(mc.userGroupsCalls) != 0 {
+		t.Fatalf("unexpected actor lookups: %d project role calls and %d group lookups",
+			mc.roleActorsCalls, len(mc.userGroupsCalls))
+	}
+	if got := m.roleOf("stranger"); got != "none" {
+		t.Errorf("actor.role = %q, want none", got)
+	}
+}

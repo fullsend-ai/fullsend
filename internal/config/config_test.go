@@ -2383,3 +2383,23 @@ func TestPerRepoConfig_LocalAgentEntries(t *testing.T) {
 	assert.Equal(t, []AgentEntry{{Name: "code", Model: "sonnet"}}, local, "only the overlay's own entries")
 	assert.Len(t, cfg.AgentEntries(), 2, "merged view includes the base")
 }
+
+func TestJiraCheckProjectMembersValidation(t *testing.T) {
+	for _, tc := range []struct{ provider, value, want string }{
+		{"jira", "null", "must be true or false"},
+		{"jira", `"false"`, "must be true or false"},
+		{"jira", "[]", "must be true or false"},
+		{"owners_file", "false", "only valid for provider jira"},
+	} {
+		_, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: " + tc.provider +
+			"\n    check_project_members: " + tc.value))
+		require.ErrorContains(t, err, tc.want)
+	}
+
+	cfg, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n    check_project_members: false\n    write:\n      accounts_from: JIRA_WRITERS\n"))
+	require.NoError(t, err)
+	provider := cfg.JiraAuthorization()
+	assert.Empty(t, provider.JiraEnvNames())
+	*provider.CheckProjectMembers = true
+	assert.True(t, cfg.JiraAuthorization().SkipsJiraActorAuthorization())
+}

@@ -352,10 +352,16 @@ func ValidJiraLabelModes() []string {
 // groups and account IDs to the Fullsend write and triage roles, and pick
 // the rule for Jira label-added events.
 type AuthorizationProvider struct {
-	Provider string         `yaml:"provider"`
-	Write    *JiraActorList `yaml:"write,omitempty"`
-	Triage   *JiraActorList `yaml:"triage,omitempty"`
-	Labels   string         `yaml:"labels,omitempty"`
+	Provider            string         `yaml:"provider"`
+	Write               *JiraActorList `yaml:"write,omitempty"`
+	Triage              *JiraActorList `yaml:"triage,omitempty"`
+	Labels              string         `yaml:"labels,omitempty"`
+	CheckProjectMembers *bool          `yaml:"check_project_members,omitempty"`
+}
+
+// SkipsJiraActorAuthorization reports whether Jira actor checks are explicitly disabled.
+func (p *AuthorizationProvider) SkipsJiraActorAuthorization() bool {
+	return p != nil && p.CheckProjectMembers != nil && !*p.CheckProjectMembers
 }
 
 // JiraActorList names the Jira actors granted one Fullsend role by the
@@ -417,7 +423,7 @@ func splitJiraActorEnv(value string) []string {
 // names that the jira provider's write: and triage: lists read through
 // groups_from and accounts_from. It returns nil when p is nil or names none.
 func (p *AuthorizationProvider) JiraEnvNames() []string {
-	if p == nil {
+	if p == nil || p.SkipsJiraActorAuthorization() {
 		return nil
 	}
 	var names []string
@@ -458,7 +464,7 @@ func (p *AuthorizationProvider) EffectiveJiraLabels() string {
 }
 
 // jiraProviderKeys are the keys allowed in a provider: jira entry.
-var jiraProviderKeys = map[string]bool{"provider": true, "write": true, "triage": true, "labels": true}
+var jiraProviderKeys = map[string]bool{"provider": true, "write": true, "triage": true, "labels": true, "check_project_members": true}
 
 // jiraActorListKeys are the keys allowed in a jira provider write:/triage:
 // mapping.
@@ -485,6 +491,16 @@ func (p *AuthorizationProvider) UnmarshalYAML(value *yaml.Node) error {
 		// A merge key can supply provider, labels or list keys from another
 		// mapping, bypassing the key checks below.
 		return managedFieldError(value, "authorization: merge keys (<<) are not supported in a provider entry")
+	}
+	if value.Kind == yaml.MappingNode {
+		if v := mappingNode(value, "check_project_members"); v != nil {
+			if mappingValue(value, "provider") != AuthProviderJira {
+				return managedFieldError(v, "check_project_members is only valid for provider jira")
+			}
+			if v.Kind != yaml.ScalarNode || v.ShortTag() != "!!bool" {
+				return managedFieldError(v, "check_project_members must be true or false")
+			}
+		}
 	}
 	if value.Kind == yaml.MappingNode && mappingValue(value, "provider") == AuthProviderJira {
 		if err := checkMappingKeys(value, jiraProviderKeys, "authorization: jira provider"); err != nil {
@@ -1430,6 +1446,8 @@ func (c *perRepoConfig) ValidateAuthorization() error {
 			if err := validateJiraProvider(p); err != nil {
 				return fmt.Errorf("authorization[%d]: %w", i, err)
 			}
+		} else if p.CheckProjectMembers != nil {
+			return fmt.Errorf("authorization[%d]: check_project_members is only valid for provider jira", i)
 		} else if p.Write != nil || p.Triage != nil || p.Labels != "" {
 			return fmt.Errorf("authorization[%d]: write, triage and labels are only valid for provider %q", i, AuthProviderJira)
 		}

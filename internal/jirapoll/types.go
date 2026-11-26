@@ -96,8 +96,10 @@ type Authorization struct {
 	// config.yaml; the zero value means no entry and selects the
 	// project-role model for every event.
 	Configured bool
-	Write      ActorList
-	Triage     ActorList
+	// SkipActorAuthorization leaves actor roles unresolved for all events.
+	SkipActorAuthorization bool
+	Write                  ActorList
+	Triage                 ActorList
 	// ListsConfigured records that the jira provider set a write: or
 	// triage: list, even an empty one. It keeps the lists authoritative
 	// (deny everyone not named) after the last entry is removed, instead of

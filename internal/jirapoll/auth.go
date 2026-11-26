@@ -60,6 +60,9 @@ func (p *Poller) roleSourceFor(event JiraEvent) roleSource {
 		return roleFromProjectRoles
 	}
 	auth := p.opts.Authorization
+	if auth.SkipActorAuthorization {
+		return roleNotResolved
+	}
 	if auth.labelMode() == LabelsProjectRoles && !auth.HasLists() {
 		return roleFromProjectRoles
 	}

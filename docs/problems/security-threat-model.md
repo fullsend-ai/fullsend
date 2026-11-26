@@ -548,6 +548,10 @@ None of these is a complete answer. They are options with different failure mode
 - **LOC or prior-merge gating.** New contributors limited until N PRs have merged. Ghostty considered this and moved to an allowlist, in part because small merged PRs are exactly what a claw farms.
 - **Provenance requirements (DCO, signed commits).** Raise the cost of disposable accounts somewhat. A polished campaign can still sign; a DCO trailer is a claim, not a proof.
 
+- A repository can opt out of Jira actor authorization at dispatch. In that
+  configuration, Jira participants who can produce matching events can use
+  them to trigger agent runs ([ADR 0177](../ADRs/0177-allow-repositories-to-skip-jira-actor-authorization.md)).
+
 ### Open questions
 
 - Should enrolled repos be able to layer a contributor allowlist or blocklist *on top of* write-permission dispatch gating — for example, auto-triage from attested reporters without write access, or refuse even maintainer-triggered runs on blocked accounts? [ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md) already notes vouch-style trust policies as a possible way to relax the write-permission boundary for drive-by bug reports; that pulls in the opposite direction from using attestation as an intake gate.

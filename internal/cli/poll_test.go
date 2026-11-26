@@ -918,5 +918,40 @@ func TestNewCELMatcher_RejectsAliasedMisspelledJiraKey(t *testing.T) {
 
 func TestJiraPollAuthorization_NilProvider(t *testing.T) {
 	assert.Equal(t, jirapoll.Authorization{}, jiraPollAuthorization(nil, noJiraEnv))
-	assert.False(t, jiraAuthOptions(nil).JiraLabelsByEditPermission)
+	assert.False(t, harnessdispatch.AuthOptionsForJiraProvider(nil).JiraLabelsByEditPermission)
+}
+
+func TestCELMatcher_JiraProjectMembersOptOut(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting string
+		bypass        bool
+	}{
+		{"omitted", "", false},
+		{"enabled", "    check_project_members: true\n", false},
+		{"disabled", "    check_project_members: false\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n" + tc.setting))
+			require.NoError(t, err)
+			auth := cfg.JiraAuthorization()
+			assert.Equal(t, tc.bypass, jiraPollAuthorization(auth, func(string) string { return "" }).SkipActorAuthorization)
+			assert.Equal(t, tc.bypass, harnessdispatch.AuthOptionsFor(cfg).SkipJiraActorAuthorization)
+			m := &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: []harnessdispatch.TriggeredHarness{
+				{Name: "code", Harness: &harness.Harness{Role: "coder", Trigger: "true"}},
+				{Name: "filtered", Harness: &harness.Harness{Role: "coder", Trigger: "false"}},
+			}}, jiraAuth: auth}
+			event := jiraLabelAddedEvent(normevent.RoleNone)
+			event.Transition = normevent.Transition{Kind: normevent.TransitionCommentAdded}
+			records, err := m.Match(t.Context(), event)
+			require.NoError(t, err)
+			if tc.bypass {
+				require.Len(t, records, 1)
+				assert.Equal(t, "code", records[0].Agent)
+				event.Source.System = normevent.SystemGitHub
+				assert.False(t, harnessdispatch.IsEventAuthorizedWith(event, harnessdispatch.AuthOptionsFor(cfg)))
+			} else {
+				assert.Empty(t, records)
+			}
+		})
+	}
 }

@@ -1576,6 +1576,27 @@ GitLab then refuses new schedule variables. A variable added to a schedule
 earlier still applies, so run `fullsend repos install` after you apply the
 setting: it replaces a Jira poll schedule that has variables.
 
+### Allow any Jira actor to trigger matching harnesses
+
+If you trust everyone who can create events in the polled Jira scope to start
+agents in your repository, add this setting to the Jira provider entry in
+`.fullsend/config.yaml`:
+
+```yaml
+authorization:
+  - provider: jira
+    check_project_members: false
+```
+
+Jira issue events, slash commands, and label changes can start agents when they
+match a harness trigger, regardless of who performed the action. The poller
+skips project role and group lookups, so this setup does not require
+**Administer Projects**. The scope of the Jira query and Jira's own permissions
+determine who can create candidate events. This includes events that can start
+agents with write access to the target repository.
+
+Omit the setting or set it to `true` to apply the existing Jira actor policy.
+
 ### Minimum Jira permissions
 
 | Permission | When the poller account needs it |

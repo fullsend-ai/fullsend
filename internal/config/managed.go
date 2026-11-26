@@ -651,6 +651,10 @@ func cloneAuthorizationProvider(p AuthorizationProvider) AuthorizationProvider {
 		out.Accounts = slices.Clone(l.Accounts)
 		return &out
 	}
+	if p.CheckProjectMembers != nil {
+		check := *p.CheckProjectMembers
+		p.CheckProjectMembers = &check
+	}
 	p.Write = cloneList(p.Write)
 	p.Triage = cloneList(p.Triage)
 	return p

@@ -58,8 +58,8 @@ func authorizeEvent(event *normevent.Event, opts AuthOptions) eventAuth {
 	if event.Source.System == normevent.SystemGitHub && isLabelAdded(event) {
 		return eventAllowed
 	}
-	if event.Source.System == normevent.SystemJira && isLabelAdded(event) &&
-		opts.JiraLabelsByEditPermission {
+	if event.Source.System == normevent.SystemJira &&
+		(opts.SkipJiraActorAuthorization || (opts.JiraLabelsByEditPermission && isLabelAdded(event))) {
 		return eventAllowed
 	}
 	if event.Actor.Kind == normevent.ActorBot && event.Actor.RoleVerified != nil {
@@ -85,6 +85,9 @@ func authorizeEvent(event *normevent.Event, opts AuthOptions) eventAuth {
 // gate. The zero value is the default policy: a Jira label-added event
 // takes the per-harness role threshold like any other event.
 type AuthOptions struct {
+	// SkipJiraActorAuthorization authorizes Jira events regardless of actor role.
+	SkipJiraActorAuthorization bool
+
 	// JiraLabelsByEditPermission turns on the Jira label-added exception:
 	// a Jira label-added event is authorized without a role threshold,
 	// because Jira requires the Edit Issues permission to change labels.
@@ -105,8 +108,13 @@ func AuthOptionsFor(cfg config.ConfigReader) AuthOptions {
 	if !ok {
 		return AuthOptions{}
 	}
-	ja := pr.JiraAuthorization()
+	return AuthOptionsForJiraProvider(pr.JiraAuthorization())
+}
+
+// AuthOptionsForJiraProvider translates the Jira provider into dispatch policy.
+func AuthOptionsForJiraProvider(ja *config.AuthorizationProvider) AuthOptions {
 	return AuthOptions{
+		SkipJiraActorAuthorization: ja.SkipsJiraActorAuthorization(),
 		JiraLabelsByEditPermission: ja != nil && ja.EffectiveJiraLabels() == config.JiraLabelsEditors,
 	}
 }
