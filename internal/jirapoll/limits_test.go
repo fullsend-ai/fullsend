@@ -116,8 +116,9 @@ func bodiesOf(t *testing.T, records []DispatchRecord) []string {
 }
 
 // One issue contributes at most 250 records on both targets: the oldest are
-// kept, the rest dropped with a WARNING that names the issue, and the
-// checkpoint advances (ADR 0085, Decision item 3).
+// kept in the order they were produced, the rest dropped with a WARNING
+// that names the issue, and the checkpoint advances (ADR 0085, Decision
+// item 3).
 func TestProcessIssueKeepsOldest250Records(t *testing.T) {
 	for _, targetForge := range []string{TargetForgeGitHub, TargetForgeGitLab} {
 		t.Run(targetForge, func(t *testing.T) {
@@ -128,10 +129,10 @@ func TestProcessIssueKeepsOldest250Records(t *testing.T) {
 				t.Fatalf("kept %d records, want %d", len(pc.records), maxRecordsPerIssue)
 			}
 			bodies := bodiesOf(t, pc.records)
-			// The 83 oldest comments (c089 down to c007) fill 249 places
-			// and c006 gets the last one.
-			if bodies[0] != "/fs-triage c089" || bodies[249] != "/fs-triage c006" {
-				t.Errorf("kept from %q to %q, want the oldest first: c089 to c006", bodies[0], bodies[249])
+			// The 83 oldest comments (c007 to c089) take 249 places and
+			// c006 gets one. The listing order, newest first, is kept.
+			if bodies[0] != "/fs-triage c006" || bodies[1] != "/fs-triage c007" || bodies[249] != "/fs-triage c089" {
+				t.Errorf("kept %q, %q ... %q; want one record of c006, then c007 to c089", bodies[0], bodies[1], bodies[249])
 			}
 			for _, body := range bodies {
 				if body < "/fs-triage c006" {
@@ -169,8 +170,8 @@ func TestProcessIssueKeepsOldestRecordsWithinSizeLimit(t *testing.T) {
 		if next := size + 2 + recordOutputSize(pc.records[0]); next <= maxMatrixOutputBytes {
 			t.Errorf("one more record would make %d bytes, within the %d limit, yet it was dropped", next, maxMatrixOutputBytes)
 		}
-		if bodies := bodiesOf(t, pc.records); bodies[0] != "/fs-triage c009" || bodies[2] != "/fs-triage c007" {
-			t.Errorf("kept %v, want the three oldest comments, oldest first", bodies)
+		if got, want := strings.Join(bodiesOf(t, pc.records), ","), "/fs-triage c007,/fs-triage c008,/fs-triage c009"; got != want {
+			t.Errorf("kept %s, want the three oldest comments in listing order: %s", got, want)
 		}
 		if want := "one issue contributes at most 250 records and 768 KB of GitHub job output, so the oldest 3 are kept and 7 dropped"; !strings.Contains(logs, want) {
 			t.Errorf("log lacks %q:\n%s", want, logs)

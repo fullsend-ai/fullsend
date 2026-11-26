@@ -68,10 +68,10 @@ type issueRecord struct {
 
 // capIssueRecords applies the per-issue limits to the records one issue
 // produced this cycle: at most maxRecordsPerIssue records and, on the
-// GitHub target, maxMatrixOutputBytes of matrix output. Within the limits it
-// returns the records in the order given. Over a limit it keeps the oldest
-// records that fit, oldest first, and drops the rest with a WARNING that
-// names the issue. The drop is deliberate, like the event cap in
+// GitHub target, maxMatrixOutputBytes of matrix output. It keeps the oldest
+// records that fit, by the time of the event that produced them, and drops
+// the rest with a WARNING that names the issue. The records it keeps stay in
+// the order given. The drop is deliberate, like the event cap in
 // processIssue: one issue does not honestly produce that many records in a
 // cycle, so the limits bound the runs that a rewound lastCheck or a bulk
 // change can start. The caller still advances the checkpoint.
@@ -80,30 +80,35 @@ func (p *Poller) capIssueRecords(issueKey string, records []issueRecord) []Dispa
 		return nil
 	}
 	sized := p.opts.TargetForge != TargetForgeGitLab
-	// fit returns how many of the leading records are within the limits.
-	fit := func() int {
-		size := matrixEnvelopeSize
-		for i, r := range records {
-			if i == maxRecordsPerIssue {
-				return i
+
+	// Rank the records oldest first without moving them. Events are not
+	// produced in time order: comments come before changelog entries, and
+	// an edited comment carries the time of its edit.
+	oldestFirst := make([]int, len(records))
+	for i := range oldestFirst {
+		oldestFirst[i] = i
+	}
+	slices.SortStableFunc(oldestFirst, func(a, b int) int { return records[a].at.Compare(records[b].at) })
+
+	keep := make([]bool, len(records))
+	kept, size := 0, matrixEnvelopeSize
+	for _, i := range oldestFirst {
+		if kept == maxRecordsPerIssue {
+			break
+		}
+		if sized {
+			if kept > 0 {
+				size += 2 // the comma between two records
 			}
-			if !sized {
-				continue
-			}
-			if i > 0 {
-				size += 2
-			}
-			if size += recordOutputSize(r.record); size > maxMatrixOutputBytes {
-				return i
+			if size += recordOutputSize(records[i].record); size > maxMatrixOutputBytes {
+				break
 			}
 		}
-		return len(records)
+		keep[i] = true
+		kept++
 	}
 
-	kept := fit()
 	if kept < len(records) {
-		slices.SortStableFunc(records, func(a, b issueRecord) int { return a.at.Compare(b.at) })
-		kept = fit()
 		limits := fmt.Sprintf("%d records", maxRecordsPerIssue)
 		if sized {
 			limits += fmt.Sprintf(" and %d KB of GitHub job output", maxMatrixOutputBytes/1024)
@@ -112,9 +117,11 @@ func (p *Poller) capIssueRecords(issueKey string, records []issueRecord) []Dispa
 			issueKey, len(records), limits, kept, len(records)-kept)
 	}
 
-	out := make([]DispatchRecord, kept)
-	for i := range out {
-		out[i] = records[i].record
+	out := make([]DispatchRecord, 0, kept)
+	for i, r := range records {
+		if keep[i] {
+			out = append(out, r.record)
+		}
 	}
 	return out
 }
