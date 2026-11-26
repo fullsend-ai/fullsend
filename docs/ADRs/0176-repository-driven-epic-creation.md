@@ -342,14 +342,15 @@ or an unresolved result with candidates. The evidence is preserved
 through the remaining steps.
 
 **Step 2 — Split into work items.** Using the resolved repository set,
-split the strategy's requirements into work items. Each work item
-belongs to exactly one repo. A requirement that spans two repos becomes
+split the strategy's requirements into work items. Each resolved work
+item belongs to exactly one repo. A requirement that spans two repos becomes
 two work items referencing the same requirement, with a dependency
 between them. When splitting reveals a slice that belongs to a repo
 outside the resolved set, that slice is resolved individually — one
 extra resolver call with the slice's description — so every work item
-carries its own evidence. If Step 1 returns unresolved, the strategy is
-still split into work items; unresolved items follow Step 4.
+carries its own evidence. If Step 1 returns unresolved, requirements are
+still split into work items without a repository set; each is resolved
+individually as above, and items that stay unresolved follow Step 4.
 
 **Step 3 — Group into planned PRs.** Work items targeting the same repo
 are grouped into planned PRs. Work items that form one coherent
