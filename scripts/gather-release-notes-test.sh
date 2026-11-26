@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # gather-release-notes-test.sh — Tests for the pure functions of
-# gather-release-notes.sh (range math and merged-PR extraction).
+# gather-release-notes.sh (merged-PR extraction).
 #
 # The full script needs the release-notes binary and an authenticated
-# gh, so only the offline parts are exercised here: compute_start_sha
-# (first-parent selection, the old-date trap, the re-tag fallback) and
-# extract_merged_prs (merge commits and squash subjects).
+# gh, so only the offline parts are exercised here: extract_merged_prs
+# (merge commits and squash subjects). The START_SHA selection is a
+# plain `git rev-parse PREV` (v0.23.0 stops its first-parent walk at the
+# merge base of START_SHA and END_SHA, exclusive), so it needs no test.
 #
 # Run from the repo root:
 #   bash scripts/gather-release-notes-test.sh
@@ -48,9 +49,6 @@ assert_equals() {
 #   A --- B(merge #1) --- C(squash #2) --- D(merge #3)  <- TAG
 #         \
 #          E (old-dated PR-branch commit for #1)
-#
-# E carries a commit date older than PREV, so an oldest-date START_SHA
-# selection would open the window before PREV and re-list PR #1.
 build_repo() {
   git -C "${TMP}" init -q -b main
   git -C "${TMP}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "A"
@@ -59,9 +57,7 @@ build_repo() {
 
   # PR #1: a branch with an old-dated commit, merged with a merge commit.
   git -C "${TMP}" checkout -q -b pr1
-  # 2000-01-01: far older than PREV.
-  GIT_COMMITTER_DATE="2000-01-01T00:00:00Z" GIT_AUTHOR_DATE="2000-01-01T00:00:00Z" \
-    git -C "${TMP}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "E"
+  git -C "${TMP}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "E"
   git -C "${TMP}" checkout -q main
   git -C "${TMP}" -c user.email=t@t -c user.name=t merge -q --no-ff -m "Merge pull request #1 from x/pr1" pr1
 
@@ -82,31 +78,6 @@ build_repo
 # The functions run git in the current directory; run them inside the
 # temp repo.
 cd "${TMP}"
-
-# --- compute_start_sha ----------------------------------------------------
-
-# START_SHA must be the first first-parent commit after PREV (the #1
-# merge), not the old-dated PR-branch commit E.
-EXPECTED_START=$(git -C "${TMP}" rev-list --first-parent --reverse v0.1.0..v0.2.0 | head -n1)
-assert_equals "compute_start_sha picks the first first-parent commit after PREV" \
-  "${EXPECTED_START}" "$(compute_start_sha v0.1.0 v0.2.0)"
-
-# START_SHA must not be E even though E is the oldest-dated commit in
-# the range.
-OLD_DATED=$(git -C "${TMP}" rev-list v0.1.0..v0.2.0 | while read -r c; do
-  printf '%s %s\n' "$(git -C "${TMP}" show -s --format=%ct "${c}")" "${c}"
-done | sort -n | head -n1 | cut -d' ' -f2)
-if [[ "$(compute_start_sha v0.1.0 v0.2.0)" != "${OLD_DATED}" ]]; then
-  ok "compute_start_sha ignores the old-dated PR-branch commit"
-else
-  fail "compute_start_sha ignores the old-dated PR-branch commit" \
-    "not ${OLD_DATED}" "${OLD_DATED}"
-fi
-
-# Re-tag: PREV and TAG on the same commit falls back to PREV itself.
-git -C "${TMP}" tag v0.2.0-same "$(git -C "${TMP}" rev-parse v0.1.0)"
-assert_equals "compute_start_sha falls back to PREV on a re-tag" \
-  "$(git -C "${TMP}" rev-parse v0.1.0)" "$(compute_start_sha v0.1.0 v0.2.0-same)"
 
 # --- extract_merged_prs ---------------------------------------------------
 

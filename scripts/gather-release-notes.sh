@@ -10,10 +10,11 @@
 #
 # Writes OUTDIR/release-notes.md (with the "## Changelog" header the
 # release-highlights step expects) and OUTDIR/release-notes-body.md.
-# Requires gh (authenticated) for PR title and edit-timestamp lookups.
+# Requires gh (authenticated) for PR title, label and edit-timestamp
+# lookups.
 #
-# The range math and merged-PR extraction live in functions below so
-# gather-release-notes-test.sh can exercise them offline (the full run
+# The merged-PR extraction lives in a function below so
+# gather-release-notes-test.sh can exercise it offline (the full run
 # needs the release-notes binary and an authenticated gh).
 
 set -euo pipefail
@@ -34,25 +35,6 @@ install_release_notes() {
   sudo mv "${outdir}/release-notes" /usr/local/bin/release-notes
 }
 
-# compute_start_sha PREV TAG — print the first first-parent commit after
-# PREV on the path to TAG.
-#
-# The tool lists commits from START_SHA's commit date onward (inclusive).
-# Use the first first-parent commit after PREV: picking the oldest-dated
-# commit in the range would open the window before PREV (PR-branch
-# commits can carry dates older than PREV) and re-list PRs from the
-# previous release. When PREV and TAG share a commit (a re-tag), fall
-# back to PREV itself.
-compute_start_sha() {
-  local prev=$1 tag=$2 range
-  range=$(git rev-list --first-parent --reverse "${prev}..${tag}")
-  if [[ -n "${range}" ]]; then
-    head -n1 <<<"${range}"
-  else
-    git rev-list -n1 "${prev}"
-  fi
-}
-
 # extract_merged_prs PREV TAG — print the PR numbers merged in the range,
 # one per line, sorted and unique. Merge commits say "Merge pull request
 # #N"; squash-merge subjects end with "(#N)".
@@ -63,9 +45,9 @@ extract_merged_prs() {
     | sort -u
 }
 
-# fetch_pr_meta PR — print a JSON object with the PR's title, lastEditedAt
-# and mergedAt (one GraphQL call). lastEditedAt is null when the body was
-# never edited.
+# fetch_pr_meta PR — print a JSON object with the PR's title,
+# lastEditedAt, mergedAt and label names (one GraphQL call).
+# lastEditedAt is null when the body was never edited.
 fetch_pr_meta() {
   local pr=$1
   gh api graphql \
@@ -75,6 +57,9 @@ fetch_pr_meta() {
           title
           lastEditedAt
           mergedAt
+          labels(first: 100) {
+            nodes { name }
+          }
         }
       }
     }' \
@@ -96,23 +81,25 @@ main() {
   fi
 
   echo "Gathering notes from ${PREV} to ${TAG}"
+  # v0.23.0 walks first parents from END_SHA and stops at the merge base
+  # of END_SHA and START_SHA (exclusive), so START_SHA must be PREV
+  # itself: every commit after PREV up to TAG is then included, and the
+  # first PR merged after the previous tag keeps its note.
   local START_SHA END_SHA
-  START_SHA=$(compute_start_sha "${PREV}" "${TAG}")
+  START_SHA=$(git rev-parse "${PREV}")
   END_SHA=$(git rev-list -n1 "${TAG}")
-  # The tool reads its range and branch from these env vars. Use the tag's
-  # SHA as the listing ref (the `sha` parameter accepts a SHA): listing
-  # from main would include PRs merged to main after the tag but dated
-  # inside the window. --required-author="" includes bot-authored PRs
-  # (agents open many of our PRs).
+  # The tool reads its range from these env vars and walks a local clone
+  # (v0.23.0 has no --required-author flag and no date window; it opens
+  # the repo at --repo-path, which defaults to a tempdir clone that does
+  # not exist here).
   export START_SHA END_SHA
-  export BRANCH="${END_SHA}"
   # Gather as JSON, then render with our own script. The tool credits a
   # commit to any PR cited as "(#N)" in its message, so PRs from earlier
   # releases can appear; the renderer keeps only PRs actually merged in
   # the range (first-parent commits between PREV and TAG) and groups notes
   # by PR title type, mirroring the old GoReleaser changelog layout.
   release-notes generate \
-    --required-author="" \
+    --repo-path "$(git rev-parse --show-toplevel)" \
     --dependencies=false \
     --format json \
     --output "${OUTDIR}/release-notes.json" \
@@ -133,19 +120,23 @@ main() {
     # The release-note check validates the body only before merge. After
     # merge the author (including a fork contributor) can still edit the
     # body, replacing a reviewed note with arbitrary markdown. Refuse to
-    # publish a note whose body was edited after the merge; a maintainer
-    # must review the edit (revert it or re-approve it) before releasing.
+    # publish a note whose body was edited after the merge. Reverting the
+    # edit does not clear lastEditedAt, so the recovery path is explicit:
+    # a maintainer reviews the edited body and adds the
+    # release-note-edit-approved label to the PR.
     if jq -e '
       .lastEditedAt != null and .mergedAt != null
       and .lastEditedAt > .mergedAt
-    ' >/dev/null <<<"${meta}"; then
+    ' >/dev/null <<<"${meta}" \
+      && ! jq -e '[.labels.nodes[].name]
+                 | index("release-note-edit-approved")' >/dev/null <<<"${meta}"; then
       edited_after_merge+=("${pr}")
     fi
   done < "${OUTDIR}/merged-prs.txt"
   if [[ ${#edited_after_merge[@]} -gt 0 ]]; then
     # PR numbers are numeric, so interpolating them needs no
     # workflow-command escaping.
-    echo "::error::PRs whose body was edited after merge (the published note would differ from the reviewed one): ${edited_after_merge[*]}. A maintainer must review the edits before releasing."
+    echo "::error::PRs whose body was edited after merge (the published note would differ from the reviewed one): ${edited_after_merge[*]}. A maintainer must review each edit and add the release-note-edit-approved label to the PR before releasing."
     exit 1
   fi
   bash "${SCRIPT_DIR}/render-release-notes.sh" \

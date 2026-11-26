@@ -90,6 +90,9 @@ jobs:
       - name: Sync action-required label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gh cannot infer the repository without a checkout (it ignores
+          # GITHUB_REPOSITORY), so tell it explicitly.
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           ACTION_REQUIRED: ${{ needs.release-note-check.outputs.action-required }}
         run: |

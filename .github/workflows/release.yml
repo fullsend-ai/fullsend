@@ -301,13 +301,14 @@ jobs:
     # published the binary and Slack reported only the missing agents tag.
     # Now the whole release stops here, so it needs its own signal;
     # otherwise a blocked release is silent on Slack.
-    needs: [validate-agents, resolve-agents, recheck-tag]
+    needs: [validate-agents, resolve-agents, recheck-tag, gather-release-notes]
     if: >-
       github.event_name == 'push'
       && always()
       && (needs.validate-agents.result == 'failure'
           || needs.resolve-agents.result == 'failure'
-          || needs.recheck-tag.result == 'failure')
+          || needs.recheck-tag.result == 'failure'
+          || needs.gather-release-notes.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

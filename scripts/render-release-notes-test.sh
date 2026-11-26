@@ -13,6 +13,15 @@ trap 'rm -rf "${TMP}"' EXIT
 
 FAILURES=0
 
+fail() {
+  echo "FAIL — $1"
+  echo "--- expected ---"
+  printf '%s\n' "$2"
+  echo "--- actual ---"
+  printf '%s\n' "$3"
+  FAILURES=$((FAILURES + 1))
+}
+
 check() {
   local desc=$1 expected=$2 actual
   actual=$("${SCRIPT}" "${TMP}/notes.json" "${TMP}/merged.txt" "${TMP}/titles.tsv")

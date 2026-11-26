@@ -297,7 +297,8 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   commit subjects — are the source of release-note entries. NONE blocks
   are skipped. The gather fails if a merged PR's body was edited after
   merge (the published note would differ from the reviewed one); a
-  maintainer must review such edits before releasing. Merged PRs with
+  maintainer must review such edits and add the
+  `release-note-edit-approved` label to the PR before releasing. Merged PRs with
   no block are listed under **PRs Without Release Notes** instead of
   vanishing. The published body starts with a `## Changelog` header
   (prepended by the workflow so `prepend-release-highlights.sh` keeps
