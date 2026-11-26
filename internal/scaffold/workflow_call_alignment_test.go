@@ -1257,9 +1257,14 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 // builder beyond the string _normalized_event (which the jq embed line also
 // matches, so a removed or broken `fullsend dispatch --print-event` call would
 // still pass TestRouteJobPayloadEmbedsNormalizedEvent): the step must invoke
-// the normalizer with --print-event, --event-action and --config-dir, and
-// neither it nor any step of the payload-cli install ladder may set
-// continue-on-error — the embed fails closed by design (AISDLC-505). Every
+// the normalizer with --print-event, --event-action and --config-dir, and it
+// and the payload-cli install steps may not set continue-on-error — the embed
+// fails closed by design (AISDLC-505). The ladder's cache steps (restore,
+// validate, expose, prepare, save) must be continue-on-error like the CEL
+// route ladder's: the cache is an optimization, so no cache-service
+// failure may block the route job every stage job needs (at the pinned
+// actions/cache v6.1.0 a restore error fails the step, while save logs
+// save errors as warnings and exits 0). Every
 // payload step must also gate on the review-skip guard the job-level `stage`
 // output uses, so an unchanged-diff synchronize push (review skipped, no stage
 // job) runs neither the ladder nor the payload step.
@@ -1321,7 +1326,22 @@ func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
 	assert.Equal(t, "${{ steps.bash-route.outputs.event_sender }}", payload.Env["ROUTED_SENDER"],
 		"the rebuild must carry the routed sender")
 
+	// The ladder's cache steps are best effort like the CEL route
+	// ladder's; the install steps and the payload step stay fail-closed,
+	// their output being what the stage jobs need.
+	cacheSteps := map[string]bool{
+		"Restore fullsend CLI cache for event payload":          true,
+		"Validate cached fullsend CLI for event payload":        true,
+		"Expose cached fullsend CLI for event payload":          true,
+		"Prepare fullsend CLI cache artifact for event payload": true,
+		"Save fullsend CLI cache for event payload":             true,
+	}
 	for _, step := range ladder {
+		if cacheSteps[step.Name] {
+			assert.Equal(t, true, step.ContinueOnError,
+				"cache step %q must be continue-on-error like the CEL route ladder: the cache is an optimization, so no cache-service failure may block the route job every stage job needs (at the pinned actions/cache v6.1.0 a restore error fails the step, while save logs save errors as warnings and exits 0)", step.Name)
+			continue
+		}
 		switch v := step.ContinueOnError.(type) {
 		case nil:
 		case bool:

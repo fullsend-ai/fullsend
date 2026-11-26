@@ -219,6 +219,61 @@ func TestRunDispatch_PrintEventRejectsRoute(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot be combined with --route")
 }
 
+// TestRunDispatch_PrintEventIgnoresOutputDriver pins the documented
+// contract that --output-driver is ignored under --print-event: the command
+// prints the loaded event's normalized form as one JSON object, never the
+// dispatch matrix the driver would otherwise shape.
+func TestRunDispatch_PrintEventIgnoresOutputDriver(t *testing.T) {
+	out, err := captureDispatch(t, dispatchOpts{
+		inputDriver:  "json",
+		inputFile:    writePrintEventFixture(t),
+		outputDriver: "json",
+		printEvent:   true,
+	})
+	require.NoError(t, err)
+
+	var printed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &printed),
+		"stdout must be one JSON object even with --output-driver set: %s", out)
+	assert.Equal(t, "fullsend-ai/demo", printed["repo"])
+	assert.NotContains(t, printed, "include",
+		"--output-driver must not shape --print-event output into a harness matrix")
+}
+
+// TestRunDispatch_RouteIgnoresOutputDriver pins the documented contract
+// that --output-driver is ignored under --route: the command prints the
+// route decision as one JSON line, never the dispatch matrix.
+func TestRunDispatch_RouteIgnoresOutputDriver(t *testing.T) {
+	dir := writeRouteFixture(t, routeFixture{
+		agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml", Trigger: strings.TrimPrefix(routeTestCommentOnlyTrigger, "trigger: >\n")}},
+		files: map[string]string{
+			"harness/review.yaml": routeTestHarnessBody,
+		},
+	})
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(eventPath, []byte(routeReviewComment), 0o644))
+
+	out, err := captureDispatch(t, dispatchOpts{
+		inputDriver:  "json",
+		inputFile:    eventPath,
+		configDir:    dir,
+		route:        "review",
+		outputDriver: "gha-matrix",
+	})
+	require.NoError(t, err)
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	require.Len(t, lines, 1, "stdout must hold exactly one JSON line even with --output-driver set: %q", out)
+	var got routeDecision
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &got))
+	assert.Equal(t, routeDecision{
+		Agent:    "review",
+		Decision: routeRun,
+		Reason:   "trigger matched",
+		Harness:  "config:harness/review.yaml",
+	}, got)
+}
+
 // TestDispatchCmd_PrintEvent exercises the cobra wiring end to end: the
 // --print-event flag reaches runDispatch through the command's RunE.
 func TestDispatchCmd_PrintEvent(t *testing.T) {
