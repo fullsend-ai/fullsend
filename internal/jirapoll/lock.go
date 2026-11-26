@@ -110,6 +110,8 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 		log.Printf("WARNING: lastCheck for %s is in the future (%q); treating as unset", issueKey, lc.raw)
 	case clampFloor:
 		log.Printf("WARNING: lastCheck for %s (%q) predates the backfill window; clamping to %s", issueKey, lc.raw, lc.value.UTC().Format(time.RFC3339))
+	case clampInvalid:
+		log.Printf("WARNING: lastCheck for %s is not a timestamp; treating as unset", issueKey)
 	}
 	return lc.value, nil
 }
@@ -118,9 +120,10 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 type lastCheckClamp int
 
 const (
-	clampNone   lastCheckClamp = iota
-	clampFuture                // stored beyond clock skew ahead; treated as unset
-	clampFloor                 // stored before the backfill window; floored to its start
+	clampNone    lastCheckClamp = iota
+	clampFuture                 // stored beyond clock skew ahead; treated as unset
+	clampFloor                  // stored before the backfill window; floored to its start
+	clampInvalid                // stored value is not a timestamp; treated as unset
 )
 
 // storedLastCheck is a lastCheck as loadLastCheck read it.
@@ -154,16 +157,22 @@ func (p *Poller) parseLastCheck(raw json.RawMessage) (storedLastCheck, error) {
 		return storedLastCheck{}, nil
 	}
 
+	// A value that is not a timestamp is treated as unset, like a future
+	// one below: the issue gets one first-poll look bounded by the backfill
+	// window and the next checkpoint advance overwrites it. Returning an
+	// error instead would fail the issue on every pick and never save a
+	// valid value (#9766). raw stays empty so the attacker-writable value
+	// is never logged.
 	var ts string
 	if err := json.Unmarshal(raw, &ts); err != nil {
-		return storedLastCheck{}, fmt.Errorf("unmarshal lastCheck: %w", err)
+		return storedLastCheck{clamp: clampInvalid}, nil
 	}
 
 	// RFC3339Nano also accepts fraction-less RFC3339 strings, so this
 	// single parse covers values stored before the Nano switch too.
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
-		return storedLastCheck{}, fmt.Errorf("parse lastCheck: %w", err)
+		return storedLastCheck{clamp: clampInvalid}, nil
 	}
 
 	// lastCheck lives in an issue entity property writable by anyone with
