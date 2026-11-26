@@ -687,9 +687,12 @@ receives one only when the harness declares it under `env.runner`; see
 The bot-role helper settings `FULLSEND_BOT_ROLE_URL`,
 `FULLSEND_BOT_ROLE_TOKEN` and `FULLSEND_ENTITY_ID` are denied the same way,
 with one difference: `fullsend run` exports them directly to pre- and
-post-scripts when the bot-role helper runs, and harness-supplied
-`env.runner` values for them are dropped, so a script never receives a
-caller-chosen helper endpoint, token or entity
+post-scripts when the bot-role helper runs — a run with no mint URL or no
+Actions OIDC environment exports none of the three, and a run with both but
+no resolvable GitHub entity exports the URL and token without
+`FULLSEND_ENTITY_ID` — and harness-supplied `env.runner` values for them
+are dropped, so a script never receives a caller-chosen helper endpoint,
+token or entity
 (see [Resolving a comment's bot role](../guides/user/bring-your-own-agent.md#resolving-a-comments-bot-role)
 and the delivery rules in the [harness field reference](../reference/harness-reference.md#field-details)).
 `FULLSEND_JIRA_EMAIL` is optional: an `env.runner` reference to it does not fail when it is
