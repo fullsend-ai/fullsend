@@ -182,31 +182,66 @@ func (p *Poller) releaseLock(ctx context.Context, issueKey, expectedID string) e
 	return p.client.DeleteEntityProperty(ctx, issueKey, propKey)
 }
 
-// readLastCheck reads the lastCheck timestamp for an issue.
+// readLastCheck reads the lastCheck timestamp for an issue, clamped as
+// loadLastCheck describes, and logs a WARNING when it clamps.
 func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time, error) {
+	lc, err := p.loadLastCheck(ctx, issueKey)
+	if err != nil {
+		return time.Time{}, err
+	}
+	switch lc.clamp {
+	case clampFuture:
+		log.Printf("WARNING: lastCheck for %s is in the future (%q); treating as unset", issueKey, lc.raw)
+	case clampFloor:
+		log.Printf("WARNING: lastCheck for %s (%q) predates the backfill window; clamping to %s", issueKey, lc.raw, lc.value.UTC().Format(time.RFC3339))
+	}
+	return lc.value, nil
+}
+
+// lastCheckClamp says how loadLastCheck changed a stored lastCheck.
+type lastCheckClamp int
+
+const (
+	clampNone   lastCheckClamp = iota
+	clampFuture                // stored beyond clock skew ahead; treated as unset
+	clampFloor                 // stored before the backfill window; floored to its start
+)
+
+// storedLastCheck is a lastCheck as loadLastCheck read it.
+type storedLastCheck struct {
+	value  time.Time      // after the clamps; zero when unset
+	stored time.Time      // as stored; zero when unset
+	raw    string         // as stored, for quoted logging
+	clamp  lastCheckClamp // how value differs from stored
+}
+
+// loadLastCheck reads and clamps the lastCheck timestamp for an issue
+// without logging, so a caller that reads every candidate's lastCheck can
+// report the clamps once per cycle instead of once per issue.
+func (p *Poller) loadLastCheck(ctx context.Context, issueKey string) (storedLastCheck, error) {
 	propKey := p.lastCheckKey()
 
 	raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
 	if err != nil {
 		if errors.Is(err, forge.ErrNotFound) {
-			return time.Time{}, nil // first poll for this issue
+			return storedLastCheck{}, nil // first poll for this issue
 		}
-		return time.Time{}, fmt.Errorf("get lastCheck property: %w", err)
+		return storedLastCheck{}, fmt.Errorf("get lastCheck property: %w", err)
 	}
 	if len(raw) == 0 {
-		return time.Time{}, nil
+		return storedLastCheck{}, nil
 	}
 
 	var ts string
 	if err := json.Unmarshal(raw, &ts); err != nil {
-		return time.Time{}, fmt.Errorf("unmarshal lastCheck: %w", err)
+		return storedLastCheck{}, fmt.Errorf("unmarshal lastCheck: %w", err)
 	}
 
 	// RFC3339Nano also accepts fraction-less RFC3339 strings, so this
 	// single parse covers values stored before the Nano switch too.
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("parse lastCheck: %w", err)
+		return storedLastCheck{}, fmt.Errorf("parse lastCheck: %w", err)
 	}
 
 	// lastCheck lives in an issue entity property writable by anyone with
@@ -222,17 +257,17 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 	//     old privileged slash commands under their authors' roles. Floor
 	//     it at now-window so a rewind can replay at most one window, the
 	//     same bound a genuine first poll already permits.
+	lc := storedLastCheck{value: t, stored: t, raw: ts}
 	now := time.Now()
 	const clockSkew = 2 * time.Minute
 	if t.After(now.Add(clockSkew)) {
-		log.Printf("WARNING: lastCheck for %s is in the future (%q); treating as unset", issueKey, ts)
-		return time.Time{}, nil
+		lc.value, lc.clamp = time.Time{}, clampFuture
+		return lc, nil
 	}
 	if floor := now.Add(-p.opts.FirstPollBackfillWindow); t.Before(floor) {
-		log.Printf("WARNING: lastCheck for %s (%q) predates the backfill window; clamping to %s", issueKey, ts, floor.UTC().Format(time.RFC3339))
-		return floor, nil
+		lc.value, lc.clamp = floor, clampFloor
 	}
-	return t, nil
+	return lc, nil
 }
 
 // advanceLastCheck updates the lastCheck timestamp for an issue.

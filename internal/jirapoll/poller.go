@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
@@ -142,14 +143,16 @@ func (p *Poller) Run(ctx context.Context) error {
 		return fmt.Errorf("search candidates: %w", err)
 	}
 
-	// Step 2: Filter locked issues, clean up stale locks.
-	unlocked, err := p.filterLocked(ctx, candidates)
+	// Step 2: Filter locked issues, clean up stale locks, and drop the
+	// issues with nothing new since their lastCheck (ADR 0160), so an
+	// already-handled issue does not take a slot from a fresh request.
+	active, unlocked, err := p.filterLocked(ctx, candidates)
 	if err != nil {
 		return fmt.Errorf("filter locked: %w", err)
 	}
 
-	// Step 3: Randomly select min(N, len(unlocked)) candidates.
-	selected := selectRandom(unlocked, p.opts.N)
+	// Step 3: Randomly select min(N, len(active)) candidates.
+	selected := selectRandom(active, p.opts.N)
 
 	// The project role roster (GET /project/{key}/role, which Jira Cloud
 	// serves only with the Administer Projects permission) is not loaded
@@ -293,8 +296,8 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("poll complete: %d candidates, %d unlocked, %d selected, %d dispatches",
-		len(candidates), len(unlocked), len(selected), len(p.dispatches))
+	log.Printf("poll complete: %d candidates, %d unlocked, %d active, %d selected, %d dispatches",
+		len(candidates), unlocked, len(active), len(selected), len(p.dispatches))
 	if dispatchErrors > 0 {
 		return fmt.Errorf("failed to dispatch records for %d issue(s); their lastCheck was not advanced, so they are retried next cycle: %w", dispatchErrors, firstDispatchErr)
 	}
@@ -414,14 +417,18 @@ func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
 	return p.client.SearchIssues(ctx, jql, p.opts.M)
 }
 
-// filterLocked removes locked issues and cleans up stale locks. If every
-// candidate is dropped by a failing lock-property read or a failing
-// stale-lock release (e.g. broken auth, or read-only credentials that
-// cannot write entity properties), it returns an error instead of silently
-// reporting zero unlocked issues, which would otherwise be
-// indistinguishable from a genuinely quiet Jira project.
-func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.Issue, error) {
-	var unlocked []jira.Issue
+// filterLocked removes locked issues, cleans up stale locks, and keeps
+// only the unlocked issues with new activity (see hasNewActivity). It
+// returns those, with the number of unlocked issues. If every candidate is
+// dropped by a failing lock-property read or a failing stale-lock release
+// (e.g. broken auth, or read-only credentials that cannot write entity
+// properties), it returns an error instead of silently reporting zero
+// unlocked issues, which would otherwise be indistinguishable from a
+// genuinely quiet Jira project. Issues with nothing new are not errors.
+func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.Issue, int, error) {
+	var active []jira.Issue
+	var unlocked int
+	var clamped clampReport
 	var readErrors, releaseErrors int
 	for _, issue := range issues {
 		lock, err := p.readLock(ctx, issue.Key)
@@ -442,12 +449,91 @@ func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.
 				continue
 			}
 		}
-		unlocked = append(unlocked, issue)
+		unlocked++
+		if p.hasNewActivity(ctx, issue, &clamped) {
+			active = append(active, issue)
+		}
 	}
 	if len(issues) > 0 && readErrors+releaseErrors == len(issues) {
-		return nil, fmt.Errorf("all %d candidates dropped by lock errors (%d reads, %d stale-lock releases failed)", len(issues), readErrors, releaseErrors)
+		return nil, 0, fmt.Errorf("all %d candidates dropped by lock errors (%d reads, %d stale-lock releases failed)", len(issues), readErrors, releaseErrors)
 	}
-	return unlocked, nil
+	clamped.log()
+	return active, unlocked, nil
+}
+
+// hasNewActivity reports whether issue has activity after its lastCheck:
+// its updated value from the search row is after its lastCheck, clamped
+// exactly as processIssue's read clamps it (ADR 0160, Decision item 1).
+// It fails open: an issue whose lastCheck cannot be read or parsed, has no
+// usable lastCheck, or has no usable updated value is active, so neither a
+// broken read nor an editor writing garbage can hide an issue. A read
+// error is not reported here; processIssue reports it if the issue is
+// picked. A clamped lastCheck is added to clamped instead of logged, so a
+// quiet project logs one line per cycle rather than one per idle issue.
+func (p *Poller) hasNewActivity(ctx context.Context, issue jira.Issue, clamped *clampReport) bool {
+	lc, err := p.loadLastCheck(ctx, issue.Key)
+	if err != nil {
+		return true
+	}
+	updated, updatedErr := parseJiraTimestamp(issue.Fields.Updated)
+	active := lc.value.IsZero() || updatedErr != nil || updated.After(lc.value)
+	switch lc.clamp {
+	case clampFuture:
+		clamped.future = append(clamped.future, issue.Key)
+	case clampFloor:
+		// Idle with activity after the stored value: that activity is
+		// itself older than the backfill window, so it is not replayed.
+		// Jira stamps updated a little after the newest entry, and a
+		// lastCheck saved before ADR 0160 sits at that entry, so a gap
+		// within gapTolerance is not reported.
+		if !active && updated.Sub(lc.stored) > gapTolerance {
+			clamped.gap = append(clamped.gap, issue.Key)
+		} else {
+			clamped.old = append(clamped.old, issue.Key)
+		}
+	}
+	return active
+}
+
+// gapTolerance is how far updated may be after a lastCheck older than
+// the backfill window before the activity filter reports that activity
+// may have been missed. It covers the offset between the newest entry and
+// the updated value Jira stamps for it.
+const gapTolerance = time.Second
+
+// clampReport collects the candidates whose lastCheck the activity filter
+// clamped in one cycle.
+type clampReport struct {
+	gap    []string // stored before the window, activity after it (beyond gapTolerance) but also before the window
+	old    []string // stored before the window, nothing lost
+	future []string // stored ahead of now, treated as unset
+}
+
+// log writes one line for the cycle when any lastCheck was clamped. The
+// line is a WARNING, and carries the phrase the guide tells operators to
+// grep for after an outage, only when activity may have been missed in
+// the gap: a lastCheck older than the window is the normal state of an
+// issue last handled more than a window ago. Issue keys come from the
+// search; stored values are attacker-writable and are not printed.
+func (r clampReport) log() {
+	var parts []string
+	if len(r.gap) > 0 {
+		parts = append(parts, "lastCheck predates the backfill window and activity after it may have been missed, because that activity is older than the window too: "+strings.Join(r.gap, ", "))
+	}
+	if len(r.old) > 0 {
+		parts = append(parts, "lastCheck older than the backfill window, clamped to its start: "+strings.Join(r.old, ", "))
+	}
+	if len(r.future) > 0 {
+		parts = append(parts, "lastCheck in the future, treated as unset: "+strings.Join(r.future, ", "))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	prefix := "activity filter: "
+	if len(r.gap) > 0 {
+		prefix = "WARNING: " + prefix
+	}
+	log.Print(prefix + strings.Join(parts, "; "))
 }
 
 // selectRandom randomly selects min(n, len(items)) items.

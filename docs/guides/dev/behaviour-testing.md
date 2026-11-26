@@ -2183,4 +2183,14 @@ field. The poller itself treats an issue served without a labels array as
 unlabeled — `state.labels` becomes an empty list — so neither shape an issue
 arrives in loses events; the unit tests serve each shape directly.
 
+**`jiramock` updated change:** an issue added with `AddIssue` now starts
+with `updated` equal to `created`, instead of the time of the call.
+`AddCommentFromActorAt` and `AddLabelChangeAt` (and so `AddComment`,
+`AddCommentFromActor` and `AddLabelChange`) move it forward to the activity
+time, never back; entity property calls leave it alone, as Jira does. The
+Jira poller skips an issue whose `updated` is not after its `lastCheck`, so
+the mock must serve it the way Jira does. This is deliberately not treated
+as a breaking change: no function or signature changed, and a scenario that
+adds activity after creating the issue sees `updated` move with it.
+
 Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.

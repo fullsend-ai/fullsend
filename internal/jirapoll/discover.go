@@ -226,6 +226,17 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 		}
 	}
 
+	// The checkpoint also reaches the issue's own updated value from the
+	// search row (ADR 0160, Decision item 3). Jira moves updated for
+	// changes that leave no comment or changelog entry (a worklog, an
+	// attachment, a deleted comment), or stamps it a little after the
+	// newest entry; without this an issue whose updated is after every
+	// entry would pass the activity filter every cycle. The safety-margin
+	// cap below still applies.
+	if updated, err := parseJiraTimestamp(issue.Fields.Updated); err == nil && updated.After(maxSeen) {
+		maxSeen = updated
+	}
+
 	if safeCeiling := fetchStart.Add(-changeDetectionSafetyMargin); maxSeen.After(safeCeiling) {
 		maxSeen = safeCeiling
 	}

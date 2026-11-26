@@ -66,6 +66,14 @@ type mockClient struct {
 	roleActorsCalls int            // GetProjectRoleActors call count
 	userGroupsCalls map[string]int // accountID -> GetUserGroups call count
 
+	// Per-issue call counts, so a test can show an issue cost nothing.
+	// Writes and deletes are counted because a lock is written and then
+	// deleted, which the end state cannot show.
+	listCommentsCalls   map[string]int // issueKey -> ListComments calls
+	listChangelogCalls  map[string]int // issueKey -> ListChangelog calls
+	propertySetCalls    map[string]int // issueKey -> SetEntityProperty calls
+	propertyDeleteCalls map[string]int // issueKey -> DeleteEntityProperty calls
+
 	// getPropertyHook, if set, runs after each GetEntityProperty call
 	// captures its return value, and before that value is returned. Used
 	// to simulate a concurrent writer changing the stored property
@@ -87,6 +95,11 @@ func newMockClient() *mockClient {
 		statuses:       make(map[string]jira.Status),
 		statusErr:      make(map[string]error),
 		myselfUser:     &jira.User{AccountID: "poller-service-account", AccountType: "atlassian", Active: true},
+
+		listCommentsCalls:   make(map[string]int),
+		listChangelogCalls:  make(map[string]int),
+		propertySetCalls:    make(map[string]int),
+		propertyDeleteCalls: make(map[string]int),
 	}
 }
 
@@ -122,6 +135,9 @@ func (m *mockClient) GetIssue(_ context.Context, key string) (*jira.Issue, error
 }
 
 func (m *mockClient) ListComments(_ context.Context, key string) ([]jira.Comment, error) {
+	m.mu.Lock()
+	m.listCommentsCalls[key]++
+	m.mu.Unlock()
 	if err, ok := m.commentErr[key]; ok && err != nil {
 		return nil, err
 	}
@@ -129,6 +145,9 @@ func (m *mockClient) ListComments(_ context.Context, key string) ([]jira.Comment
 }
 
 func (m *mockClient) ListChangelog(_ context.Context, key string) ([]jira.ChangelogEntry, error) {
+	m.mu.Lock()
+	m.listChangelogCalls[key]++
+	m.mu.Unlock()
 	if err, ok := m.changelogErr[key]; ok && err != nil {
 		return nil, err
 	}
@@ -160,6 +179,7 @@ func (m *mockClient) GetEntityProperty(_ context.Context, issueKey, propKey stri
 func (m *mockClient) SetEntityProperty(_ context.Context, issueKey, propKey string, value any) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.propertySetCalls[issueKey]++
 
 	if err, ok := m.propertySetErr[propKey]; ok && err != nil {
 		return err
@@ -178,6 +198,7 @@ func (m *mockClient) SetEntityProperty(_ context.Context, issueKey, propKey stri
 func (m *mockClient) DeleteEntityProperty(_ context.Context, issueKey, propKey string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.propertyDeleteCalls[issueKey]++
 
 	if props, ok := m.properties[issueKey]; ok {
 		delete(props, propKey)
@@ -1641,7 +1662,7 @@ func TestFilterLockedStaleCleanupPreservesConcurrentFreshLock(t *testing.T) {
 		}
 	}
 
-	if _, err := p.filterLocked(context.Background(), []jira.Issue{{Key: "PROJ-123"}}); err != nil {
+	if _, _, err := p.filterLocked(context.Background(), []jira.Issue{{Key: "PROJ-123"}}); err != nil {
 		t.Fatalf("filterLocked() error: %v", err)
 	}
 
@@ -1671,12 +1692,12 @@ func TestFilterLockedErrorsWhenAllLockReadsFail(t *testing.T) {
 	p := newTestPoller(mc, nil, Options{TargetRepo: "acme/platform"})
 
 	issues := []jira.Issue{{Key: "PROJ-1"}, {Key: "PROJ-2"}}
-	unlocked, err := p.filterLocked(context.Background(), issues)
+	active, unlocked, err := p.filterLocked(context.Background(), issues)
 	if err == nil {
 		t.Fatal("filterLocked() error = nil, want error when every lock read fails")
 	}
-	if len(unlocked) != 0 {
-		t.Errorf("unlocked = %v, want empty", unlocked)
+	if len(active) != 0 || unlocked != 0 {
+		t.Errorf("active = %v, unlocked = %d, want none", active, unlocked)
 	}
 }
 
