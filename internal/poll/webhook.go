@@ -181,7 +181,7 @@ func (p *Poller) BuildWebhookEvents(ctx context.Context, raw []byte) ([]WebhookE
 			where := fmt.Sprintf("webhook %s event on IID %d", event.Type, event.IID)
 			we.Normalized.State.Labels = dispatch.LogBoundTransportLabels(where, we.Normalized.State.Labels)
 			logBoundTransportEventStrings(where, &we.Normalized)
-			stages, err := p.router.Route(&we.Normalized)
+			stages, reason, err := routeWithReason(p.router, &we.Normalized)
 			if err != nil {
 				err = fmt.Errorf("route webhook %s event on IID %d: %w", event.Type, event.IID, err)
 				if deferrable {
@@ -189,6 +189,9 @@ func (p *Poller) BuildWebhookEvents(ctx context.Context, raw []byte) ([]WebhookE
 					continue
 				}
 				return nil, err
+			}
+			if len(stages) == 0 {
+				log.Printf("  no stages routed for %s: %s", where, reason)
 			}
 			we.Stages = stages
 		}

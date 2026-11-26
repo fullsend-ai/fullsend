@@ -532,8 +532,11 @@ role and review state are accepted.
 The GitHub bash dispatcher checks that the event sender has write access
 before routing a closed pull request to retro. On `pull_request`, only a
 same-repository pull request (head repository id equals the base repository
-id) is routed; a fork pull request close does not dispatch retro, and a
-write-authorized user can run `/fs-retro`. The CEL route applies the
+id) is routed; a fork pull request close reaches retro through the fork
+pull request stub's `workflow_run`, where the closer (`merged_by`, else the
+latest `closed` issue event actor, for a close at most five minutes before
+the stub run) must have write access, and a write-authorized user can run
+`/fs-retro`. The CEL route applies the
 same fixed write floor before applying the selected harness's role-derived
 threshold; a `retro` role requires `write` by default. Merge-queue merges use
 the same rule: the event sender must have write-level repository permission.

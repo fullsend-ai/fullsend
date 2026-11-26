@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -737,7 +739,7 @@ authorization:
 		Triage:          jirapoll.ActorList{Accounts: []string{"acct"}},
 		ListsConfigured: true,
 		Labels:          config.JiraLabelsAllowlist,
-	}, jiraPollAuthorization(m.jiraAuth))
+	}, jiraPollAuthorization(m.jiraAuth, noJiraEnv))
 
 	// Kill switch keeps the provider so the poller's role resolution is
 	// configured consistently.
@@ -750,7 +752,7 @@ authorization:
 	require.NoError(t, err)
 	require.NotNil(t, m.jiraAuth)
 	assert.True(t, m.Auth.JiraLabelsByEditPermission)
-	assert.Equal(t, jirapoll.Authorization{Configured: true, Labels: config.JiraLabelsEditors}, jiraPollAuthorization(m.jiraAuth))
+	assert.Equal(t, jirapoll.Authorization{Configured: true, Labels: config.JiraLabelsEditors}, jiraPollAuthorization(m.jiraAuth, noJiraEnv))
 
 	// An invalid labels value fails config loading.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
@@ -762,6 +764,9 @@ authorization:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid labels")
 }
+
+// noJiraEnv is a getenv that sets no variable.
+func noJiraEnv(string) string { return "" }
 
 func TestJiraPollOptions_ForwardsAuthorization(t *testing.T) {
 	dir := t.TempDir()
@@ -781,7 +786,7 @@ authorization:
 		jira:       jiraPollSettings{baseURL: "https://jira.example.com", apiURL: config.DefaultJiraAPIURL, project: "PROJ", jql: "project = PROJ", enabled: true},
 		targetRepo: "group/sub/repo", outputPath: "out.json", fullsendDir: dir,
 	}
-	opts := jiraPollOptions(args, m)
+	opts := jiraPollOptions(args, m, noJiraEnv)
 	assert.Equal(t, jirapoll.Options{
 		TargetRepo:  "group/sub/repo",
 		JiraBaseURL: "https://jira.example.com",
@@ -805,13 +810,39 @@ authorization:
 	assert.True(t, opts.Authorization.Configured)
 	assert.Equal(t, jirapoll.ActorList{Groups: []string{"devs"}}, opts.Authorization.Write)
 
+	// Lists read from the environment convert to the same authorization.
+	// An unset variable leaves its list empty, which denies everyone, and
+	// logs a warning that names the variable.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+authorization:
+  - provider: jira
+    write:
+      groups_from: WRITE_GROUPS
+    triage:
+      accounts_from: TRIAGE_ACCOUNTS
+    labels: allowlist
+`), 0o644))
+	m, err = newCELMatcher(context.Background(), dir)
+	require.NoError(t, err)
+	var logs bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prevOut) })
+	env := map[string]string{"WRITE_GROUPS": "devs", "TRIAGE_ACCOUNTS": "acct"}
+	assert.Equal(t, opts.Authorization, jiraPollOptions(args, m, func(k string) string { return env[k] }).Authorization)
+	assert.Empty(t, logs.String())
+	assert.Equal(t, jirapoll.Authorization{Configured: true, ListsConfigured: true, Labels: config.JiraLabelsAllowlist},
+		jiraPollOptions(args, m, noJiraEnv).Authorization)
+	assert.Contains(t, logs.String(), "write.groups_from: WRITE_GROUPS is unset or empty")
+	assert.Contains(t, logs.String(), "triage.accounts_from: TRIAGE_ACCOUNTS is unset or empty")
+
 	// With no jira entry both forges get the zero value: project roles for
 	// every event, as before the provider existed.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
 `), 0o644))
 	m, err = newCELMatcher(context.Background(), dir)
 	require.NoError(t, err)
-	assert.Equal(t, jirapoll.Authorization{}, jiraPollOptions(args, m).Authorization)
+	assert.Equal(t, jirapoll.Authorization{}, jiraPollOptions(args, m, noJiraEnv).Authorization)
 }
 
 func TestNewCELMatcher_RejectsInvalidAuthorization(t *testing.T) {
@@ -849,10 +880,10 @@ func TestJiraPollAuthorization_EmptyListsStayConfigured(t *testing.T) {
 	got := jiraPollAuthorization(&config.AuthorizationProvider{
 		Provider: config.AuthProviderJira,
 		Write:    &config.JiraActorList{},
-	})
+	}, noJiraEnv)
 	assert.True(t, got.ListsConfigured)
 	assert.True(t, got.HasLists())
-	assert.False(t, jiraPollAuthorization(&config.AuthorizationProvider{Provider: config.AuthProviderJira}).HasLists())
+	assert.False(t, jiraPollAuthorization(&config.AuthorizationProvider{Provider: config.AuthProviderJira}, noJiraEnv).HasLists())
 }
 
 func TestNewCELMatcher_NullListKeysStayConfigured(t *testing.T) {
@@ -869,7 +900,7 @@ func TestNewCELMatcher_NullListKeysStayConfigured(t *testing.T) {
 			m, err := newCELMatcher(context.Background(), dir)
 			require.NoError(t, err)
 			require.NotNil(t, m.jiraAuth)
-			got := jiraPollAuthorization(m.jiraAuth)
+			got := jiraPollAuthorization(m.jiraAuth, noJiraEnv)
 			assert.True(t, got.ListsConfigured)
 			assert.True(t, got.HasLists())
 		})
@@ -886,6 +917,6 @@ func TestNewCELMatcher_RejectsAliasedMisspelledJiraKey(t *testing.T) {
 }
 
 func TestJiraPollAuthorization_NilProvider(t *testing.T) {
-	assert.Equal(t, jirapoll.Authorization{}, jiraPollAuthorization(nil))
+	assert.Equal(t, jirapoll.Authorization{}, jiraPollAuthorization(nil, noJiraEnv))
 	assert.False(t, jiraAuthOptions(nil).JiraLabelsByEditPermission)
 }

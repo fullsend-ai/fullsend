@@ -57,13 +57,13 @@ type InstallConfig struct {
 
 	// InferenceAuth is the repository's effective inference.auth
 	// (InferenceAuthVertexWIF, InferenceAuthOpenAIAPIKey or
-	// InferenceAuthOpenAIWIF). It selects
+	// InferenceAuthOpenAIWIF, or a comma-joined mix of them). It selects
 	// which inference credentials Install writes. Empty keeps the legacy
 	// behavior: the Vertex secrets are written when InferenceProject is set.
 	InferenceAuth string
 
 	// OpenAIAPIKey is the static OpenAI API key written as
-	// FULLSEND_OPENAI_API_KEY when InferenceAuth is
+	// FULLSEND_OPENAI_API_KEY when InferenceAuth selects
 	// InferenceAuthOpenAIAPIKey. It comes from the command line only;
 	// it is never persisted to the manifest and never logged.
 	OpenAIAPIKey string
@@ -307,7 +307,7 @@ func Install(ctx context.Context, cfg InstallConfig,
 	}
 
 	// Validate WIF provider when Vertex inference secrets will be written.
-	if !cfg.ReuseSecrets && cfg.InferenceAuth != InferenceAuthOpenAIAPIKey && cfg.InferenceProject != "" {
+	if !cfg.ReuseSecrets && writesVertexSecrets(cfg.InferenceAuth) && cfg.InferenceProject != "" {
 		if wifProvider == "" {
 			return result, fmt.Errorf("WIF provider required for repository secret configuration; set WIFProvider or enable WIF provisioning")
 		}
@@ -759,25 +759,32 @@ func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, 
 }
 
 // installSecretsForForge returns the inference secrets to write for the
-// repository's inference.auth. For openai-api-key it returns
-// FULLSEND_OPENAI_API_KEY when a key was supplied; otherwise it returns
-// the Vertex pair when InferenceProject is set. Returns nil when no
-// input was supplied for the selected method.
+// repository's inference.auth. When the selection includes openai-api-key
+// it returns FULLSEND_OPENAI_API_KEY if a key was supplied; when it
+// includes a Vertex-using method (or is the legacy empty selection) it
+// returns the Vertex pair if InferenceProject is set. A mix gets both
+// groups whose inputs were supplied. Returns nil when no input was
+// supplied for any selected method.
 func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]string {
-	if cfg.InferenceAuth == InferenceAuthOpenAIAPIKey {
-		if cfg.OpenAIAPIKey == "" {
-			return nil
-		}
-		return map[string]string{forge.SecretOpenAIAPIKey: cfg.OpenAIAPIKey}
+	secrets := make(map[string]string)
+	if inferenceAuthHas(cfg.InferenceAuth, InferenceAuthOpenAIAPIKey) && cfg.OpenAIAPIKey != "" {
+		secrets[forge.SecretOpenAIAPIKey] = cfg.OpenAIAPIKey
 	}
-	if cfg.InferenceProject == "" {
+	if writesVertexSecrets(cfg.InferenceAuth) && cfg.InferenceProject != "" {
+		secrets[forge.SecretGCPProjectID] = cfg.InferenceProject
+		secrets[forge.SecretGCPWIFProvider] = wifProvider
+	}
+	if len(secrets) == 0 {
 		return nil
 	}
+	return secrets
+}
 
-	return map[string]string{
-		forge.SecretGCPProjectID:   cfg.InferenceProject,
-		forge.SecretGCPWIFProvider: wifProvider,
-	}
+// writesVertexSecrets reports whether Install writes the Vertex pair for
+// auth when a GCP project is supplied: any Vertex-using selection, and the
+// legacy empty selection of callers outside convergence.
+func writesVertexSecrets(auth string) bool {
+	return auth == "" || usesVertexCredentials(auth)
 }
 
 // requiredVariables lists the per-repo variables that must exist for a
@@ -853,24 +860,35 @@ func requiredSecretsForForge(forgeName string) []string {
 // empty selection) uses the GCP project ID and WIF provider pair.
 // openai-wif needs no secret of its own; it returns the GCP pair, which
 // stays optional there and is written only when Vertex inputs are
-// supplied, so an OpenAI parent can keep Vertex sub-agents.
+// supplied, so an OpenAI parent can keep Vertex sub-agents. A mix returns
+// the union for its methods, the OpenAI key first.
 func inferenceSecretsForAuth(auth string) []string {
-	if auth == InferenceAuthOpenAIAPIKey {
-		return []string{forge.SecretOpenAIAPIKey}
+	var names []string
+	if inferenceAuthHas(auth, InferenceAuthOpenAIAPIKey) {
+		names = append(names, forge.SecretOpenAIAPIKey)
 	}
-	return requiredSecrets
+	if writesVertexSecrets(auth) {
+		names = append(names, requiredSecrets...)
+	}
+	return names
 }
 
 // requiredInferenceSecretsForAuth returns the inference secrets that must
-// exist (or be supplied) for auth to be usable. openai-wif requires none:
-// its identifiers are non-secret configuration checked separately. A
-// gateway-only repository (empty auth past RequireInferenceAuth) requires
-// none either: its inference.gateway route authenticates on its own.
+// exist (or be supplied) for auth to be usable: FULLSEND_OPENAI_API_KEY
+// when the selection includes openai-api-key, and the GCP pair when it
+// includes vertex-wif. openai-wif requires none: its identifiers are
+// non-secret configuration checked separately. A gateway-only repository
+// (empty auth past RequireInferenceAuth) requires none either: its
+// inference.gateway route authenticates on its own.
 func requiredInferenceSecretsForAuth(auth string) []string {
-	if auth == InferenceAuthOpenAIWIF || auth == "" {
-		return nil
+	var names []string
+	if inferenceAuthHas(auth, InferenceAuthOpenAIAPIKey) {
+		names = append(names, forge.SecretOpenAIAPIKey)
 	}
-	return inferenceSecretsForAuth(auth)
+	if inferenceAuthHas(auth, InferenceAuthVertexWIF) {
+		names = append(names, requiredSecrets...)
+	}
+	return names
 }
 
 // managedInferenceSecrets returns every Fullsend-managed inference
@@ -893,22 +911,28 @@ func managedInferenceSecrets() []string {
 }
 
 // obsoleteInferenceSecrets returns the Fullsend-managed inference secrets
-// that belong to the method auth did not select. Convergence removes them
-// only after the selected method's credentials are established. GitLab's
-// unprefixed OPENAI_API_KEY is never included: it may be shared with
-// other jobs and Fullsend does not manage it.
+// that no method auth selects uses: every managed inference secret except
+// those of inferenceSecretsForAuth. Convergence removes them only after
+// the selected methods' credentials are established. GitLab's unprefixed
+// OPENAI_API_KEY is never included: it may be shared with other jobs and
+// Fullsend does not manage it. An empty selection (gateway-only) makes
+// nothing obsolete.
 //
 // openai-wif makes only FULLSEND_OPENAI_API_KEY obsolete: the GCP pair
 // may still serve Vertex sub-agents of an OpenAI parent, so it is kept.
+// A mix that includes openai-api-key keeps FULLSEND_OPENAI_API_KEY too.
 func obsoleteInferenceSecrets(auth string) []string {
-	switch auth {
-	case InferenceAuthOpenAIAPIKey:
-		return requiredSecrets
-	case InferenceAuthVertexWIF, InferenceAuthOpenAIWIF:
-		return []string{forge.SecretOpenAIAPIKey}
-	default:
+	if auth == "" {
 		return nil
 	}
+	used := inferenceSecretsForAuth(auth)
+	var obsolete []string
+	for _, name := range managedInferenceSecrets() {
+		if !slices.Contains(used, name) {
+			obsolete = append(obsolete, name)
+		}
+	}
+	return obsolete
 }
 
 // obsoleteVariable is a Fullsend-managed inference variable the
@@ -932,12 +956,12 @@ func obsoleteInferenceVariables(cfg ResolvedConfig) []obsoleteVariable {
 		authReason = "inference is routed through inference.gateway"
 	}
 	var vars []obsoleteVariable
-	if cfg.InferenceAuth == InferenceAuthOpenAIAPIKey {
+	if cfg.InferenceAuth != "" && !usesVertexCredentials(cfg.InferenceAuth) {
 		vars = append(vars, obsoleteVariable{name: forge.VarGCPRegion, reason: authReason})
 	}
 	if cfg.Forge == ForgeGitLab && cfg.DeclaredServiceAccount == "" {
 		reason := "inference.service_account is not declared"
-		if cfg.InferenceAuth != InferenceAuthVertexWIF {
+		if !inferenceAuthHas(cfg.InferenceAuth, InferenceAuthVertexWIF) {
 			reason = authReason
 		}
 		vars = append(vars, obsoleteVariable{name: forge.VarGCPServiceAccount, reason: reason})

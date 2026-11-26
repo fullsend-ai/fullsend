@@ -296,12 +296,14 @@ type convergeDiscovery struct {
 	// failed read changes nothing.
 	staleVendored *scaffold.StaleVendoredAssets
 
-	// credsPresent reports that every inference secret for the repo's
-	// inference.auth existed before this run. credsSupplied reports that
-	// the run supplied inputs for that method, so its secrets are
-	// (re)written. Set by the serial validation phase.
-	credsPresent  bool
-	credsSupplied bool
+	// credsSupplied reports that the run supplied inputs for at least one
+	// selected method, so those secrets are (re)written: openAISupplied
+	// for FULLSEND_OPENAI_API_KEY, vertexSupplied for the GCP pair. A mix
+	// may supply one group and reuse the other. Set by the serial
+	// validation phase.
+	credsSupplied  bool
+	openAISupplied bool
+	vertexSupplied bool
 	// unsafeOpenAIKey reports that the existing GitLab
 	// FULLSEND_OPENAI_API_KEY variable, which this run would reuse, is not
 	// both masked and protected. Only set when no replacement key is supplied.
@@ -349,17 +351,6 @@ func hasComponent(components []ComponentStatus, name string) bool {
 	return false
 }
 
-// secretsPresent returns true when every required inference secret for
-// auth is present (always true for openai-wif, which requires none).
-func secretsPresent(components []ComponentStatus, auth string) bool {
-	for _, name := range requiredInferenceSecretsForAuth(auth) {
-		if !hasComponent(components, "secret:"+name) {
-			return false
-		}
-	}
-	return true
-}
-
 // openAIKeyDefect names why an existing FULLSEND_OPENAI_API_KEY cannot be
 // reused as the agent job's credential, or returns "" when it can. Jobs
 // receive only a masked, protected environment variable that is not
@@ -385,16 +376,36 @@ func openAIKeyDefect(p forge.SecretProtection) string {
 	return ""
 }
 
-// missingSecretNames returns the required inference secrets for auth that
-// are absent.
-func missingSecretNames(components []ComponentStatus, auth string) []string {
-	var missing []string
-	for _, name := range requiredInferenceSecretsForAuth(auth) {
-		if !hasComponent(components, "secret:"+name) {
-			missing = append(missing, name)
+// missingInferenceCredentials returns the required inference secrets for
+// auth that are absent and that this run supplies no inputs for, with the
+// inputs that would supply each missing group. Every selected method is
+// checked on its own, so in a mix supplying one method's inputs does not
+// excuse another method's missing secret. Both results are empty when the
+// repository's credentials are usable.
+func missingInferenceCredentials(components []ComponentStatus, cfg ConvergeConfig, auth string) (missing, inputs []string) {
+	groups := []struct {
+		method   string
+		supplied bool
+	}{
+		{InferenceAuthOpenAIAPIKey, openAIInputsSupplied(cfg, auth)},
+		{InferenceAuthVertexWIF, vertexInputsSupplied(cfg, auth)},
+	}
+	for _, g := range groups {
+		if !inferenceAuthHas(auth, g.method) || g.supplied {
+			continue
+		}
+		var absent []string
+		for _, name := range requiredInferenceSecretsForAuth(g.method) {
+			if !hasComponent(components, "secret:"+name) {
+				absent = append(absent, name)
+			}
+		}
+		if len(absent) > 0 {
+			missing = append(missing, absent...)
+			inputs = append(inputs, inferenceInputFlags(g.method))
 		}
 	}
-	return missing
+	return missing, inputs
 }
 
 // gitlabMaskableRe matches the values GitLab accepts for a masked CI/CD
@@ -402,17 +413,21 @@ func missingSecretNames(components []ComponentStatus, auth string) []string {
 // (including the URL-safe - and _) plus @ : . ~.
 var gitlabMaskableRe = regexp.MustCompile(`^[A-Za-z0-9_+=/@:.~-]{8,}$`)
 
-// inferenceInputsSupplied reports whether this run supplied credential
-// inputs for auth: a GCP project for vertex-wif (--vertex-project or the
-// inference.project the effective configuration declares; cfg carries the
-// repository's effective inputs, see withVertexInputs), --openai-api-key
-// for openai-api-key. For openai-wif, the GCP project supplies the
+// openAIInputsSupplied reports whether this run supplies
+// FULLSEND_OPENAI_API_KEY for auth: the selection includes openai-api-key
+// and --openai-api-key was given.
+func openAIInputsSupplied(cfg ConvergeConfig, auth string) bool {
+	return inferenceAuthHas(auth, InferenceAuthOpenAIAPIKey) && cfg.OpenAIAPIKey != ""
+}
+
+// vertexInputsSupplied reports whether this run supplies the GCP pair for
+// auth: the selection includes a Vertex-using method and a GCP project is
+// supplied (--vertex-project or the inference.project the effective
+// configuration declares; cfg carries the repository's effective inputs,
+// see withVertexInputs). For openai-wif, the GCP project supplies the
 // optional GCP pair used by Vertex sub-agents. A gateway-only repository
 // (empty auth) consumes no credential inputs.
-func inferenceInputsSupplied(cfg ConvergeConfig, auth string) bool {
-	if auth == InferenceAuthOpenAIAPIKey {
-		return cfg.OpenAIAPIKey != ""
-	}
+func vertexInputsSupplied(cfg ConvergeConfig, auth string) bool {
 	return usesVertexCredentials(auth) && cfg.InferenceProject != ""
 }
 
@@ -426,15 +441,33 @@ func inferenceInputFlags(auth string) string {
 }
 
 // inferenceSecretValues returns the secret values to write for auth from
-// the run's inputs. Values are secrets and must never be logged.
+// the run's inputs: only the groups whose inputs were supplied, so a mix
+// that supplies one method's inputs leaves the other method's existing
+// secrets untouched. Values are secrets and must never be logged.
 func inferenceSecretValues(cfg ConvergeConfig, auth, wifProvider string) map[string]string {
-	if auth == InferenceAuthOpenAIAPIKey {
-		return map[string]string{forge.SecretOpenAIAPIKey: cfg.OpenAIAPIKey}
+	values := make(map[string]string)
+	if openAIInputsSupplied(cfg, auth) {
+		values[forge.SecretOpenAIAPIKey] = cfg.OpenAIAPIKey
 	}
-	return map[string]string{
-		forge.SecretGCPProjectID:   cfg.InferenceProject,
-		forge.SecretGCPWIFProvider: wifProvider,
+	if vertexInputsSupplied(cfg, auth) {
+		values[forge.SecretGCPProjectID] = cfg.InferenceProject
+		values[forge.SecretGCPWIFProvider] = wifProvider
 	}
+	return values
+}
+
+// suppliedInferenceSecrets returns, in inferenceSecretsForAuth order, the
+// inference secrets this run writes for the repository: those of the
+// groups whose inputs the validation phase found supplied.
+func (d convergeDiscovery) suppliedInferenceSecrets() []string {
+	var names []string
+	for _, name := range inferenceSecretsForAuth(d.resolved.InferenceAuth) {
+		if name == forge.SecretOpenAIAPIKey && d.openAISupplied ||
+			name != forge.SecretOpenAIAPIKey && d.vertexSupplied {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // scaffoldFilesOnDefaultBranch reports whether every file is already on the
@@ -489,7 +522,7 @@ func githubLegacyOpenAIConsumers(ctx context.Context, resolved ResolvedConfig, c
 }
 
 // selectedCredentialContractLive reports whether the default branch already
-// carries a consumer of the selected method's credential. openai-wif needs
+// carries a consumer of every selected method's credential. openai-wif needs
 // a complete set of OpenAI WIF identifiers live on the default branch and,
 // on GitHub, installed reusable workflows that forward them.
 // openai-api-key needs a consumer: GitLab's agent job script maps
@@ -498,7 +531,7 @@ func githubLegacyOpenAIConsumers(ctx context.Context, resolved ResolvedConfig, c
 // consumer that predates either would leave the job without credentials once
 // the old secrets are deleted.
 func selectedCredentialContractLive(ctx context.Context, resolved ResolvedConfig, client forge.Client) (bool, error) {
-	if resolved.InferenceAuth == InferenceAuthOpenAIWIF {
+	if inferenceAuthHas(resolved.InferenceAuth, InferenceAuthOpenAIWIF) {
 		// The replacement route is usable only once a complete identifier
 		// set is live on the default branch: configuration still in an
 		// unmerged pull request does not count.
@@ -512,9 +545,12 @@ func selectedCredentialContractLive(ctx context.Context, resolved ResolvedConfig
 		if err != nil {
 			return false, err
 		}
-		return installedOpenAIWIFWorkflowsForward(ctx, resolved, client, gcp)
+		ok, err := installedOpenAIWIFWorkflowsForward(ctx, resolved, client, gcp)
+		if err != nil || !ok {
+			return false, err
+		}
 	}
-	if resolved.InferenceAuth != InferenceAuthOpenAIAPIKey {
+	if !inferenceAuthHas(resolved.InferenceAuth, InferenceAuthOpenAIAPIKey) {
 		return true, nil
 	}
 	if resolved.Forge != ForgeGitLab {
@@ -624,7 +660,7 @@ func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig
 				// the selected credential.
 				ready, readyErr = selectedCredentialContractLive(ctx, resolved, client)
 			}
-			if readyErr == nil && ready && resolved.InferenceAuth == InferenceAuthOpenAIAPIKey {
+			if readyErr == nil && ready && usesOpenAIKeyRoute(resolved.InferenceAuth) {
 				// Inherited OpenAI WIF identifiers that cannot be read
 				// would override the API key at runtime, so the effective
 				// auth route is unverified: keep the old credentials.
@@ -836,10 +872,10 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// selection the credential inputs are validated against, so a
 			// skipped consumer does not fail the run for the others.
 			excludedResolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
-			switch excludedResolved.InferenceAuth {
-			case InferenceAuthOpenAIAPIKey:
+			if inferenceAuthHas(excludedResolved.InferenceAuth, InferenceAuthOpenAIAPIKey) {
 				excludedUsesOpenAI = true
-			case InferenceAuthVertexWIF, InferenceAuthOpenAIWIF:
+			}
+			if usesVertexCredentials(excludedResolved.InferenceAuth) {
 				excludedUsesVertex = true
 			}
 			// Polling can be enabled by the declared preset alone, so the
@@ -854,7 +890,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 			if presetErr != nil {
 				excludedUsesJira = true
-			} else if jira, jiraErr := effectiveJiraTracking(excludedResolved, excludedPreset); jiraErr != nil || jira.PollEnabled() {
+			} else if st, jiraErr := effectiveJiraPollState(excludedResolved, excludedPreset); jiraErr != nil || st.enabled {
 				excludedUsesJira = true
 			}
 		}
@@ -992,12 +1028,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: inputErr}
 				return
 			}
-			jiraTracking, jiraErr := effectiveJiraTracking(resolved, presetData)
+			jiraState, jiraErr := effectiveJiraPollState(resolved, presetData)
 			if jiraErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: jiraErr}
 				return
 			}
-			jiraState := jiraPollState{jira: jiraTracking, enabled: jiraTracking.PollEnabled()}
 			repoFullName := rr.Owner + "/" + rr.Repo
 			progress(repoFullName, "discover", "Checking installation status")
 
@@ -1079,7 +1114,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// would otherwise bypass those controls. The probe reports an
 			// existing but unusable key as present without a match.
 			unsafeKey := false
-			if resolved.Forge == ForgeGitLab && resolved.InferenceAuth == InferenceAuthOpenAIAPIKey &&
+			if resolved.Forge == ForgeGitLab && inferenceAuthHas(resolved.InferenceAuth, InferenceAuthOpenAIAPIKey) &&
 				cfg.OpenAIAPIKey == "" {
 				for _, c := range probed {
 					if c.Name == "secret:"+forge.SecretOpenAIAPIKey {
@@ -1119,10 +1154,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	// consumers (they remain selected) but receive no write.
 	usesOpenAI, usesVertex := excludedUsesOpenAI, excludedUsesVertex
 	for _, d := range discoveries {
-		switch d.resolved.InferenceAuth {
-		case InferenceAuthOpenAIAPIKey:
+		// A mix consumes the inputs of every method it selects.
+		if inferenceAuthHas(d.resolved.InferenceAuth, InferenceAuthOpenAIAPIKey) {
 			usesOpenAI = true
-		case InferenceAuthVertexWIF, InferenceAuthOpenAIWIF:
+		}
+		if usesVertexCredentials(d.resolved.InferenceAuth) {
 			// openai-wif consumes the optional GCP pair for Vertex
 			// sub-agents of an OpenAI parent.
 			usesVertex = true
@@ -1293,7 +1329,9 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// The openai-api-key route is unreachable while WIF identifiers
 		// stay active, because the runtime prefers WIF. Reject before
 		// writes; the identifiers are user-owned and never auto-deleted.
-		if d.resolved.InferenceAuth == InferenceAuthOpenAIAPIKey {
+		// A mix that also selects openai-wif expects the identifiers; the
+		// key is kept but the runtime does not use it while they are set.
+		if usesOpenAIKeyRoute(d.resolved.InferenceAuth) {
 			if residualErr := checkNoResidualOpenAIWIF(ctx, d); residualErr != nil {
 				result.Results[i] = ConvergeResult{
 					Owner: d.repo.Owner,
@@ -1310,7 +1348,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// only when adoption and the safety gate let it be written, the
 		// preset, else what is already committed). Reject a missing or
 		// partial set before writes.
-		if d.resolved.InferenceAuth == InferenceAuthOpenAIWIF {
+		if inferenceAuthHas(d.resolved.InferenceAuth, InferenceAuthOpenAIWIF) {
 			ids, idsErr := effectiveOpenAIWIFIdentifiers(ctx, d)
 			if idsErr == nil && !ids.complete() {
 				idsErr = fmt.Errorf("%s/%s uses inference.auth %s: %s", d.repo.Owner, d.repo.Repo, InferenceAuthOpenAIWIF, ids.problem())
@@ -1326,20 +1364,21 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		}
 
 		// Validate this repo's inference credentials before any writes:
-		// the selected method's secrets must already exist or this run
+		// each selected method's secrets must already exist or this run
 		// must supply inputs for that method (which then replace them).
 		auth := d.resolved.InferenceAuth
 		repoCfg := d.withVertexInputs(cfg)
-		d.credsPresent = secretsPresent(d.components, auth)
-		d.credsSupplied = inferenceInputsSupplied(repoCfg, auth)
-		if !d.credsPresent && !d.credsSupplied {
+		d.openAISupplied = openAIInputsSupplied(repoCfg, auth)
+		d.vertexSupplied = vertexInputsSupplied(repoCfg, auth)
+		d.credsSupplied = d.openAISupplied || d.vertexSupplied
+		if missing, inputs := missingInferenceCredentials(d.components, repoCfg, auth); len(missing) > 0 {
 			result.Results[i] = ConvergeResult{
 				Owner: d.repo.Owner,
 				Repo:  d.repo.Repo,
 				Error: fmt.Errorf("%s/%s uses inference.auth %s: missing %s and no credentials were supplied; supply %s",
 					d.repo.Owner, d.repo.Repo, auth,
-					strings.Join(missingSecretNames(d.components, auth), ", "),
-					inferenceInputFlags(auth)),
+					strings.Join(missing, ", "),
+					strings.Join(inputs, "; and ")),
 			}
 			continue
 		}
@@ -1396,7 +1435,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// GitLab silently stores a CI/CD variable unmasked when masking is
 		// rejected; refuse an OpenAI key that cannot be masked rather than
 		// storing the credential in the clear.
-		if d.credsSupplied && auth == InferenceAuthOpenAIAPIKey && d.resolved.Forge == ForgeGitLab && !gitlabMaskableRe.MatchString(cfg.OpenAIAPIKey) {
+		if d.openAISupplied && d.resolved.Forge == ForgeGitLab && !gitlabMaskableRe.MatchString(cfg.OpenAIAPIKey) {
 			result.Results[i] = ConvergeResult{
 				Owner: d.repo.Owner,
 				Repo:  d.repo.Repo,
@@ -1418,9 +1457,9 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			continue
 		}
 
-		// Compute WIF for vertex-wif repos whose secrets are written.
+		// Compute WIF for Vertex-using repos whose GCP secrets are written.
 		var wif string
-		if d.credsSupplied && auth != InferenceAuthOpenAIAPIKey {
+		if d.vertexSupplied {
 			var number string
 			if repoCfg.WIFProvider == "" {
 				n, numErr := resolveProjectNumber(repoCfg.InferenceProject)
@@ -1581,6 +1620,10 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 	}
+	if err := checkJiraAuthorizationEnvSupport(ctx, d, cfg, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
 	if err := checkGitHubJiraPollWorkflow(ctx, d, cfg, refResolver); err != nil {
 		cr.Error = err
 		return cr
@@ -1594,7 +1637,7 @@ func convergeRepo(ctx context.Context,
 	// A pinned scaffold that predates the OpenAI credential mapping cannot
 	// consume FULLSEND_OPENAI_API_KEY; reject it before any credential is
 	// written or any existing credential is removed.
-	if auth == InferenceAuthOpenAIAPIKey {
+	if inferenceAuthHas(auth, InferenceAuthOpenAIAPIKey) {
 		if err := checkPinnedOpenAICredentialContract(ctx, resolved, cfg, refResolver); err != nil {
 			cr.Error = err
 			return cr
@@ -1628,7 +1671,7 @@ func convergeRepo(ctx context.Context,
 	}
 	// A release build supplies the target when an OpenAI WIF manifest is
 	// unpinned, including migration from an existing github setup install.
-	if auth == InferenceAuthOpenAIWIF && resolved.FullsendRef == "" && cfg.UpstreamRef != "" {
+	if inferenceAuthHas(auth, InferenceAuthOpenAIWIF) && resolved.FullsendRef == "" && cfg.UpstreamRef != "" {
 		resolved.FullsendRef = cfg.UpstreamRef
 		d.resolved = resolved
 	}
@@ -1707,7 +1750,7 @@ func convergeRepo(ctx context.Context,
 			}
 			configAdoptionRequired = overlayNeedsAdoption(found, existing)
 			configSafetyRejected = managedSafetyRejectedAction(ctx, resolved)
-		} else if auth == InferenceAuthOpenAIWIF {
+		} else if inferenceAuthHas(auth, InferenceAuthOpenAIWIF) {
 			// Readiness above may have been satisfied by identifiers in an
 			// unmanaged config.yaml already on the default branch. The
 			// generated installer overlay would replace it and drop them,
@@ -1763,7 +1806,7 @@ func convergeRepo(ctx context.Context,
 		// FULLSEND_GCP_REGION is written with the Vertex credentials, or
 		// whenever the effective configuration declares a region.
 		installRegion := ""
-		if d.credsSupplied || resolved.InferenceRegionDeclared {
+		if d.vertexSupplied || resolved.InferenceRegionDeclared {
 			installRegion = inferenceRegionForAuth(auth, resolved.InferenceRegion)
 		}
 
@@ -1789,8 +1832,8 @@ func convergeRepo(ctx context.Context,
 			// applyEffectiveInfrastructure and vertexCredentialInputs).
 			InferenceWIFAudience:    resolved.DeclaredWIFAudience,
 			InferenceServiceAccount: resolved.DeclaredServiceAccount,
-			// Supplied inputs replace every secret of the selected
-			// method; without inputs the existing secrets are reused
+			// Supplied inputs replace every secret of the methods they
+			// supply; without inputs the existing secrets are reused
 			// (validation already required them to be present).
 			ReuseSecrets:   !d.credsSupplied,
 			VendorBinary:   vendor,
@@ -1798,12 +1841,11 @@ func convergeRepo(ctx context.Context,
 			ManagedConfig:  d.managedConfig,
 			ExistingConfig: existingUnmanagedConfig,
 		}
-		if d.credsSupplied {
-			if auth == InferenceAuthOpenAIAPIKey {
-				installCfg.OpenAIAPIKey = cfg.OpenAIAPIKey
-			} else {
-				installCfg.InferenceProject = cfg.InferenceProject
-			}
+		if d.openAISupplied {
+			installCfg.OpenAIAPIKey = cfg.OpenAIAPIKey
+		}
+		if d.vertexSupplied {
+			installCfg.InferenceProject = cfg.InferenceProject
 		}
 
 		// When vendored, the running binary's embedded templates match the
@@ -2295,18 +2337,28 @@ func withoutLegacyOpenAIConsumer(ctx context.Context, resolved ResolvedConfig, f
 	var (
 		shimLegacy    bool
 		legacyCallers []string
-		err           error
 	)
-	switch resolved.InferenceAuth {
-	case InferenceAuthOpenAIAPIKey:
-		shimLegacy, legacyCallers, err = githubLegacyOpenAIConsumers(ctx, resolved, resolved.ForgeConfig.Client)
-	case InferenceAuthOpenAIWIF:
-		shimLegacy, legacyCallers, err = githubIncompatibleOpenAIWIFCallers(ctx, resolved, resolved.ForgeConfig.Client)
-	default:
-		return files, nil
+	// A mix that selects both OpenAI methods needs consumers that serve
+	// both routes, so a consumer either check rejects is dropped.
+	if inferenceAuthHas(resolved.InferenceAuth, InferenceAuthOpenAIAPIKey) {
+		shim, callers, err := githubLegacyOpenAIConsumers(ctx, resolved, resolved.ForgeConfig.Client)
+		if err != nil {
+			return nil, err
+		}
+		shimLegacy = shimLegacy || shim
+		legacyCallers = append(legacyCallers, callers...)
 	}
-	if err != nil {
-		return nil, err
+	if inferenceAuthHas(resolved.InferenceAuth, InferenceAuthOpenAIWIF) {
+		shim, callers, err := githubIncompatibleOpenAIWIFCallers(ctx, resolved, resolved.ForgeConfig.Client)
+		if err != nil {
+			return nil, err
+		}
+		shimLegacy = shimLegacy || shim
+		for _, c := range callers {
+			if !slices.Contains(legacyCallers, c) {
+				legacyCallers = append(legacyCallers, c)
+			}
+		}
 	}
 	if !shimLegacy && len(legacyCallers) == 0 {
 		return files, nil
@@ -2440,10 +2492,11 @@ func convergeVariables(ctx context.Context,
 // inference.auth. Secrets are write-only (values cannot be read back from
 // the forge API), so without supplied inputs convergence only confirms
 // presence; validation already rejected repos missing them. Supplied
-// inputs replace every secret of the selected method. Removing the other
-// method's Fullsend-managed secrets is not done here: Converge does it
-// after every convergence step succeeded, so a failed setup keeps the old
-// credentials.
+// inputs replace every secret of the methods they supply; in a mix, the
+// secrets of a method without supplied inputs are reused. Removing the
+// unselected methods' Fullsend-managed secrets is not done here: Converge
+// does it after every convergence step succeeded, so a failed setup keeps
+// the old credentials.
 func convergeSecrets(ctx context.Context,
 	d convergeDiscovery,
 	wifProvider string,
@@ -2474,7 +2527,7 @@ func convergeSecrets(ctx context.Context,
 	// the Vertex credentials (e.g. after switching from openai-api-key),
 	// using the effective configuration's region.
 	region := inferenceRegionForAuth(auth, resolved.InferenceRegion)
-	if region != "" && !d.gcpRegionExists {
+	if region != "" && !d.gcpRegionExists && d.vertexSupplied {
 		if cfg.DryRun {
 			actions = append(actions, ComponentAction{
 				Component: "var:" + forge.VarGCPRegion,
@@ -2505,7 +2558,7 @@ func convergeSecrets(ctx context.Context,
 	}
 
 	values := inferenceSecretValues(cfg, auth, wifProvider)
-	for _, name := range inferenceSecretsForAuth(auth) {
+	for _, name := range d.suppliedInferenceSecrets() {
 		action := secretWriteAction(d.components, name)
 		if err := client.CreateRepoSecret(ctx, resolved.Owner, resolved.Repo, name, values[name]); err != nil {
 			actions = append(actions, ComponentAction{
@@ -2542,7 +2595,7 @@ func plannedInferenceSecretActions(d convergeDiscovery, progress ProgressFunc) [
 	}
 	repoFullName := d.resolved.Owner + "/" + d.resolved.Repo
 	var actions []ComponentAction
-	for _, name := range inferenceSecretsForAuth(d.resolved.InferenceAuth) {
+	for _, name := range d.suppliedInferenceSecrets() {
 		action := secretWriteAction(d.components, name)
 		actions = append(actions, ComponentAction{
 			Component: "secret:" + name,
@@ -4042,7 +4095,8 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 		// than taking another release's template now. Using one rule in
 		// both runs keeps the dry run and the live run in step.
 		skip := func(p string) bool {
-			return slices.Contains(resolved.ForgeConfig.WorkflowPaths, p) || slices.Contains(scaffold.PerRepoThinCallerPaths(), p)
+			return slices.Contains(resolved.ForgeConfig.WorkflowPaths, p) || slices.Contains(scaffold.PerRepoThinCallerPaths(), p) ||
+				p == scaffold.ForkPRStubPath
 		}
 		before := len(contentDriftActions)
 		contentDriftFiles, contentDriftActions = withoutRefPathRepairs(contentDriftFiles, contentDriftActions, skip)

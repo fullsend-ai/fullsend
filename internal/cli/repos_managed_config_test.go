@@ -97,8 +97,14 @@ func useOpenAIInputs(opts *reposInstallConfig) *reposInstallConfig {
 		if err != nil {
 			panic(err)
 		}
+		// The fork pull request stub ships with the shim that triggers on it.
+		stub, err := scaffold.FullsendRepoFile(scaffold.ForkPRStubTemplate)
+		if err != nil {
+			panic(err)
+		}
 		for _, ref := range []string{"v1.0.0", "v2.0.0"} {
 			fc.FileContentsRef["fullsend-ai/fullsend/internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml@"+ref] = shim
+			fc.FileContentsRef["fullsend-ai/fullsend/internal/scaffold/fullsend-repo/"+scaffold.ForkPRStubTemplate+"@"+ref] = stub
 		}
 	}
 	opts.inferenceProject = ""

@@ -128,3 +128,12 @@ type Source struct {
 type EventRouter interface {
 	Route(event *NormalizedEvent) ([]string, error)
 }
+
+// ReasonRouter is optionally implemented by an EventRouter that can say
+// why an event routed to no stages. RouteWithReason returns the same
+// stages and error as Route, plus a short human-readable reason that is
+// non-empty only when no stage was selected. Callers use it for logging
+// only; it must not change the routing decision.
+type ReasonRouter interface {
+	RouteWithReason(event *NormalizedEvent) (stages []string, reason string, err error)
+}

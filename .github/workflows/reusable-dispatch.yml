@@ -147,6 +147,9 @@ jobs:
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
       mint_url: ${{ steps.resolve-mint.outputs.mint_url }}
+      # The fork PR number for workflow_run events, whose payload has none;
+      # the stage concurrency groups fall back to it.
+      pr_number: ${{ steps.fork-pr.outputs.number }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}
@@ -185,6 +188,186 @@ jobs:
             /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
 
+      # Fork pull requests arrive as workflow_run: the shim's trigger on the
+      # completed run of the no-permission fullsend-fork-pr.yaml stub. It
+      # runs from the default branch with secrets and OIDC, which is why it
+      # can review a fork PR that its own pull_request run could not.
+      # github/gh-aw does not dispatch PR events through workflow_run, and
+      # its CTR-021 check flags a workflow_run trigger without a branches:
+      # filter. A branches: filter cannot help here: for a fork PR the
+      # stub run's head_branch is a branch name the fork chose.
+      #
+      # The fork controls the stub copy that ran, so nothing that run
+      # produced (artifacts, run name, logs) is read, and PR code is never
+      # checked out. Its head_repository, head_branch, head_sha, path and
+      # created_at are lookup metadata a fork can influence, not
+      # provenance: they only say which PR to look up. What authorizes a
+      # run, all checked here before any token mint or agent step with the
+      # read-only GITHUB_TOKEN, is:
+      #   - the PR as the API returns it for this repository, whose
+      #     head.repo.id and head.sha must match the run (a run whose SHA is
+      #     no longer an open PR's head is skipped; the newer push has its
+      #     own run);
+      #   - "Determine stage" checking the PR author or closer the
+      #     API reports, as for a same-repo pull_request event.
+      # The action the run stands for is rebuilt from API data: closed for a
+      # closed PR, otherwise opened, ready_for_review or synchronize, all
+      # checked against the PR author. A label never starts a fork PR
+      # review: a fork's stub copy can run on any label event, so nothing
+      # trusted ties a label to the head it was added on; a maintainer
+      # comments /fs-review instead. A closed PR counts only if it closed
+      # within FORK_PR_WINDOW seconds before the stub run was created, so
+      # one close cannot start retro again later: GitHub creates the stub
+      # run seconds after the event, and five minutes absorbs Actions event
+      # backlog. The issue events API documents no order, so events are
+      # sorted by time.
+      - name: Resolve fork pull request for workflow_run
+        id: fork-pr
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          STUB_PATH: .github/workflows/fullsend-fork-pr.yaml
+          FORK_PR_WINDOW: "300"
+          WR_EVENT: ${{ github.event.workflow_run.event }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_PATH: ${{ github.event.workflow_run.path }}
+          WR_HEAD_REPO_ID: ${{ github.event.workflow_run.head_repository.id }}
+          WR_HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_CREATED_AT: ${{ github.event.workflow_run.created_at }}
+        run: |
+          set -euo pipefail
+          echo "resolved=false" >> "${GITHUB_OUTPUT}"
+          skip() {
+            echo "::notice::Fork pull request run not routed: $1"
+            exit 0
+          }
+          # A close or label that should have started a run but fell
+          # outside its checks is a warning, so a lost retro or review shows.
+          skip_warn() {
+            echo "::warning::Fork pull request run not routed: $1"
+            exit 0
+          }
+          [[ "${WR_EVENT}" == "pull_request" ]] || skip "the stub run was not started by a pull_request event"
+          [[ "${WR_CONCLUSION}" == "success" ]] || skip "the stub run did not succeed"
+          [[ "${WR_PATH}" == "${STUB_PATH}" ]] || skip "the completed run is not ${STUB_PATH}"
+          [[ "${WR_HEAD_REPO_ID}" =~ ^[0-9]+$ && "${WR_HEAD_REPO_ID}" != "${REPOSITORY_ID}" ]] || skip "the head repository is not a fork"
+          [[ "${WR_HEAD_SHA}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || skip "the run has no valid head SHA"
+          [[ "${WR_HEAD_OWNER}" =~ ^[A-Za-z0-9-]+$ && -n "${WR_HEAD_BRANCH}" ]] || skip "the run has no head owner or branch"
+          [[ -n "${WR_CREATED_AT}" ]] || skip "the run has no creation time"
+
+          api() {
+            local out err
+            err=$(mktemp)
+            if ! out=$(gh api "$@" 2>"${err}"); then
+              echo "::error::GitHub API call failed: $(LC_ALL=C tr -d '\000-\037:%' < "${err}" | head -c 300)" >&2
+              rm -f "${err}"
+              exit 1
+            fi
+            rm -f "${err}"
+            printf '%s' "${out}"
+          }
+
+          # The head filter takes the fork owner's login and the branch name;
+          # gh encodes them as query parameters.
+          PRS=$(api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f state=all -f per_page=100 -f "head=${WR_HEAD_OWNER}:${WR_HEAD_BRANCH}")
+          NUMBER=$(jq -r --arg sha "${WR_HEAD_SHA}" --argjson hid "${WR_HEAD_REPO_ID}" '
+            [.[] | select(.head.sha == $sha and (.head.repo.id // -1) == $hid)]
+            | sort_by(.state != "open", -.number) | .[0].number // empty' <<<"${PRS}")
+          if [[ -z "${NUMBER}" ]]; then
+            if jq -e 'any(.[]; .state == "open")' <<<"${PRS}" >/dev/null; then
+              skip "the run's head SHA is no longer the pull request head (a newer push has its own run)"
+            fi
+            skip "no pull request has the run's head SHA"
+          fi
+          [[ "${NUMBER}" =~ ^[0-9]+$ ]] || skip "the pull request number is malformed"
+
+          WORK_DIR="${RUNNER_TEMP}/fullsend-fork-pr"
+          mkdir -p "${WORK_DIR}"
+          PR_FILE="${WORK_DIR}/pull_request.json"
+          api "repos/${GITHUB_REPOSITORY}/pulls/${NUMBER}" > "${PR_FILE}"
+          STATE=$(jq -r '.state // ""' "${PR_FILE}")
+          AUTHOR=$(jq -r '.user.login // ""' "${PR_FILE}")
+          if ! jq -e --arg sha "${WR_HEAD_SHA}" --argjson hid "${WR_HEAD_REPO_ID}" \
+            '.head.sha == $sha and (.head.repo.id // -1) == $hid' "${PR_FILE}" >/dev/null; then
+            skip "the run's head SHA is no longer the pull request head (a newer push has its own run)"
+          fi
+          EVENTS=$(api --paginate "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/events?per_page=100" | jq -s 'add // [] | sort_by(.created_at)')
+          # last_event <filter>: the newest issue event matching filter.
+          last_event() {
+            jq -c "[.[] | select($1)] | last // {}" <<<"${EVENTS}"
+          }
+
+          # within <iso-time>: is it in [run created - window, run created + 60 s]?
+          # The 60 s allows for clock differences between GitHub services.
+          within() {
+            jq -en --arg t "$1" --arg created "${WR_CREATED_AT}" --argjson window "${FORK_PR_WINDOW}" '
+              ($t | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t
+              | ($created | sub("\\.[0-9]+"; "") | fromdateiso8601) as $c
+              | $t >= ($c - $window) and $t <= ($c + 60)' >/dev/null 2>&1
+          }
+
+          ACTION=""
+          CLOSER=""
+          case "${STATE}" in
+            closed)
+              CLOSED_AT=$(jq -r '.closed_at // ""' "${PR_FILE}")
+              if [[ -z "${CLOSED_AT}" ]] || ! within "${CLOSED_AT}"; then
+                skip_warn "the pull request did not close within ${FORK_PR_WINDOW} s before the run"
+              fi
+              ACTION="closed"
+              CLOSER=$(jq -r 'if .merged == true then (.merged_by.login // "") else "" end' "${PR_FILE}")
+              if [[ -z "${CLOSER}" ]]; then
+                CLOSE_EVENT=$(last_event '.event == "closed"')
+                CLOSE_EVENT_AT=$(jq -r '.created_at // ""' <<<"${CLOSE_EVENT}")
+                if [[ -z "${CLOSE_EVENT_AT}" ]] || ! within "${CLOSE_EVENT_AT}"; then
+                  skip_warn "no close event within ${FORK_PR_WINDOW} s before the run names the closer"
+                fi
+                CLOSER=$(jq -r '.actor.login // ""' <<<"${CLOSE_EVENT}")
+              fi
+              ;;
+            open)
+              READY_AT=$(jq -r '.created_at // ""' <<<"$(last_event '.event == "ready_for_review"')")
+              CREATED_AT=$(jq -r '.created_at // ""' "${PR_FILE}")
+              if [[ -n "${CREATED_AT}" ]] && within "${CREATED_AT}"; then
+                ACTION="opened"
+              elif [[ -n "${READY_AT}" ]] && within "${READY_AT}"; then
+                ACTION="ready_for_review"
+              else
+                ACTION="synchronize"
+              fi
+              ;;
+            *)
+              skip "the pull request state is not open or closed"
+              ;;
+          esac
+          for login in "${AUTHOR}" "${CLOSER}"; do
+            [[ -z "${login}" || "${login}" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || skip "a login has an unexpected format"
+          done
+
+          # The same fields the issue_comment path merges into the event
+          # payload (see "Resolve PR head for issue_comment events").
+          PR_JSON=$(jq -c '{number, html_url,
+            head: {ref: .head.ref, sha: .head.sha, repo: {full_name: .head.repo.full_name}},
+            base: {ref: .base.ref, repo: {full_name: .base.repo.full_name}}}' "${PR_FILE}")
+          echo "::notice::Fork pull request #${NUMBER} (${STATE}, ${ACTION})"
+          DELIM="PR_$(openssl rand -hex 8)"
+          {
+            echo "resolved=true"
+            echo "number=${NUMBER}"
+            echo "state=${STATE}"
+            echo "action=${ACTION}"
+            echo "author=${AUTHOR}"
+            echo "closer=${CLOSER}"
+            echo "pr_file=${PR_FILE}"
+            echo "pr_json<<${DELIM}"
+            echo "${PR_JSON}"
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Determine stage
         id: bash-route
         env:
@@ -210,6 +393,11 @@ jobs:
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           GH_TOKEN: ${{ github.token }}
+          FORK_PR_RESOLVED: ${{ steps.fork-pr.outputs.resolved }}
+          FORK_PR_STATE: ${{ steps.fork-pr.outputs.state }}
+          FORK_PR_ACTION: ${{ steps.fork-pr.outputs.action }}
+          FORK_PR_AUTHOR: ${{ steps.fork-pr.outputs.author }}
+          FORK_PR_CLOSER: ${{ steps.fork-pr.outputs.closer }}
         run: |
           set -euo pipefail
 
@@ -464,6 +652,39 @@ jobs:
               esac
               ;;
 
+            workflow_run)
+              # A fork pull request event, resolved from the API by "Resolve
+              # fork pull request for workflow_run". The same rules as the
+              # pull_request case above, except that labels do not apply (see
+              # "Resolve fork pull request"): a closed PR needs a write
+              # closer, and any other event needs a triage+ PR author. Unlike a
+              # same-repo PR, a [bot] author is not trusted on its own: any
+              # registered GitHub App can open a PR from a fork.
+              # event_action and event_sender name the equivalent
+              # pull_request event for the CEL route steps.
+              if [[ "${FORK_PR_RESOLVED:-}" == "true" ]]; then
+                ROUTED_ACTION=""
+                ROUTED_SENDER=""
+                if [[ "${FORK_PR_STATE}" == "closed" ]]; then
+                  ROUTED_ACTION="closed"
+                  ROUTED_SENDER="${FORK_PR_CLOSER}"
+                  if is_event_actor_authorized "${FORK_PR_CLOSER}"; then
+                    STAGE="retro"
+                  fi
+                else
+                  ROUTED_ACTION="${FORK_PR_ACTION}"
+                  ROUTED_SENDER="${FORK_PR_AUTHOR}"
+                  if is_event_actor_authorized "${FORK_PR_AUTHOR}" triage; then
+                    STAGE="review"
+                  fi
+                fi
+                {
+                  echo "event_action=${ROUTED_ACTION}"
+                  echo "event_sender=${ROUTED_SENDER}"
+                } >> "${GITHUB_OUTPUT}"
+              fi
+              ;;
+
             pull_request_review)
               if [[ "${EVENT_ACTION}" == "submitted" && "${REVIEW_STATE}" == "changes_requested" ]]; then
                 REVIEW_BOT="${ORG_NAME}-review[bot]"
@@ -508,7 +729,7 @@ jobs:
       # still enforce the same policy for the final routed stage.
       - name: Check review deduplication guards
         id: review-dedup-guard
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]'))
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize'))
         shell: bash
         run: |
           set -euo pipefail
@@ -560,7 +781,7 @@ jobs:
       # the binary; default callers install the trusted workflow build.
       - name: Detect review dedup CLI
         id: review-cli-mode
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.review-dedup-guard.outputs.allowed == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -667,15 +888,17 @@ jobs:
           key: fullsend-review-dedup-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       # A synchronize event can be caused by merging the base branch into a
-      # PR without changing its effective diff. Missing or incomplete
+      # PR without changing its effective diff. A fork PR push comes in as
+      # the shim's workflow_run with event_action synchronize (see "Resolve
+      # fork pull request for workflow_run") and gets the same check. Missing or incomplete
       # metadata deliberately fails open in the CLI.
       - name: Check unchanged review diff
         id: review-diff
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.review-dedup-guard.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || steps.fork-pr.outputs.number }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
         shell: bash
@@ -716,8 +939,10 @@ jobs:
       - name: Detect CEL route opt-in
         id: cel-opt-in
         # A fork or Dependabot PR on pull_request is never routed (see
-        # "Determine stage"), by CEL either: a maintainer comments /fs-review.
-        if: ${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' }}
+        # "Determine stage"), by CEL either. A fork PR is routed through the
+        # workflow_run event the shim gets once the fork PR stub completes,
+        # as the pull_request event "Determine stage" rebuilt from the API.
+        if: ${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action != '') }}
         continue-on-error: true
         shell: bash
         env:
@@ -726,8 +951,15 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           ISSUE_IS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
           BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
+          ROUTED_ACTION: ${{ steps.bash-route.outputs.event_action }}
         run: |
           set -euo pipefail
+          # A fork PR's workflow_run stands for the pull_request event
+          # "Determine stage" rebuilt (see "Resolve fork pull request").
+          if [[ "${EVENT_NAME}" == "workflow_run" ]]; then
+            EVENT_NAME="pull_request"
+            EVENT_ACTION="${ROUTED_ACTION:-}"
+          fi
           # Pick the one agent whose CEL route covers this event, among those
           # `fullsend dispatch --route` supports (routableAgents in
           # internal/cli/dispatch_route.go), and only when bash chose that
@@ -994,6 +1226,9 @@ jobs:
           EVENT_ACTION: ${{ inputs.event_action }}
           ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
           FULLSEND_MINT_URL: ${{ inputs.mint_url }}
+          FORK_PR_FILE: ${{ steps.fork-pr.outputs.pr_file }}
+          ROUTED_ACTION: ${{ steps.bash-route.outputs.event_action }}
+          ROUTED_SENDER: ${{ steps.bash-route.outputs.event_sender }}
         run: |
           set -euo pipefail
           # gha_text makes a value safe inside a ::notice::/::warning::/::error::
@@ -1007,6 +1242,20 @@ jobs:
             while [[ "${v}" == *::* ]]; do v=${v//::/: :}; done
             printf '%s' "${v}"
           }
+          # A fork PR's workflow_run is evaluated as the pull_request event
+          # "Determine stage" rebuilt from the API (see "Resolve fork pull
+          # request"): the PR as the API returns it, the action, and the
+          # author or closer as the sender.
+          if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_run" ]]; then
+            FORK_PR_EVENT="$(dirname "${FORK_PR_FILE}")/event.json"
+            jq -n --slurpfile pr "${FORK_PR_FILE}" --arg action "${ROUTED_ACTION}" --arg sender "${ROUTED_SENDER}" '
+              {action: $action, pull_request: $pr[0],
+               repository: $pr[0].base.repo,
+               sender: {login: $sender, type: (if ($sender | endswith("[bot]")) then "Bot" else "User" end)}}' > "${FORK_PR_EVENT}"
+            export GITHUB_EVENT_PATH="${FORK_PR_EVENT}"
+            export GITHUB_EVENT_NAME="pull_request"
+            EVENT_ACTION="${ROUTED_ACTION}"
+          fi
           DECISION_JSON=$("${RUNNER_TEMP}/fullsend/fullsend" dispatch \
             --input-driver gha-event \
             --config-dir cel-route/.fullsend \
@@ -1035,7 +1284,7 @@ jobs:
         env:
           BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
           BASH_TRIGGER_SOURCE: ${{ steps.bash-route.outputs.trigger_source }}
-          CLOSED_PULL_REQUEST: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'closed' }}
+          CLOSED_PULL_REQUEST: ${{ ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'closed') || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'closed') }}
           ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
           CEL_OPT_IN_OUTCOME: ${{ steps.cel-opt-in.outcome }}
           CEL_CONFIG_OUTCOME: ${{ steps.cel-config.outcome }}
@@ -1114,7 +1363,7 @@ jobs:
       # Only obtain a write-capable review token after final routing has
       # authorized the review stage. The diff check above remains read-only.
       - name: Checkout upstream defaults for review skip note
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1129,7 +1378,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Prepare workspace for review skip note
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
         id: review-token-workspace
         continue-on-error: true
         timeout-minutes: 2
@@ -1141,12 +1390,12 @@ jobs:
       # .defaults path internally. Provide that compatibility path while
       # the action's defaults_root input is adopted by existing callers.
       - name: Stage nested defaults compatibility path
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
         shell: bash
         run: ln -s .fullsend/.defaults .defaults
 
       - name: Prepare workspace for review skip note (nested vendor)
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
         id: review-token-workspace-nested
         continue-on-error: true
         timeout-minutes: 2
@@ -1156,7 +1405,7 @@ jobs:
           source_repo: ${{ github.repository }}
 
       - name: Mint review token for review skip note
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
         id: review-token
         continue-on-error: true
         timeout-minutes: 2
@@ -1168,7 +1417,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Mint review token for review skip note (nested vendor)
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
         id: review-token-nested
         continue-on-error: true
         timeout-minutes: 2
@@ -1181,13 +1430,13 @@ jobs:
 
       - name: Publish review skip note
         id: review-skip-publish
-        if: (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
           REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
           SOURCE_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || steps.fork-pr.outputs.number }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
         shell: bash
@@ -1475,7 +1724,9 @@ jobs:
         id: payload
         if: steps.route.outputs.stage != ''
         env:
-          PR_HEAD_JSON: ${{ steps.pr-head.outputs.pr_json }}
+          # A fork PR's workflow_run event carries no pull_request: merge the
+          # one "Resolve fork pull request for workflow_run" fetched.
+          PR_HEAD_JSON: ${{ steps.pr-head.outputs.pr_json || steps.fork-pr.outputs.pr_json }}
         run: |
           set -euo pipefail
           EVENT_PAYLOAD=$(jq -c '{
@@ -1840,7 +2091,7 @@ jobs:
     if: needs.route.outputs.stage == 'review'
     runs-on: ${{ inputs.runner_image }}
     concurrency:
-      group: fullsend-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: fullsend-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number || needs.route.outputs.pr_number }}
       cancel-in-progress: true
     permissions:
       actions: write
@@ -2459,7 +2710,7 @@ jobs:
     if: needs.route.outputs.stage == 'retro'
     runs-on: ${{ inputs.runner_image }}
     concurrency:
-      group: fullsend-retro-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: fullsend-retro-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number || needs.route.outputs.pr_number }}
       cancel-in-progress: true
     permissions:
       actions: write
@@ -2738,8 +2989,11 @@ jobs:
   harness-dispatch:
     name: Harness dispatch
     # A fork or Dependabot PR on pull_request never dispatches (see
-    # "Determine stage" in the route job, #9221).
-    if: ${{ inputs.matrix == '' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) }}
+    # "Determine stage" in the route job, #9221). Neither does the shim's
+    # workflow_run for a fork PR: `fullsend dispatch` has no mapping for
+    # that event, and the route job handles it for the built-in agents. A
+    # caller that passes a precomputed matrix skips this job anyway.
+    if: ${{ inputs.matrix == '' && github.event_name != 'workflow_run' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write

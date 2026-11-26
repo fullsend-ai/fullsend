@@ -21,3 +21,4 @@ features/platform/vault-runner-secrets.feature:121 # needs a GitHub Actions job 
 features/platform/vault-runner-secrets.feature:158 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job
 features/platform/vault-runner-secrets.feature:192 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job
 features/platform/vault-runner-secrets.feature:222 # needs a GitHub Actions job OIDC token and the OpenBao server (BEHAVIOUR_OPENBAO); run by the live behaviour job
+features/dispatch/fork-bash-routing.feature:35 # @requires:capability:fork-pr-workflow-run (the emulator sends no workflow_run event)

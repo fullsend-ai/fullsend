@@ -2044,8 +2044,9 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 9. Update branch ref to point to new commit.
-	// A 422 may indicate branch protection or a non-fast-forward
-	// (concurrent modification race).
+	// A 422 may indicate branch protection, a non-fast-forward
+	// (concurrent modification race), or a just-created commit not yet
+	// visible to the refs endpoint (replication lag).
 	refPayload := map[string]string{
 		"sha": newCommit.SHA,
 	}
@@ -2060,7 +2061,10 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 				}
 				return false, fmt.Errorf("update ref: %w: %w", forge.ErrBranchProtected, err)
 			}
-			if isNonFastForwardError(apiErr) {
+			// A commit not yet visible is the same class of race as the
+			// transient create-tree/create-commit 422s above: wrap it so
+			// commitFilesWithRetry retries the entire operation from scratch.
+			if isNonFastForwardError(apiErr) || isObjectNotYetVisibleError(apiErr) {
 				return false, fmt.Errorf("update ref: %w: %w", forge.ErrNonFastForward, err)
 			}
 		}
@@ -2202,6 +2206,14 @@ func isSignedCommitsRequiredMessage(message string) bool {
 func isNonFastForwardError(apiErr *APIError) bool {
 	msg := lowerAPIErrorText(apiErr)
 	return strings.Contains(msg, "not a fast forward") || strings.Contains(msg, "not a fast-forward")
+}
+
+// isObjectNotYetVisibleError checks whether a 422 APIError from the
+// update-ref step says "Object does not exist": the commit created moments
+// earlier is not yet visible to the refs endpoint (replication lag), as
+// seen during fresh behaviour-test repository setup.
+func isObjectNotYetVisibleError(apiErr *APIError) bool {
+	return strings.Contains(lowerAPIErrorText(apiErr), "object does not exist")
 }
 
 // isStaleTreeSHAError checks whether a 422 APIError indicates a stale
@@ -5690,6 +5702,27 @@ func (c *LiveClient) ListInheritedRepoVariables(ctx context.Context, owner, repo
 		resp, err := c.get(ctx, path)
 		if err != nil {
 			var apiErr *APIError
+			if page == 1 && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+				// GitHub returns 422 for personal repositories, which cannot
+				// inherit organization variables. Verify ownership before
+				// treating this as empty: an organization error must not hide
+				// inherited credentials from the caller's safety checks.
+				var metadata struct {
+					Owner struct {
+						Login string `json:"login"`
+						Type  string `json:"type"`
+					} `json:"owner"`
+				}
+				ownerResp, ownerErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
+				if ownerErr == nil {
+					ownerErr = decodeJSON(ownerResp, &metadata)
+				}
+				if ownerErr != nil {
+					err = errors.Join(err, fmt.Errorf("verify repository owner: %w", ownerErr))
+				} else if metadata.Owner.Type == "User" && strings.EqualFold(metadata.Owner.Login, owner) {
+					return nil, nil
+				}
+			}
 			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden && !IsRateLimitError(err) {
 				return nil, fmt.Errorf("list inherited repo variables page %d: %w: %w", page, forge.ErrForbidden, err)
 			}

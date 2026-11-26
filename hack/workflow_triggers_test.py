@@ -1,10 +1,12 @@
-"""No workflow in .github/workflows/ may trigger on pull_request_target (#9245).
+"""No workflow in .github/workflows/ or the shipped scaffold templates may
+trigger on pull_request_target (#9245).
 
 GitHub blocks pull_request_target by default on public repos from 2026-12-02,
 and a blocked run ends in startup_failure, which cannot be re-run. Same-repo
 PRs use pull_request; fork PRs run e2e through a maintainer's /ok-to-test
-comment (e2e-ok-to-test.yml). The check reads the `on:` keys, so a workflow
-that only compares github.event_name strings (reusable-dispatch.yml) passes.
+comment (e2e-ok-to-test.yml), and fullsend reaches fork PRs through the fork
+PR stub and the shim's workflow_run trigger. The check reads the `on:` keys,
+so a workflow that only compares github.event_name strings (reusable-dispatch.yml) passes.
 """
 
 from pathlib import Path
@@ -12,7 +14,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
+ROOT = Path(__file__).resolve().parent.parent
+WORKFLOWS = ROOT / ".github" / "workflows"
+# Workflows `fullsend repos install` ships to every enrolled repository: the
+# shim and the fork pull request stub among them.
+TEMPLATES = ROOT / "internal" / "scaffold" / "fullsend-repo" / "templates"
 
 
 def triggers(path: Path) -> set[str]:
@@ -28,10 +34,12 @@ def triggers(path: Path) -> set[str]:
     return set()
 
 
-FILES = sorted(p for p in WORKFLOWS.iterdir() if p.suffix in {".yml", ".yaml"})
+FILES = sorted(
+    p for d in (WORKFLOWS, TEMPLATES) for p in d.iterdir() if p.suffix in {".yml", ".yaml"}
+)
 
 
-@pytest.mark.parametrize("path", FILES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", FILES, ids=lambda p: str(p.relative_to(ROOT)))
 def test_no_pull_request_target_trigger(path: Path) -> None:
     assert "pull_request_target" not in triggers(path)
 

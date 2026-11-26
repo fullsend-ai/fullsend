@@ -334,7 +334,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		deletePaths = cfg.ForgeConfig.WorkflowPaths
 	}
 	if cfg.Forge == ForgeGitHub || cfg.Forge == "" {
-		deletePaths = slices.Concat(deletePaths, scaffold.PerRepoThinCallerPaths())
+		deletePaths = slices.Concat(deletePaths, scaffold.PerRepoThinCallerPaths(), []string{scaffold.ForkPRStubPath})
 	}
 	files := make([]forge.TreeFile, 0, len(deletePaths)+1)
 	for _, p := range deletePaths {

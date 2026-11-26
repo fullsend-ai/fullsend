@@ -49,6 +49,15 @@ on candidates whose Jira `updated` is newer than their checkpoint, and M and
 N become configurable within bounds. The lock protocol and the random pick
 among candidates remain.
 
+[ADR 0085](0085-serve-every-changed-jira-issue.md) partially
+supersedes the coordination decisions below for the `jira-poll` driver. One
+poller runs per repository, and issues that changed within the driver's
+backfill window are served, oldest change first by default, up to a
+per-cycle dispatch limit. The row limit on the candidate pool, the random pick, and the
+per-issue lock are replaced, together with what depends on the lock (the lock
+held during agent runs, the lock settings, the lock handling of
+`fullsend poll cancel`, and the expectation of several concurrent pollers).
+
 ## Context
 
 Fullsend's primary dispatch path is **event-driven**: forge webhooks are normalized
