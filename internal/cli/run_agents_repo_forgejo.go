@@ -45,8 +45,8 @@ const (
 	forgejoTokenEnv = "FORGEJO_TOKEN"
 )
 
-// forgejoCommitSHAPattern matches a full SHA-1 or SHA-256 commit ID.
-var forgejoCommitSHAPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+// forgejoObjectIDPattern matches a full SHA-1 or SHA-256 git object ID.
+var forgejoObjectIDPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // maxForgejoTreeEntries bounds a single tree listing of the source.
 const maxForgejoTreeEntries = 4 * gitfetch.MaxFiles
@@ -106,7 +106,7 @@ func forgejoAgentsSourceFromEnv(getenv func(string) string, httpClient *http.Cli
 	if ref == "" {
 		return nil, fmt.Errorf("%s must be set to the full commit SHA of %s/%s that agent definitions are pinned to", forgejoAgentsRefEnv, owner, repo)
 	}
-	if !forgejoCommitSHAPattern.MatchString(ref) {
+	if !forgejoObjectIDPattern.MatchString(ref) {
 		return nil, fmt.Errorf("%s %q is not a full lowercase commit SHA: agent definitions resolve only from an immutable pinned commit, not a branch, tag, or abbreviated SHA", forgejoAgentsRefEnv, ref)
 	}
 	client, err := forgejo.New(base, getenv(forgejoTokenEnv), httpClient)
@@ -188,7 +188,9 @@ func (s *forgejoAgentsSource) verifyCommit(ctx context.Context) error {
 		return fmt.Errorf("resolving pinned commit %s of %s/%s: %w", s.sha, s.owner, s.repo, err)
 	}
 	if !strings.EqualFold(got, s.sha) {
-		return fmt.Errorf("pinned commit %s of %s/%s resolved to %s", s.sha, s.owner, s.repo, got)
+		// got comes from the server's response, so it is quoted rather
+		// than printed raw.
+		return fmt.Errorf("pinned commit %s of %s/%s resolved to %q", s.sha, s.owner, s.repo, got)
 	}
 	return nil
 }
@@ -227,11 +229,16 @@ func (s *forgejoAgentsSource) lookup(ctx context.Context, relPath string) (forge
 // readBlob reads the regular file entry at relPath and checks its content
 // against the entry's object ID.
 func (s *forgejoAgentsSource) readBlob(ctx context.Context, relPath string, e forgejo.TreeEntry, limit int64) ([]byte, error) {
+	// The entry's fields come from the server's response, so errors quote
+	// them rather than print them raw.
 	if e.Type != "blob" {
-		return nil, fmt.Errorf("%q in %s is a %s, not a file", relPath, s, e.Type)
+		return nil, fmt.Errorf("%q in %s is a %q, not a file", relPath, s, e.Type)
 	}
 	if e.Mode == "120000" {
 		return nil, fmt.Errorf("%q in %s is a symlink; symlinks are not supported", relPath, s)
+	}
+	if !forgejoObjectIDPattern.MatchString(e.SHA) {
+		return nil, fmt.Errorf("%q in %s has an invalid object ID %q", relPath, s, e.SHA)
 	}
 	content, err := s.client.GetBlob(ctx, s.owner, s.repo, e.SHA, limit)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/forge/forgejo"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -626,6 +627,56 @@ func TestForgejoAgentsSource_ReadDirBounds(t *testing.T) {
 	require.NoError(t, err)
 	_, err = src.readDir(ctx, "skills/many", 1<<20)
 	assert.ErrorContains(t, err, "exceeds the 1000-file limit")
+}
+
+// maliciousForgejoGit answers successfully with server-controlled values
+// that carry control characters and workflow-command delimiters.
+type maliciousForgejoGit struct {
+	commit string
+	entry  forgejo.TreeEntry
+}
+
+func (m maliciousForgejoGit) GetCommitSHA(context.Context, string, string, string) (string, error) {
+	return m.commit, nil
+}
+
+func (m maliciousForgejoGit) GetTree(context.Context, string, string, string, bool, int) ([]forgejo.TreeEntry, error) {
+	return []forgejo.TreeEntry{m.entry}, nil
+}
+
+func (m maliciousForgejoGit) GetBlob(context.Context, string, string, string, int64) ([]byte, error) {
+	return []byte("x"), nil
+}
+
+func TestForgejoAgentsSource_MaliciousSuccessfulResponses(t *testing.T) {
+	ctx := context.Background()
+	evil := "\n::error::forged\x1b[31m"
+	newSource := func(m maliciousForgejoGit) *forgejoAgentsSource {
+		return &forgejoAgentsSource{baseURL: "http://forgejo.example", owner: "acme", repo: "agents", sha: forgejoTestSHA, client: m}
+	}
+
+	t.Run("commit SHA", func(t *testing.T) {
+		err := newSource(maliciousForgejoGit{commit: evil}).verifyCommit(ctx)
+		require.ErrorContains(t, err, "resolved to")
+		assert.NotContains(t, err.Error(), "\n", "control characters are escaped")
+		assert.NotContains(t, err.Error(), "\x1b")
+	})
+
+	t.Run("entry type", func(t *testing.T) {
+		src := newSource(maliciousForgejoGit{entry: forgejo.TreeEntry{Path: "a.yaml", Type: evil, SHA: forgejoTestSHA}})
+		_, err := src.readFile(ctx, "a.yaml", 1<<20)
+		require.ErrorContains(t, err, "not a file")
+		assert.NotContains(t, err.Error(), "\n")
+		assert.NotContains(t, err.Error(), "\x1b")
+	})
+
+	t.Run("entry object ID", func(t *testing.T) {
+		src := newSource(maliciousForgejoGit{entry: forgejo.TreeEntry{Path: "a.yaml", Type: "blob", Mode: "100644", SHA: evil}})
+		_, err := src.readFile(ctx, "a.yaml", 1<<20)
+		require.ErrorContains(t, err, "invalid object ID")
+		assert.NotContains(t, err.Error(), "\n")
+		assert.NotContains(t, err.Error(), "\x1b")
+	})
 }
 
 func TestGitBlobID(t *testing.T) {
