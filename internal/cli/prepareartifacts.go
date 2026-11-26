@@ -341,15 +341,11 @@ func rawDispatchSourceClaim(payload []byte) string {
 	return normalizeSource(extractMapString(norm, "source", "system"))
 }
 
-// sourceForgejo is the Forgejo forge's source name. normevent has no
-// constant for it yet; no Forgejo adapter emits events today.
-const sourceForgejo = "forgejo"
-
 // isForgeOrInternalSource reports whether a run source is a forge or
 // fullsend itself, as opposed to an external tracker such as Jira.
 func isForgeOrInternalSource(source string) bool {
 	switch normevent.SourceSystem(source) {
-	case normevent.SystemGitHub, normevent.SystemGitLab, normevent.SystemManual, normevent.SystemSchedule, sourceForgejo:
+	case normevent.SystemGitHub, normevent.SystemGitLab, normevent.SystemManual, normevent.SystemSchedule, normevent.SystemForgejo:
 		return true
 	}
 	return false
