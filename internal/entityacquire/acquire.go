@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/entitycel"
 	"github.com/fullsend-ai/fullsend/internal/normentity"
@@ -487,5 +489,15 @@ func appendMembers(e, frag *normentity.Entity, n Need) (int, bool) {
 	sk := src.FieldByName("Known")
 	dk := dst.FieldByName("Known")
 	dk.Set(reflect.AppendSlice(dk, sk))
+	if n == NeedLabelApplications {
+		// An adapter may read pages newest first, but the contract orders
+		// known actions by created_at, then ID, across all pages read.
+		slices.SortStableFunc(e.LabelApplications.Known, func(a, b normentity.LabelApplication) int {
+			if c := strings.Compare(string(a.CreatedAt), string(b.CreatedAt)); c != 0 {
+				return c
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
+	}
 	return sk.Len(), true
 }

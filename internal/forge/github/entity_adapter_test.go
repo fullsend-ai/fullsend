@@ -950,6 +950,41 @@ func TestEntityAdapterAcquireLabelApplicationWitnessSettles(t *testing.T) {
 	assert.Contains(t, queries[0], "conn: timelineItems(")
 }
 
+func TestEntityAdapterAcquireLabelApplicationsAreSortedByTimeThenID(t *testing.T) {
+	t.Run("multi-page read is ordered across pages", func(t *testing.T) {
+		f := &fakeEntityGraphQL{base: issueBase(), conns: labelTimeline()}
+		res := acquireGitHub(t, f, `entity.label_applications[0].label == "docs" && entity.label_applications[1].label == "bug" && entity.label_applications[2].label == "p1"`)
+		assert.Equal(t, entityacquire.StatusSettled, res.Status)
+		assert.Equal(t, "true", res.Value.String())
+		assert.Len(t, f.pageQueries(), 2)
+		require.Len(t, res.Reads, 1)
+		assert.Equal(t, ne.CoverageComplete, res.Reads[0].Coverage.Status)
+	})
+	t.Run("single page with equal timestamps is ordered by ID", func(t *testing.T) {
+		f := &fakeEntityGraphQL{base: issueBase(), conns: map[string][]map[string]any{"timelineItems": {
+			{"nodes": []any{
+				labeledEvent("LE_B", "bug", "2026-11-01T00:00:00Z", nil),
+				labeledEvent("LE_A", "docs", "2026-11-01T00:00:00Z", nil),
+				labeledEvent("LE_C", "p1", "2026-10-31T00:00:00Z", nil),
+			}},
+		}}}
+		res := acquireGitHub(t, f, `entity.label_applications[0].id == "LE_C" && entity.label_applications[1].id == "LE_A" && entity.label_applications[2].id == "LE_B"`)
+		assert.Equal(t, entityacquire.StatusSettled, res.Status)
+		assert.Equal(t, "true", res.Value.String())
+		require.Len(t, res.Reads, 1)
+		assert.Equal(t, ne.CoverageComplete, res.Reads[0].Coverage.Status)
+	})
+	t.Run("equal timestamps across pages are ordered by ID", func(t *testing.T) {
+		f := &fakeEntityGraphQL{base: issueBase(), conns: map[string][]map[string]any{"timelineItems": {
+			{"nodes": []any{labeledEvent("LE_B", "bug", "2026-11-01T00:00:00Z", nil)}},
+			{"nodes": []any{labeledEvent("LE_A", "docs", "2026-11-01T00:00:00Z", nil)}},
+		}}}
+		res := acquireGitHub(t, f, `entity.label_applications[0].id == "LE_A" && entity.label_applications[1].id == "LE_B"`)
+		assert.Equal(t, entityacquire.StatusSettled, res.Status)
+		assert.Equal(t, "true", res.Value.String())
+	})
+}
+
 func TestEntityAdapterAcquireRemovedLabelNeedsCompleteApplications(t *testing.T) {
 	f := &fakeEntityGraphQL{base: pullBase(), conns: labelTimeline()}
 	res := acquireGitHub(t, f, `!entity.label_applications.exists(l, l.label == "wontfix")`)
