@@ -510,7 +510,7 @@ type celMatcher struct {
 	*jiradispatch.Matcher
 	// jiraAuth is the jira authorization provider from config.yaml, or
 	// nil when none is listed. It configures the poller's actor role
-	// resolution and the gate's Jira label rule.
+	// resolution and the dispatch gate's Jira policy.
 	jiraAuth *config.AuthorizationProvider
 }
 
@@ -520,7 +520,7 @@ type celMatcher struct {
 // refreshing the policy here keeps a directly-constructed matcher (a
 // test, or a caller with its own provider) consistent with its jiraAuth.
 func (m *celMatcher) Match(ctx context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
-	m.Matcher.Auth = jiraAuthOptions(m.jiraAuth)
+	m.Matcher.Auth = harnessdispatch.AuthOptionsForJiraProvider(m.jiraAuth)
 	return m.Matcher.Match(ctx, event)
 }
 
@@ -541,26 +541,13 @@ func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error)
 	if cfg.IsKillSwitchActive() {
 		// Kill switch active: return a matcher with no candidates so all
 		// events are silently dropped (no dispatches).
-		return &celMatcher{Matcher: &jiradispatch.Matcher{Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth}, nil
+		return &celMatcher{Matcher: &jiradispatch.Matcher{Auth: harnessdispatch.AuthOptionsForJiraProvider(jiraAuth)}, jiraAuth: jiraAuth}, nil
 	}
 	candidates, err := harnessdispatch.ListTriggeredHarnesses(ctx, fullsendDir, cfg, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list triggered harnesses: %w", err)
 	}
-	return &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: candidates, Auth: jiraAuthOptions(jiraAuth)}, jiraAuth: jiraAuth}, nil
-}
-
-// jiraAuthOptions returns the dispatch gate policy for the configured
-// jira provider: with no jira entry, Jira label-added events take the
-// per-harness role threshold as before; with an entry, they are authorized
-// by Jira's Edit Issues permission under labels: jira_editors (the default)
-// and take the role threshold under allowlist or project_roles, where the
-// poller resolves the label author's role from that source.
-func jiraAuthOptions(p *config.AuthorizationProvider) harnessdispatch.AuthOptions {
-	return harnessdispatch.AuthOptions{
-		JiraLabelsByEditPermission: p != nil &&
-			p.EffectiveJiraLabels() == config.JiraLabelsEditors,
-	}
+	return &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: candidates, Auth: harnessdispatch.AuthOptionsForJiraProvider(jiraAuth)}, jiraAuth: jiraAuth}, nil
 }
 
 // jiraPollOptions builds the poller options every jira-poll target forge
@@ -590,6 +577,9 @@ func jiraPollOptions(args jiraPollArgs, matcher *celMatcher, getenv func(string)
 func jiraPollAuthorization(p *config.AuthorizationProvider, getenv func(string) string) jirapoll.Authorization {
 	if p == nil {
 		return jirapoll.Authorization{}
+	}
+	if p.SkipsJiraActorAuthorization() {
+		return jirapoll.Authorization{Configured: true, SkipActorAuthorization: true}
 	}
 	list := func(role string, l *config.JiraActorList) jirapoll.ActorList {
 		groups, accounts := l.Resolved(getenv)

@@ -711,6 +711,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [Authorization Contract v2](normative/authorization/v2/) for target CEL;
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md);
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md)).
+- Repositories can opt out of Jira actor authorization at dispatch with
+  `check_project_members: false`. Harness filters still apply
+  ([ADR 0177](ADRs/0177-allow-repositories-to-skip-jira-actor-authorization.md)).
 - Data security boundary (target state): each source-system record that
   fullsend controls is admitted to model input only after its exact current
   revision's actor and current authorization are verified. An ordinary human

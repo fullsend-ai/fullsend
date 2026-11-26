@@ -47,6 +47,9 @@ verified label-transition grant, and enforces each selected harness's effective
 `human_min_role` before CEL. The workflow stage guards and Go role-derived
 default thresholds remain in effect until migration.
 
+[ADR 0177](0177-allow-repositories-to-skip-jira-actor-authorization.md)
+adds an explicit repository-level Jira exception.
+
 ## Context
 
 The dispatch routing logic (`dispatch.yml` / `reusable-dispatch.yml`)

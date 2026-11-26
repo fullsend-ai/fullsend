@@ -62,6 +62,11 @@ admin > maintain > write > triage > read > none > external
 | `none` | Authenticated user without explicit repository permission |
 | `external` | Actor outside the repository or project (currently Jira-only; GitHub maps non-collaborators to `read` on public repositories or `none`; GitLab maps them to `none`) |
 
+Jira has a repository-level dispatch exception. When the Jira authorization
+provider sets `check_project_members: false`, the dispatch gate admits Jira
+events regardless of the actor's role. Harness filters still apply.
+[ADR 0177](../../../ADRs/0177-allow-repositories-to-skip-jira-actor-authorization.md).
+
 ### Forge-native permission mapping
 
 | Forge | Native level | Fullsend role |
