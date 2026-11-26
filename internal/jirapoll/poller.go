@@ -1,6 +1,7 @@
 // Package jirapoll implements a polling-based input driver for Jira,
 // converting issue comments, label changes, and status transitions into
-// NormalizedEvents per ADR 0063's write-then-verify coordination protocol.
+// NormalizedEvents per ADR 0063, with one poller per target repository and
+// no per-issue lock (ADR 0085).
 package jirapoll
 
 import (
@@ -18,8 +19,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/randutil"
-
-	"github.com/google/uuid"
 )
 
 // EventMatcher evaluates a normalized event against harness CEL triggers
@@ -61,28 +60,16 @@ type Poller struct {
 	matcher             EventMatcher
 	opts                Options
 	dispatches          []DispatchRecord
-	sleepFn             func(context.Context, time.Duration) // overridable for testing
-	roleMembership      map[string]string                    // accountID → Jira project role name
-	roleGroups          map[string][]string                  // Jira role name → group IDs for per-actor resolution
-	roleGroupsChecked   map[string]bool                      // accountID → group membership already fetched this cycle
-	rolesLoaded         bool                                 // project role roster loaded (or skipped for a missing project key) this cycle
-	userGroups          map[string][]jira.UserGroupInfo      // accountID → GetUserGroups result, cached per cycle
-	statusCategoryCache map[string]string                    // status name → statusCategory key, reset each cycle
-	selfAccountID       string                               // authenticated Jira account from GetMyself; used to classify self-authored events as bot
-	eventsSeen          int                                  // events converted this cycle
-	eventsInvalid       int                                  // events skipped this cycle because they failed validation
-	eventsMatchErrors   int                                  // events dropped this cycle because matcher.Match errored
-}
-
-// ctxSleep sleeps for d or until ctx is cancelled, whichever comes first,
-// so a cancelled poll (e.g. a killed CI job) doesn't block on lock jitter.
-func ctxSleep(ctx context.Context, d time.Duration) {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-	case <-ctx.Done():
-	}
+	roleMembership      map[string]string               // accountID → Jira project role name
+	roleGroups          map[string][]string             // Jira role name → group IDs for per-actor resolution
+	roleGroupsChecked   map[string]bool                 // accountID → group membership already fetched this cycle
+	rolesLoaded         bool                            // project role roster loaded (or skipped for a missing project key) this cycle
+	userGroups          map[string][]jira.UserGroupInfo // accountID → GetUserGroups result, cached per cycle
+	statusCategoryCache map[string]string               // status name → statusCategory key, reset each cycle
+	selfAccountID       string                          // authenticated Jira account from GetMyself; used to classify self-authored events as bot
+	eventsSeen          int                             // events converted this cycle
+	eventsInvalid       int                             // events skipped this cycle because they failed validation
+	eventsMatchErrors   int                             // events dropped this cycle because matcher.Match errored
 }
 
 // New creates a Jira Poller with the given options.
@@ -93,23 +80,34 @@ func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
 	if opts.N == 0 {
 		opts.N = 5
 	}
-	if opts.StaleThreshold == 0 {
-		opts.StaleThreshold = 900 * time.Second
-	}
 	if opts.FirstPollBackfillWindow == 0 {
 		opts.FirstPollBackfillWindow = 24 * time.Hour
+	}
+	if opts.CycleTimeLimit == 0 {
+		opts.CycleTimeLimit = 5 * time.Minute
+	}
+	if opts.IssueTimeLimit == 0 {
+		opts.IssueTimeLimit = 2 * time.Minute
 	}
 	return &Poller{
 		client:  client,
 		matcher: matcher,
 		opts:    opts,
-		sleepFn: ctxSleep,
 	}
 }
 
-// Run executes a single poll cycle per ADR 0063.
+// Run executes a single poll cycle per ADR 0063. The caller must keep two
+// cycles for one target repository from overlapping: with no lock, they
+// would dispatch the same requests twice (ADR 0085, Decision item 1).
 func (p *Poller) Run(ctx context.Context) error {
-	cycleID := uuid.New().String()
+	// Reading (the preflight, the search, the activity filter and every
+	// issue) must finish within CycleTimeLimit of the cycle's start, and
+	// one issue within IssueTimeLimit (ADR 0085, Decision item 3). The
+	// dispatch and checkpoint commit after it use ctx, so they get the rest
+	// of the job's time.
+	readCtx, cancelRead := context.WithTimeout(ctx, p.opts.CycleTimeLimit)
+	defer cancelRead()
+
 	p.dispatches = nil
 	p.eventsSeen, p.eventsInvalid, p.eventsMatchErrors = 0, 0, 0
 	p.statusCategoryCache = make(map[string]string)
@@ -119,11 +117,11 @@ func (p *Poller) Run(ctx context.Context) error {
 	p.rolesLoaded = false
 	p.userGroups = make(map[string][]jira.UserGroupInfo)
 
-	// Auth preflight: verify credentials before any discovery, lock, or
+	// Auth preflight: verify credentials before any discovery or
 	// checkpoint operations. Without this, bad credentials cause Jira to
 	// treat the request as unauthenticated and return empty results —
 	// indistinguishable from a genuinely quiet project.
-	myself, err := p.client.GetMyself(ctx)
+	myself, err := p.client.GetMyself(readCtx)
 	if err != nil {
 		return fmt.Errorf("authentication preflight failed: %w", err)
 	}
@@ -138,18 +136,22 @@ func (p *Poller) Run(ctx context.Context) error {
 	p.selfAccountID = userID(*myself)
 
 	// Step 1: Execute JQL to get candidate issues.
-	candidates, err := p.searchCandidates(ctx)
+	candidates, err := p.searchCandidates(readCtx)
 	if err != nil {
-		return fmt.Errorf("search candidates: %w", err)
+		if ctx.Err() != nil || !errors.Is(readCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("search candidates: %w", err)
+		}
+		// The cycle time limit includes the search. Reaching it stops the
+		// reading and the cycle exits normally (ADR 0085, Decision item 3):
+		// no issue was read, so nothing is dispatched or committed.
+		log.Printf("WARNING: the %s cycle time limit was reached during the search; no issue was read this cycle", p.opts.CycleTimeLimit)
+		candidates = nil
 	}
 
-	// Step 2: Filter locked issues, clean up stale locks, and drop the
-	// issues with nothing new since their lastCheck (ADR 0160), so an
-	// already-handled issue does not take a slot from a fresh request.
-	active, unlocked, err := p.filterLocked(ctx, candidates)
-	if err != nil {
-		return fmt.Errorf("filter locked: %w", err)
-	}
+	// Step 2: Drop the issues with nothing new since their lastCheck
+	// (ADR 0160), so an already-handled issue does not take a slot from a
+	// fresh request.
+	active := p.filterActive(readCtx, candidates)
 
 	// Step 3: Randomly select min(N, len(active)) candidates.
 	selected := selectRandom(active, p.opts.N)
@@ -166,29 +168,66 @@ func (p *Poller) Run(ctx context.Context) error {
 	// Step 4: Process each selected issue. Checkpoint advances are not
 	// committed to Jira here — detectChanges/routing only compute the
 	// candidate checkpoint per issue; processIssue returns it (zero if
-	// there's nothing to advance) and Step 6 below commits it only after
-	// Step 5's dispatch-file write has durably succeeded. Committing here
-	// instead would mean a local write failure permanently loses every
-	// event this cycle found: the checkpoint would already be past them in
-	// Jira with no record of them ever written anywhere.
+	// there's nothing to advance) together with the issue's records, this
+	// loop adds the two to the cycle as one unit, and Step 6 below commits
+	// the checkpoint only after Step 5's dispatch-file write has durably
+	// succeeded. Committing here instead would mean a local write failure
+	// permanently loses every event this cycle found: the checkpoint would
+	// already be past them in Jira with no record of them ever written
+	// anywhere. An issue that times out, or that the cycle limit cuts off,
+	// contributes neither records nor a checkpoint, so its requests stay
+	// eligible next cycle.
 	var pending []pendingCheckpoint
-	var processErrors int
+	var failed, tried int
 	for _, issue := range selected {
-		start := len(p.dispatches)
-		checkpoint, err := p.processIssue(ctx, issue, cycleID)
+		if readCtx.Err() != nil {
+			break
+		}
+		tried++
+		issueCtx, cancelIssue := context.WithTimeout(readCtx, p.opts.IssueTimeLimit)
+		pc, err := p.processIssue(issueCtx, issue)
+		issueTimedOut := errors.Is(issueCtx.Err(), context.DeadlineExceeded)
+		cancelIssue()
 		if err != nil {
 			var rle *roleLoadError
-			if errors.As(err, &rle) {
+			switch {
+			case ctx.Err() != nil:
+				// The caller ended the cycle; reported after the loop.
+			case errors.Is(readCtx.Err(), context.DeadlineExceeded):
+				// Not a failure: the issue is unfinished and waits.
+				log.Printf("WARNING: the %s cycle time limit cut off reading %s; it waits for the next cycle", p.opts.CycleTimeLimit, issue.Key)
+			case issueTimedOut:
+				log.Printf("WARNING: reading %s took longer than %s; none of its records were taken and its lastCheck was not advanced", issue.Key, p.opts.IssueTimeLimit)
+				failed++
+			case errors.As(err, &rle):
 				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, rle.err)
+			default:
+				log.Printf("WARNING: processing %s: %v", issue.Key, err)
+				failed++
 			}
-			log.Printf("WARNING: processing %s: %v", issue.Key, err)
-			processErrors++
 			continue
 		}
-		pending = append(pending, pendingCheckpoint{issueKey: issue.Key, t: checkpoint, records: p.dispatches[start:len(p.dispatches):len(p.dispatches)]})
+		p.dispatches = append(p.dispatches, pc.records...)
+		pending = append(pending, pc)
 	}
-	if processErrors > 0 && processErrors == len(selected) {
-		return fmt.Errorf("all %d selected issues failed to process", processErrors)
+	// The caller's context ended, not a time limit of this cycle: stop
+	// before anything is dispatched or committed.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("poll cycle interrupted: %w", err)
+	}
+	if left := len(selected) - tried; left > 0 {
+		log.Printf("WARNING: the %s cycle time limit was reached with %d selected issue(s) not read; they wait for the next cycle", p.opts.CycleTimeLimit, left)
+	}
+	// A cycle in which every issue it read failed or timed out ends in an
+	// error, so a poller blocked by failing or slow issues shows as a failed
+	// run. Reaching the cycle time limit is not a failure by itself: what
+	// was finished is dispatched and committed below, and the rest waits
+	// (ADR 0085, Decision item 3).
+	if failed > 0 && len(pending) == 0 {
+		if failed == len(selected) {
+			return fmt.Errorf("all %d selected issues failed to process", failed)
+		}
+		return fmt.Errorf("all %d issues read before the %s cycle time limit failed or timed out; the other %d selected issues wait for the next cycle", failed, p.opts.CycleTimeLimit, len(selected)-failed)
 	}
 
 	// Step 5: Write dispatch records.
@@ -296,8 +335,8 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("poll complete: %d candidates, %d unlocked, %d active, %d selected, %d dispatches",
-		len(candidates), unlocked, len(active), len(selected), len(p.dispatches))
+	log.Printf("poll complete: %d candidates, %d active, %d selected, %d dispatches",
+		len(candidates), len(active), len(selected), len(p.dispatches))
 	if dispatchErrors > 0 {
 		return fmt.Errorf("failed to dispatch records for %d issue(s); their lastCheck was not advanced, so they are retried next cycle: %w", dispatchErrors, firstDispatchErr)
 	}
@@ -307,9 +346,10 @@ func (p *Poller) Run(ctx context.Context) error {
 	return nil
 }
 
-// pendingCheckpoint holds a computed lastCheck value for an issue, deferred
-// until the dispatch file write succeeds (see Run), together with the
-// dispatch records the issue produced this cycle. A zero t means there is
+// pendingCheckpoint is what one look at an issue produced: its dispatch
+// records and the lastCheck value to commit once the dispatch file write
+// succeeds (see Run). Run takes or leaves it whole, so an issue's records
+// never go out without its checkpoint or in part. A zero t means there is
 // no checkpoint to advance.
 type pendingCheckpoint struct {
 	issueKey       string
@@ -417,48 +457,20 @@ func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
 	return p.client.SearchIssues(ctx, jql, p.opts.M)
 }
 
-// filterLocked removes locked issues, cleans up stale locks, and keeps
-// only the unlocked issues with new activity (see hasNewActivity). It
-// returns those, with the number of unlocked issues. If every candidate is
-// dropped by a failing lock-property read or a failing stale-lock release
-// (e.g. broken auth, or read-only credentials that cannot write entity
-// properties), it returns an error instead of silently reporting zero
-// unlocked issues, which would otherwise be indistinguishable from a
-// genuinely quiet Jira project. Issues with nothing new are not errors.
-func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.Issue, int, error) {
+// filterActive keeps the candidates with new activity (see hasNewActivity)
+// and logs the cycle's clamped lastCheck values once. It neither reads nor
+// writes lock properties, including those left by earlier versions
+// (ADR 0085, Decision item 1).
+func (p *Poller) filterActive(ctx context.Context, issues []jira.Issue) []jira.Issue {
 	var active []jira.Issue
-	var unlocked int
 	var clamped clampReport
-	var readErrors, releaseErrors int
 	for _, issue := range issues {
-		lock, err := p.readLock(ctx, issue.Key)
-		if err != nil {
-			log.Printf("WARNING: reading lock for %s: %v (skipping)", issue.Key, err)
-			readErrors++
-			continue
-		}
-		if lock != nil {
-			if isLockStale(*lock, p.opts.StaleThreshold) {
-				log.Printf("cleaning stale lock on %s (age > %s)", issue.Key, p.opts.StaleThreshold)
-				if err := p.releaseLock(ctx, issue.Key, lock.ID); err != nil {
-					log.Printf("WARNING: cleaning stale lock for %s: %v", issue.Key, err)
-					releaseErrors++
-					continue
-				}
-			} else {
-				continue
-			}
-		}
-		unlocked++
 		if p.hasNewActivity(ctx, issue, &clamped) {
 			active = append(active, issue)
 		}
 	}
-	if len(issues) > 0 && readErrors+releaseErrors == len(issues) {
-		return nil, 0, fmt.Errorf("all %d candidates dropped by lock errors (%d reads, %d stale-lock releases failed)", len(issues), readErrors, releaseErrors)
-	}
 	clamped.log()
-	return active, unlocked, nil
+	return active
 }
 
 // hasNewActivity reports whether issue has activity after its lastCheck:
@@ -480,6 +492,8 @@ func (p *Poller) hasNewActivity(ctx context.Context, issue jira.Issue, clamped *
 	switch lc.clamp {
 	case clampFuture:
 		clamped.future = append(clamped.future, issue.Key)
+	case clampInvalid:
+		clamped.invalid = append(clamped.invalid, issue.Key)
 	case clampFloor:
 		// Idle with activity after the stored value: that activity is
 		// itself older than the backfill window, so it is not replayed.
@@ -504,9 +518,10 @@ const gapTolerance = time.Second
 // clampReport collects the candidates whose lastCheck the activity filter
 // clamped in one cycle.
 type clampReport struct {
-	gap    []string // stored before the window, activity after it (beyond gapTolerance) but also before the window
-	old    []string // stored before the window, nothing lost
-	future []string // stored ahead of now, treated as unset
+	gap     []string // stored before the window, activity after it (beyond gapTolerance) but also before the window
+	old     []string // stored before the window, nothing lost
+	future  []string // stored ahead of now, treated as unset
+	invalid []string // stored value not a timestamp, treated as unset
 }
 
 // log writes one line for the cycle when any lastCheck was clamped. The
@@ -525,6 +540,9 @@ func (r clampReport) log() {
 	}
 	if len(r.future) > 0 {
 		parts = append(parts, "lastCheck in the future, treated as unset: "+strings.Join(r.future, ", "))
+	}
+	if len(r.invalid) > 0 {
+		parts = append(parts, "lastCheck not a timestamp, treated as unset: "+strings.Join(r.invalid, ", "))
 	}
 	if len(parts) == 0 {
 		return
@@ -547,44 +565,30 @@ func selectRandom(items []jira.Issue, n int) []jira.Issue {
 	return items[:n]
 }
 
-// processIssue acquires the lock, detects changes, converts, routes, and
-// dispatches. It returns the checkpoint value the caller should advance
-// lastCheck to once the dispatch file has been durably written (zero if
-// there is nothing to advance) — it does not commit the checkpoint itself.
-func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID string) (time.Time, error) {
-	// Attempt lock.
-	acquired, err := p.attemptLock(ctx, issue.Key, cycleID)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("lock %s: %w", issue.Key, err)
+// processIssue confirms write access, detects changes, converts and
+// matches. It returns the issue's dispatch records with the checkpoint value
+// the caller should advance lastCheck to once the dispatch file has been
+// durably written (zero if there is nothing to advance). It neither adds the
+// records to the cycle nor commits the checkpoint: the caller takes the
+// result whole or not at all.
+func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (pendingCheckpoint, error) {
+	pc := pendingCheckpoint{issueKey: issue.Key}
+	// Confirm write access before reading the issue's comments and history
+	// (ADR 0085, Decision item 1). A failure yields no records: Run warns
+	// and goes on, and a cycle in which every issue fails ends in an error.
+	if err := p.checkWriteAccess(ctx, issue.Key); err != nil {
+		return pendingCheckpoint{}, fmt.Errorf("check write access to %s: %w", issue.Key, err)
 	}
-	if !acquired {
-		log.Printf("lock contention on %s, skipping", issue.Key)
-		return time.Time{}, nil
-	}
-	// KNOWN LIMITATION: the lock covers the change-detection window only.
-	// It is released here at the end of processIssue — before writeDispatches
-	// runs and before the downstream dispatch step consumes the records — so
-	// it does not provide the through-dispatch-scheduling ownership ADR 0063
-	// describes; that handoff is part of the same tracked follow-up as the
-	// lastCheck dispatch-confirmation note below. The lock is also never
-	// renewed while an issue is processed: a cycle stalled longer than
-	// StaleThreshold can have its lock reclaimed as stale by a concurrent
-	// poller, which may duplicate dispatches for the same activity.
-	defer func() {
-		if err := p.releaseLock(ctx, issue.Key, cycleID); err != nil {
-			log.Printf("WARNING: releasing lock for %s: %v", issue.Key, err)
-		}
-	}()
 
 	// Read lastCheck.
 	lastCheck, err := p.readLastCheck(ctx, issue.Key)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read lastCheck for %s: %w", issue.Key, err)
+		return pendingCheckpoint{}, fmt.Errorf("read lastCheck for %s: %w", issue.Key, err)
 	}
 	// Detect changes.
 	result, err := p.detectChanges(ctx, issue, lastCheck)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("detect changes for %s: %w", issue.Key, err)
+		return pendingCheckpoint{}, fmt.Errorf("detect changes for %s: %w", issue.Key, err)
 	}
 
 	// The checkpoint is result.maxSeen and nothing else. maxSeen already
@@ -598,9 +602,9 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// lastCheck, skip the advance entirely (return zero) rather than
 	// regressing the checkpoint; the next cycle re-detects the same
 	// in-margin activity — a harmless, self-correcting duplicate.
-	checkpoint := result.maxSeen
-	if !checkpoint.After(lastCheck) {
-		checkpoint = time.Time{}
+	pc.t = result.maxSeen
+	if !pc.t.After(lastCheck) {
+		pc.t = time.Time{}
 	}
 
 	if len(result.events) == 0 {
@@ -608,7 +612,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		// with unsupported fields; the checkpoint (zero if nothing was
 		// seen at all) still needs to advance past them so the poller
 		// does not re-scan the same updates every cycle.
-		return checkpoint, nil
+		return pc, nil
 	}
 
 	// Deduplicate.
@@ -651,9 +655,9 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	if err := p.resolveEventRoles(ctx, events); err != nil {
 		var rle *roleLoadError
 		if errors.As(err, &rle) {
-			return time.Time{}, err
+			return pendingCheckpoint{}, err
 		}
-		return time.Time{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
+		return pendingCheckpoint{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
 	}
 
 	// Convert, match harness triggers, dispatch. An event that fails
@@ -701,11 +705,11 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 				p.eventsMatchErrors++
 				continue
 			}
-			p.dispatches = append(p.dispatches, records...)
+			pc.records = append(pc.records, records...)
 		}
 	}
 
-	return checkpoint, nil
+	return pc, nil
 }
 
 // deduplicate removes duplicate events based on their Key().
