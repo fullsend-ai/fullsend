@@ -110,6 +110,8 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 		log.Printf("WARNING: lastCheck for %s is in the future (%q); treating as unset", issueKey, lc.raw)
 	case clampFloor:
 		log.Printf("WARNING: lastCheck for %s (%q) predates the backfill window; clamping to %s", issueKey, lc.raw, lc.value.UTC().Format(time.RFC3339))
+	case clampInvalid:
+		log.Printf("WARNING: lastCheck for %s is not a timestamp; treating as unset", issueKey)
 	}
 	return lc.value, nil
 }
@@ -118,9 +120,10 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 type lastCheckClamp int
 
 const (
-	clampNone   lastCheckClamp = iota
-	clampFuture                // stored beyond clock skew ahead; treated as unset
-	clampFloor                 // stored before the backfill window; floored to its start
+	clampNone    lastCheckClamp = iota
+	clampFuture                 // stored beyond clock skew ahead; treated as unset
+	clampFloor                  // stored before the backfill window; floored to its start
+	clampInvalid                // stored value is not a timestamp; treated as unset
 )
 
 // storedLastCheck is a lastCheck as loadLastCheck read it.
@@ -143,27 +146,34 @@ func (p *Poller) loadLastCheck(ctx context.Context, issueKey string) (storedLast
 		}
 		return storedLastCheck{}, fmt.Errorf("get lastCheck property: %w", err)
 	}
-	return p.parseLastCheck(raw)
+	return p.parseLastCheck(raw), nil
 }
 
 // parseLastCheck parses and clamps a stored lastCheck value without
 // logging, so the activity filter can report the clamps once per cycle
-// instead of once per issue. An empty value is unset.
-func (p *Poller) parseLastCheck(raw json.RawMessage) (storedLastCheck, error) {
+// instead of once per issue. An empty value is unset, and so is one that is
+// not a timestamp.
+func (p *Poller) parseLastCheck(raw json.RawMessage) storedLastCheck {
 	if len(raw) == 0 {
-		return storedLastCheck{}, nil
+		return storedLastCheck{}
 	}
 
+	// A value that is not a timestamp is treated as unset, like a future
+	// one below: the issue gets one first-poll look bounded by the backfill
+	// window and the next checkpoint advance overwrites it. Returning an
+	// error instead would fail the issue on every pick and never save a
+	// valid value (#9766). raw stays empty so the attacker-writable value
+	// is never logged.
 	var ts string
 	if err := json.Unmarshal(raw, &ts); err != nil {
-		return storedLastCheck{}, fmt.Errorf("unmarshal lastCheck: %w", err)
+		return storedLastCheck{clamp: clampInvalid}
 	}
 
 	// RFC3339Nano also accepts fraction-less RFC3339 strings, so this
 	// single parse covers values stored before the Nano switch too.
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
-		return storedLastCheck{}, fmt.Errorf("parse lastCheck: %w", err)
+		return storedLastCheck{clamp: clampInvalid}
 	}
 
 	// lastCheck lives in an issue entity property writable by anyone with
@@ -184,12 +194,12 @@ func (p *Poller) parseLastCheck(raw json.RawMessage) (storedLastCheck, error) {
 	const clockSkew = 2 * time.Minute
 	if t.After(now.Add(clockSkew)) {
 		lc.value, lc.clamp = time.Time{}, clampFuture
-		return lc, nil
+		return lc
 	}
 	if floor := now.Add(-p.opts.FirstPollBackfillWindow); t.Before(floor) {
 		lc.value, lc.clamp = floor, clampFloor
 	}
-	return lc, nil
+	return lc
 }
 
 // advanceLastCheck updates the lastCheck timestamp for an issue.

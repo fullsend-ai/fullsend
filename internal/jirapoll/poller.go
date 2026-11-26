@@ -138,7 +138,14 @@ func (p *Poller) Run(ctx context.Context) error {
 	// window.
 	candidates, err := p.searchCandidates(readCtx)
 	if err != nil {
-		return fmt.Errorf("search candidates: %w", err)
+		if ctx.Err() != nil || !errors.Is(readCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("search candidates: %w", err)
+		}
+		// The cycle time limit includes the search. Reaching it stops the
+		// reading and the cycle exits normally (ADR 0085, Decision item 3):
+		// no issue was read, so nothing is dispatched or committed.
+		log.Printf("WARNING: the %s cycle time limit was reached during the search; no issue was read this cycle", p.opts.CycleTimeLimit)
+		candidates = nil
 	}
 
 	// Step 2: Drop the issues with nothing new since their lastCheck
@@ -171,7 +178,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	// contributes neither records nor a checkpoint, so its requests stay
 	// eligible next cycle.
 	var pending []pendingCheckpoint
-	var processErrors, tried int
+	var failed, tried int
 	for _, issue := range selected {
 		if readCtx.Err() != nil {
 			break
@@ -187,15 +194,17 @@ func (p *Poller) Run(ctx context.Context) error {
 			case ctx.Err() != nil:
 				// The caller ended the cycle; reported after the loop.
 			case errors.Is(readCtx.Err(), context.DeadlineExceeded):
+				// Not a failure: the issue is unfinished and waits.
 				log.Printf("WARNING: the %s cycle time limit cut off reading %s; it waits for the next cycle", p.opts.CycleTimeLimit, issue.Key)
 			case issueTimedOut:
 				log.Printf("WARNING: reading %s took longer than %s; none of its records were taken and its lastCheck was not advanced", issue.Key, p.opts.IssueTimeLimit)
+				failed++
 			case errors.As(err, &rle):
 				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, rle.err)
 			default:
 				log.Printf("WARNING: processing %s: %v", issue.Key, err)
+				failed++
 			}
-			processErrors++
 			continue
 		}
 		p.dispatches = append(p.dispatches, pc.records...)
@@ -209,13 +218,16 @@ func (p *Poller) Run(ctx context.Context) error {
 	if left := len(selected) - tried; left > 0 {
 		log.Printf("WARNING: the %s cycle time limit was reached with %d selected issue(s) not read; they wait for the next cycle", p.opts.CycleTimeLimit, left)
 	}
-	// A cycle that served no selected issue fails, so a poller blocked by
-	// failing or slow issues shows as a failed run.
-	if len(selected) > 0 && len(pending) == 0 {
-		if processErrors == len(selected) {
-			return fmt.Errorf("all %d selected issues failed to process", processErrors)
+	// A cycle in which every issue it read failed or timed out ends in an
+	// error, so a poller blocked by failing or slow issues shows as a failed
+	// run. Reaching the cycle time limit is not a failure by itself: what
+	// was finished is dispatched and committed below, and the rest waits
+	// (ADR 0085, Decision item 3).
+	if failed > 0 && len(pending) == 0 {
+		if failed == len(selected) {
+			return fmt.Errorf("all %d selected issues failed to process", failed)
 		}
-		return fmt.Errorf("the %s cycle time limit was reached with none of the %d selected issues served (%d tried)", p.opts.CycleTimeLimit, len(selected), tried)
+		return fmt.Errorf("all %d issues read before the %s cycle time limit failed or timed out; the other %d selected issues wait for the next cycle", failed, p.opts.CycleTimeLimit, len(selected)-failed)
 	}
 
 	// Step 5: Write dispatch records.
@@ -502,22 +514,20 @@ func (p *Poller) filterActive(issues []jira.Issue) []jira.Issue {
 // processIssue's read clamps it (ADR 0160, Decision item 1). The search's
 // value only decides whether to skip the issue; processing reads lastCheck
 // from the issue again. It fails open: an issue whose lastCheck the search
-// did not return or that cannot be parsed, or that has no usable updated
+// did not return or that is not a timestamp, or that has no usable updated
 // value, is active, so neither a search that drops the property nor an
-// editor writing garbage can hide an issue. A parse error is not reported
-// here; processIssue reports it if the issue is picked. A clamped
-// lastCheck is added to clamped instead of logged, so a quiet project logs
-// one line per cycle rather than one per idle issue.
+// editor writing garbage can hide an issue. A clamped lastCheck is added to
+// clamped instead of logged, so a quiet project logs one line per cycle
+// rather than one per idle issue.
 func (p *Poller) hasNewActivity(issue jira.Issue, clamped *clampReport) bool {
-	lc, err := p.parseLastCheck(issue.Properties[p.lastCheckKey()])
-	if err != nil {
-		return true
-	}
+	lc := p.parseLastCheck(issue.Properties[p.lastCheckKey()])
 	updated, updatedErr := parseJiraTimestamp(issue.Fields.Updated)
 	active := lc.value.IsZero() || updatedErr != nil || updated.After(lc.value)
 	switch lc.clamp {
 	case clampFuture:
 		clamped.future = append(clamped.future, issue.Key)
+	case clampInvalid:
+		clamped.invalid = append(clamped.invalid, issue.Key)
 	case clampFloor:
 		// Idle with activity after the stored value: that activity is
 		// itself older than the backfill window, so it is not replayed.
@@ -542,9 +552,10 @@ const gapTolerance = time.Second
 // clampReport collects the candidates whose lastCheck the activity filter
 // clamped in one cycle.
 type clampReport struct {
-	gap    []string // stored before the window, activity after it (beyond gapTolerance) but also before the window
-	old    []string // stored before the window, nothing lost
-	future []string // stored ahead of now, treated as unset
+	gap     []string // stored before the window, activity after it (beyond gapTolerance) but also before the window
+	old     []string // stored before the window, nothing lost
+	future  []string // stored ahead of now, treated as unset
+	invalid []string // stored value not a timestamp, treated as unset
 }
 
 // log writes one line for the cycle when any lastCheck was clamped. The
@@ -563,6 +574,9 @@ func (r clampReport) log() {
 	}
 	if len(r.future) > 0 {
 		parts = append(parts, "lastCheck in the future, treated as unset: "+strings.Join(r.future, ", "))
+	}
+	if len(r.invalid) > 0 {
+		parts = append(parts, "lastCheck not a timestamp, treated as unset: "+strings.Join(r.invalid, ", "))
 	}
 	if len(parts) == 0 {
 		return
