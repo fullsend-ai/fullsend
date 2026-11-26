@@ -86,7 +86,9 @@ main() {
   # itself: every commit after PREV up to TAG is then included, and the
   # first PR merged after the previous tag keeps its note.
   local START_SHA END_SHA
-  START_SHA=$(git rev-parse "${PREV}")
+  # ^{commit} peels annotated tags to their commit SHA; the tool's
+  # CommitObject call fails on a tag object.
+  START_SHA=$(git rev-parse "${PREV}^{commit}")
   END_SHA=$(git rev-list -n1 "${TAG}")
   # The tool reads its range from these env vars and walks a local clone
   # (v0.23.0 has no --required-author flag and no date window; it opens
