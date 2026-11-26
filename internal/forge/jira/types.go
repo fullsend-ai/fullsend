@@ -12,6 +12,10 @@ type Issue struct {
 	Key    string      `json:"key"`
 	Self   string      `json:"self"`
 	Fields IssueFields `json:"fields"`
+	// Properties holds the issue entity properties SearchIssues was asked
+	// to return, keyed by property key. A property the issue does not have
+	// is absent.
+	Properties map[string]json.RawMessage `json:"properties,omitempty"`
 }
 
 // CreatedIssue is the response from POST /rest/api/3/issue.

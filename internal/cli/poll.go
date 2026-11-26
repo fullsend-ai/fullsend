@@ -414,7 +414,7 @@ type jiraPollArgs struct {
 
 // validTargetRepo matches "owner/repo" slugs (subgroup segments allowed,
 // matching splitOwnerRepo). Validated up front because a slash-less value
-// would otherwise flow into a silently malformed Jira entity-property lock
+// would otherwise flow into a silently malformed Jira entity-property
 // namespace and into NormalizedEvent.Repo.
 var validTargetRepo = regexp.MustCompile(`^[^/\s]+(/[^/\s]+)+$`)
 
