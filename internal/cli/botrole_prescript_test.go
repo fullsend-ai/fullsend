@@ -147,6 +147,12 @@ func TestRunAgent_BotRoleHelperEnvReachedPreScriptWithoutOIDC(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.invalid/token?api-version=2.0")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-request-token-9602")
 	useFakeGitHubGraphQL(t, "I_kwDOAgents9602", nil)
+	// statusMintToken is package-level shared state. Mutating it here is
+	// safe only because this package's tests are serialized by
+	// construction: they call t.Setenv, which forbids t.Parallel, and the
+	// var is restored through t.Cleanup even on a failing assertion. A
+	// future t.Parallel adoption must lift this constraint first (a
+	// per-test stub instead of the shared var).
 	origMint := statusMintToken
 	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
 		return &mintclient.MintResult{Token: "ghs_test_token_9602", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
@@ -243,6 +249,12 @@ func TestRunAgent_BotRoleHelperResolvesThroughRunsOwnMint(t *testing.T) {
 	useFakeGitHubGraphQL(t, "I_kwDOAgents9602", map[string]fakeGitHubComment{
 		"IC_kwDOComment1": {authorType: "Bot", authorLogin: "fullsend-ai-triage", issueID: "I_kwDOAgents9602"},
 	})
+	// statusMintToken is package-level shared state. Mutating it here is
+	// safe only because this package's tests are serialized by
+	// construction: they call t.Setenv, which forbids t.Parallel, and the
+	// var is restored through t.Cleanup even on a failing assertion. A
+	// future t.Parallel adoption must lift this constraint first (a
+	// per-test stub instead of the shared var).
 	origMint := statusMintToken
 	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
 		return &mintclient.MintResult{Token: "ghs_test_token_9602", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
@@ -317,6 +329,12 @@ func TestRunAgent_BotRoleHelperSkippedWhenLookupImpossible(t *testing.T) {
 	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
 	t.Setenv("GH_TOKEN", "ghs_fake_graphql_token")
 
+	// statusMintToken is package-level shared state. Mutating it here is
+	// safe only because this package's tests are serialized by
+	// construction: they call t.Setenv, which forbids t.Parallel, and the
+	// var is restored through t.Cleanup even on a failing assertion. A
+	// future t.Parallel adoption must lift this constraint first (a
+	// per-test stub instead of the shared var).
 	origMint := statusMintToken
 	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
 		return &mintclient.MintResult{Token: "ghs_test_token_9602", ExpiresAt: "2026-06-15T12:00:00Z"}, nil

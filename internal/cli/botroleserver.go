@@ -17,6 +17,19 @@ import (
 // maxBotRoleRequestBytes bounds the request body a script may send.
 const maxBotRoleRequestBytes = 1 << 20
 
+// The three runner-owned environment names of the bot-role helper
+// (#9602). They are defined once here, beside the helper that exports
+// them, and every Go site that spells them references these constants —
+// the deny maps and env-key predicates in run.go, the helper's exports,
+// and the command's environment reads — so the lists cannot drift apart
+// silently: a divergence at one site is a compile error instead of a
+// silent weakening.
+const (
+	botRoleHelperURLEnvKey   = "FULLSEND_BOT_ROLE_URL"
+	botRoleHelperTokenEnvKey = "FULLSEND_BOT_ROLE_TOKEN"
+	botRoleEntityIDEnvKey    = "FULLSEND_ENTITY_ID"
+)
+
 // botRoleHelperEnv holds the loopback URL and bearer token of the
 // runner-side bot-role helper service (#9602), and the canonical ID of the
 // entity the run handles. When the URL is non-empty, the run injects them
@@ -39,9 +52,9 @@ func (e botRoleHelperEnv) exports() []string {
 	if e.url == "" {
 		return nil
 	}
-	out := []string{"FULLSEND_BOT_ROLE_URL=" + e.url, "FULLSEND_BOT_ROLE_TOKEN=" + e.token}
+	out := []string{botRoleHelperURLEnvKey + "=" + e.url, botRoleHelperTokenEnvKey + "=" + e.token}
 	if e.entity != "" {
-		out = append(out, "FULLSEND_ENTITY_ID="+e.entity)
+		out = append(out, botRoleEntityIDEnvKey+"="+e.entity)
 	}
 	return out
 }
@@ -96,19 +109,19 @@ func (h *botRoleHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBotRoleRequestBytes)
 	var req botRoleScriptRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "invalid request body"})
+		h.writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "invalid request body"})
 		return
 	}
 	if req.Entity == "" || req.Comment == "" {
-		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "entity and comment are required"})
+		h.writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "entity and comment are required"})
 		return
 	}
 	if h.comments == nil || h.entity == "" {
-		writeBotRoleJSON(w, http.StatusNotImplemented, botidentity.MintBotRoleResponse{Error: "no trusted bot-role lookup for this run"})
+		h.writeBotRoleJSON(w, http.StatusNotImplemented, botidentity.MintBotRoleResponse{Error: "no trusted bot-role lookup for this run"})
 		return
 	}
 	if req.Entity != h.entity {
-		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "entity is not the one this run handles"})
+		h.writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "entity is not the one this run handles"})
 		return
 	}
 	// One GitHub comment lookup runs under githubGraphQLTimeout (looser
@@ -121,18 +134,18 @@ func (h *botRoleHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	actor, err := h.comments.CommentActor(ctx, req.Comment)
 	if err != nil {
 		h.logf("comment lookup failed: %v", err)
-		writeBotRoleJSON(w, http.StatusBadGateway, botidentity.MintBotRoleResponse{Error: "bot-role lookup failed"})
+		h.writeBotRoleJSON(w, http.StatusBadGateway, botidentity.MintBotRoleResponse{Error: "bot-role lookup failed"})
 		return
 	}
 	if actor.Entity != h.entity {
-		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "comment is not on the entity this run handles"})
+		h.writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "comment is not on the entity this run handles"})
 		return
 	}
 	// A human actor, including a human who last edited a bot's comment,
 	// is not a registered bot: a completed no-match that never reaches
 	// the mint.
 	if !actor.Bot {
-		writeBotRoleJSON(w, http.StatusOK, botidentity.MintBotRoleResponse{Outcome: botidentity.MintOutcomeNoMatch})
+		h.writeBotRoleJSON(w, http.StatusOK, botidentity.MintBotRoleResponse{Outcome: botidentity.MintOutcomeNoMatch})
 		return
 	}
 	res, err := h.resolver.ResolveBotRole(r.Context(), botidentity.BotRoleQuery{
@@ -142,14 +155,14 @@ func (h *botRoleHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.logf("bot-role lookup failed: %v", err)
-		writeBotRoleJSON(w, http.StatusBadGateway, botidentity.MintBotRoleResponse{Error: "bot-role lookup failed"})
+		h.writeBotRoleJSON(w, http.StatusBadGateway, botidentity.MintBotRoleResponse{Error: "bot-role lookup failed"})
 		return
 	}
 	if res.Recognized() {
-		writeBotRoleJSON(w, http.StatusOK, botidentity.MintBotRoleResponse{Outcome: botidentity.MintOutcomeRecognized, Role: res.Role})
+		h.writeBotRoleJSON(w, http.StatusOK, botidentity.MintBotRoleResponse{Outcome: botidentity.MintOutcomeRecognized, Role: res.Role})
 		return
 	}
-	writeBotRoleJSON(w, http.StatusOK, botidentity.MintBotRoleResponse{Outcome: botidentity.MintOutcomeNoMatch})
+	h.writeBotRoleJSON(w, http.StatusOK, botidentity.MintBotRoleResponse{Outcome: botidentity.MintOutcomeNoMatch})
 }
 
 // logf records failure detail runner-side, when the helper has a log.
@@ -160,8 +173,13 @@ func (h *botRoleHelper) logf(format string, args ...any) {
 }
 
 // writeBotRoleJSON writes one helper response in the mint's bot-role
-// response shape.
-func writeBotRoleJSON(w http.ResponseWriter, status int, resp botidentity.MintBotRoleResponse) {
+// response shape. The Encode error is deliberately discarded: every body
+// here is tens of bytes, and net/http buffers chunked responses below
+// 2048 bytes until the handler returns, discarding that flush's error
+// itself — a write failure is unobservable at this size without an
+// explicit Flush (surfacing client disconnects would be its own
+// follow-up).
+func (h *botRoleHelper) writeBotRoleJSON(w http.ResponseWriter, status int, resp botidentity.MintBotRoleResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(resp)

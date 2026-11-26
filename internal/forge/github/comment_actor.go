@@ -68,23 +68,31 @@ type graphqlActor struct {
 // resolves.
 const nextGlobalIDHeader = "X-Github-Next-Global-ID"
 
-// CommentActor reads a comment's current-revision actor and the issue or
-// pull request it is on (ADR 0133, ADR 0141). For an edited comment the
-// actor is the editor of the edit-history entry the lastEditedAt field
-// names: GitHub does not document whether the top-level editor field is
-// the first or the last editor, and it does not document the order of the
-// userContentEdits connection either, so a small page of the edit history
-// is read and the entry whose editedAt equals lastEditedAt is the current
-// revision, whichever end of the page it sits at. A page that does not
-// contain it, whose entry has no editor, or whose timestamp matches more
-// than one entry, is an error: the lookup fails closed rather than
-// guessing. An unedited comment's actor is its author.
+// GetCommentActor reads a comment's current-revision actor and the issue
+// or pull request it is on (ADR 0133, ADR 0141), matching the Get* naming
+// of the other lookups so it does not share its identifier with its
+// return type. For an edited comment the actor is the editor of the
+// edit-history entry the lastEditedAt field names: GitHub does not
+// document whether the top-level editor field is the first or the last
+// editor, and it does not document the order of the userContentEdits
+// connection either, so the first ten entries of the edit history are
+// read (the helper lookup is the hot path a pre-script waits on, so the
+// page is deliberately small) and the entry whose editedAt equals
+// lastEditedAt is the current revision, whichever end of the page it sits
+// at. A page that does not contain it, whose entry has no editor, whose
+// timestamp matches more than one entry, or that is truncated — the
+// comment has more edits than the ten-entry bound, which the connection's
+// pageInfo reports — is an error: the lookup fails closed rather than
+// guessing, so an edit omitted from the window can never leave an
+// in-page match accepted as the current revision. The bound can be grown
+// or paginated if a comment with that many edits shows up in practice.
+// An unedited comment's actor is its author.
 // It accepts the comments the normalized entity lists: issue and
 // pull-request conversation comments (IssueComment) and pull-request
 // review-thread comments (PullRequestReviewComment). Any other node, and
 // an edited comment whose current revision cannot be attributed, is an
 // error.
-func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (forge.CommentActor, error) {
+func (c *LiveClient) GetCommentActor(ctx context.Context, commentID string) (forge.CommentActor, error) {
 	var data struct {
 		Node *struct {
 			Typename         string        `json:"__typename"`
@@ -95,6 +103,9 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (forge.
 					Editor   *graphqlActor `json:"editor"`
 					EditedAt string        `json:"editedAt"`
 				} `json:"nodes"`
+				PageInfo struct {
+					HasNextPage bool `json:"hasNextPage"`
+				} `json:"pageInfo"`
 			} `json:"userContentEdits"`
 			Issue *struct {
 				ID string `json:"id"`
@@ -105,8 +116,8 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (forge.
 		} `json:"node"`
 	}
 	const q = `query($id:ID!){node(id:$id){__typename ` +
-		`... on IssueComment{author{__typename login} lastEditedAt userContentEdits(first:10){nodes{editor{__typename login} editedAt}} issue{id} pullRequest{id}} ` +
-		`... on PullRequestReviewComment{author{__typename login} lastEditedAt userContentEdits(first:10){nodes{editor{__typename login} editedAt}} pullRequest{id}}}}`
+		`... on IssueComment{author{__typename login} lastEditedAt userContentEdits(first:10){nodes{editor{__typename login} editedAt} pageInfo{hasNextPage}} issue{id} pullRequest{id}} ` +
+		`... on PullRequestReviewComment{author{__typename login} lastEditedAt userContentEdits(first:10){nodes{editor{__typename login} editedAt} pageInfo{hasNextPage}} pullRequest{id}}}}`
 	if err := c.graphqlQuery(ctx, q, map[string]any{"id": commentID}, &data, withHeader(nextGlobalIDHeader, "1")); err != nil {
 		return forge.CommentActor{}, err
 	}
@@ -137,7 +148,13 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (forge.
 		// revision, whose entry has no editor, or whose timestamp
 		// matches more than one entry (DateTime values carry no
 		// sub-second precision, so two edits in one second are
-		// ambiguous), fails closed.
+		// ambiguous), fails closed. A truncated page fails closed the
+		// same way even when it holds a match: the entries past the
+		// ten-entry bound are unknown, so an omitted edit sharing
+		// lastEditedAt's second could make the in-page match ambiguous.
+		if n.UserContentEdits != nil && n.UserContentEdits.PageInfo.HasNextPage {
+			return forge.CommentActor{}, fmt.Errorf("comment %q's edit history is truncated past its first ten entries", commentID)
+		}
 		var editor *graphqlActor
 		matches := 0
 		if n.UserContentEdits != nil {

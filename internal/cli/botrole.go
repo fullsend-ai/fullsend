@@ -91,13 +91,13 @@ func runBotRole(ctx context.Context, entity, comment string, stdout io.Writer) e
 	if entity == "" || comment == "" {
 		return fmt.Errorf("both --entity and --comment are required")
 	}
-	helperURL := os.Getenv("FULLSEND_BOT_ROLE_URL")
+	helperURL := os.Getenv(botRoleHelperURLEnvKey)
 	if helperURL == "" {
-		return fmt.Errorf("%w: FULLSEND_BOT_ROLE_URL is not set (is this inside a fullsend run with a pre- or post-script?)", botidentity.ErrLookup)
+		return fmt.Errorf("%w: %s is not set (is this inside a fullsend run with a pre- or post-script?)", botidentity.ErrLookup, botRoleHelperURLEnvKey)
 	}
-	token := os.Getenv("FULLSEND_BOT_ROLE_TOKEN")
+	token := os.Getenv(botRoleHelperTokenEnvKey)
 	if token == "" {
-		return fmt.Errorf("%w: FULLSEND_BOT_ROLE_TOKEN is not set", botidentity.ErrLookup)
+		return fmt.Errorf("%w: %s is not set", botidentity.ErrLookup, botRoleHelperTokenEnvKey)
 	}
 	if err := requireLoopbackHelperURL(helperURL); err != nil {
 		return err
@@ -159,11 +159,11 @@ func runBotRole(ctx context.Context, entity, comment string, stdout io.Writer) e
 func requireLoopbackHelperURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%w: FULLSEND_BOT_ROLE_URL is not a valid URL: %v", botidentity.ErrLookup, err)
+		return fmt.Errorf("%w: %s is not a valid URL: %v", botidentity.ErrLookup, botRoleHelperURLEnvKey, err)
 	}
 	host := u.Hostname()
 	if host != "127.0.0.1" && host != "::1" {
-		return fmt.Errorf("%w: FULLSEND_BOT_ROLE_URL must be the helper's loopback address (127.0.0.1), not %q", botidentity.ErrLookup, host)
+		return fmt.Errorf("%w: %s must be the helper's loopback address (127.0.0.1), not %q", botidentity.ErrLookup, botRoleHelperURLEnvKey, host)
 	}
 	return nil
 }

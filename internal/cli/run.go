@@ -3765,9 +3765,9 @@ var inheritedScriptDenyKeys = map[string]bool{
 	// or a workflow-level env) must not answer lookups, or name the entity,
 	// for a run whose own helper failed to start. The run's own export is
 	// appended after childScriptEnv, so a running helper still wins.
-	"FULLSEND_BOT_ROLE_URL":   true,
-	"FULLSEND_BOT_ROLE_TOKEN": true,
-	"FULLSEND_ENTITY_ID":      true,
+	botRoleHelperURLEnvKey:   true,
+	botRoleHelperTokenEnvKey: true,
+	botRoleEntityIDEnvKey:    true,
 }
 
 // optionalHarnessEnvKeys are host variables a harness ${VAR} reference may
@@ -3853,7 +3853,7 @@ func harnessExpansionDenied(key string) bool {
 // this refusal the nested harness could copy the outer token into its own
 // env.runner or runner_env entry under a different name.
 func isBotRoleHelperSecretKey(key string) bool {
-	return key == "FULLSEND_BOT_ROLE_URL" || key == "FULLSEND_BOT_ROLE_TOKEN"
+	return key == botRoleHelperURLEnvKey || key == botRoleHelperTokenEnvKey
 }
 
 // harnessEnvExpand is the expander used for harness YAML ${VAR} sites.
@@ -3894,8 +3894,8 @@ var sandboxDeniedKeys = map[string]bool{
 	// helper token to its agent. The runner-side export to pre- and
 	// post-scripts (botRoleHelperEnv.exports through childScriptEnv) never
 	// goes through ${VAR} expansion and is unaffected.
-	"FULLSEND_BOT_ROLE_URL":   true,
-	"FULLSEND_BOT_ROLE_TOKEN": true,
+	botRoleHelperURLEnvKey:   true,
+	botRoleHelperTokenEnvKey: true,
 }
 
 // providerCredentialJiraKeys are the sandboxDeniedKeys that provider
@@ -3965,8 +3965,8 @@ var reservedSandboxKeys = map[string]bool{
 	// The bot-role helper's address and credential are runner-owned and
 	// host-side only (#9602): the sandbox never receives a genuine value,
 	// so an env.sandbox entry can only impersonate the helper.
-	"FULLSEND_BOT_ROLE_URL":       true,
-	"FULLSEND_BOT_ROLE_TOKEN":     true,
+	botRoleHelperURLEnvKey:        true,
+	botRoleHelperTokenEnvKey:      true,
 	"FULLSEND_OUTPUT_DIR":         true,
 	"FULLSEND_OUTPUT_SCHEMA":      true,
 	"FULLSEND_OUTPUT_FILE":        true,
@@ -6494,7 +6494,7 @@ func botRoleCommentLookup(ctx context.Context, forgePlatform, trackerSource stri
 // last-value-wins reasoning as the GitLab role-routing pin above
 // (#7499).
 func isBotRoleHelperEnvKey(key string) bool {
-	return key == "FULLSEND_BOT_ROLE_URL" || key == "FULLSEND_BOT_ROLE_TOKEN" || key == "FULLSEND_ENTITY_ID"
+	return key == botRoleHelperURLEnvKey || key == botRoleHelperTokenEnvKey || key == botRoleEntityIDEnvKey
 }
 
 // postScriptEnv builds the environment for post-script execution.

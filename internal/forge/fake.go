@@ -259,7 +259,7 @@ type FakeClient struct {
 	// IssueOrPullRequestNodeIDs maps "owner/repo/number" → node for
 	// IssueOrPullRequestNodeID.
 	IssueOrPullRequestNodeIDs map[string]IssueOrPullRequestNode
-	// CommentActors maps a comment node ID → its actor for CommentActor.
+	// CommentActors maps a comment node ID → its actor for GetCommentActor.
 	CommentActors map[string]CommentActor
 
 	// CollaboratorPermissions maps "owner/repo/username" → role_name for GetCollaboratorPermission.
@@ -2455,11 +2455,11 @@ func (f *FakeClient) IssueOrPullRequestNodeID(_ context.Context, owner, repo str
 	return "", "", fmt.Errorf("%w: %s", ErrNotFound, key)
 }
 
-func (f *FakeClient) CommentActor(_ context.Context, commentID string) (CommentActor, error) {
+func (f *FakeClient) GetCommentActor(_ context.Context, commentID string) (CommentActor, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("CommentActor"); e != nil {
+	if e := f.err("GetCommentActor"); e != nil {
 		return CommentActor{}, e
 	}
 

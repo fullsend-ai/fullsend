@@ -93,7 +93,7 @@ func (g *githubCommentActors) CommentActor(ctx context.Context, commentID string
 	if err != nil {
 		return commentActor{}, err
 	}
-	a, err := client.CommentActor(ctx, commentID)
+	a, err := client.GetCommentActor(ctx, commentID)
 	if err != nil {
 		return commentActor{}, err
 	}

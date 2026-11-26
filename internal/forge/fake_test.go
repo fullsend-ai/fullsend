@@ -1090,7 +1090,7 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		"IssueOrPullRequestNodeID": func(fc *FakeClient) []any {
 			return pack(fc.IssueOrPullRequestNodeID(ctx, "o", "r", 1))
 		},
-		"CommentActor": func(fc *FakeClient) []any { return pack(fc.CommentActor(ctx, "node")) },
+		"GetCommentActor": func(fc *FakeClient) []any { return pack(fc.GetCommentActor(ctx, "node")) },
 
 		// GitLabExtensions
 		"GetNoteOnParent": func(fc *FakeClient) []any { return pack(fc.GetNoteOnParent(ctx, "o", "r", "issue", 1, 1)) },

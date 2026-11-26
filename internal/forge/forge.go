@@ -1926,10 +1926,10 @@ type GitHubExtensions interface {
 	// Returns forge.ErrNotFound when no such issue or pull request exists.
 	IssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (typename, nodeID string, err error)
 
-	// CommentActor reads a comment's current-revision actor and the issue
-	// or pull request it is on, failing closed when the actor cannot be
-	// attributed. Returns forge.ErrNotFound when no such comment exists.
-	CommentActor(ctx context.Context, commentID string) (CommentActor, error)
+	// GetCommentActor reads a comment's current-revision actor and the
+	// issue or pull request it is on, failing closed when the actor cannot
+	// be attributed. Returns forge.ErrNotFound when no such comment exists.
+	GetCommentActor(ctx context.Context, commentID string) (CommentActor, error)
 
 	// GetCollaboratorPermission returns the effective GitHub base role
 	// (admin, maintain, write, triage, read or none) for username on

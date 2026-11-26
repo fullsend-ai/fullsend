@@ -254,6 +254,38 @@ func TestBotRoleCmd_FailClosedBranches(t *testing.T) {
 		assert.Empty(t, stdout)
 		assert.ErrorIs(t, err, botidentity.ErrLookup)
 	})
+
+	t.Run("helper refuses with a non-JSON body", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("upstream exploded"))
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv(botRoleScriptEnvURL, srv.URL)
+		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+
+		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
+		require.Error(t, err, "a non-200 answer that is not the JSON error shape must fail the command")
+		assert.Empty(t, stdout)
+		assert.ErrorIs(t, err, botidentity.ErrLookup)
+		assert.ErrorContains(t, err, "bot-role helper refused (HTTP 502)")
+		assert.ErrorContains(t, err, "upstream exploded", "the raw body is echoed in the refusal wording, so a script author can see what the helper misbehaved with")
+	})
+
+	t.Run("helper refuses with an empty body", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv(botRoleScriptEnvURL, srv.URL)
+		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+
+		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
+		require.Error(t, err, "a non-200 answer with no body must fail the command, never print a guessed outcome")
+		assert.Empty(t, stdout)
+		assert.ErrorIs(t, err, botidentity.ErrLookup)
+		assert.ErrorContains(t, err, "no error message", "an empty refusal body falls back to the no-error-message wording")
+	})
 }
 
 // The command asks about one comment on one entity; it takes no login and

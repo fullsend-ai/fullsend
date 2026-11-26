@@ -44,6 +44,12 @@ func TestRunAgent_BotRoleHelperEnvReachedPostScript(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "http://127.0.0.1:1/mint")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.invalid/token?api-version=2.0")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-request-token-9602")
+	// statusMintToken is package-level shared state. Mutating it here is
+	// safe only because this package's tests are serialized by
+	// construction: they call t.Setenv, which forbids t.Parallel, and the
+	// var is restored through t.Cleanup even on a failing assertion. A
+	// future t.Parallel adoption must lift this constraint first (a
+	// per-test stub instead of the shared var).
 	origMint := statusMintToken
 	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
 		return &mintclient.MintResult{Token: "ghs_test_token_9602", ExpiresAt: "2026-06-15T12:00:00Z"}, nil

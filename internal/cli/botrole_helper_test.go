@@ -490,6 +490,12 @@ func TestBotRoleCommentLookup_OnlyGitHubRunsWithAResolvedEntity(t *testing.T) {
 // under CI load and couple the test to machine speed.
 func TestBotRoleCommentLookup_EntityCallBounded(t *testing.T) {
 	printer := ui.New(io.Discard)
+	// botRoleEntityTimeout is package-level shared state. Mutating it here
+	// is safe only because this package's tests are serialized by
+	// construction: they call t.Setenv, which forbids t.Parallel, and the
+	// var is restored through t.Cleanup even on a failing assertion. A
+	// future t.Parallel adoption must lift this constraint first (a
+	// per-test timeout instead of the shared var).
 	orig := botRoleEntityTimeout
 	botRoleEntityTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { botRoleEntityTimeout = orig })

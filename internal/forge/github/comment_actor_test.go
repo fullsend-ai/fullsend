@@ -106,6 +106,10 @@ func TestCommentActor(t *testing.T) {
 			`{"data":{"node":{"__typename":"IssueComment","author":null,"lastEditedAt":null,"issue":{"id":"I_1"}}}}`,
 			forge.CommentActor{EntityNodeID: "I_1"},
 		},
+		"edited, complete history page": {
+			`{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"fs-triage"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"User","login":"octocat"},"editedAt":"2026-11-18T00:00:00Z"}],"pageInfo":{"hasNextPage":false}},"issue":{"id":"I_1"},"pullRequest":null}}}`,
+			forge.CommentActor{EntityNodeID: "I_1", ActorType: "User", ActorLogin: "octocat"},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, rec := graphqlServer(t, http.StatusOK, tc.body)
@@ -113,7 +117,7 @@ func TestCommentActor(t *testing.T) {
 			if name == "legacy-format comment node id" {
 				commentID = "MDExOlB1bGxSZXF1ZXN0MzI0NDk1MDI3"
 			}
-			got, err := c.CommentActor(context.Background(), commentID)
+			got, err := c.GetCommentActor(context.Background(), commentID)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
 			_, sent := rec.snapshot()
@@ -126,13 +130,14 @@ func TestCommentActor(t *testing.T) {
 		body         string
 		wantNotFound bool
 	}{
-		"not found":                            {http.StatusOK, `{"data":{"node":null}}`, false},
+		"not found":                            {http.StatusOK, `{"data":{"node":null}}`, true},
 		"a review body":                        {http.StatusOK, `{"data":{"node":{"__typename":"PullRequestReview"}}}`, false},
 		"no parent":                            {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":null}}}`, false},
 		"edited, editor gone":                  {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":null,"editedAt":"2026-11-18T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`, false},
 		"edited, no history":                   {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[]},"issue":{"id":"I_1"}}}}`, false},
 		"newest edit is not the last revision": {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"Bot","login":"x"},"editedAt":"2026-11-17T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`, false},
 		"two edits in the same second":         {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"User","login":"octocat"},"editedAt":"2026-11-18T00:00:00Z"},{"editor":{"__typename":"User","login":"alice"},"editedAt":"2026-11-18T00:00:00Z"}]},"issue":{"id":"I_1"}}}}`, false},
+		"truncated edit history":               {http.StatusOK, `{"data":{"node":{"__typename":"IssueComment","author":{"__typename":"Bot","login":"x"},"lastEditedAt":"2026-11-18T00:00:00Z","userContentEdits":{"nodes":[{"editor":{"__typename":"User","login":"octocat"},"editedAt":"2026-11-18T00:00:00Z"}],"pageInfo":{"hasNextPage":true}},"issue":{"id":"I_1"}}}}`, false},
 		"graphql error":                        {http.StatusOK, `{"errors":[{"message":"Could not resolve to a node"}]}`, false},
 		"graphql not-found error":              {http.StatusOK, `{"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a node"}]}`, true},
 		"empty data":                           {http.StatusOK, `{"data":null}`, false},
@@ -141,7 +146,7 @@ func TestCommentActor(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _ := graphqlServer(t, tc.status, tc.body)
-			_, err := c.CommentActor(context.Background(), "C_1")
+			_, err := c.GetCommentActor(context.Background(), "C_1")
 			if tc.wantNotFound {
 				assert.ErrorIs(t, err, forge.ErrNotFound)
 			} else {
