@@ -41,10 +41,12 @@ const entityLimitCursor = "fullsend:result-cap"
 // read at different revisions.
 //
 // The adapter never applies a narrowing filter, so every page it returns is
-// unfiltered. It reads labels, assignees, reactions, label applications, and
-// a pull request's changed files, commits, reviewers, and current approvals.
-// Other collections, and text the content-safety filter must process first
-// (title and body), are reported unsupported, which can never read as empty.
+// unfiltered. It reads labels, assignees, reactions, label applications, an
+// issue's comments, and a pull request's changed files, commits, reviews,
+// reviewers, and current approvals. Other collections are reported
+// unsupported, which can never read as empty. Text the content-safety filter
+// must process first (title, body, and comment and review text and commands)
+// stays unknown.
 // Actor roles are left unknown for the authorized entity view (#9584) to
 // resolve.
 //
@@ -296,6 +298,9 @@ type entityCollection struct {
 	// members are merged with the page's, so the read reports a limit,
 	// without members, unless both connections fit in one page.
 	extra string
+	// only, when set, is the one entity kind the adapter reads the
+	// collection for. For other kinds the read is unsupported.
+	only normentity.Kind
 }
 
 // entityActorSelection selects an Actor with the fields entityActor maps.
@@ -340,6 +345,22 @@ var entityCollections = map[entityacquire.Need]entityCollection{
 			... on Team { databaseId name }
 		}`,
 		extra: "latestReviews(first: $first) { totalCount pageInfo { hasNextPage } nodes { state submittedAt author " + entityActorSelection + " } }",
+	},
+	// Comments are an issue's comments, which are unthreaded. A pull
+	// request's comments also include review-thread comments, which this
+	// connection does not return, so they are not read. Comment edits are not
+	// shown to advance updatedAt, so the read must fit in one page.
+	entityacquire.NeedComments: {
+		field: "comments", counted: true, singlePage: true, only: normentity.KindWorkItem,
+		nodes: "id url createdAt lastEditedAt author " + entityActorSelection + " editor " + entityActorSelection,
+	},
+	// Reviews are a pull request's submitted reviews: a pending review is not
+	// an action. Review submissions are not shown to advance updatedAt, so the
+	// read must fit in one page.
+	entityacquire.NeedReviews: {
+		field: "reviews", args: "states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED], ",
+		counted: true, singlePage: true,
+		nodes: "id state submittedAt lastEditedAt author " + entityActorSelection + " editor " + entityActorSelection,
 	},
 }
 
@@ -386,6 +407,9 @@ type gqlEntityNode struct {
 	SubmittedAt       string            `json:"submittedAt"`
 	Author            *gqlEntityActor   `json:"author"`
 	RequestedReviewer *gqlReviewSubject `json:"requestedReviewer"`
+	URL               string            `json:"url"`
+	LastEditedAt      *string           `json:"lastEditedAt"`
+	Editor            *gqlEntityActor   `json:"editor"`
 }
 
 // ReadPage reads one page of one collection.
@@ -397,7 +421,7 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 		return nil, fmt.Errorf("github entity page read: kind %s does not match entity kind %s", req.Kind, a.kind)
 	}
 	coll, ok := entityCollections[req.Need]
-	if !ok || !req.Need.AppliesTo(a.kind) {
+	if !ok || !req.Need.AppliesTo(a.kind) || (coll.only != "" && coll.only != a.kind) {
 		return nil, fmt.Errorf("%w: github %s %s", entityacquire.ErrUnsupported, a.kind, req.Need)
 	}
 	if req.Cursor == entityLimitCursor {
@@ -611,8 +635,123 @@ func (a *EntityAdapter) entityMembers(need entityacquire.Need, nodes, extra []gq
 			return nil, err
 		}
 		frag.Reviewers.Known = reviewers
+	case entityacquire.NeedComments:
+		comments, err := comments(nodes)
+		if err != nil {
+			return nil, err
+		}
+		frag.Comments.Known = comments
+	case entityacquire.NeedReviews:
+		reviews, err := reviews(nodes)
+		if err != nil {
+			return nil, err
+		}
+		frag.Reviews.Known = reviews
 	}
 	return frag, nil
+}
+
+// textAction maps the shared members of a comment or review record created
+// at createdAt. The actor is the source-authenticated editor of the current
+// revision when the record was edited, otherwise its author: an edited
+// record never borrows its author's attribution. The text and command need
+// the content-safety filter, which this adapter does not run, so they stay
+// unknown.
+func textAction(n gqlEntityNode, createdAt string) (normentity.TextAction, error) {
+	if n.ID == "" {
+		return normentity.TextAction{}, errors.New("record without an ID")
+	}
+	created, ok := entityTimestamp(createdAt).Value()
+	if !ok {
+		return normentity.TextAction{}, fmt.Errorf("record %q without a valid time", n.ID)
+	}
+	act := normentity.Action{
+		ID:        n.ID,
+		CreatedAt: created,
+		RevisedAt: normentity.Known(created),
+		Actor:     recordActor(n.Author),
+		// The entity author is not read with comments or reviews.
+		IsEntityAuthor: normentity.Unknown[bool](normentity.ReasonNotLoaded),
+	}
+	if n.LastEditedAt != nil {
+		act.Actor = recordActor(n.Editor)
+		revised, ok := entityTimestamp(*n.LastEditedAt).Value()
+		switch {
+		case !ok:
+			act.RevisedAt = normentity.Unknown[normentity.Timestamp](normentity.ReasonFailed)
+		case revised < created:
+			// An edit before submission (a pending review's) is not a
+			// revision time the contract can represent.
+			act.RevisedAt = normentity.Unknown[normentity.Timestamp](normentity.ReasonUnsupported)
+		default:
+			act.RevisedAt = normentity.Known(revised)
+		}
+	}
+	return normentity.TextAction{
+		Action:  act,
+		Text:    normentity.Unknown[string](normentity.ReasonUnsupported),
+		Command: normentity.Unknown[string](normentity.ReasonUnsupported),
+	}, nil
+}
+
+// compareActions orders actions by creation time, then ID in byte order.
+func compareActions(x, y normentity.Action) int {
+	if c := strings.Compare(string(x.CreatedAt), string(y.CreatedAt)); c != 0 {
+		return c
+	}
+	return strings.Compare(x.ID, y.ID)
+}
+
+// comments maps an issue's comments, which are unthreaded, sorted by
+// creation time, then ID.
+func comments(nodes []gqlEntityNode) ([]normentity.Comment, error) {
+	out := make([]normentity.Comment, 0, len(nodes))
+	for _, n := range nodes {
+		ta, err := textAction(n, n.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("comment: %w", err)
+		}
+		c := normentity.Comment{TextAction: ta, ThreadID: normentity.Null[string](), URL: normentity.Unknown[string](normentity.ReasonFailed)}
+		if n.URL != "" {
+			c.URL = normentity.Known(n.URL)
+		}
+		out = append(out, c)
+	}
+	slices.SortStableFunc(out, func(x, y normentity.Comment) int { return compareActions(x.Action, y.Action) })
+	return out, nil
+}
+
+// reviewStates maps a submitted GitHub review state to a review disposition.
+var reviewStates = map[string]normentity.ReviewState{
+	"APPROVED":          normentity.ReviewApproved,
+	"CHANGES_REQUESTED": normentity.ReviewChangesRequested,
+	"COMMENTED":         normentity.ReviewCommented,
+	"DISMISSED":         normentity.ReviewDismissed,
+}
+
+// reviews maps a pull request's submitted reviews, created at submission and
+// sorted by submission time, then ID. GitHub orders reviews by creation, which
+// for a review drafted while pending precedes its submission.
+func reviews(nodes []gqlEntityNode) ([]normentity.Review, error) {
+	out := make([]normentity.Review, 0, len(nodes))
+	for _, n := range nodes {
+		if n.State == "PENDING" {
+			// The query selects submitted reviews only; a pending review is
+			// not an action.
+			return nil, errors.New("pending review among submitted reviews")
+		}
+		ta, err := textAction(n, n.SubmittedAt)
+		if err != nil {
+			return nil, fmt.Errorf("review: %w", err)
+		}
+		state := normentity.Unknown[normentity.ReviewState](normentity.ReasonUnsupported)
+		if st, ok := reviewStates[n.State]; ok {
+			state = normentity.Known(st)
+		}
+		out = append(out, normentity.Review{TextAction: ta, ReviewState: state})
+	}
+	slices.SortStableFunc(out, func(x, y normentity.Review) int { return compareActions(x.Action, y.Action) })
+	return out, nil
 }
 
 // currentApprovals returns the approvals among the latest opinionated review
