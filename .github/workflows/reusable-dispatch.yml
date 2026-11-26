@@ -1763,9 +1763,10 @@ jobs:
           sparse-checkout: |
             .github/actions/install-fullsend-cli/
           sparse-checkout-cone-mode: false
-          # Like every other checkout in this file: the job token must not
-          # persist into .git/config of the sparse checkout and stay
-          # available to later steps running with elevated permissions.
+          # The job token must not persist into .git/config of the sparse
+          # checkout, where later steps running with elevated permissions
+          # could read it; the sibling upstream-install checkouts that
+          # still omit the flag are recorded as follow-ups.
           persist-credentials: false
 
       - name: Install fullsend CLI for event payload (upstream workflow)
@@ -1899,6 +1900,17 @@ jobs:
             while [[ "${v}" == *::* ]]; do v=${v//::/: :}; done
             printf '%s' "${v}"
           }
+          # gha_replay sends captured stderr to the log one line at a
+          # time through gha_text: the runner parses :: workflow
+          # commands on stderr as well — and it trims leading
+          # whitespace before the :: check, so a line-start prefix
+          # would not stop a command. This job holds id-token: write.
+          gha_replay() {
+            local line
+            while IFS= read -r line || [[ -n "${line}" ]]; do
+              printf '%s\n' "$(gha_text "${line}")" >&2
+            done < "$1"
+          }
           NORMALIZED_EVENT=$(fullsend dispatch \
             --input-driver gha-event \
             --config-dir .fullsend \
@@ -1911,17 +1923,18 @@ jobs:
             else
               echo "::error::Failed to normalize the event for the routed stage"
             fi
-            # Prefixed: the runner parses :: commands on stderr as well,
-            # and this job holds id-token: write.
-            sed 's/^/ /' "${PAYLOAD_NORM_ERR}" >&2 || true
+            # Sanitized through gha_replay: the runner parses ::
+            # commands on stderr as well, and this job holds
+            # id-token: write.
+            gha_replay "${PAYLOAD_NORM_ERR}" || true
             rm -f "${PAYLOAD_NORM_ERR}"
             exit 1
           }
           # The CLI's stderr carries success-path diagnostics too (a
           # denied bot role is a warning, not an error), so it reaches
-          # the log before the scratch file goes — prefixed like the
-          # failure path, so no replayed line may start a command.
-          sed 's/^/ /' "${PAYLOAD_NORM_ERR}" >&2 || true
+          # the log before the scratch file goes — sanitized like the
+          # failure path, so no replayed line can forge a command.
+          gha_replay "${PAYLOAD_NORM_ERR}" || true
           rm -f "${PAYLOAD_NORM_ERR}"
           EVENT_PAYLOAD=$(printf '%s' "${EVENT_PAYLOAD}" \
             | jq -c --argjson normalized "${NORMALIZED_EVENT}" '._normalized_event = $normalized')
