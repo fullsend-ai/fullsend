@@ -304,25 +304,23 @@ func TestLoadJiraPollSettings_InvalidRunLabelDoesNotBlockPolling(t *testing.T) {
 }
 
 func TestLoadJiraPollSettings_EntitySourceProjects(t *testing.T) {
-	dir := writeJiraPollConfig(t, `connections:
-  jira1:
-    kind: jira
+	// An explicit source on the connection translated from tracker.jira keeps
+	// the existing credential lookup, so it may poll.
+	dir := writeJiraPollConfig(t, `tracker:
+  jira:
     base_url: https://example.atlassian.net
     api_url: https://gateway.example.com
+    project: PROJ
+    poll:
+      enabled: true
 entity_sources:
-  jira_work:
-    connection: jira1
+  legacy_tracker:
     projects: [PROJ1, PROJ2]
     query: 'statusCategory != Done'
-  jira_related:
-    connection: jira1
-    projects: [PROJ3]
-    query: ''
 agents:
   - name: triage
     entities:
-      source: [native, jira_work]
-      related_work: [jira_related]
+      source: [legacy_tracker]
 `)
 	got, err := loadJiraPollSettings(dir, "", "", "")
 	require.NoError(t, err)
@@ -332,7 +330,7 @@ agents:
 		projects: []string{"PROJ1", "PROJ2"},
 		query:    "statusCategory != Done",
 		enabled:  true,
-		sources:  []string{"jira_work"},
+		sources:  []string{"legacy_tracker"},
 	}, got, "the entity source's projects list is the poller's whole set")
 	opts := jiraPollOptions(jiraPollArgs{jira: got}, &celMatcher{}, noJiraEnv)
 	assert.Equal(t, []string{"PROJ1", "PROJ2"}, opts.JiraProjects)
@@ -362,9 +360,37 @@ agents:
     entities:
       source: [sa, sb]
 `
+	explicitConnection := `connections:
+  ja:
+    kind: jira
+    base_url: https://example.atlassian.net
+entity_sources:
+  sa:
+    connection: ja
+    projects: [A]
+    query: ''
+agents:
+  - name: triage
+    entities:
+      source: [sa]
+`
+	differingBindings := enabledJiraPollConfig + `entity_sources:
+  legacy_tracker:
+    projects: [PROJ, OTHER]
+    query: ''
+agents:
+  - name: triage
+    entities:
+      source: [legacy_tracker]
+  - name: code
+    entities:
+      source: []
+`
 	for name, tc := range map[string]struct{ body, wantErr string }{
-		"unknown binding": {"agents:\n  - name: triage\n    entities:\n      source: [missing]\n", "invalid entity-source configuration"},
-		"two connections": {twoConnections, "one Jira connection per cycle"},
+		"unknown binding":     {"agents:\n  - name: triage\n    entities:\n      source: [missing]\n", "invalid entity-source configuration"},
+		"two connections":     {twoConnections, "one Jira connection per cycle"},
+		"explicit connection": {explicitConnection, "no separately provisioned credential binding"},
+		"differing bindings":  {differingBindings, "does not yet apply per-agent source bindings"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := loadJiraPollSettings(writeJiraPollConfig(t, tc.body), "", "", "")

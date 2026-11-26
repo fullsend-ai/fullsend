@@ -513,6 +513,70 @@ entity_sources:
 	})
 }
 
+func TestResolveEntityConfig_DefaultConnectionWithoutOrigin(t *testing.T) {
+	body := "entity_sources:\n  actionable_work:\n    connection: github\n    query: 'is:open'\n" +
+		"agents:\n  - name: triage\n    entities:\n      source: [actionable_work]\n"
+	r := parseEntityConfig(t, body)
+	require.NoError(t, r.(interface{ Validate() error }).Validate(),
+		"a provider-default connection needs no connections entry")
+
+	ec, err := ResolveEntityConfig(r, nil)
+	require.NoError(t, err)
+	src := ec.Sources["actionable_work"]
+	assert.True(t, src.NeedsOrigin)
+	assert.Equal(t, ConnectionKindGitHub, src.Connection.Kind)
+	_, err = ec.AgentBindings("triage", map[string]string{"source": EntityKindWorkItem, "target": EntityKindWorkItem})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no trusted configuration origin")
+
+	ec, err = ResolveEntityConfig(r, githubOrigin)
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com", ec.Sources["actionable_work"].Connection.BaseURL)
+
+	// An unknown non-provider connection name is still undeclared.
+	_, err = ResolveEntityConfig(parseEntityConfig(t, "entity_sources:\n  x:\n    connection: nope\n    repositories: [a/b]\n    query: ''\n"), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not declared under connections")
+}
+
+func TestCheckUniformSourceBindings(t *testing.T) {
+	base := `connections:
+  jira1:
+    kind: jira
+    base_url: https://example.atlassian.net
+entity_sources:
+  a:
+    connection: jira1
+    projects: [A]
+    query: ''
+`
+	check := func(t *testing.T, agents string) error {
+		ec, err := ResolveEntityConfig(parseEntityConfig(t, base+agents), nil)
+		require.NoError(t, err)
+		scope, err := ec.JiraDiscoveryScope()
+		require.NoError(t, err)
+		return ec.CheckUniformSourceBindings(scope.Sources)
+	}
+	t.Run("same binding", func(t *testing.T) {
+		require.NoError(t, check(t, "agents:\n  - name: triage\n    entities:\n      source: [a]\n  - name: code\n    entities:\n      source: [a]\n"))
+	})
+	t.Run("disabled agent is ignored", func(t *testing.T) {
+		require.NoError(t, check(t, "agents:\n  - name: triage\n    entities:\n      source: [a]\n  - name: code\n    enabled: false\n"))
+	})
+	t.Run("agent bound to another source set", func(t *testing.T) {
+		err := check(t, "agents:\n  - name: triage\n    entities:\n      source: [a]\n  - name: code\n    entities:\n      source: [native, a]\n")
+		require.ErrorIs(t, err, ErrEntityUnsupported)
+	})
+	t.Run("agent without binding defaults to native", func(t *testing.T) {
+		err := check(t, "agents:\n  - name: triage\n    entities:\n      source: [a]\n  - name: code\n")
+		require.ErrorIs(t, err, ErrEntityUnsupported)
+	})
+	t.Run("explicitly empty binding", func(t *testing.T) {
+		err := check(t, "agents:\n  - name: triage\n    entities:\n      source: [a]\n  - name: code\n    entities:\n      source: []\n")
+		require.ErrorIs(t, err, ErrEntityUnsupported)
+	})
+}
+
 func TestEntitySources_LayerPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	base := `version: "1"

@@ -718,8 +718,8 @@ type EntityConfig struct {
 	// translated, or nil.
 	LegacyTracker *TrackingConfig
 
-	agents         []AgentEntry
-	legacySourceEr error
+	agents          []AgentEntry
+	legacySourceErr error
 }
 
 // ResolveEntityConfig composes the effective entity-source configuration of
@@ -858,7 +858,7 @@ func (ec *EntityConfig) translateLegacyTracker(t *TrackingConfig, explicitConns 
 		conn.AllowedTargets = ConnectionAllowedTargets{Projects: projects}
 		if j.HasConnectionSettings() {
 			if err := j.ValidateConnection(); err != nil {
-				ec.legacySourceEr = err
+				ec.legacySourceErr = err
 			} else {
 				source = &ResolvedEntitySource{
 					Name: LegacyTrackerName, Connection: conn, Projects: []string{j.Project},
@@ -873,10 +873,10 @@ func (ec *EntityConfig) translateLegacyTracker(t *TrackingConfig, explicitConns 
 		ec.Connections[LegacyTrackerName] = conn
 	}
 	if _, ok := explicitSources[LegacyTrackerName]; ok {
-		if source != nil || ec.legacySourceEr != nil {
+		if source != nil || ec.legacySourceErr != nil {
 			ec.Diagnostics = append(ec.Diagnostics, fmt.Sprintf("entity_sources.%s replaces the lookup scope translated from tracker.%s", LegacyTrackerName, provider))
 		}
-		ec.legacySourceEr = nil
+		ec.legacySourceErr = nil
 		return
 	}
 	if source != nil {
@@ -895,6 +895,15 @@ func (ec *EntityConfig) resolveSource(name string, s EntitySource) (ResolvedEnti
 		Query: *s.Query, Discovery: s.DiscoveryEnabled(), Origin: EntryExplicit,
 	}
 	conn, ok := ec.Connections[connName]
+	if !ok && ec.Origin == nil && !isReservedProvider(name) && isReservedProvider(connName) {
+		// A provider-default connection is created from the configuration
+		// origin when it is not declared. Without an origin (validation, or
+		// a Jira-only caller) defer it: use requires a trusted origin or an
+		// explicit connection.
+		conn = ResolvedConnection{Name: connName, Kind: connName, Origin: EntrySynthesized}
+		ok = true
+		out.NeedsOrigin = true
+	}
 	if !ok {
 		if isReservedProvider(name) && (ec.Origin == nil || ec.Origin.Provider != name) {
 			// An unbound preset for another provider: inert until bound.
@@ -1104,7 +1113,7 @@ func (ec *EntityConfig) resolveBindingName(name, kind string) (ResolvedEntitySou
 		return ResolvedEntitySource{}, fmt.Errorf("%q is a preset for another provider: binding it needs connections.%s with a base_url and explicit repositories", name, lookup)
 	}
 	if src.NeedsOrigin {
-		return ResolvedEntitySource{}, fmt.Errorf("%q defaults its repository scope to the clone, but no trusted configuration origin is available", name)
+		return ResolvedEntitySource{}, fmt.Errorf("%q defaults its connection or repository scope from the clone, but no trusted configuration origin is available", name)
 	}
 	kinds, ok := entityKindsByProvider[src.Connection.Kind]
 	if !ok {
@@ -1134,6 +1143,49 @@ type JiraDiscoveryScope struct {
 	Enabled bool
 }
 
+// CheckUniformSourceBindings rejects selected explicit Jira sources (the
+// JiraDiscoveryScope sources) when the enabled agents do not all bind the
+// same primary source set. The poller polls one merged scope and the
+// dispatch matcher does not yet apply each agent's own entities.source
+// binding, so differing bindings (including an agent with no binding, which
+// defaults to native) would let agents receive events from sources they are
+// not bound to. The source translated from tracker.jira keeps its existing
+// behavior.
+func (ec *EntityConfig) CheckUniformSourceBindings(selected []string) error {
+	explicit := false
+	for _, name := range selected {
+		if ec.Sources[name].Origin != EntryTranslated {
+			explicit = true
+			break
+		}
+	}
+	if !explicit {
+		return nil
+	}
+	var firstAgent, firstSet string
+	for _, a := range ec.agents {
+		if !a.IsEnabled() {
+			continue
+		}
+		bound, present := a.Entities[EntitySlotSource]
+		bound = slices.Clone(bound)
+		if !present {
+			bound = []string{EntityNativeSelector}
+		}
+		slices.Sort(bound)
+		set := strings.Join(slices.Compact(bound), ",")
+		if firstAgent == "" {
+			firstAgent, firstSet = a.DerivedName(), set
+			continue
+		}
+		if set != firstSet {
+			return unsupportedf("the jira-poll driver does not yet apply per-agent source bindings, but agents %q and %q bind different entities.source lists (%s and %s); bind the same sources in every enabled agent",
+				firstAgent, a.DerivedName(), firstSet, set)
+		}
+	}
+	return nil
+}
+
 // JiraDiscoveryScope selects the Jira sources the jira-poll driver polls: the
 // source translated from tracker.jira when its poll is enabled, and every
 // explicit Jira source with discovery enabled that an enabled agent binds in
@@ -1143,8 +1195,8 @@ type JiraDiscoveryScope struct {
 // reported as unsupported. With no Jira lookup scope at all it returns an
 // error naming the configuration to add.
 func (ec *EntityConfig) JiraDiscoveryScope() (*JiraDiscoveryScope, error) {
-	if ec.legacySourceEr != nil {
-		return nil, ec.legacySourceEr
+	if ec.legacySourceErr != nil {
+		return nil, ec.legacySourceErr
 	}
 	bound := map[string]bool{}
 	for _, a := range ec.agents {

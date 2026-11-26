@@ -398,6 +398,20 @@ func loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jql string, diag ..
 	if err != nil {
 		return jiraPollSettings{}, err
 	}
+	if scope.Enabled {
+		// buildJiraClient reuses the job's existing Jira credentials for any
+		// endpoint, which the entity-source contract allows only for the
+		// connection translated from tracker.jira. An explicit connection
+		// needs its own provisioned host binding, which does not exist yet.
+		if err := ec.CheckUniformSourceBindings(scope.Sources); err != nil {
+			return jiraPollSettings{}, err
+		}
+		for _, name := range scope.Sources {
+			if c := ec.Sources[name].Connection; c.Origin != config.EntryTranslated {
+				return jiraPollSettings{}, fmt.Errorf("entity source %q uses explicit connection %q: the jira-poll driver has no separately provisioned credential binding for explicit Jira connections, so it supports only the connection translated from tracker.jira", name, c.Name)
+			}
+		}
+	}
 	return jiraPollSettings{
 		baseURL:  scope.Connection.BaseURL,
 		apiURL:   scope.Connection.EffectiveAPIURL(),
