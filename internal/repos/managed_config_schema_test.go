@@ -70,6 +70,10 @@ func TestResolveManagedConfigSchema(t *testing.T) {
 
 		fc.FileContentsRef[schemaDeclKey(schemaTestCurrentSHA)] = []byte("3\n")
 		s = resolveManagedConfigSchema(ctx, "v0.9.0", "", "", NewRefResolver(fc))
+		assert.Equal(t, managedConfigSchema{Ref: "v0.9.0", Version: config.ManagedConfigSchemaAgentHarness}, s)
+
+		fc.FileContentsRef[schemaDeclKey(schemaTestCurrentSHA)] = []byte("4\n")
+		s = resolveManagedConfigSchema(ctx, "v0.9.0", "", "", NewRefResolver(fc))
 		assert.Equal(t, managedConfigSchema{Ref: "v0.9.0", Version: config.ManagedConfigSchemaVersion}, s)
 	})
 

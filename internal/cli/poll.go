@@ -183,7 +183,7 @@ func newPollCmd() *cobra.Command {
 }
 
 func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
-	settings, err := loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jqlOverride)
+	settings, err := loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jqlOverride, stderrDiag(cmd))
 	if err != nil {
 		return err
 	}
@@ -338,24 +338,31 @@ func gitlabChildDispatchJobToken(getenv func(string) string) (string, error) {
 }
 
 // jiraPollSettings are the Jira connection and poll settings the jira-poll
-// driver reads from tracker.jira in the effective config.yaml (#9077).
+// driver reads from the canonical entity-source configuration
+// (config.ResolveEntityConfig): either the lookup scope translated from
+// tracker.jira, or explicit Jira entity sources bound to an agent's primary
+// source slot (#9884).
 type jiraPollSettings struct {
-	baseURL string // tracker.jira.base_url: the Jira site URL
-	apiURL  string // tracker.jira.api_url, or its default
-	project string // tracker.jira.project
-	query   string // tracker.jira.poll.query, or the default; the poller scopes it to project
-	enabled bool   // tracker.jira.poll.enabled is true
+	baseURL  string   // the Jira connection's base_url: the Jira site URL
+	apiURL   string   // the Jira connection's api_url, or its default
+	projects []string // the selected sources' projects; the poller scopes the query to exactly this set
+	query    string   // the selected sources' query; for tracker.jira, poll.query or the default
+	enabled  bool     // a selected source permits discovery (tracker.jira.poll.enabled is true)
+	sources  []string // the selected entity source names, for diagnostics
 }
 
-// loadJiraPollSettings reads the Jira site, API gateway, project, and poll
-// settings from tracker.jira in the effective config.yaml. The config is
-// the only source of these settings: base_url and project are required,
-// api_url and poll.query fall back to their defaults, and the poller always
-// scopes the query to the project as `project = "<project>" AND (<query>)`
-// with any ORDER BY last. The removed --jira-url, --jira-project, and --jql
-// flags are rejected with a pointer to the config fields, and environment
-// variables such as JIRA_BASE_URL are not read.
-func loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jql string) (jiraPollSettings, error) {
+// loadJiraPollSettings resolves the Jira site, API gateway, project set, and
+// query from the effective entity-source configuration (see
+// config.EntityConfig.JiraDiscoveryScope). The config is the only source of
+// these settings; legacy tracker.jira settings reach the poller through the
+// canonical model as a one-project scope, and an explicit Jira source's
+// projects list supplies the whole set. The poller always scopes the query
+// to the project set, with any ORDER BY last. The removed --jira-url,
+// --jira-project, and --jql flags are rejected with a pointer to the config
+// fields, and environment variables such as JIRA_BASE_URL are not read.
+// Diagnostics (such as explicit entries shadowing translated tracker
+// settings) go to diag, never to machine-readable output.
+func loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jql string, diag ...func(string)) (jiraPollSettings, error) {
 	var removed []string
 	for _, f := range []struct{ flag, value string }{
 		{"--jira-url", jiraURL}, {"--jira-project", jiraProject}, {"--jql", jql},
@@ -366,28 +373,45 @@ func loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jql string) (jiraPo
 	}
 	if len(removed) > 0 {
 		return jiraPollSettings{}, fmt.Errorf("%s no longer supported: the jira-poll driver reads the Jira site, project, and query "+
-			"from tracker.jira.base_url, tracker.jira.project, and tracker.jira.poll.query in config.yaml", strings.Join(removed, ", "))
+			"from tracker.jira.base_url, tracker.jira.project, and tracker.jira.poll.query (or a Jira entity source) in config.yaml", strings.Join(removed, ", "))
 	}
 	cfg, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
 		return jiraPollSettings{}, fmt.Errorf("load config: %w", err)
 	}
-	tracking := cfg.IssueTracking()
-	if tracking.Provider() != config.TrackingProviderJira || !tracking.Jira.HasConnectionSettings() {
-		return jiraPollSettings{}, fmt.Errorf("the jira-poll driver requires tracker.jira in config.yaml: " +
-			"set tracker.jira.base_url (the Jira site URL) and tracker.jira.project (the Jira project key)")
+	pr, ok := cfg.(config.PerRepoConfigReader)
+	if !ok {
+		return jiraPollSettings{}, fmt.Errorf("the jira-poll driver requires a per-repo config.yaml")
 	}
-	jiraCfg := tracking.Jira
-	if err := jiraCfg.ValidateConnection(); err != nil {
+	// The poller needs only Jira sources, which do not depend on the
+	// configuration origin, so none is guessed from the runner.
+	ec, err := config.ResolveEntityConfig(pr, nil)
+	if err != nil {
+		return jiraPollSettings{}, fmt.Errorf("invalid entity-source configuration: %w", err)
+	}
+	for _, d := range ec.Diagnostics {
+		for _, f := range diag {
+			f(d)
+		}
+	}
+	scope, err := ec.JiraDiscoveryScope()
+	if err != nil {
 		return jiraPollSettings{}, err
 	}
 	return jiraPollSettings{
-		baseURL: jiraCfg.BaseURL,
-		apiURL:  jiraCfg.EffectiveAPIURL(),
-		project: jiraCfg.Project,
-		query:   jiraCfg.PollQuery(),
-		enabled: jiraCfg.PollEnabled(),
+		baseURL:  scope.Connection.BaseURL,
+		apiURL:   scope.Connection.EffectiveAPIURL(),
+		projects: scope.Projects,
+		query:    scope.Query,
+		enabled:  scope.Enabled,
+		sources:  scope.Sources,
 	}, nil
+}
+
+// stderrDiag returns a diagnostics sink that writes warnings to the
+// command's stderr.
+func stderrDiag(cmd *cobra.Command) func(string) {
+	return func(msg string) { fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: "+msg) }
 }
 
 // skipDisabledJiraPoll ends a jira-poll run without contacting Jira when
@@ -395,7 +419,7 @@ func loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jql string) (jiraPo
 // writes an empty dispatch list, as a cycle with no dispatches does, so a
 // downstream dispatch step sees no work rather than a missing file.
 func skipDisabledJiraPoll(cmd *cobra.Command, outputPath string) error {
-	fmt.Fprintln(cmd.ErrOrStderr(), "Jira polling is disabled (tracker.jira.poll.enabled is not true in config.yaml); skipping the poll cycle")
+	fmt.Fprintln(cmd.ErrOrStderr(), "Jira polling is disabled (tracker.jira.poll.enabled is not true in config.yaml, and no Jira entity source with discovery is bound to an agent's source slot); skipping the poll cycle")
 	if outputPath == "" {
 		return nil
 	}
@@ -573,10 +597,11 @@ func jiraPollOptions(args jiraPollArgs, matcher *celMatcher, getenv func(string)
 	return jirapoll.Options{
 		TargetRepo:  args.targetRepo,
 		JiraBaseURL: args.jira.baseURL,
-		// tracker.jira.project is the poller's one-item project set; the
-		// poller scopes the query to it, so the search JQL is
-		// config.JiraTrackingConfig.PollJQL's.
-		JiraProjects: []string{args.jira.project},
+		// The resolved entity source's project set: a one-item set for
+		// tracker.jira.project, so the search JQL is
+		// config.JiraTrackingConfig.PollJQL's, or the explicit source's
+		// whole projects list.
+		JiraProjects: args.jira.projects,
 		JQL:          args.jira.query,
 		OutputPath:   args.outputPath,
 

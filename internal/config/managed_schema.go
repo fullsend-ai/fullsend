@@ -26,10 +26,15 @@ const (
 	// ManagedConfigSchemaTrackerMapping is the schema with the tracker
 	// mapping (#9082) that predates the harness: block of an agents: entry.
 	ManagedConfigSchemaTrackerMapping = 2
+	// ManagedConfigSchemaAgentHarness is the schema in which an agents:
+	// entry may carry a harness: block (ADR 0162), which predates
+	// entity-source configuration.
+	ManagedConfigSchemaAgentHarness = 3
 	// ManagedConfigSchemaVersion is the schema this binary reads and
-	// renders: an agents: entry may carry a harness: block (ADR 0162). It
+	// renders: entity-source configuration v1 (entity_sources, entity
+	// connection kinds, and agents[].entities bindings) is readable. It
 	// must equal the value declared in ManagedConfigSchemaDeclarationPath.
-	ManagedConfigSchemaVersion = 3
+	ManagedConfigSchemaVersion = 4
 )
 
 // ManagedConfigSchemaDeclarationPath is the path, in the fullsend-ai/fullsend
@@ -84,7 +89,14 @@ func RenderManagedConfigSchema(data []byte, version int) ([]byte, error) {
 	switch version {
 	case ManagedConfigSchemaVersion:
 		return data, nil
-	case ManagedConfigSchemaTrackerMapping, ManagedConfigSchemaLegacy:
+	case ManagedConfigSchemaAgentHarness, ManagedConfigSchemaTrackerMapping, ManagedConfigSchemaLegacy:
+		if key, ok := entitySourceKey(data); ok {
+			return nil, fmt.Errorf("%s cannot be expressed in the configuration schema of the repository's fullsend_ref: "+
+				"upgrade fullsend_ref to a release that reads entity-source configuration, or remove the setting", key)
+		}
+		if version == ManagedConfigSchemaAgentHarness {
+			return data, nil
+		}
 		if name, ok := harnessBlockEntry(data); ok {
 			return nil, fmt.Errorf("agents entry %q: a harness: block cannot be expressed in the configuration schema of the repository's fullsend_ref: "+
 				"upgrade fullsend_ref to a release that reads harness: blocks, or remove the block", name)
@@ -172,6 +184,42 @@ func legacyTrackingFor(t *TrackingConfig) (provider string, orgs, repos []string
 	return "", nil, nil, errors.New("tracker must select exactly one provider to be expressed in the legacy configuration schema")
 }
 
+// entitySourceKey returns the first entity-source configuration key in
+// data, a per-repo configuration document: entity_sources, a connections
+// entry of an entity kind (or a reserved provider name), or an agents:
+// entry's entities: binding. Unparseable content has none; the regular
+// parser reports it.
+func entitySourceKey(data []byte) (string, bool) {
+	var doc struct {
+		EntitySources map[string]yaml.Node            `yaml:"entity_sources"`
+		Connections   map[string]map[string]yaml.Node `yaml:"connections"`
+		Agents        []struct {
+			Name     string    `yaml:"name"`
+			Source   string    `yaml:"source"`
+			Entities yaml.Node `yaml:"entities"`
+		} `yaml:"agents"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return "", false
+	}
+	if len(doc.EntitySources) > 0 {
+		return "entity_sources", true
+	}
+	for _, name := range sortedKeys(doc.Connections) {
+		kind := doc.Connections[name]["kind"]
+		if isReservedProvider(name) || isEntityConnectionKind(kind.Value) {
+			return "connections." + name, true
+		}
+	}
+	for _, a := range doc.Agents {
+		if a.Entities.Kind != 0 {
+			name := AgentEntry{Name: a.Name, Source: a.Source}.DerivedName()
+			return fmt.Sprintf("agents entry %q entities", name), true
+		}
+	}
+	return "", false
+}
+
 // harnessBlockEntry returns the name of the first agents: entry in data, a
 // per-repo configuration document, that carries a non-empty harness: block
 // (ADR 0162), and whether there is one. Unparseable content has none; the
@@ -193,8 +241,8 @@ func harnessBlockEntry(data []byte) (string, bool) {
 
 // ManagedConfigSchemaDependent reports whether data, a per-repo
 // configuration document, declares anything the known schema versions do
-// not all read the same way: tracker, create_issues, or a harness: block on
-// an agents: entry. A document without them renders identically, and is
+// not all read the same way: tracker, create_issues, a harness: block on
+// an agents: entry, or entity-source configuration. A document without them renders identically, and is
 // read identically, under every known schema. Blank or unparseable content
 // is not schema-dependent.
 func ManagedConfigSchemaDependent(data []byte) bool {
@@ -203,6 +251,9 @@ func ManagedConfigSchemaDependent(data []byte) bool {
 		return false
 	}
 	if _, ok := harnessBlockEntry(data); ok {
+		return true
+	}
+	if _, ok := entitySourceKey(data); ok {
 		return true
 	}
 	_, kind, _ := ReadLegacyTracking(doc.Content[0], LegacyTracking{})
@@ -227,8 +278,11 @@ func CheckManagedConfigSchemaCompat(data []byte, version int) error {
 	case version > ManagedConfigSchemaLegacy && kind == TrackingLayerLegacy:
 		return errors.New("uses the legacy tracker scalar or create_issues keys, which the current configuration schema cannot read")
 	}
-	if name, ok := harnessBlockEntry(data); ok && version < ManagedConfigSchemaVersion {
+	if name, ok := harnessBlockEntry(data); ok && version < ManagedConfigSchemaAgentHarness {
 		return fmt.Errorf("has a harness: block on the agents entry %q, which this configuration schema cannot read", name)
+	}
+	if key, ok := entitySourceKey(data); ok && version < ManagedConfigSchemaVersion {
+		return fmt.Errorf("uses %s (entity-source configuration), which this configuration schema cannot read", key)
 	}
 	return nil
 }

@@ -158,7 +158,7 @@ trigger: |
 func TestValidateJiraPollArgs(t *testing.T) {
 	fullsendDir := t.TempDir()
 
-	settings := jiraPollSettings{baseURL: "https://acme.atlassian.net", project: "PROJ", query: config.DefaultJiraPollQuery, enabled: true}
+	settings := jiraPollSettings{baseURL: "https://acme.atlassian.net", projects: []string{"PROJ"}, query: config.DefaultJiraPollQuery, enabled: true}
 
 	tests := []struct {
 		name           string
@@ -783,7 +783,7 @@ authorization:
 	require.NoError(t, err)
 
 	args := jiraPollArgs{
-		jira:       jiraPollSettings{baseURL: "https://jira.example.com", apiURL: config.DefaultJiraAPIURL, project: "PROJ", query: `labels = "fullsend"`, enabled: true},
+		jira:       jiraPollSettings{baseURL: "https://jira.example.com", apiURL: config.DefaultJiraAPIURL, projects: []string{"PROJ"}, query: `labels = "fullsend"`, enabled: true},
 		targetRepo: "group/sub/repo", outputPath: "out.json", fullsendDir: dir,
 	}
 	opts := jiraPollOptions(args, m, noJiraEnv)

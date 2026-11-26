@@ -71,6 +71,10 @@ type AgentEntry struct {
 	Subagents map[string]*string `yaml:"subagents,omitempty"`
 	Trigger   string             `yaml:"trigger,omitempty"`
 	Harness   *AgentHarness      `yaml:"harness,omitempty"`
+	// Entities binds the agent's harness entity slots to lists of entity
+	// source names (entity-source configuration v1). It composes by slot
+	// name across layers: an explicit list replaces that slot's list.
+	Entities EntityBindings `yaml:"entities,omitempty"`
 
 	// inheritedHarness holds the harness: blocks of parent config layers,
 	// outermost first, below Harness. Set only by the keyed merge.
@@ -78,9 +82,9 @@ type AgentEntry struct {
 }
 
 // HasSettings reports whether the entry tunes runtime, model, effort,
-// subagents, trigger or harness fields.
+// subagents, trigger, harness or entities fields.
 func (a AgentEntry) HasSettings() bool {
-	return a.Runtime != "" || a.Model != "" || a.Effort != "" || len(a.Subagents) > 0 || strings.TrimSpace(a.Trigger) != "" || len(a.HarnessBlocks()) > 0
+	return a.Runtime != "" || a.Model != "" || a.Effort != "" || len(a.Subagents) > 0 || strings.TrimSpace(a.Trigger) != "" || len(a.HarnessBlocks()) > 0 || len(a.Entities) > 0
 }
 
 // HarnessBlocks returns the entry's non-empty harness: blocks in
@@ -1179,6 +1183,11 @@ type perRepoConfig struct {
 	Connections map[string]SecretConnection `yaml:"connections,omitempty"`
 	Secrets     map[string]SecretSource     `yaml:"secrets,omitempty"`
 
+	// EntitySources names entity-source scopes on entity connections
+	// (entity-source configuration v1). It merges by name through the
+	// parent chain; a more-specific layer replaces a whole entry.
+	EntitySources map[string]EntitySource `yaml:"entity_sources,omitempty"`
+
 	// Artifacts limits what the run artifact publishes (ADR 0161).
 	// content overrides the parent layer; by_source merges per key.
 	Artifacts *ArtifactsConfig `yaml:"artifacts,omitempty"`
@@ -1327,6 +1336,7 @@ type perRepoConfigMarshal struct {
 	Models                 *ModelsConfig               `yaml:"models,omitempty"`
 	Connections            map[string]SecretConnection `yaml:"connections,omitempty"`
 	Secrets                map[string]SecretSource     `yaml:"secrets,omitempty"`
+	EntitySources          map[string]EntitySource     `yaml:"entity_sources,omitempty"`
 	Artifacts              *ArtifactsConfig            `yaml:"artifacts,omitempty"`
 	Progress               *ProgressConfig             `yaml:"progress,omitempty"`
 	TraceContext           *TraceContextConfig         `yaml:"trace_context,omitempty"`
@@ -1352,6 +1362,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		TraceContext:        c.TraceContextBlock,
 		Connections:         c.Connections,
 		Secrets:             c.Secrets,
+		EntitySources:       c.EntitySources,
 	}
 	// Only emit inference block when at least one field is set locally.
 	if c.Inference != nil && *c.Inference != (PerRepoInferenceConfig{}) {
@@ -1387,6 +1398,12 @@ func (c *perRepoConfig) Validate() error {
 		return err
 	}
 	if err := c.ValidateSecretSources(); err != nil {
+		return err
+	}
+	// Entity-source references (connections, binding names) resolve on the
+	// merged view; without a trusted configuration origin, native defaults
+	// are checked where they are used.
+	if _, err := ResolveEntityConfig(c, nil); err != nil {
 		return err
 	}
 	// Agents are validated against the effective allowlist — the
@@ -1508,6 +1525,12 @@ func (c *perRepoConfig) validateLocalFields() error {
 	// Connection references may resolve in another layer, so this checks
 	// only this layer's own entries; Validate checks the merged view.
 	if err := validateSecretSources(c.Connections, c.Secrets, false); err != nil {
+		return err
+	}
+	if err := validateEntitySourceEntries(c.EntitySources); err != nil {
+		return err
+	}
+	if err := validateAgentEntityBindings(c.Agents); err != nil {
 		return err
 	}
 	if err := validateArtifacts(c.Artifacts); err != nil {
