@@ -99,7 +99,7 @@ func splitOwnerRepo(slug string) (string, string) {
 }
 
 // readLastCheck reads the lastCheck timestamp for an issue, clamped as
-// loadLastCheck describes, and logs a WARNING when it clamps.
+// parseLastCheck describes, and logs a WARNING when it clamps.
 func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time, error) {
 	lc, err := p.loadLastCheck(ctx, issueKey)
 	if err != nil {
@@ -131,9 +131,8 @@ type storedLastCheck struct {
 	clamp  lastCheckClamp // how value differs from stored
 }
 
-// loadLastCheck reads and clamps the lastCheck timestamp for an issue
-// without logging, so a caller that reads every candidate's lastCheck can
-// report the clamps once per cycle instead of once per issue.
+// loadLastCheck reads an issue's lastCheck property and parses it with
+// parseLastCheck, without logging.
 func (p *Poller) loadLastCheck(ctx context.Context, issueKey string) (storedLastCheck, error) {
 	propKey := p.lastCheckKey()
 
@@ -144,6 +143,13 @@ func (p *Poller) loadLastCheck(ctx context.Context, issueKey string) (storedLast
 		}
 		return storedLastCheck{}, fmt.Errorf("get lastCheck property: %w", err)
 	}
+	return p.parseLastCheck(raw)
+}
+
+// parseLastCheck parses and clamps a stored lastCheck value without
+// logging, so the activity filter can report the clamps once per cycle
+// instead of once per issue. An empty value is unset.
+func (p *Poller) parseLastCheck(raw json.RawMessage) (storedLastCheck, error) {
 	if len(raw) == 0 {
 		return storedLastCheck{}, nil
 	}

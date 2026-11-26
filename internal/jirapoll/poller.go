@@ -144,7 +144,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	// Step 2: Drop the issues with nothing new since their lastCheck
 	// (ADR 0160), so an already-handled issue does not take a slot from a
 	// fresh request.
-	active := p.filterActive(readCtx, candidates)
+	active := p.filterActive(candidates)
 
 	// Step 3: Randomly select min(N, len(active)) candidates.
 	selected := selectRandom(active, p.opts.N)
@@ -435,18 +435,20 @@ func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
 		jql = fmt.Sprintf("project = %q AND statusCategory != Done ORDER BY updated DESC", p.opts.JiraProject)
 	}
 
-	return p.client.SearchIssues(ctx, jql, p.opts.M)
+	// The search returns each candidate's lastCheck, so the activity
+	// filter reads no property per candidate (ADR 0085, Decision item 2).
+	return p.client.SearchIssues(ctx, jql, p.opts.M, p.lastCheckKey())
 }
 
 // filterActive keeps the candidates with new activity (see hasNewActivity)
 // and logs the cycle's clamped lastCheck values once. It neither reads nor
 // writes lock properties, including those left by earlier versions
 // (ADR 0085, Decision item 1).
-func (p *Poller) filterActive(ctx context.Context, issues []jira.Issue) []jira.Issue {
+func (p *Poller) filterActive(issues []jira.Issue) []jira.Issue {
 	var active []jira.Issue
 	var clamped clampReport
 	for _, issue := range issues {
-		if p.hasNewActivity(ctx, issue, &clamped) {
+		if p.hasNewActivity(issue, &clamped) {
 			active = append(active, issue)
 		}
 	}
@@ -455,16 +457,19 @@ func (p *Poller) filterActive(ctx context.Context, issues []jira.Issue) []jira.I
 }
 
 // hasNewActivity reports whether issue has activity after its lastCheck:
-// its updated value from the search row is after its lastCheck, clamped
-// exactly as processIssue's read clamps it (ADR 0160, Decision item 1).
-// It fails open: an issue whose lastCheck cannot be read or parsed, has no
-// usable lastCheck, or has no usable updated value is active, so neither a
-// broken read nor an editor writing garbage can hide an issue. A read
-// error is not reported here; processIssue reports it if the issue is
-// picked. A clamped lastCheck is added to clamped instead of logged, so a
-// quiet project logs one line per cycle rather than one per idle issue.
-func (p *Poller) hasNewActivity(ctx context.Context, issue jira.Issue, clamped *clampReport) bool {
-	lc, err := p.loadLastCheck(ctx, issue.Key)
+// its updated value from the search row is after the lastCheck the search
+// returned with it (ADR 0085, Decision item 2), clamped exactly as
+// processIssue's read clamps it (ADR 0160, Decision item 1). The search's
+// value only decides whether to skip the issue; processing reads lastCheck
+// from the issue again. It fails open: an issue whose lastCheck the search
+// did not return or that cannot be parsed, or that has no usable updated
+// value, is active, so neither a search that drops the property nor an
+// editor writing garbage can hide an issue. A parse error is not reported
+// here; processIssue reports it if the issue is picked. A clamped
+// lastCheck is added to clamped instead of logged, so a quiet project logs
+// one line per cycle rather than one per idle issue.
+func (p *Poller) hasNewActivity(issue jira.Issue, clamped *clampReport) bool {
+	lc, err := p.parseLastCheck(issue.Properties[p.lastCheckKey()])
 	if err != nil {
 		return true
 	}

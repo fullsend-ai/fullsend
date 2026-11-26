@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,8 @@ type mockClient struct {
 	searchErr    error
 	lastQuery    string
 	lastLimit    int
+
+	lastSearchProperties []string
 
 	issues   map[string]*jira.Issue
 	issueErr map[string]error
@@ -101,9 +104,10 @@ func newMockClient() *mockClient {
 	}
 }
 
-func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]jira.Issue, error) {
+func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error) {
 	m.lastQuery = jql
 	m.lastLimit = limit
+	m.lastSearchProperties = properties
 	if m.searchErr != nil {
 		return nil, m.searchErr
 	}
@@ -115,10 +119,25 @@ func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]j
 			m.searchResult[i].Fields.Labels = []string{}
 		}
 	}
-	if limit > 0 && len(m.searchResult) > limit {
-		return m.searchResult[:limit], nil
+	rows := m.searchResult
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
 	}
-	return m.searchResult, nil
+	// Like Jira, return each requested entity property the issue has.
+	out := make([]jira.Issue, len(rows))
+	for i, issue := range rows {
+		for _, key := range properties {
+			if v, ok := m.properties[issue.Key][key]; ok {
+				issue.Properties = maps.Clone(issue.Properties)
+				if issue.Properties == nil {
+					issue.Properties = map[string]json.RawMessage{}
+				}
+				issue.Properties[key] = v
+			}
+		}
+		out[i] = issue
+	}
+	return out, nil
 }
 
 func (m *mockClient) GetIssue(_ context.Context, key string) (*jira.Issue, error) {

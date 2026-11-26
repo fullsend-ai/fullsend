@@ -154,7 +154,7 @@ type rawSearchClient struct {
 	*mockClient
 }
 
-func (c *rawSearchClient) SearchIssues(ctx context.Context, jql string, limit int) ([]jira.Issue, error) {
+func (c *rawSearchClient) SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error) {
 	if c.searchErr != nil {
 		return nil, c.searchErr
 	}

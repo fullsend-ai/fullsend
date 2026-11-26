@@ -15,8 +15,9 @@ type JiraClient interface {
 	// SearchIssues executes a JQL search and returns up to limit matching
 	// issues, stopping pagination once that many results are collected.
 	// A limit <= 0 returns all matching issues (bounded by the
-	// implementation's own pagination cap).
-	SearchIssues(ctx context.Context, jql string, limit int) ([]jira.Issue, error)
+	// implementation's own pagination cap). Each issue carries the entity
+	// properties named in properties that it has, in Issue.Properties.
+	SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error)
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
 	// GetStatus resolves a status name to its statusCategory, used to
 	// classify status transitions (closed/reopened) without relying on

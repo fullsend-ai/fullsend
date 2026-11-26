@@ -524,6 +524,7 @@ type searchRequest struct {
 	MaxResults    int      `json:"maxResults"`
 	Fields        []string `json:"fields"`
 	NextPageToken string   `json:"nextPageToken,omitempty"`
+	Properties    []string `json:"properties,omitempty"`
 }
 
 // searchFields lists the issue fields SearchIssues requests. The poller
@@ -553,6 +554,10 @@ const maxSearchPages = 200
 // maxSearchPages pages (10,000 issues at 50 per page) to prevent unbounded
 // memory growth.
 //
+// properties names issue entity properties to return with each issue in
+// Issue.Properties (Jira returns at most five), so a caller that needs one
+// property per issue does not read it with a call per issue.
+//
 // This endpoint is eventually consistent: Atlassian documents that recent
 // updates might not be immediately visible in results. For the poller that
 // means an issue can appear, re-sort under ORDER BY updated, or show a
@@ -563,7 +568,7 @@ const maxSearchPages = 200
 // relies on them being at least as fresh as the row; if they lag it, an
 // entry can be skipped. Do not "fix" ordering assumptions by trusting
 // search freshness.
-func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([]Issue, error) {
+func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]Issue, error) {
 	var all []Issue
 	var nextPageToken string
 	for page := 0; page < maxSearchPages; page++ {
@@ -576,6 +581,7 @@ func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([
 			MaxResults:    50,
 			Fields:        searchFields,
 			NextPageToken: nextPageToken,
+			Properties:    properties,
 		}
 		bodyJSON, err := json.Marshal(body)
 		if err != nil {

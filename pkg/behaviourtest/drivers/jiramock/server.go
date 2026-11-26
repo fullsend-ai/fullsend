@@ -286,10 +286,28 @@ func handleSearch(w http.ResponseWriter, r *http.Request, s *State) {
 		return
 	}
 
+	// Like Jira, return each requested entity property an issue has.
+	var req struct {
+		Properties []string `json:"properties"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad search body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	s.mu.Lock()
 	issues := make([]jira.Issue, 0, len(s.issues))
 	for _, issue := range s.issues {
-		issues = append(issues, *issue)
+		row := *issue
+		for _, key := range req.Properties {
+			if v, ok := s.properties[row.Key][key]; ok {
+				if row.Properties == nil {
+					row.Properties = make(map[string]json.RawMessage)
+				}
+				row.Properties[key] = append(json.RawMessage(nil), v...)
+			}
+		}
+		issues = append(issues, row)
 	}
 	s.mu.Unlock()
 

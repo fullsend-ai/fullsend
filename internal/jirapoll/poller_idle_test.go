@@ -324,8 +324,10 @@ func TestRunGarbageLastCheckAloneFailsCycle(t *testing.T) {
 }
 
 // Every row of the activity filter's decision table (ADR 0160, Decision
-// item 1): only an issue whose usable lastCheck is at or after its updated
-// value is dropped; every error and unset case keeps the issue.
+// item 1), with lastCheck taken from the search row (ADR 0085, Decision
+// item 2): only an issue whose usable lastCheck is at or after its updated
+// value is dropped; every error and unset case keeps the issue. The filter
+// reads no property itself.
 func TestFilterLockedActivityDecision(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	key := lastCheckPropertyKey("acme", "platform")
@@ -336,12 +338,10 @@ func TestFilterLockedActivityDecision(t *testing.T) {
 	elsewhere := time.FixedZone("UTC-5", -5*3600)
 	cases := []struct {
 		name    string
-		stored  json.RawMessage // nil: no property
-		readErr bool
+		stored  json.RawMessage // nil: the search returned no property
 		updated string
 		active  bool
 	}{
-		{name: "read fails", readErr: true, updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
 		{name: "not JSON", stored: json.RawMessage(`not json`), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
 		{name: "JSON but not a time", stored: json.RawMessage(`"yesterday"`), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
 		{name: "JSON number", stored: json.RawMessage(`42`), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
@@ -361,14 +361,12 @@ func TestFilterLockedActivityDecision(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mc := newMockClient()
-			if tc.readErr {
-				mc.propertyGetErr[key] = fmt.Errorf("503 service unavailable")
-			}
-			if tc.stored != nil {
-				mc.properties["PROJ-1"] = map[string]json.RawMessage{key: tc.stored}
-			}
+			mc.getPropertyHook = func(issueKey, propKey string) { t.Errorf("filter read %s of %s", propKey, issueKey) }
 			issue := jira.Issue{ID: "10001", Key: "PROJ-1", Fields: jira.IssueFields{Updated: tc.updated}}
-			active := idleTestPoller(mc, t).filterActive(context.Background(), []jira.Issue{issue})
+			if tc.stored != nil {
+				issue.Properties = map[string]json.RawMessage{key: tc.stored}
+			}
+			active := idleTestPoller(mc, t).filterActive([]jira.Issue{issue})
 			if got := len(active) == 1; got != tc.active {
 				t.Errorf("active = %v, want %v", got, tc.active)
 			}
@@ -389,18 +387,15 @@ func TestFilterLockedGitLabTargetReadsItsOwnKey(t *testing.T) {
 	}
 	issue := idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Hour))
 
-	mc := newMockClient()
-	p := newTestPoller(mc, nil, opts)
-	if err := p.advanceLastCheck(context.Background(), issue.Key, now.Add(-time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if active := p.filterActive(context.Background(), []jira.Issue{issue}); len(active) != 0 {
+	stamp, _ := json.Marshal(now.Add(-time.Hour).UTC().Format(time.RFC3339Nano))
+	p := newTestPoller(newMockClient(), nil, opts)
+	issue.Properties = map[string]json.RawMessage{p.lastCheckKey(): stamp}
+	if active := p.filterActive([]jira.Issue{issue}); len(active) != 0 {
 		t.Errorf("lastCheck equal to updated under the GitLab key: active %v; want idle", active)
 	}
 
-	mc = newMockClient()
-	setLastCheck(mc, issue.Key, "group", "project", now.Add(-time.Hour))
-	if active := newTestPoller(mc, nil, opts).filterActive(context.Background(), []jira.Issue{issue}); len(active) != 1 {
+	issue.Properties = map[string]json.RawMessage{lastCheckPropertyKey("group", "project"): stamp}
+	if active := p.filterActive([]jira.Issue{issue}); len(active) != 1 {
 		t.Errorf("lastCheck only under the GitHub-style key: active %v; want active", active)
 	}
 }
@@ -714,4 +709,38 @@ func TestRunTimeLimitsServingNothingFailCycle(t *testing.T) {
 			t.Fatalf("Run() error = %v, want the all-failed guard", err)
 		}
 	})
+}
+
+// The search returns each candidate's lastCheck, so an idle candidate costs
+// no property read (ADR 0085, Decision item 2); a picked issue's lastCheck
+// is still read from the issue before processing.
+func TestRunTakesLastCheckFromSearch(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Hour)),
+		idleTestIssue(2, now.Add(-48*time.Hour), now.Add(-time.Minute)),
+	}
+	setLastCheck(mc, "PROJ-1", "acme", "platform", now.Add(-time.Hour))
+	setLastCheck(mc, "PROJ-2", "acme", "platform", now.Add(-time.Hour))
+	addTriageComment(mc, "PROJ-2", "502", now.Add(-time.Minute))
+	reads := map[string]int{}
+	mc.getPropertyHook = func(issueKey, _ string) { reads[issueKey]++ }
+
+	p := idleTestPoller(mc, t)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if got := mc.lastSearchProperties; len(got) != 1 || got[0] != lastCheckPropertyKey("acme", "platform") {
+		t.Errorf("search asked for properties %v, want only the lastCheck key", got)
+	}
+	if reads["PROJ-1"] != 0 {
+		t.Errorf("read %d properties of the idle PROJ-1, want 0", reads["PROJ-1"])
+	}
+	if reads["PROJ-2"] == 0 {
+		t.Error("processing did not read PROJ-2's lastCheck from the issue")
+	}
+	if got := dispatchedKeys(p); len(got) != 1 || got[0] != "10002" {
+		t.Errorf("dispatched for %v, want PROJ-2 only", got)
+	}
 }
