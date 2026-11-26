@@ -6,8 +6,10 @@
 // File writes are conditional on the SHA of the revision the caller read,
 // so a file replaced between the read and the write causes a conflict rather
 // than an overwrite. It also reads Forgejo Actions runs, jobs, artifacts,
-// and logs (actions.go) for the behaviour-test CI driver. Operations
-// Forgejo support does not yet cover are not part of this adapter.
+// and logs (actions.go) for the behaviour-test CI driver, and reads and
+// updates issues, issue comments, and labels (issues.go) for the triage
+// and polling flows. Operations Forgejo support does not yet cover are not
+// part of this adapter.
 package forgejo
 
 import (
