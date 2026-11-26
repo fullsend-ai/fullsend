@@ -735,7 +735,12 @@ test("denial diagnostics retain useful details without secrets or canaries", asy
   }
 });
 
-test("missing policy blocks all calls", async () => {
+test("missing policy blocks all calls", async (t) => {
+  const previous = process.env.FULLSEND_OPENCODE_HOOK_CONFIG;
+  t.after(() => {
+    if (previous === undefined) delete process.env.FULLSEND_OPENCODE_HOOK_CONFIG;
+    else process.env.FULLSEND_OPENCODE_HOOK_CONFIG = previous;
+  });
   process.env.FULLSEND_OPENCODE_HOOK_CONFIG = "not json";
   const hooks = await plugin({ directory: tmpdir() });
   await assert.rejects(hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "true" } }), /policy unavailable/);
