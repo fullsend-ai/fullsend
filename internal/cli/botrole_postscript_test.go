@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,7 +19,16 @@ import (
 // bearer token (FULLSEND_BOT_ROLE_URL / FULLSEND_BOT_ROLE_TOKEN) reach every
 // post-script, not only pre-scripts. The append in runAgent's post-script
 // defer is inline wiring no narrower test (postScriptEnv alone) can see.
+// The post-script also probes the helper's own listener: runAgent registers
+// the helper's shutdown defer before the post-script's defer, so under LIFO
+// the helper is still serving while the post-script runs, and one
+// unauthenticated request must come back 401 — a connection failure is the
+// signature of a defer-order regression that shuts the helper down first
+// while the exported env keeps every lookup silently fail-closed.
 func TestRunAgent_BotRoleHelperEnvReachedPostScript(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not available")
+	}
 	for _, k := range []string{"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"} {
 		t.Setenv(k, "")
 	}
@@ -41,7 +51,13 @@ func TestRunAgent_BotRoleHelperEnvReachedPostScript(t *testing.T) {
 	t.Cleanup(func() { statusMintToken = origMint })
 
 	marker := filepath.Join(t.TempDir(), "postscript-env")
-	postScript := "#!/bin/sh\nenv > " + shellQuoteForTest(marker) + "\n"
+	// The probe records curl's http_code for one unauthenticated request to
+	// the helper's URL: 401 while the listener is up (bearer auth refuses it
+	// before the method check), 000 when the connection is refused.
+	postScript := "#!/bin/sh\n" +
+		"env > " + shellQuoteForTest(marker) + "\n" +
+		"code=$(curl -s -o /dev/null -w '%{http_code}' \"$FULLSEND_BOT_ROLE_URL\")\n" +
+		"echo \"helper_probe_status=$code\" >> " + shellQuoteForTest(marker) + "\n"
 	dir := writeValidationLoopFullsendDir(t, passingValidationScript, postScript, 1, "")
 	outputBase := t.TempDir()
 
@@ -60,4 +76,8 @@ func TestRunAgent_BotRoleHelperEnvReachedPostScript(t *testing.T) {
 	helperToken, ok := scriptEnvValue(t, env, "FULLSEND_BOT_ROLE_TOKEN")
 	require.True(t, ok, "the post-script environment must carry FULLSEND_BOT_ROLE_TOKEN")
 	require.NotEmpty(t, helperToken)
+
+	probe, ok := scriptEnvValue(t, env, "helper_probe_status")
+	require.True(t, ok, "the post-script must record its probe of the helper's URL")
+	assert.Equal(t, "401", probe, "the helper must still be serving while the post-script runs: an unauthenticated request must get 401, not a connection failure (the defer-order regression)")
 }
