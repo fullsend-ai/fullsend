@@ -121,6 +121,7 @@ const entityBaseQuery = `query($owner: String!, $name: String!, $number: Int!, $
 				updatedAt
 				stateReason @include(if: $workItem)
 				closedAt @include(if: $lifecycle)
+				issueClosedEvents: timelineItems` + entityClosedEventSelection + `
 				author @include(if: $author) { ...entityActor }
 			}
 			... on PullRequest {
@@ -132,6 +133,7 @@ const entityBaseQuery = `query($owner: String!, $name: String!, $number: Int!, $
 				updatedAt
 				headRefOid
 				closedAt @include(if: $lifecycle)
+				pullRequestClosedEvents: timelineItems` + entityClosedEventSelection + `
 				mergedAt @include(if: $lifecycle)
 				mergedBy @include(if: $lifecycle) { ...entityActor }
 				author @include(if: $author) { ...entityActor }
@@ -146,6 +148,23 @@ const entityBaseQuery = `query($owner: String!, $name: String!, $number: Int!, $
 	}
 }
 ` + entityActorFragment
+
+// entityClosedEventSelection selects an entity's most recent ClosedEvent. The
+// response names are aliased per fragment, as state is: the issue and pull
+// request timeline connections are different GraphQL types.
+const entityClosedEventSelection = `(itemTypes: [CLOSED_EVENT], last: 1) @include(if: $lifecycle) {
+					nodes { __typename ... on ClosedEvent { createdAt actor { ...entityActor } } }
+				}`
+
+// gqlClosedEvents is the timeline connection selected with
+// entityClosedEventSelection.
+type gqlClosedEvents struct {
+	Nodes []struct {
+		Typename  string          `json:"__typename"`
+		CreatedAt string          `json:"createdAt"`
+		Actor     *gqlEntityActor `json:"actor"`
+	} `json:"nodes"`
+}
 
 type gqlEntityBase struct {
 	Typename string `json:"__typename"`
@@ -176,6 +195,12 @@ type gqlEntityBase struct {
 	HeadRepository *struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"headRepository"`
+	// IssueClosedEvents and PullRequestClosedEvents are the per-fragment
+	// aliases of the most recent ClosedEvent. ClosedEvents is the one
+	// matching the entity's kind, set by ReadBase.
+	IssueClosedEvents       *gqlClosedEvents `json:"issueClosedEvents"`
+	PullRequestClosedEvents *gqlClosedEvents `json:"pullRequestClosedEvents"`
+	ClosedEvents            *gqlClosedEvents `json:"-"`
 }
 
 // ReadBase reads the entity's identity and the requested fact groups.
@@ -239,8 +264,9 @@ func (a *EntityAdapter) ReadBase(ctx context.Context, facts []entityacquire.Need
 		URL:      g.URL,
 	}
 	rawState := g.IssueState
+	g.ClosedEvents = g.IssueClosedEvents
 	if kind == normentity.KindChangeProposal {
-		rawState = g.PullRequestState
+		rawState, g.ClosedEvents = g.PullRequestState, g.PullRequestClosedEvents
 	}
 	g.State = rawState
 	state := entityState(kind, rawState)
@@ -1193,8 +1219,7 @@ func entityLifecycle(kind normentity.Kind, state normentity.Field[normentity.Sta
 		if g.ClosedAt != nil {
 			l.ClosedAt = entityTimestamp(*g.ClosedAt)
 		}
-		// The closing actor needs a timeline read.
-		l.ClosedBy = normentity.Unknown[normentity.Actor](normentity.ReasonUnsupported)
+		l.ClosedBy = entityCloser(l.ClosedAt, g.ClosedEvents)
 	}
 	if kind != normentity.KindChangeProposal {
 		return l
@@ -1213,6 +1238,24 @@ func entityLifecycle(kind normentity.Kind, state normentity.Field[normentity.Sta
 		l.MergedBy = entityActor(g.MergedBy)
 	}
 	return l
+}
+
+// entityCloser maps the actor of the entity's current close: the actor of
+// its most recent ClosedEvent, read in the same response, when that event
+// occurred at the entity's close time. Otherwise the event cannot be tied to
+// the current close (there may be none, or the close time is unresolved), so
+// the actor stays unknown rather than being inferred.
+func entityCloser(closedAt normentity.Field[normentity.Timestamp], events *gqlClosedEvents) normentity.Field[normentity.Actor] {
+	unresolved := normentity.Unknown[normentity.Actor](normentity.ReasonFailed)
+	at, ok := closedAt.Value()
+	if !ok || events == nil || len(events.Nodes) != 1 || events.Nodes[0].Typename != "ClosedEvent" {
+		return unresolved
+	}
+	ev := events.Nodes[0]
+	if t, ok := entityTimestamp(ev.CreatedAt).Value(); !ok || t != at {
+		return unresolved
+	}
+	return entityActor(ev.Actor)
 }
 
 func entityWorkItem(g *gqlEntityBase) normentity.Field[normentity.WorkItem] {
