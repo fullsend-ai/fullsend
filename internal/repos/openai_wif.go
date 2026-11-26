@@ -692,6 +692,11 @@ func checkPinnedOpenAIWIFContract(ctx context.Context, resolved ResolvedConfig, 
 		return fmt.Errorf("fetching callers at the %s to verify %s support (existing credentials were left unchanged): %w", what, InferenceAuthOpenAIWIF, err)
 	}
 	for _, caller := range callers {
+		// The fork pull request stub calls no workflow and gets no
+		// credentials; it is not an inference credential consumer.
+		if caller.Path == scaffold.ForkPRStubPath {
+			continue
+		}
 		if !callerGrantsIDToken(caller.Content) {
 			return fmt.Errorf("the %s %s does not support inference.auth %s: caller %s must grant id-token: write (existing credentials were left unchanged)", what, ref, InferenceAuthOpenAIWIF, caller.Path)
 		}
@@ -890,7 +895,7 @@ func probeOpenAIWIFWorkflows(ctx context.Context, client forge.Client, owner, re
 // and verifies it before writes. The returned flag controls delivery preflight.
 func checkOpenAIWIFContract(ctx context.Context, d convergeDiscovery, cfg ConvergeConfig, refResolver *RefResolver) (bool, error) {
 	resolved := d.resolved
-	if resolved.InferenceAuth != InferenceAuthOpenAIWIF || resolved.Forge == ForgeGitLab {
+	if !inferenceAuthHas(resolved.InferenceAuth, InferenceAuthOpenAIWIF) || resolved.Forge == ForgeGitLab {
 		return false, nil
 	}
 	gcp := plannedGCPSecrets(d.components, cfg)

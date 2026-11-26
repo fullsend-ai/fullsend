@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -1101,5 +1102,133 @@ func TestHasRole(t *testing.T) {
 		if got := HasRole(tt.actor, tt.required); got != tt.want {
 			t.Errorf("HasRole(%q, %q) = %v, want %v", tt.actor, tt.required, got, tt.want)
 		}
+	}
+}
+
+func TestHarnessRouter_SlashCommandReviewOnForkMR(t *testing.T) {
+	forkState := State{ChangeProposal: &ChangeProposalState{IsFork: true}}
+	tests := []struct {
+		name   string
+		agents []string
+		cmd    string
+		actor  Actor
+		state  State
+		want   []string
+	}{
+		{name: "review by triage-role actor allowed", agents: []string{"review"}, cmd: "/fs-review", actor: Actor{ID: "alice", Role: "triage"}, state: forkState, want: []string{"review"}},
+		{name: "review by write-role actor allowed", agents: []string{"review"}, cmd: "/fs-review", actor: Actor{ID: "alice", Role: "write"}, state: forkState, want: []string{"review"}},
+		{name: "mixed-case review allowed", agents: []string{"review"}, cmd: "/fs-Review", actor: Actor{ID: "alice", Role: "triage"}, state: forkState, want: []string{"review"}},
+		{name: "review by read-only actor denied", agents: []string{"review"}, cmd: "/fs-review", actor: Actor{ID: "bob", Role: "read"}, state: forkState},
+		{name: "review by read-only MR author denied", agents: []string{"review"}, cmd: "/fs-review", actor: Actor{ID: "bob", Role: "read", IsEntityAuthor: true}, state: forkState},
+		{name: "review not installed denied", agents: []string{"code"}, cmd: "/fs-review", actor: Actor{ID: "alice", Role: "write"}, state: forkState},
+		{name: "review with unknown origin denied", agents: []string{"review"}, cmd: "/fs-review", actor: Actor{ID: "alice", Role: "write"}, state: State{}},
+		{name: "fix denied on fork", agents: []string{"review", "fix"}, cmd: "/fs-fix", actor: Actor{ID: "alice", Role: "admin"}, state: forkState},
+		{name: "code denied on fork", agents: []string{"review", "code"}, cmd: "/fs-code", actor: Actor{ID: "alice", Role: "admin"}, state: forkState},
+		{name: "triage denied on fork", agents: []string{"review", "triage"}, cmd: "/fs-triage", actor: Actor{ID: "alice", Role: "admin"}, state: forkState},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewHarnessRouter(tt.agents)
+			event := &NormalizedEvent{
+				Entity:     Entity{Kind: "change_proposal", ID: 10},
+				Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{Command: tt.cmd, Body: tt.cmd}},
+				Actor:      tt.actor,
+				State:      tt.state,
+			}
+			stages, err := r.Route(event)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !slices.Equal(stages, tt.want) {
+				t.Fatalf("Route() = %v, want %v", stages, tt.want)
+			}
+		})
+	}
+}
+
+func TestHarnessRouter_LabelReadyForReviewForkMRBlocked(t *testing.T) {
+	r := NewHarnessRouter([]string{"review"})
+
+	event := &NormalizedEvent{
+		Entity:     Entity{Kind: "change_proposal", ID: 10},
+		Transition: Transition{Kind: "label_changed", Label: &TransitionLabel{Name: "ready-for-review", Action: "added"}},
+		Actor:      Actor{ID: "alice", Role: "write"},
+		State:      State{ChangeProposal: &ChangeProposalState{IsFork: true}},
+	}
+
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 0 {
+		t.Fatalf("expected no stages for ready-for-review label on fork MR, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_RouteWithReason(t *testing.T) {
+	forkState := State{ChangeProposal: &ChangeProposalState{IsFork: true}}
+	sameState := State{ChangeProposal: &ChangeProposalState{IsFork: false}}
+	comment := func(cmd string) Transition {
+		return Transition{Kind: "comment_added", Comment: &TransitionComment{Command: cmd, Body: cmd}}
+	}
+	mr := Entity{Kind: "change_proposal", ID: 10}
+	issue := Entity{Kind: "work_item", ID: 3}
+	tests := []struct {
+		name       string
+		agents     []string
+		event      *NormalizedEvent
+		wantStages []string
+		wantReason string // substring; empty means the reason must be empty
+	}{
+		{name: "nil event", event: nil, wantReason: "nil event"},
+		{name: "unknown transition", event: &NormalizedEvent{Transition: Transition{Kind: "reopened"}}, wantReason: `transition kind "reopened" is not routed`},
+		{name: "nil comment", event: &NormalizedEvent{Transition: Transition{Kind: "comment_added"}}, wantReason: "has no comment"},
+		{name: "plain comment", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{Body: "hi"}}, State: sameState}, wantReason: "not a slash command"},
+		{name: "non fs command", agents: []string{"review"}, event: &NormalizedEvent{Entity: issue, Transition: comment("/assign")}, wantReason: "not an /fs- command"},
+		{name: "empty fs command", agents: []string{"review"}, event: &NormalizedEvent{Entity: issue, Transition: comment("/fs-")}, wantReason: "empty /fs- command"},
+		{name: "fork code", agents: []string{"code"}, event: &NormalizedEvent{Entity: mr, Transition: comment("/fs-code"), Actor: Actor{Role: "write"}, State: forkState}, wantReason: "only /fs-review is allowed on forks"},
+		{name: "unknown origin", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: comment("/fs-review"), Actor: Actor{Role: "write"}}, wantReason: "unknown origin"},
+		{name: "agent missing", agents: []string{"code"}, event: &NormalizedEvent{Entity: issue, Transition: comment("/fs-review"), Actor: Actor{Role: "write"}}, wantReason: `agent "review" is not installed`},
+		{name: "role too low", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: comment("/fs-review"), Actor: Actor{Role: "read"}, State: forkState}, wantReason: `actor role "read" is below the required "triage" role`},
+		{name: "fork review dispatched", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: comment("/fs-review"), Actor: Actor{Role: "triage"}, State: forkState}, wantStages: []string{"review"}},
+		{name: "changes requested on fork", agents: []string{"fix"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{Body: changesRequestedMarker}}, Actor: Actor{Kind: "bot"}, State: forkState}, wantReason: "fix is not allowed"},
+		{name: "changes requested fix missing", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{Body: changesRequestedMarker}}, Actor: Actor{Kind: "bot"}, State: sameState}, wantReason: "fix agent is not installed"},
+		{name: "changes requested no-fix label", agents: []string{"fix"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{Body: changesRequestedMarker}}, Actor: Actor{Kind: "bot"}, State: State{ChangeProposal: &ChangeProposalState{}, Labels: []string{noFixLabel}}}, wantReason: noFixLabel},
+		{name: "label removed", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "label_changed", Label: &TransitionLabel{Name: "ready-for-review", Action: "removed"}}}, wantReason: "not a label addition"},
+		{name: "label other", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "label_changed", Label: &TransitionLabel{Name: "bug", Action: "added"}}}, wantReason: `label "bug" does not trigger a stage`},
+		{name: "label fork", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "label_changed", Label: &TransitionLabel{Name: "ready-for-review", Action: "added"}}, Actor: Actor{Role: "write"}, State: forkState}, wantReason: "labels do not dispatch on forks"},
+		{name: "label role", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "label_changed", Label: &TransitionLabel{Name: "ready-for-review", Action: "added"}}, Actor: Actor{Role: "triage"}, State: sameState}, wantReason: `below the required "write" role`},
+		{name: "label agent missing", agents: []string{"code"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "label_changed", Label: &TransitionLabel{Name: "ready-for-review", Action: "added"}}, Actor: Actor{Role: "write"}, State: sameState}, wantReason: `agent "review" is not installed`},
+		{name: "merged work item", agents: []string{"retro"}, event: &NormalizedEvent{Entity: issue, Transition: Transition{Kind: "closed"}}, wantReason: "work_item closed is not routed"},
+		{name: "merged role", agents: []string{"retro"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "merged"}, Actor: Actor{Role: "read"}}, wantReason: `below the required "write" role`},
+		{name: "merged retro missing", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "merged"}, Actor: Actor{Role: "write"}}, wantReason: `agent "retro" is not installed`},
+		{name: "opened jira", agents: []string{"triage"}, event: &NormalizedEvent{Entity: issue, Source: Source{System: "jira"}, Transition: Transition{Kind: "opened"}}, wantReason: "opened jira work item is not routed"},
+		{name: "opened triage missing", agents: []string{"review"}, event: &NormalizedEvent{Entity: issue, Source: Source{System: "gitlab"}, Transition: Transition{Kind: "opened"}}, wantReason: `agent "triage" is not installed`},
+		{name: "opened review missing", agents: []string{"triage"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "opened"}}, wantReason: `agent "review" is not installed`},
+		{name: "opened other entity", agents: []string{"review"}, event: &NormalizedEvent{Entity: Entity{Kind: "other"}, Transition: Transition{Kind: "opened"}}, wantReason: "opened other is not routed"},
+		{name: "synchronized work item", agents: []string{"review"}, event: &NormalizedEvent{Entity: issue, Transition: Transition{Kind: "synchronized"}}, wantReason: "synchronized work_item is not routed"},
+		{name: "synchronized fork", agents: []string{"review"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "synchronized"}, State: forkState}, wantReason: "use /fs-review"},
+		{name: "synchronized review missing", agents: []string{"fix"}, event: &NormalizedEvent{Entity: mr, Transition: Transition{Kind: "synchronized"}, State: sameState}, wantReason: `agent "review" is not installed`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewHarnessRouter(tt.agents)
+			stages, reason, err := r.RouteWithReason(tt.event)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !slices.Equal(stages, tt.wantStages) {
+				t.Fatalf("stages = %v, want %v", stages, tt.wantStages)
+			}
+			if tt.wantReason == "" {
+				if reason != "" {
+					t.Fatalf("reason = %q, want empty", reason)
+				}
+				return
+			}
+			if !strings.Contains(reason, tt.wantReason) {
+				t.Fatalf("reason = %q, want substring %q", reason, tt.wantReason)
+			}
+		})
 	}
 }

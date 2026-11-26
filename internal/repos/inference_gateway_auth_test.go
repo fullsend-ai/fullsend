@@ -201,7 +201,8 @@ func TestGatewayOnlyCredentialHelpers(t *testing.T) {
 	assert.Nil(t, requiredInferenceSecretsForAuth(""), "gateway-only needs no provider secret")
 	assert.Nil(t, obsoleteInferenceSecrets(""), "gateway-only removes no existing secret")
 	assert.Empty(t, inferenceRegionForAuth("", "us-east5"))
-	assert.False(t, inferenceInputsSupplied(ConvergeConfig{InferenceProject: "test-inference"}, ""))
+	assert.False(t, vertexInputsSupplied(ConvergeConfig{InferenceProject: "test-inference"}, ""))
+	assert.False(t, openAIInputsSupplied(ConvergeConfig{OpenAIAPIKey: testOpenAIAPIKey}, ""))
 
 	project, wif, err := vertexCredentialInputs(ConvergeConfig{}, ResolvedConfig{
 		Owner: "acme", Repo: "api", DeclaredInferenceProject: "declared-project",

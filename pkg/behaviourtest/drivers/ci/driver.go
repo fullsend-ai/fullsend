@@ -24,8 +24,8 @@ import (
 // *NotDispatchedError.
 var ErrWorkflowNotDispatched = errors.New("was not dispatched")
 
-// NotDispatchedError is the GitHub Actions driver's WaitForWorkflow
-// timeout when no matching run appeared. It records the workflow file and
+// NotDispatchedError is the GitHub Actions and Forgejo Actions drivers'
+// WaitForWorkflow timeout when no matching run appeared. It records the workflow file and
 // event that were waited for, so the failure diagnostics, which run only
 // for this type, can look for exactly that run. It unwraps to
 // ErrWorkflowNotDispatched.

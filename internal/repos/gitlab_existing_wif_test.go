@@ -120,7 +120,7 @@ func TestApplyEffectiveInfrastructure_ExistingWIFOptionsInertOutsideGitLabVertex
 	for _, auth := range []string{InferenceAuthOpenAIAPIKey, InferenceAuthOpenAIWIF} {
 		t.Run(auth, func(t *testing.T) {
 			m := gitlabExistingWIFManifest(t, options)
-			m.Defaults.Inference.Auth = auth
+			m.Defaults.Inference.Auth = InferenceAuthSelection(auth)
 			rc, err := resolvedFor(t, m, "group", "project", "")
 			require.NoError(t, err)
 			assert.Empty(t, rc.DeclaredWIFAudience)

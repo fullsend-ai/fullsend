@@ -41,9 +41,45 @@ func isGHCRImage(image string) bool {
 	return ok && strings.EqualFold(host, ghcrRegistry)
 }
 
-// prePullGHCRImage pulls a ghcr.io sandbox image into the runner user's
-// Podman store with the Actions workflow token, so harness images published
-// as private GitHub packages can be used (#9019).
+// registryCredential is a registry login used for one image pull. The
+// secret is only written to a private, temporary auth file and is redacted
+// from every message.
+type registryCredential struct {
+	registry string // auth-file key: the registry host, with any port
+	username string
+	secret   string
+	source   string // human-readable origin, for progress messages
+}
+
+// sandboxImageCredential returns the registry credential an image is pulled
+// with, and whether one applies. Each forge's CI supplies a job-scoped
+// credential for its own registry:
+//
+//   - GitHub Actions: the workflow token for ghcr.io images (#9019).
+//   - GitLab CI: CI_REGISTRY_USER and CI_REGISTRY_PASSWORD for images on
+//     the instance's container registry (CI_REGISTRY).
+func sandboxImageCredential(image, workflowToken string) (registryCredential, bool) {
+	host, _, ok := strings.Cut(image, "/")
+	if !ok {
+		return registryCredential{}, false
+	}
+	if os.Getenv("GITHUB_ACTIONS") == "true" && isGHCRImage(image) && workflowToken != "" {
+		return registryCredential{registry: ghcrRegistry, username: ghcrAuthUsername, secret: workflowToken, source: "the workflow token"}, true
+	}
+	if os.Getenv("GITLAB_CI") == "true" {
+		registry := os.Getenv("CI_REGISTRY")
+		user, password := os.Getenv("CI_REGISTRY_USER"), os.Getenv("CI_REGISTRY_PASSWORD")
+		if registry != "" && strings.EqualFold(host, registry) && user != "" && password != "" {
+			return registryCredential{registry: registry, username: user, secret: password, source: "the GitLab CI registry credentials"}, true
+		}
+	}
+	return registryCredential{}, false
+}
+
+// prePullSandboxImage pulls a private sandbox image into the runner user's
+// Podman store with the CI job's registry credential
+// (sandboxImageCredential), so harness images published as private
+// packages can be used (#9019).
 //
 // At the pinned OpenShell (0.1.4) the Podman driver pulls the sandbox image
 // through the libpod API without registry credentials, using the "missing"
@@ -59,20 +95,39 @@ func isGHCRImage(image string) bool {
 // other helpers makes the pull run anonymously; it then fails for a private
 // image and the warning below is the only trace.
 //
-// It runs only on GitHub Actions, for ghcr.io images, when GH_WORKFLOW_TOKEN
-// is set. Failures are warnings: the gateway still attempts its own
-// unauthenticated pull, which keeps public images working as before.
-func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
-	if os.Getenv("GITHUB_ACTIONS") != "true" || !isGHCRImage(image) {
-		return
+// It runs only when a credential applies: on GitHub Actions for ghcr.io
+// images when GH_WORKFLOW_TOKEN is set, on GitLab CI for images on CI_REGISTRY.
+// Failures are warnings: the gateway still attempts its own unauthenticated
+// pull, which keeps public images working as before.
+func prePullSandboxImage(ctx context.Context, image string, printer *ui.Printer) {
+	pullSandboxImage(ctx, image, os.Getenv(workflowTokenEnv), printer)
+}
+
+// localPull is what pullSandboxImage did for an image. It describes only this
+// host's Podman store, never the OpenShell gateway's image store: the
+// gateway pulls into its own store when it creates a sandbox.
+type localPull int
+
+const (
+	localPullNone   localPull = iota // no credential applied; nothing was pulled
+	localPullCached                  // already in the local Podman store
+	localPullPulled                  // pulled into the local Podman store
+	localPullFailed                  // could not pull; a warning was printed
+)
+
+// pullSandboxImage is prePullSandboxImage with the workflow token supplied
+// by the caller, and reports what it did. fullsend prepare shares it with
+// fullsend run, so both pull with the same credential, auth file and
+// redaction.
+func pullSandboxImage(ctx context.Context, image, workflowToken string, printer *ui.Printer) localPull {
+	cred, ok := sandboxImageCredential(image, workflowToken)
+	if !ok {
+		return localPullNone
 	}
-	token := os.Getenv(workflowTokenEnv)
-	if token == "" {
-		return
-	}
+	token := cred.secret
 	if _, err := imagePullLookPathFn("podman"); err != nil {
 		printer.StepWarn("podman not found; the sandbox gateway will pull " + image + " without registry credentials")
-		return
+		return localPullFailed
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, sandboxImagePullTimeout)
@@ -80,7 +135,7 @@ func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
 
 	// Already present: the gateway's default pull policy reuses it too.
 	if _, err := runPodmanFn(ctx, "image", "exists", image); err == nil {
-		return
+		return localPullCached
 	}
 
 	warn := func(step string, out []byte, err error) {
@@ -95,22 +150,23 @@ func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
 	dir, err := os.MkdirTemp("", "fullsend-registry-auth-")
 	if err != nil {
 		warn("creating registry auth directory", nil, err)
-		return
+		return localPullFailed
 	}
 	defer os.RemoveAll(dir)
 	authFile := filepath.Join(dir, "auth.json")
 
-	auth := base64.StdEncoding.EncodeToString([]byte(ghcrAuthUsername + ":" + token))
-	authJSON := fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, ghcrRegistry, auth)
+	auth := base64.StdEncoding.EncodeToString([]byte(cred.username + ":" + token))
+	authJSON := fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, cred.registry, auth)
 	if err := os.WriteFile(authFile, []byte(authJSON), 0o600); err != nil {
 		warn("writing registry auth file", nil, err)
-		return
+		return localPullFailed
 	}
 
-	printer.StepStart("Pulling sandbox image with the workflow token: " + image)
+	printer.StepStart("Pulling sandbox image with " + cred.source + ": " + image)
 	if out, err := runPodmanFn(ctx, "pull", "--quiet", "--authfile", authFile, image); err != nil {
 		warn("pulling "+image, out, err)
-		return
+		return localPullFailed
 	}
 	printer.StepDone("Pulled sandbox image " + image)
+	return localPullPulled
 }

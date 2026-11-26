@@ -2363,6 +2363,44 @@ func TestIsNonFastForwardError(t *testing.T) {
 	}
 }
 
+func TestIsObjectNotYetVisibleError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name:   "object does not exist in top-level message",
+			apiErr: &APIError{StatusCode: 422, Message: "Object does not exist"},
+			want:   true,
+		},
+		{
+			name: "object does not exist in error detail",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors:     []APIErrorDetail{{Message: "Object does not exist"}},
+			},
+			want: true,
+		},
+		{
+			name:   "non-fast-forward is not a missing object",
+			apiErr: &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			want:   false,
+		},
+		{
+			name:   "validation failed",
+			apiErr: &APIError{StatusCode: 422, Message: "Validation Failed"},
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isObjectNotYetVisibleError(tt.apiErr))
+		})
+	}
+}
+
 func TestIsStaleTreeSHAError(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -4882,6 +4920,82 @@ func TestListInheritedRepoVariables_Error(t *testing.T) {
 	assert.True(t, forge.IsForbidden(err))
 }
 
+func TestListInheritedRepoVariables_PersonalRepository(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		ownerBody  string
+		ownerError int
+		wantEmpty  bool
+	}{
+		{name: "personal owner", status: 422, ownerBody: `{"owner":{"login":"alice","type":"User"}}`, wantEmpty: true},
+		{name: "organization owner", status: 422, ownerBody: `{"owner":{"login":"alice","type":"Organization"}}`},
+		{name: "unknown owner", status: 422, ownerBody: `{"owner":{"login":"alice"}}`},
+		{name: "different owner", status: 422, ownerBody: `{"owner":{"login":"other","type":"User"}}`},
+		{name: "malformed metadata", status: 422, ownerBody: `{`},
+		{name: "metadata unavailable", status: 422, ownerError: http.StatusForbidden},
+		{name: "forbidden is not empty", status: http.StatusForbidden},
+		{name: "not found is not empty", status: http.StatusNotFound},
+		{name: "server error is not empty", status: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var variableCalls, ownerCalls int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/alice/repo/actions/organization-variables":
+					variableCalls++
+					w.WriteHeader(tc.status)
+				case "/repos/alice/repo":
+					ownerCalls++
+					if tc.ownerError != 0 {
+						w.WriteHeader(tc.ownerError)
+						return
+					}
+					fmt.Fprint(w, tc.ownerBody)
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			vars, err := newTestClient(t, srv).ListInheritedRepoVariables(context.Background(), "alice", "repo")
+			assert.Positive(t, variableCalls)
+			if tc.status == http.StatusUnprocessableEntity {
+				assert.Equal(t, 1, ownerCalls)
+			} else {
+				assert.Zero(t, ownerCalls)
+			}
+			if tc.wantEmpty {
+				require.NoError(t, err)
+				assert.Empty(t, vars)
+			} else {
+				require.Error(t, err)
+				assert.Nil(t, vars)
+			}
+		})
+	}
+}
+
+func TestListInheritedRepoVariables_LaterPage422(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Equal(t, "/repos/org/repo/actions/organization-variables", r.URL.Path)
+		if r.URL.Query().Get("page") == "1" {
+			fmt.Fprint(w, `{"total_count":2,"variables":[{"name":"A","value":"1"}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	vars, err := newTestClient(t, srv).ListInheritedRepoVariables(context.Background(), "org", "repo")
+	require.Error(t, err)
+	assert.Nil(t, vars)
+	assert.Equal(t, 2, calls)
+}
+
 func TestGetIssue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/issues/7", r.URL.Path)
@@ -6192,6 +6306,109 @@ func TestCommitFiles_NonFastForward(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.True(t, forge.IsNonFastForward(err))
+}
+
+// updateRef422Server serves the Git Data commit path, answering the first
+// failRefPatches PATCH /git/refs calls with body and 422. It counts tree
+// posts too, to show a retry reruns the commit from scratch.
+func updateRef422Server(t *testing.T, body map[string]any, failRefPatches int, treePosts, refPatches *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/commits/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			*treePosts++
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			*refPatches++
+			if *refPatches <= failRefPatches {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				json.NewEncoder(w).Encode(body)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+}
+
+var objectDoesNotExist422 = map[string]any{"message": "Object does not exist"}
+
+func TestCommitFiles_UpdateRefObjectNotYetVisibleRetry(t *testing.T) {
+	treePosts, refPatches := 0, 0
+	srv := updateRef422Server(t, objectDoesNotExist422, 1, &treePosts, &refPatches)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 2, refPatches)
+	assert.Equal(t, 2, treePosts, "the retry reruns the commit from scratch")
+}
+
+func TestCommitFiles_UpdateRefObjectNotYetVisibleExhausted(t *testing.T) {
+	treePosts, refPatches := 0, 0
+	srv := updateRef422Server(t, objectDoesNotExist422, 1000, &treePosts, &refPatches)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "update ref: ")
+	assert.Contains(t, err.Error(), "Object does not exist")
+	assert.Equal(t, 3, refPatches, "bounded at three attempts")
+}
+
+func TestCommitFiles_UpdateRef422NotRetried(t *testing.T) {
+	tests := map[string]struct {
+		body          map[string]any
+		wantProtected bool
+	}{
+		"branch protection": {
+			body:          map[string]any{"message": "Protected branch update failed: Object does not exist"},
+			wantProtected: true,
+		},
+		"unrelated validation failure": {
+			body: map[string]any{"message": "Validation Failed"},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			treePosts, refPatches := 0, 0
+			srv := updateRef422Server(t, tt.body, 1000, &treePosts, &refPatches)
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+				// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+				{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+			})
+			require.Error(t, err)
+			assert.Equal(t, tt.wantProtected, forge.IsBranchProtected(err))
+			assert.False(t, forge.IsNonFastForward(err))
+			assert.Equal(t, 1, refPatches)
+		})
+	}
 }
 
 func TestCommitFiles_BranchProtected(t *testing.T) {

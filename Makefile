@@ -90,7 +90,7 @@ lint-all: ensure-hooks
 
 check:
 	uvx ruff@0.15.7 check .
-	uvx ty@0.0.108 check hack/
+	uvx ty@0.0.109 check hack/
 
 fmt:
 	uvx ruff@0.15.7 format .
@@ -286,6 +286,10 @@ ci-local:
 # on demand with fetch-allowlist-gate added to BEHAVIOUR_CAPABILITIES, on
 # dev against the fix or on stage once it is on main; when that passes,
 # declare it here (#9291).
+# fork-pr-workflow-run (features/dispatch/fork-bash-routing.feature) needs
+# GitHub's workflow_run event, which the GitHub emulator does not send. Like
+# fetch-allowlist-gate it is not declared until its scenario has passed one
+# live run; run it on demand with fork-pr-workflow-run added.
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key,runner-secret-overlay-guard
 
 # Runs through scripts/run-with-infra-retry.sh: a failed attempt whose

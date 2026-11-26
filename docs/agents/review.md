@@ -37,7 +37,7 @@ write or higher.
 
 The `/fs-review` command does not accept arguments and always forces a review. The review agent also runs automatically on a same-repository PR when it is opened,
 when its effective diff changes on a synchronize event, or when it is moved out of draft by a user with triage-level repository permission or higher.
-Fork and Dependabot PRs are not reviewed automatically; someone with triage access or higher (or an OWNERS approver or reviewer) can comment `/fs-review` on them.
+On GitHub, a fork PR is reviewed automatically under the same rules (a bot author is checked like any other author), through the managed `fullsend-fork-pr.yaml` workflow (see [Fork pull requests](../guides/getting-started/repo-management.md#fork-pull-requests)); the `ready-for-review` label does not start a fork PR review. Dependabot PRs are not reviewed automatically. On either, someone with triage access or higher (or an OWNERS approver or reviewer) can comment `/fs-review`.
 For GitHub `pull_request` synchronize events (and `pull_request_target` from shims that have not been upgraded), the review is skipped when the complete effective diff matches the previous app-verified approved review. The guard posts or updates one PR-visible `fullsend:review-skip` status comment linking the previous approved review. GitLab diff metadata uses the same normalized model, but the GitLab poller does not consume this marker yet and continues to review synchronized merge requests.
 The deduplication check runs before final Bash/CEL stage selection, so CEL-selected review routes participate as well. File modes are part of the compared effective diff identity, so executable-bit changes cannot be hidden by an otherwise identical textual patch.
 The guard fails open and runs the review when there is no prior diff hash, the prior review cannot be verified, a required hash/head or base/head tree-mode API call fails,
@@ -86,8 +86,13 @@ the loop. Dispatch is keyed on the head SHA, so later polls that see the same
 head do not review it again. Diff versions do not record who pushed, so the
 poller cannot authorize the pusher. It therefore reviews pushes only to
 same-project MRs, where any pusher already has project push access. A push to
-a fork MR is not reviewed automatically, and re-review of fork MR pushes is
-currently unsupported (the router also denies slash commands on fork MRs).
+a fork MR is not reviewed automatically. To review a fork MR after a push, or
+an existing fork MR that predates the installation, someone with Developer
+access or higher comments `/fs-review` on it (the router accepts Reporter, but
+the agent job requires Developer). `/fs-review` is the only slash
+command that dispatches on a fork MR: write-capable commands such as `/fs-fix`
+and `/fs-code`, and the `ready-for-review` label, do not dispatch on fork MRs.
+When the poller skips an event, its log names the reason.
 
 ## Control labels
 

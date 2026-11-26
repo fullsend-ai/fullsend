@@ -69,13 +69,13 @@ func validateExistingWIFOptionFormats(audience, serviceAccount string) error {
 // are declared, then clears them where they do not apply. They only change
 // the GitLab agent job's Vertex credentials, so on GitHub repositories (which
 // can inherit them from defaults.config) and on GitLab repositories whose
-// inference.auth is not vertex-wif they are inert: no variable is written and
-// no audience is rendered.
+// inference.auth does not include vertex-wif they are inert: no variable is
+// written and no audience is rendered.
 func (c *ResolvedConfig) applyExistingWIFOptions() error {
 	if err := validateExistingWIFOptionFormats(c.DeclaredWIFAudience, c.DeclaredServiceAccount); err != nil {
 		return fmt.Errorf("%s/%s: effective configuration: %w", c.Owner, c.Repo, err)
 	}
-	if c.Forge != ForgeGitLab || c.InferenceAuth != InferenceAuthVertexWIF {
+	if c.Forge != ForgeGitLab || !inferenceAuthHas(c.InferenceAuth, InferenceAuthVertexWIF) {
 		c.DeclaredWIFAudience = ""
 		c.DeclaredServiceAccount = ""
 	}

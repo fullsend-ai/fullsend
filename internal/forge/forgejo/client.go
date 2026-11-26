@@ -5,7 +5,10 @@
 //
 // File writes are conditional on the SHA of the revision the caller read,
 // so a file replaced between the read and the write causes a conflict rather
-// than an overwrite. Operations Forgejo support does not yet cover are not
+// than an overwrite. It also reads Forgejo Actions runs, jobs, artifacts,
+// and logs (actions.go) for the behaviour-test CI driver, and reads and
+// updates issues, issue comments, and labels (issues.go) for the triage
+// and polling flows. Operations Forgejo support does not yet cover are not
 // part of this adapter.
 package forgejo
 
@@ -98,19 +101,52 @@ func (c *LiveClient) contentsURL(owner, repo, filePath string) string {
 // do sends an API request and decodes a JSON response into out when out
 // is non-nil. A 404 maps to forge.ErrNotFound.
 func (c *LiveClient) do(ctx context.Context, method, rawURL string, body, out any) error {
+	data, err := c.send(ctx, method, rawURL, body, "application/json", maxResponseBytes, false)
+	if err != nil {
+		return err
+	}
+	if out != nil && len(data) > 0 {
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("%s %s: decoding response: %w", method, redactedString(rawURL), err)
+		}
+	}
+	return nil
+}
+
+// raw sends a GET request and returns the response body, accepting
+// content type accept. A body larger than limit is an error rather than
+// a silently truncated result. A 404 maps to forge.ErrNotFound.
+func (c *LiveClient) raw(ctx context.Context, rawURL, accept string, limit int64) ([]byte, error) {
+	return c.send(ctx, http.MethodGet, rawURL, nil, accept, limit, true)
+}
+
+// redactedString redacts rawURL for an error message, or returns a
+// placeholder when it does not parse.
+func redactedString(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "(unparsable URL)"
+	}
+	return redactURL(u)
+}
+
+// send sends an API request and returns the response body, read up to
+// limit bytes. When strict is set, a body over limit is an error. A 404
+// maps to forge.ErrNotFound and any other non-2xx status to *APIError.
+func (c *LiveClient) send(ctx context.Context, method, rawURL string, body any, accept string, limit int64, strict bool) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("encoding request: %w", err)
+			return nil, fmt.Errorf("encoding request: %w", err)
 		}
 		reader = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, reader)
 	if err != nil {
-		return fmt.Errorf("building request: %w", err)
+		return nil, fmt.Errorf("building request: %w", err)
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -119,25 +155,27 @@ func (c *LiveClient) do(ctx context.Context, method, rawURL string, body, out an
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, redactURL(req.URL), err)
+		return nil, fmt.Errorf("%s %s: %w", method, redactURL(req.URL), err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	readLimit := limit
+	if strict {
+		readLimit = limit + 1
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, readLimit))
 	if err != nil {
-		return fmt.Errorf("%s %s: reading response: %w", method, redactURL(req.URL), err)
+		return nil, fmt.Errorf("%s %s: reading response: %w", method, redactURL(req.URL), err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("%s %s: %w", method, redactURL(req.URL), forge.ErrNotFound)
+		return nil, fmt.Errorf("%s %s: %w", method, redactURL(req.URL), forge.ErrNotFound)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &APIError{Method: method, URL: redactURL(req.URL), StatusCode: resp.StatusCode, Message: apiMessage(data)}
+		return nil, &APIError{Method: method, URL: redactURL(req.URL), StatusCode: resp.StatusCode, Message: apiMessage(data)}
 	}
-	if out != nil && len(data) > 0 {
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("%s %s: decoding response: %w", method, redactURL(req.URL), err)
-		}
+	if strict && int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s %s: response exceeds %d bytes", method, redactURL(req.URL), limit)
 	}
-	return nil
+	return data, nil
 }
 
 // APIError is a non-2xx, non-404 Forgejo API response.
