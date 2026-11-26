@@ -149,7 +149,7 @@ def looks_failed(value: Any, text: str) -> bool:
     if not isinstance(value, dict):
         return False
     exit_code = value.get("exit_code")
-    return value.get("interrupted") is True or (isinstance(exit_code, int) and exit_code != 0)
+    return value.get("interrupted") is True or (type(exit_code) is int and exit_code != 0)
 
 
 def transform_strings(
