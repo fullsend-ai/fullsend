@@ -326,7 +326,7 @@ func TestRunGarbageLastCheckAloneFailsCycle(t *testing.T) {
 // Every row of the activity filter's decision table (ADR 0160, Decision
 // item 1): only an issue whose usable lastCheck is at or after its updated
 // value is dropped; every error and unset case keeps the issue.
-func TestFilterLockedActivityDecision(t *testing.T) {
+func TestFilterActiveDecision(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	key := lastCheckPropertyKey("acme", "platform")
 	stamp := func(t time.Time) json.RawMessage {
@@ -378,7 +378,7 @@ func TestFilterLockedActivityDecision(t *testing.T) {
 
 // A GitLab-target poller compares updated with its own lastCheck key, not
 // the GitHub-style one.
-func TestFilterLockedGitLabTargetReadsItsOwnKey(t *testing.T) {
+func TestFilterActiveGitLabTargetReadsItsOwnKey(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	opts := Options{
 		TargetRepo:  "group/project",
