@@ -544,11 +544,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   ([guide](guides/user/chaining-follow-up-workflows.md),
   [ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
-  input drivers to discover work from remote systems (Jira first), runs one
-  cycle at a time per repository with no per-issue lock (ADR 0085), and feeds
-  the same dispatch pipeline as webhooks
-  ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial scope is
-  per-repo mode only.
+  input drivers to discover work from remote systems (Jira first), coordinates
+  via source-native write-then-verify locks, and feeds the same dispatch pipeline
+  as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
+  scope is per-repo mode only.
 - Jira poll candidate selection spends per-cycle slots only on candidates
   whose Jira `updated` is newer than their per-repository checkpoint, picks
   at random among them, and reads the per-cycle caps (N, default 5, and M,
@@ -730,9 +729,8 @@ The existing design principle is that [the repo is the coordinator](problems/age
   remains open.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
-  idempotency? (Jira polling relies on one poll cycle at a time per repository
-  and no longer locks issues, per ADR 0085; ADR 0098 does not resolve this
-  question.)
+  idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
+  lock refresh; ADR 0098 does not resolve this question.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - How should explicit cancellation, retry, and reassignment interact with the
   automatic event-coalescing policy in

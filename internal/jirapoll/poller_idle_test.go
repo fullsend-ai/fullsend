@@ -3,6 +3,7 @@ package jirapoll
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -328,7 +329,7 @@ func TestRunGarbageLastCheckAloneFailsCycle(t *testing.T) {
 // item 2): only an issue whose usable lastCheck is at or after its updated
 // value is dropped; every error and unset case keeps the issue. The filter
 // reads no property itself.
-func TestFilterLockedActivityDecision(t *testing.T) {
+func TestFilterActiveDecision(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	key := lastCheckPropertyKey("acme", "platform")
 	stamp := func(t time.Time) json.RawMessage {
@@ -376,7 +377,7 @@ func TestFilterLockedActivityDecision(t *testing.T) {
 
 // A GitLab-target poller compares updated with its own lastCheck key, not
 // the GitHub-style one.
-func TestFilterLockedGitLabTargetReadsItsOwnKey(t *testing.T) {
+func TestFilterActiveGitLabTargetReadsItsOwnKey(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	opts := Options{
 		TargetRepo:  "group/project",
@@ -691,7 +692,7 @@ func TestRunTimeLimitsServingNothingFailCycle(t *testing.T) {
 		mc := newMockClient()
 		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true}, 100*time.Millisecond, time.Hour)
 		err := p.Run(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "cycle time limit was reached before any selected issue was read (1 of 2 tried") {
+		if err == nil || !strings.Contains(err.Error(), "cycle time limit was reached with none of the 2 selected issues served (1 tried)") {
 			t.Fatalf("Run() error = %v, want the cycle-limit failure", err)
 		}
 		if want := "1 selected issue(s) not read"; !strings.Contains(logs.String(), want) {
@@ -742,5 +743,26 @@ func TestRunTakesLastCheckFromSearch(t *testing.T) {
 	}
 	if got := dispatchedKeys(p); len(got) != 1 || got[0] != "10002" {
 		t.Errorf("dispatched for %v, want PROJ-2 only", got)
+	}
+}
+
+// When the caller's context ends, the cycle stops with that error and does
+// not blame a time limit of its own.
+func TestRunCallerCancelIsNotATimeLimit(t *testing.T) {
+	logs := captureLog(t)
+	mc := newMockClient()
+	p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true}, time.Hour, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	err := p.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want the caller's cancellation", err)
+	}
+	if strings.Contains(logs.String(), "time limit") || strings.Contains(logs.String(), "took longer than") {
+		t.Errorf("a cancelled cycle logged a time limit:\n%s", logs)
+	}
+	if mc.listCommentsCalls["PROJ-2"] != 0 {
+		t.Error("read PROJ-2 after the cycle was cancelled")
 	}
 }

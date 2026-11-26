@@ -100,8 +100,8 @@ func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
 // cycles for one target repository from overlapping: with no lock, they
 // would dispatch the same requests twice (ADR 0085, Decision item 1).
 func (p *Poller) Run(ctx context.Context) error {
-	// Reading — the preflight, the search, the activity filter and every
-	// issue — must finish within CycleTimeLimit of the cycle's start, and
+	// Reading (the preflight, the search, the activity filter and every
+	// issue) must finish within CycleTimeLimit of the cycle's start, and
 	// one issue within IssueTimeLimit (ADR 0085, Decision item 3). The
 	// dispatch and checkpoint commit after it use ctx, so they get the rest
 	// of the job's time.
@@ -184,6 +184,8 @@ func (p *Poller) Run(ctx context.Context) error {
 		if err != nil {
 			var rle *roleLoadError
 			switch {
+			case ctx.Err() != nil:
+				// The caller ended the cycle; reported after the loop.
 			case errors.Is(readCtx.Err(), context.DeadlineExceeded):
 				log.Printf("WARNING: the %s cycle time limit cut off reading %s; it waits for the next cycle", p.opts.CycleTimeLimit, issue.Key)
 			case issueTimedOut:
@@ -199,6 +201,11 @@ func (p *Poller) Run(ctx context.Context) error {
 		p.dispatches = append(p.dispatches, pc.records...)
 		pending = append(pending, pc)
 	}
+	// The caller's context ended, not a time limit of this cycle: stop
+	// before anything is dispatched or committed.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("poll cycle interrupted: %w", err)
+	}
 	if left := len(selected) - tried; left > 0 {
 		log.Printf("WARNING: the %s cycle time limit was reached with %d selected issue(s) not read; they wait for the next cycle", p.opts.CycleTimeLimit, left)
 	}
@@ -208,7 +215,7 @@ func (p *Poller) Run(ctx context.Context) error {
 		if processErrors == len(selected) {
 			return fmt.Errorf("all %d selected issues failed to process", processErrors)
 		}
-		return fmt.Errorf("the %s cycle time limit was reached before any selected issue was read (%d of %d tried, all failed or timed out)", p.opts.CycleTimeLimit, tried, len(selected))
+		return fmt.Errorf("the %s cycle time limit was reached with none of the %d selected issues served (%d tried)", p.opts.CycleTimeLimit, len(selected), tried)
 	}
 
 	// Step 5: Write dispatch records.
