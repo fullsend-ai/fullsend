@@ -338,42 +338,74 @@ func TestRunFirstLookOldActivityThenIdle(t *testing.T) {
 // A garbage lastCheck is treated as unset (#9766): the issue stays active
 // (an editor must not be able to hide an issue by writing garbage), gets
 // one first-poll look that saves a valid lastCheck, and is idle next cycle.
-// Neither warning prints the stored value.
+// Neither warning prints the stored value. The cases cover both ways a
+// stored value can fail: JSON that is not a string, and a string that is
+// not a timestamp.
 func TestRunGarbageLastCheckTreatedAsUnset(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stored string
+	}{
+		{name: "a string that is not a time", stored: `"garbage-time"`},
+		{name: "JSON that is not a string", stored: `{"garbage":1}`},
+		{name: "not JSON", stored: `garbage, not JSON`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().Truncate(time.Second)
+			updated := now.Add(-time.Hour)
+			mc := newMockClient()
+			mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), updated)}
+			mc.properties["PROJ-1"] = map[string]json.RawMessage{lastCheckPropertyKey("acme", "platform"): json.RawMessage(tc.stored)}
+			for n := 2; n <= 4; n++ {
+				mc.searchResult = append(mc.searchResult, idleTestIssue(n, now.Add(-48*time.Hour), updated))
+				setLastCheck(mc, fmt.Sprintf("PROJ-%d", n), "acme", "platform", updated)
+			}
+
+			logs := captureLog(t)
+			if err := idleTestPoller(mc, t).Run(context.Background()); err != nil {
+				t.Fatalf("cycle 1: %v", err)
+			}
+			if lc := storedLastCheckAt(t, mc, "PROJ-1"); !lc.Equal(updated) {
+				t.Fatalf("lastCheck after cycle 1 = %v, want the issue's updated %v saved over the garbage", lc, updated)
+			}
+			for _, want := range []string{
+				"lastCheck not a timestamp, treated as unset: PROJ-1",
+				"WARNING: lastCheck for PROJ-1 is not a timestamp; treating as unset",
+			} {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("log lacks %q:\n%s", want, logs)
+				}
+			}
+			if strings.Contains(logs.String(), "garbage") {
+				t.Errorf("log prints the stored value:\n%s", logs)
+			}
+
+			before := mc.listCommentsCalls["PROJ-1"]
+			if err := idleTestPoller(mc, t).Run(context.Background()); err != nil {
+				t.Fatalf("cycle 2: %v", err)
+			}
+			if mc.listCommentsCalls["PROJ-1"] != before {
+				t.Error("cycle 2 looked at an issue with nothing new")
+			}
+		})
+	}
+}
+
+// A cycle whose every selected issue fails ends in an error. Here the one
+// active issue's lastCheck cannot be read.
+func TestRunAllSelectedIssuesFailedFailsCycle(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
 	mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Hour))}
-	mc.properties["PROJ-1"] = map[string]json.RawMessage{lastCheckPropertyKey("acme", "platform"): json.RawMessage(`"not-a-time"`)}
-	for n := 2; n <= 4; n++ {
-		mc.searchResult = append(mc.searchResult, idleTestIssue(n, now.Add(-48*time.Hour), now.Add(-time.Hour)))
-		setLastCheck(mc, fmt.Sprintf("PROJ-%d", n), "acme", "platform", now.Add(-time.Hour))
-	}
+	mc.propertyGetErr[lastCheckPropertyKey("acme", "platform")] = fmt.Errorf("503 service unavailable")
 
-	logs := captureLog(t)
-	if err := idleTestPoller(mc, t).Run(context.Background()); err != nil {
-		t.Fatalf("cycle 1: %v", err)
+	p := idleTestPoller(mc, t)
+	err := p.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "all 1 selected issues failed to process") {
+		t.Fatalf("Run() error = %v, want the all-failed guard", err)
 	}
-	if storedLastCheckAt(t, mc, "PROJ-1").IsZero() {
-		t.Fatal("cycle 1 saved no lastCheck over the garbage")
-	}
-	for _, want := range []string{
-		"lastCheck not a timestamp, treated as unset: PROJ-1",
-		"WARNING: lastCheck for PROJ-1 is not a timestamp; treating as unset",
-	} {
-		if !strings.Contains(logs.String(), want) {
-			t.Errorf("log lacks %q:\n%s", want, logs)
-		}
-	}
-	if strings.Contains(logs.String(), "not-a-time") {
-		t.Errorf("log prints the stored value:\n%s", logs)
-	}
-
-	before := mc.listCommentsCalls["PROJ-1"]
-	if err := idleTestPoller(mc, t).Run(context.Background()); err != nil {
-		t.Fatalf("cycle 2: %v", err)
-	}
-	if mc.listCommentsCalls["PROJ-1"] != before {
-		t.Error("cycle 2 looked at an issue with nothing new")
+	if len(p.dispatches) != 0 {
+		t.Errorf("dispatched %d, want 0", len(p.dispatches))
 	}
 }
 
