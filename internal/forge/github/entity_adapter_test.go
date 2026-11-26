@@ -99,7 +99,10 @@ func (f *fakeEntityGraphQL) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	require.Less(f.t, idx, len(pages))
 	conn := pages[idx]
 	next := idx < len(pages)-1
-	conn["pageInfo"] = map[string]any{"hasNextPage": next, "endCursor": map[bool]string{true: "c" + strconv.Itoa(idx+1)}[next]}
+	// Pages are served in read order; a backward connection (newest first)
+	// continues through hasPreviousPage and startCursor.
+	cursor := map[bool]string{true: "c" + strconv.Itoa(idx+1)}[next]
+	conn["pageInfo"] = map[string]any{"hasNextPage": next, "endCursor": cursor, "hasPreviousPage": next, "startCursor": cursor}
 	updated := entityUpdated
 	if f.pageUpdatedAt != "" {
 		updated = f.pageUpdatedAt
@@ -747,4 +750,249 @@ func TestEntityAdapterBaseQueryAliasesState(t *testing.T) {
 	for line := range strings.SplitSeq(entityBaseQuery, "\n") {
 		assert.NotEqual(t, "state", strings.TrimSpace(line), "state must be aliased")
 	}
+}
+
+func reactionNode(id, content string, user any) map[string]any {
+	return map[string]any{"id": id, "content": content, "createdAt": "2026-11-02T08:00:00Z", "user": user}
+}
+
+func TestEntityAdapterReadPageReactions(t *testing.T) {
+	f := &fakeEntityGraphQL{base: issueBase(), conns: map[string][]map[string]any{
+		"reactions": {{"totalCount": 3, "nodes": []any{
+			reactionNode("REA_1", "THUMBS_UP", map[string]any{"__typename": "User", "login": "alice", "databaseId": 42}),
+			reactionNode("REA_2", "SPARKLES", map[string]any{"__typename": "User", "login": "carol", "databaseId": 44}),
+			map[string]any{"id": "REA_3", "content": "HEART", "createdAt": "not a time", "user": nil},
+		}}},
+	}}
+	a := newEntityTest(t, f)
+	_, err := a.ReadBase(context.Background(), nil)
+	require.NoError(t, err)
+	page, err := a.ReadPage(context.Background(), entityacquire.PageRequest{Need: entityacquire.NeedReactions, Kind: ne.KindWorkItem})
+	require.NoError(t, err)
+	assert.Empty(t, page.Next, "a single page is a complete, consistent read")
+	assert.Equal(t, entityUpdated, page.Revision)
+	got := page.Members.Reactions.Known
+	require.Len(t, got, 3)
+	assert.Equal(t, "REA_1", got[0].ID)
+	assert.Equal(t, ne.Known("+1"), got[0].Content)
+	assert.Equal(t, ne.Known("42"), got[0].Actor.ID)
+	assert.Equal(t, ne.Known(ne.ActorHuman), got[0].Actor.Kind)
+	assert.Equal(t, ne.Known(ne.Timestamp("2026-11-02T08:00:00.000000000Z")), got[0].CreatedAt)
+	assert.Equal(t, ne.Unknown[string](ne.ReasonUnsupported), got[1].Content, "an unmapped reaction is unknown")
+	assert.Equal(t, ne.Known("heart"), got[2].Content)
+	assert.Equal(t, ne.Unknown[ne.Timestamp](ne.ReasonFailed), got[2].CreatedAt)
+	assert.Equal(t, ne.Unknown[string](ne.ReasonUnsupported), got[2].Actor.ID, "an unreported reactor stays unresolved")
+	assert.Equal(t, ne.Unknown[string](ne.ReasonUnsupported), got[2].Actor.Login)
+	assert.Equal(t, ne.Unknown[ne.ActorKind](ne.ReasonUnsupported), got[2].Actor.Kind)
+	assert.Contains(t, f.pageQueries()[0], "conn: reactions(first: $first, after: $cursor)")
+}
+
+func TestEntityAdapterReadPageReactionsSpanningPagesAreLimited(t *testing.T) {
+	user := map[string]any{"__typename": "User", "login": "alice", "databaseId": 42}
+	f := &fakeEntityGraphQL{base: issueBase(), conns: map[string][]map[string]any{
+		"reactions": {
+			{"totalCount": 2, "nodes": []any{reactionNode("REA_1", "EYES", user)}},
+			{"totalCount": 2, "nodes": []any{reactionNode("REA_2", "EYES", user)}},
+		},
+	}}
+	a := newEntityTest(t, f)
+	_, err := a.ReadBase(context.Background(), nil)
+	require.NoError(t, err)
+	req := entityacquire.PageRequest{Need: entityacquire.NeedReactions, Kind: ne.KindWorkItem}
+	page, err := a.ReadPage(context.Background(), req)
+	require.NoError(t, err, "the first page keeps its members as witnesses")
+	require.Len(t, page.Members.Reactions.Known, 1)
+	require.NotEmpty(t, page.Next)
+
+	req.Cursor = page.Next
+	_, err = a.ReadPage(context.Background(), req)
+	assert.ErrorIs(t, err, entityacquire.ErrLimit, "reaction changes do not advance the revision, so later pages are never read")
+	assert.Len(t, f.pageQueries(), 1)
+}
+
+func labeledEvent(id, label, at string, actor any) map[string]any {
+	return map[string]any{"__typename": "LabeledEvent", "id": id, "createdAt": at, "label": map[string]any{"name": label}, "actor": actor}
+}
+
+func unlabeledEvent(id, label, at string) map[string]any {
+	return map[string]any{"__typename": "UnlabeledEvent", "id": id, "createdAt": at, "label": map[string]any{"name": label}}
+}
+
+// labelTimeline serves label events newest page first; each page lists its
+// events oldest first, as GitHub does.
+func labelTimeline() map[string][]map[string]any {
+	alice := map[string]any{"__typename": "User", "login": "alice", "databaseId": 42}
+	bot := map[string]any{"__typename": "Bot", "login": "triage-bot", "databaseId": 9}
+	return map[string][]map[string]any{"timelineItems": {
+		{"nodes": []any{
+			labeledEvent("LE_3", "bug", "2026-11-03T00:00:00Z", alice),
+			unlabeledEvent("UE_4", "wontfix", "2026-11-04T00:00:00Z"),
+			labeledEvent("LE_5", "p1", "2026-11-05T00:00:00Z", bot),
+		}},
+		{"nodes": []any{
+			labeledEvent("LE_1", "wontfix", "2026-11-01T00:00:00Z", alice),
+			labeledEvent("LE_2", "bug", "2026-11-02T00:00:00Z", nil),
+			labeledEvent("LE_6", "docs", "2026-11-02T12:00:00Z", nil),
+		}},
+	}}
+}
+
+func TestEntityAdapterReadPageLabelApplications(t *testing.T) {
+	f := &fakeEntityGraphQL{base: issueBase(), conns: labelTimeline()}
+	a := newEntityTest(t, f)
+	_, err := a.ReadBase(context.Background(), nil)
+	require.NoError(t, err)
+	req := entityacquire.PageRequest{Need: entityacquire.NeedLabelApplications, Kind: ne.KindWorkItem}
+	page, err := a.ReadPage(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, "c1", page.Next)
+	assert.Equal(t, entityUpdated, page.Revision)
+	got := page.Members.LabelApplications.Known
+	require.Len(t, got, 2, "wontfix was removed after its last application")
+	assert.Equal(t, "LE_5", got[0].ID)
+	assert.Equal(t, ne.Known("p1"), got[0].Label)
+	assert.Equal(t, ne.Known(ne.ActorBot), got[0].Actor.Kind)
+	assert.Equal(t, "LE_3", got[1].ID)
+	assert.Equal(t, ne.Known("bug"), got[1].Label)
+	assert.Equal(t, ne.Timestamp("2026-11-03T00:00:00.000000000Z"), got[1].CreatedAt)
+	assert.Equal(t, ne.Known(got[1].CreatedAt), got[1].RevisedAt)
+	assert.Equal(t, ne.Known("42"), got[1].Actor.ID)
+	assert.Equal(t, ne.Unknown[bool](ne.ReasonNotLoaded), got[1].IsEntityAuthor)
+
+	req.Cursor = page.Next
+	page, err = a.ReadPage(context.Background(), req)
+	require.NoError(t, err)
+	assert.Empty(t, page.Next)
+	got = page.Members.LabelApplications.Known
+	require.Len(t, got, 1, "older events of labels already decided are skipped")
+	assert.Equal(t, "LE_6", got[0].ID)
+	assert.Equal(t, ne.Unknown[string](ne.ReasonUnsupported), got[0].Actor.ID, "an unreported actor stays unresolved")
+
+	q := f.pageQueries()[0]
+	assert.Contains(t, q, "conn: timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: $first, before: $cursor)")
+	assert.Contains(t, q, "pageInfo { hasPreviousPage startCursor }")
+}
+
+func TestEntityAdapterLabelApplicationsRereadRestarts(t *testing.T) {
+	f := &fakeEntityGraphQL{base: issueBase(), conns: labelTimeline()}
+	a := newEntityTest(t, f)
+	_, err := a.ReadBase(context.Background(), nil)
+	require.NoError(t, err)
+	req := entityacquire.PageRequest{Need: entityacquire.NeedLabelApplications, Kind: ne.KindWorkItem}
+	for range 2 {
+		page, err := a.ReadPage(context.Background(), req)
+		require.NoError(t, err)
+		assert.Len(t, page.Members.LabelApplications.Known, 2, "a reread from the newest page forgets earlier labels")
+	}
+}
+
+func TestEntityAdapterReadPageCollectionErrors(t *testing.T) {
+	cases := map[string]struct {
+		need  entityacquire.Need
+		conns map[string][]map[string]any
+	}{
+		"reaction without id": {
+			need:  entityacquire.NeedReactions,
+			conns: map[string][]map[string]any{"reactions": {{"totalCount": 1, "nodes": []any{reactionNode("", "EYES", nil)}}}},
+		},
+		"reaction result cap": {
+			need:  entityacquire.NeedReactions,
+			conns: map[string][]map[string]any{"reactions": {{"totalCount": 5, "nodes": []any{}}}},
+		},
+		"label event without label": {
+			need: entityacquire.NeedLabelApplications,
+			conns: map[string][]map[string]any{"timelineItems": {{"nodes": []any{
+				map[string]any{"__typename": "LabeledEvent", "id": "LE_1", "createdAt": "2026-11-01T00:00:00Z", "label": nil},
+			}}}},
+		},
+		"label event without id": {
+			need:  entityacquire.NeedLabelApplications,
+			conns: map[string][]map[string]any{"timelineItems": {{"nodes": []any{labeledEvent("", "bug", "2026-11-01T00:00:00Z", nil)}}}},
+		},
+		"label event without time": {
+			need:  entityacquire.NeedLabelApplications,
+			conns: map[string][]map[string]any{"timelineItems": {{"nodes": []any{labeledEvent("LE_1", "bug", "yesterday", nil)}}}},
+		},
+		"unexpected timeline item": {
+			need: entityacquire.NeedLabelApplications,
+			conns: map[string][]map[string]any{"timelineItems": {{"nodes": []any{
+				map[string]any{"__typename": "ClosedEvent", "id": "CE_1", "createdAt": "2026-11-01T00:00:00Z"},
+			}}}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeEntityGraphQL{base: issueBase(), conns: tc.conns}
+			a := newEntityTest(t, f)
+			_, err := a.ReadBase(context.Background(), nil)
+			require.NoError(t, err)
+			req := entityacquire.PageRequest{Need: tc.need, Kind: ne.KindWorkItem}
+			page, err := a.ReadPage(context.Background(), req)
+			if err == nil {
+				// A result cap hands back the members read so far and
+				// reports the limit on the following read.
+				req.Cursor = page.Next
+				_, err = a.ReadPage(context.Background(), req)
+				assert.ErrorIs(t, err, entityacquire.ErrLimit)
+			}
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestEntityAdapterAcquireLabelApplicationWitnessSettles(t *testing.T) {
+	f := &fakeEntityGraphQL{base: issueBase(), conns: labelTimeline()}
+	res := acquireGitHub(t, f, `entity.label_applications.exists(l, l.label == "bug")`)
+	assert.Equal(t, entityacquire.StatusSettled, res.Status)
+	assert.Equal(t, "true", res.Value.String())
+	queries := f.pageQueries()
+	require.Len(t, queries, 1, "the newest page holds the witness")
+	assert.Contains(t, queries[0], "conn: timelineItems(")
+}
+
+func TestEntityAdapterAcquireRemovedLabelNeedsCompleteApplications(t *testing.T) {
+	f := &fakeEntityGraphQL{base: pullBase(), conns: labelTimeline()}
+	res := acquireGitHub(t, f, `!entity.label_applications.exists(l, l.label == "wontfix")`)
+	assert.Equal(t, entityacquire.StatusSettled, res.Status)
+	assert.Equal(t, "true", res.Value.String())
+	assert.Len(t, f.pageQueries(), 2)
+	require.Len(t, res.Reads, 1)
+	assert.Equal(t, ne.CoverageComplete, res.Reads[0].Coverage.Status)
+	assert.Equal(t, entityUpdated+"@"+entityHead, res.Reads[0].Coverage.SourceRevision)
+}
+
+func TestEntityAdapterAcquireReactions(t *testing.T) {
+	user := map[string]any{"__typename": "User", "login": "alice", "databaseId": 42}
+	t.Run("empty single page is complete", func(t *testing.T) {
+		f := &fakeEntityGraphQL{base: issueBase(), conns: map[string][]map[string]any{
+			"reactions": {{"totalCount": 0, "nodes": []any{}}},
+		}}
+		res := acquireGitHub(t, f, `size(entity.reactions) == 0`)
+		assert.Equal(t, entityacquire.StatusSettled, res.Status)
+		assert.Equal(t, "true", res.Value.String())
+	})
+	t.Run("multi-page count stays partial", func(t *testing.T) {
+		f := &fakeEntityGraphQL{base: issueBase(), conns: map[string][]map[string]any{
+			"reactions": {
+				{"totalCount": 2, "nodes": []any{reactionNode("REA_1", "EYES", user)}},
+				{"totalCount": 2, "nodes": []any{reactionNode("REA_2", "EYES", user)}},
+			},
+		}}
+		res := acquireGitHub(t, f, `size(entity.reactions) == 2`)
+		assert.Equal(t, entityacquire.StatusIncomplete, res.Status)
+		assert.True(t, res.Retryable())
+		require.Len(t, res.Reads, 1)
+		assert.Equal(t, ne.CoveragePartial, res.Reads[0].Coverage.Status)
+	})
+	t.Run("witness on first page settles", func(t *testing.T) {
+		f := &fakeEntityGraphQL{base: issueBase(), conns: map[string][]map[string]any{
+			"reactions": {
+				{"totalCount": 2, "nodes": []any{reactionNode("REA_1", "THUMBS_UP", user)}},
+				{"totalCount": 2, "nodes": []any{reactionNode("REA_2", "EYES", user)}},
+			},
+		}}
+		res := acquireGitHub(t, f, `entity.reactions.exists(r, r.content == "+1")`)
+		assert.Equal(t, entityacquire.StatusSettled, res.Status)
+		assert.Equal(t, "true", res.Value.String())
+	})
 }

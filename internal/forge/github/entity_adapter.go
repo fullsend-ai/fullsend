@@ -41,11 +41,11 @@ const entityLimitCursor = "fullsend:result-cap"
 // read at different revisions.
 //
 // The adapter never applies a narrowing filter, so every page it returns is
-// unfiltered. It reads labels, assignees, and a pull request's changed files
-// and commits. Other collections, and text the content-safety filter must
-// process first (title and body), are reported unsupported, which can never
-// read as empty. Actor roles are left unknown for the authorized entity view
-// (#9584) to resolve.
+// unfiltered. It reads labels, assignees, reactions, label applications, and
+// a pull request's changed files and commits. Other collections, and text the
+// content-safety filter must process first (title and body), are reported
+// unsupported, which can never read as empty. Actor roles are left unknown
+// for the authorized entity view (#9584) to resolve.
 //
 // An EntityAdapter is not safe for concurrent use.
 type EntityAdapter struct {
@@ -64,6 +64,9 @@ type EntityAdapter struct {
 	// capped holds the limit error to report when a collection's final page
 	// exposed a provider result cap.
 	capped map[entityacquire.Need]error
+	// labelEvents records the labels whose most recent label event has been
+	// read in the current label-application read sequence.
+	labelEvents map[string]bool
 }
 
 var _ entityacquire.Adapter = (*EntityAdapter)(nil)
@@ -80,7 +83,7 @@ func NewEntityAdapter(c *LiveClient, owner, repo string, number int) (*EntityAda
 	if number <= 0 {
 		return nil, fmt.Errorf("github entity adapter: invalid entity number %d", number)
 	}
-	return &EntityAdapter{c: c, owner: owner, repo: repo, number: number, seen: map[entityacquire.Need]int{}, capped: map[entityacquire.Need]error{}}, nil
+	return &EntityAdapter{c: c, owner: owner, repo: repo, number: number, seen: map[entityacquire.Need]int{}, capped: map[entityacquire.Need]error{}, labelEvents: map[string]bool{}}, nil
 }
 
 // gqlEntityActor is an Actor selected with entityActorFragment.
@@ -280,7 +283,18 @@ type entityCollection struct {
 	// match. GitHub caps some connections (pull request commits and
 	// files) without reporting a next page.
 	counted bool
+	// args holds connection arguments other than the page window.
+	args string
+	// backward pages from the newest member to the oldest.
+	backward bool
+	// singlePage: changes to the collection do not advance the source
+	// revision, so only a read that fits in one page (one GraphQL response)
+	// is consistent. A longer read reports a limit after its first page.
+	singlePage bool
 }
+
+// entityActorSelection selects an Actor with the fields entityActor maps.
+const entityActorSelection = `{ __typename login ... on User { databaseId } ... on Bot { databaseId } }`
 
 var entityCollections = map[entityacquire.Need]entityCollection{
 	entityacquire.NeedLabels: {field: "labels", nodes: "name", counted: true},
@@ -289,6 +303,18 @@ var entityCollections = map[entityacquire.Need]entityCollection{
 		... on Bot { login databaseId }`},
 	entityacquire.NeedChangedFiles: {field: "files", nodes: "path", counted: true},
 	entityacquire.NeedCommits:      {field: "commits", nodes: "commit { oid }", counted: true},
+	// GitHub does not advance an issue's or pull request's updatedAt when a
+	// reaction is added or removed. Reaction.user is a User, so a bot or
+	// deleted reactor is null and stays unresolved.
+	entityacquire.NeedReactions: {field: "reactions", nodes: "id content createdAt user { __typename login databaseId }", counted: true, singlePage: true},
+	// Label applications are read newest first, so the first event seen for
+	// a label is its most recent one.
+	entityacquire.NeedLabelApplications: {
+		field: "timelineItems", args: "itemTypes: [LABELED_EVENT, UNLABELED_EVENT], ", backward: true,
+		nodes: `__typename
+			... on LabeledEvent { id createdAt label { name } actor ` + entityActorSelection + ` }
+			... on UnlabeledEvent { id createdAt label { name } }`,
+	},
 }
 
 type gqlEntityNode struct {
@@ -298,6 +324,14 @@ type gqlEntityNode struct {
 	Commit *struct {
 		OID string `json:"oid"`
 	} `json:"commit"`
+	ID        string          `json:"id"`
+	Content   string          `json:"content"`
+	CreatedAt string          `json:"createdAt"`
+	User      *gqlEntityActor `json:"user"`
+	Actor     *gqlEntityActor `json:"actor"`
+	Label     *struct {
+		Name string `json:"name"`
+	} `json:"label"`
 }
 
 // ReadPage reads one page of one collection.
@@ -328,6 +362,10 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 	if coll.counted {
 		count = "totalCount"
 	}
+	window, pageInfo := "first: $first, after: $cursor", "hasNextPage endCursor"
+	if coll.backward {
+		window, pageInfo = "last: $first, before: $cursor", "hasPreviousPage startCursor"
+	}
 	q := fmt.Sprintf(`query($owner: String!, $name: String!, $number: Int!, $first: Int!, $cursor: String) {
 	repository(owner: $owner, name: $name) {
 		issueOrPullRequest(number: $number) {
@@ -336,15 +374,15 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 				id
 				updatedAt
 				%s
-				conn: %s(first: $first, after: $cursor) {
+				conn: %s(%s%s) {
 					%s
-					pageInfo { hasNextPage endCursor }
+					pageInfo { %s }
 					nodes { %s }
 				}
 			}
 		}
 	}
-}`, typename, revField, coll.field, count, coll.nodes)
+}`, typename, revField, coll.field, coll.args, window, count, pageInfo, coll.nodes)
 	var cursor any
 	if req.Cursor != "" {
 		cursor = req.Cursor
@@ -360,8 +398,10 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 					Conn       *struct {
 						TotalCount *int `json:"totalCount"`
 						PageInfo   struct {
-							HasNextPage bool   `json:"hasNextPage"`
-							EndCursor   string `json:"endCursor"`
+							HasNextPage     bool   `json:"hasNextPage"`
+							EndCursor       string `json:"endCursor"`
+							HasPreviousPage bool   `json:"hasPreviousPage"`
+							StartCursor     string `json:"startCursor"`
 						} `json:"pageInfo"`
 						Nodes []gqlEntityNode `json:"nodes"`
 					} `json:"conn"`
@@ -391,20 +431,27 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 		return nil, fmt.Errorf("github entity %s read: no %s connection", req.Need, coll.field)
 	}
 	page := &entityacquire.Page{Revision: entityRevision(a.kind, g.UpdatedAt, g.HeadRefOid)}
-	if g.Conn.PageInfo.HasNextPage {
-		if g.Conn.PageInfo.EndCursor == "" {
+	more, next := g.Conn.PageInfo.HasNextPage, g.Conn.PageInfo.EndCursor
+	if coll.backward {
+		more, next = g.Conn.PageInfo.HasPreviousPage, g.Conn.PageInfo.StartCursor
+	}
+	if more {
+		if next == "" {
 			return nil, fmt.Errorf("github entity %s read: next page without a cursor", req.Need)
 		}
-		page.Next = g.Conn.PageInfo.EndCursor
+		page.Next = next
 	}
-	page.Members, err = entityMembers(req.Need, g.Conn.Nodes)
+	if req.Cursor == "" {
+		a.seen[req.Need] = 0
+		if req.Need == entityacquire.NeedLabelApplications {
+			clear(a.labelEvents)
+		}
+	}
+	page.Members, err = a.entityMembers(req.Need, g.Conn.Nodes)
 	if err != nil {
 		return nil, fmt.Errorf("github entity %s read: %w", req.Need, err)
 	}
 
-	if req.Cursor == "" {
-		a.seen[req.Need] = 0
-	}
 	a.seen[req.Need] += len(g.Conn.Nodes)
 	if coll.counted && page.Next == "" {
 		total := g.Conn.TotalCount
@@ -418,11 +465,17 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 			page.Next = entityLimitCursor
 		}
 	}
+	if coll.singlePage && page.Next != "" && page.Next != entityLimitCursor {
+		// Keep this page's members as witnesses; the rest of the read could
+		// not be shown consistent with them.
+		a.capped[req.Need] = fmt.Errorf("%w: github %s span more than one page, and changes to them do not advance the source revision", entityacquire.ErrLimit, req.Need)
+		page.Next = entityLimitCursor
+	}
 	return page, nil
 }
 
 // entityMembers builds the page fragment for need from the page's nodes.
-func entityMembers(need entityacquire.Need, nodes []gqlEntityNode) (*normentity.Entity, error) {
+func (a *EntityAdapter) entityMembers(need entityacquire.Need, nodes []gqlEntityNode) (*normentity.Entity, error) {
 	frag := &normentity.Entity{}
 	switch need {
 	case entityacquire.NeedLabels:
@@ -462,8 +515,87 @@ func entityMembers(need entityacquire.Need, nodes []gqlEntityNode) (*normentity.
 			shas = append(shas, n.Commit.OID)
 		}
 		frag.ChangeProposal = normentity.Known(normentity.ChangeProposal{Commits: normentity.List[string]{Known: shas}})
+	case entityacquire.NeedReactions:
+		reactions := make([]normentity.Reaction, 0, len(nodes))
+		for _, n := range nodes {
+			if n.ID == "" {
+				return nil, errors.New("reaction without an ID")
+			}
+			reactions = append(reactions, normentity.Reaction{
+				ID:        n.ID,
+				Content:   reactionContent(n.Content),
+				Actor:     recordActor(n.User),
+				CreatedAt: entityTimestamp(n.CreatedAt),
+			})
+		}
+		frag.Reactions.Known = reactions
+	case entityacquire.NeedLabelApplications:
+		apps, err := a.labelApplications(nodes)
+		if err != nil {
+			return nil, err
+		}
+		frag.LabelApplications.Known = apps
 	}
 	return frag, nil
+}
+
+// labelApplications returns the most recent application of each currently
+// applied label among one page of label events. Pages are read newest first
+// and GitHub orders a page's events oldest first, so the page is walked in
+// reverse: the first event seen for a label is its most recent one. A label
+// whose most recent event removed it is not currently applied.
+func (a *EntityAdapter) labelApplications(nodes []gqlEntityNode) ([]normentity.LabelApplication, error) {
+	apps := make([]normentity.LabelApplication, 0, len(nodes))
+	for i := len(nodes) - 1; i >= 0; i-- {
+		n := nodes[i]
+		if n.Typename != "LabeledEvent" && n.Typename != "UnlabeledEvent" {
+			return nil, fmt.Errorf("unexpected label event type %q", n.Typename)
+		}
+		if n.ID == "" || n.Label == nil || n.Label.Name == "" {
+			// The event cannot be tied to a label, so the most recent
+			// event of a current label may be unknown.
+			return nil, errors.New("label event without an ID or label")
+		}
+		created, ok := entityTimestamp(n.CreatedAt).Value()
+		if !ok {
+			return nil, fmt.Errorf("label event %q without a valid time", n.ID)
+		}
+		name := n.Label.Name
+		if a.labelEvents[name] {
+			continue
+		}
+		a.labelEvents[name] = true
+		if n.Typename == "UnlabeledEvent" {
+			continue
+		}
+		apps = append(apps, normentity.LabelApplication{
+			Action: normentity.Action{
+				ID:        n.ID,
+				CreatedAt: created,
+				// A label application is never revised.
+				RevisedAt: normentity.Known(created),
+				Actor:     recordActor(n.Actor),
+				// The entity author is not read with label events.
+				IsEntityAuthor: normentity.Unknown[bool](normentity.ReasonNotLoaded),
+			},
+			Label: normentity.Known(name),
+		})
+	}
+	return apps, nil
+}
+
+// reactionContents maps GitHub GraphQL reaction content to the REST names
+// the normalized entity uses.
+var reactionContents = map[string]string{
+	"THUMBS_UP": "+1", "THUMBS_DOWN": "-1", "LAUGH": "laugh", "HOORAY": "hooray",
+	"CONFUSED": "confused", "HEART": "heart", "ROCKET": "rocket", "EYES": "eyes",
+}
+
+func reactionContent(s string) normentity.Field[string] {
+	if c, ok := reactionContents[s]; ok {
+		return normentity.Known(c)
+	}
+	return normentity.Unknown[string](normentity.ReasonUnsupported)
 }
 
 // query runs one GraphQL query and decodes the response into out. A GitHub
@@ -574,6 +706,22 @@ func entityActor(g *gqlEntityActor) normentity.Field[normentity.Actor] {
 		a.ID = normentity.Known(strconv.FormatInt(*g.DatabaseID, 10))
 	}
 	return normentity.Known(a)
+}
+
+// recordActor maps the actor of a reaction or action record, which always
+// carries an actor. An actor GitHub does not report has every attribute
+// unresolved, so the authorized entity view cannot admit it.
+func recordActor(g *gqlEntityActor) normentity.Actor {
+	if a, ok := entityActor(g).Value(); ok {
+		return a
+	}
+	return normentity.Actor{
+		ID:           normentity.Unknown[string](normentity.ReasonUnsupported),
+		Login:        normentity.Unknown[string](normentity.ReasonUnsupported),
+		Kind:         normentity.Unknown[normentity.ActorKind](normentity.ReasonUnsupported),
+		Role:         normentity.Unknown[normentity.Role](normentity.ReasonNotLoaded),
+		RoleVerified: normentity.Unknown[bool](normentity.ReasonNotLoaded),
+	}
 }
 
 func entityLifecycle(kind normentity.Kind, state normentity.Field[normentity.State], g *gqlEntityBase) normentity.Lifecycle {
