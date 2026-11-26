@@ -480,6 +480,8 @@ func (p *Poller) hasNewActivity(ctx context.Context, issue jira.Issue, clamped *
 	switch lc.clamp {
 	case clampFuture:
 		clamped.future = append(clamped.future, issue.Key)
+	case clampInvalid:
+		clamped.invalid = append(clamped.invalid, issue.Key)
 	case clampFloor:
 		// Idle with activity after the stored value: that activity is
 		// itself older than the backfill window, so it is not replayed.
@@ -504,9 +506,10 @@ const gapTolerance = time.Second
 // clampReport collects the candidates whose lastCheck the activity filter
 // clamped in one cycle.
 type clampReport struct {
-	gap    []string // stored before the window, activity after it (beyond gapTolerance) but also before the window
-	old    []string // stored before the window, nothing lost
-	future []string // stored ahead of now, treated as unset
+	gap     []string // stored before the window, activity after it (beyond gapTolerance) but also before the window
+	old     []string // stored before the window, nothing lost
+	future  []string // stored ahead of now, treated as unset
+	invalid []string // stored value not a timestamp, treated as unset
 }
 
 // log writes one line for the cycle when any lastCheck was clamped. The
@@ -525,6 +528,9 @@ func (r clampReport) log() {
 	}
 	if len(r.future) > 0 {
 		parts = append(parts, "lastCheck in the future, treated as unset: "+strings.Join(r.future, ", "))
+	}
+	if len(r.invalid) > 0 {
+		parts = append(parts, "lastCheck not a timestamp, treated as unset: "+strings.Join(r.invalid, ", "))
 	}
 	if len(parts) == 0 {
 		return
