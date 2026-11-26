@@ -177,6 +177,19 @@ func TestProcessIssueKeepsOldestRecordsWithinSizeLimit(t *testing.T) {
 		}
 	})
 
+	// A record that is over the limit on its own is dropped too: dispatching
+	// it would lose the whole batch.
+	t.Run("github, one record over the limit", func(t *testing.T) {
+		pc, logs := limitsTestIssue(t, TargetForgeGitHub, 1, commentMatcher{agents: 1, pad: 400_000})
+
+		if len(pc.records) != 0 {
+			t.Errorf("kept %d records, want 0", len(pc.records))
+		}
+		if want := "the oldest 0 are kept and 1 dropped"; !strings.Contains(logs, want) {
+			t.Errorf("log lacks %q:\n%s", want, logs)
+		}
+	})
+
 	t.Run("gitlab", func(t *testing.T) {
 		pc, logs := limitsTestIssue(t, TargetForgeGitLab, 10, matcher)
 
