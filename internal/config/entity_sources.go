@@ -590,7 +590,10 @@ func checkGitHubTerm(tok, kind string) error {
 	if value == "" {
 		return fmt.Errorf("GitHub query: %s: needs a value", q)
 	}
-	if strings.Contains(value, "@") {
+	// Viewer-relative and relative tokens (@me, @today) start with "@"
+	// (or sit inside a date comparison). A literal "@" inside a label or
+	// milestone value is metadata, not a relative identity.
+	if unquoted := strings.Trim(value, `"`); strings.HasPrefix(unquoted, "@") || (githubDateQualifiers[q] && strings.Contains(unquoted, "@")) {
 		return fmt.Errorf("GitHub query: %s:%s: viewer-relative and relative values are not supported", q, value)
 	}
 	lower := strings.ToLower(strings.Trim(value, `"`))
@@ -948,6 +951,9 @@ func (ec *EntityConfig) resolveSource(name string, s EntitySource) (ResolvedEnti
 		for _, repo := range s.Repositories {
 			if !validPathSegments(repo, 2) || strings.Contains(repo, "..") {
 				return out, fmt.Errorf("entity_sources.%s: repository %q must be a canonical repository path (owner/repo or group/project)", name, repo)
+			}
+			if conn.Kind == ConnectionKindGitHub && strings.Count(repo, "/") != 1 {
+				return out, fmt.Errorf("entity_sources.%s: repository %q must be owner/repo for a github connection", name, repo)
 			}
 		}
 		if conn.BaseURL == "" {

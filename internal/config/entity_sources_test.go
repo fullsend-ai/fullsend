@@ -264,6 +264,9 @@ func TestResolveEntityConfig_ValidationErrors(t *testing.T) {
 		"named forge connection needs repositories": {
 			body: "connections:\n  ghe:\n    kind: github\n    base_url: https://github.example.com\nentity_sources:\n  s:\n    connection: ghe\n    query: ''\n", wantErr: "repositories is required",
 		},
+		"github nested repository path": {
+			body: "connections:\n  ghe:\n    kind: github\n    base_url: https://github.example.com\nentity_sources:\n  s:\n    connection: ghe\n    repositories: [owner/repo/extra]\n    query: ''\n", wantErr: "must be owner/repo for a github connection",
+		},
 		"gitlab bad query": {
 			body: "connections:\n  gitlab:\n    base_url: https://gitlab.example.com\nentity_sources:\n  s:\n    connection: gitlab\n    repositories: [a/b]\n    query: opened\n", wantErr: "use open, closed, or all",
 		},
@@ -740,6 +743,7 @@ func TestValidateGitHubQuery(t *testing.T) {
 		"label:bug,enhancement author:octocat assignee:hubot milestone:v1",
 		"created:>=2024-01-01 updated:2024-01-01..2024-02-01 closed:<2024-03-01T10:00:00Z",
 		"type:Bug state:closed",
+		`label:"team@example.com" milestone:"release@v2"`,
 	} {
 		assert.NoError(t, ValidateGitHubQuery(q, EntityKindWorkItem), q)
 	}
@@ -754,6 +758,8 @@ func TestValidateGitHubQuery(t *testing.T) {
 		"sort:updated":          "adapter-owned",
 		"in:title foo":          "not supported",
 		"assignee:@me":          "viewer-relative",
+		`author:"@me"`:          "viewer-relative",
+		"created:>=@today":      "viewer-relative",
 		"created:>2024-01-01x":  "absolute date",
 		"-no:label":             "-no: is not supported",
 		"no:reviewer":           "no:reviewer is not supported",
@@ -779,6 +785,18 @@ func TestValidateGitHubQuery(t *testing.T) {
 			assert.Contains(t, err.Error(), want, q)
 		}
 	}
+}
+
+func TestResolveEntityConfig_RepositoryPathPerProvider(t *testing.T) {
+	gitlab := "connections:\n  gl:\n    kind: gitlab\n    base_url: https://gitlab.example.com\n" +
+		"entity_sources:\n  s:\n    connection: gl\n    repositories: [group/sub/project]\n    query: open\n"
+	_, err := ResolveEntityConfig(parseEntityConfig(t, gitlab), nil)
+	assert.NoError(t, err, "GitLab accepts nested group/project paths")
+
+	github := "connections:\n  gh:\n    kind: github\n    base_url: https://github.example.com\n" +
+		"entity_sources:\n  s:\n    connection: gh\n    repositories: [owner/repo]\n    query: ''\n"
+	_, err = ResolveEntityConfig(parseEntityConfig(t, github), nil)
+	assert.NoError(t, err)
 }
 
 func TestEffectiveYAML_EntitySources(t *testing.T) {
