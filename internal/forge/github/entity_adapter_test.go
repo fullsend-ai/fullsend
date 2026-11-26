@@ -36,6 +36,9 @@ type fakeEntityGraphQL struct {
 	typename string
 	base     map[string]any
 	conns    map[string][]map[string]any
+	// extra is served as the second connection of a page read that
+	// selects one.
+	extra map[string]any
 	// pageUpdatedAt overrides the updatedAt reported by page reads.
 	pageUpdatedAt string
 	// pageID overrides the entity ID reported by page reads.
@@ -111,10 +114,14 @@ func (f *fakeEntityGraphQL) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.pageID != "" {
 		id = f.pageID
 	}
+	entity := map[string]any{
+		"__typename": f.typename, "id": id, "updatedAt": updated, "headRefOid": entityHead, "conn": conn,
+	}
+	if strings.Contains(req.Query, "extra: ") && f.extra != nil {
+		entity["extra"] = f.extra
+	}
 	json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
-		"issueOrPullRequest": map[string]any{
-			"__typename": f.typename, "id": id, "updatedAt": updated, "headRefOid": entityHead, "conn": conn,
-		},
+		"issueOrPullRequest": entity,
 	}}})
 }
 
@@ -1029,5 +1036,259 @@ func TestEntityAdapterAcquireReactions(t *testing.T) {
 		res := acquireGitHub(t, f, `entity.reactions.exists(r, r.content == "+1")`)
 		assert.Equal(t, entityacquire.StatusSettled, res.Status)
 		assert.Equal(t, "true", res.Value.String())
+	})
+}
+
+func ghUser(login string, id int) map[string]any {
+	return map[string]any{"__typename": "User", "login": login, "databaseId": id}
+}
+
+func reviewNode(state string, author any) map[string]any {
+	return map[string]any{"state": state, "submittedAt": "2026-11-03T08:00:00Z", "author": author}
+}
+
+func TestEntityAdapterReadPageCurrentApprovals(t *testing.T) {
+	f := &fakeEntityGraphQL{base: pullBase(), conns: map[string][]map[string]any{
+		"latestOpinionatedReviews": {{"totalCount": 7, "nodes": []any{
+			reviewNode("APPROVED", map[string]any{"__typename": "Mannequin", "login": "imported"}),
+			reviewNode("APPROVED", ghUser("dave", 50)),
+			reviewNode("CHANGES_REQUESTED", ghUser("carol", 44)),
+			reviewNode("APPROVED", nil),
+			reviewNode("APPROVED", map[string]any{"__typename": "Bot", "login": "review-bot", "databaseId": 9}),
+			reviewNode("DISMISSED", ghUser("erin", 45)),
+			map[string]any{"state": "APPROVED", "submittedAt": nil, "author": ghUser("frank", 100)},
+		}}},
+	}}
+	a := newEntityTest(t, f)
+	_, err := a.ReadBase(context.Background(), nil)
+	require.NoError(t, err)
+	page, err := a.ReadPage(context.Background(), entityacquire.PageRequest{Need: entityacquire.NeedCurrentApprovals, Kind: ne.KindChangeProposal})
+	require.NoError(t, err)
+	assert.Empty(t, page.Next, "a single page is a complete, consistent read")
+	assert.Equal(t, entityUpdated+"@"+entityHead, page.Revision)
+	got := page.Members.CurrentApprovals.Known
+	require.Len(t, got, 5, "changes requested and dismissed reviews are not approvals")
+	assert.Equal(t, ne.Known("100"), got[0].Actor.ID, "sorted by actor ID in byte order")
+	assert.Equal(t, ne.Unknown[ne.Timestamp](ne.ReasonFailed), got[0].ApprovedAt)
+	assert.Equal(t, ne.Known("50"), got[1].Actor.ID)
+	assert.Equal(t, ne.Known("dave"), got[1].Actor.Login)
+	assert.Equal(t, ne.Known(ne.Timestamp("2026-11-03T08:00:00.000000000Z")), got[1].ApprovedAt)
+	assert.Equal(t, ne.Unknown[bool](ne.ReasonNotLoaded), got[1].IsEntityAuthor)
+	assert.Equal(t, ne.Known("9"), got[2].Actor.ID)
+	assert.Equal(t, ne.Known(ne.ActorBot), got[2].Actor.Kind)
+	assert.Equal(t, ne.Known("imported"), got[3].Actor.Login, "approvers without an ID follow, in source order")
+	assert.Equal(t, ne.Unknown[string](ne.ReasonUnsupported), got[3].Actor.ID)
+	assert.Equal(t, ne.Unknown[string](ne.ReasonUnsupported), got[4].Actor.Login, "an unreported approver stays unresolved")
+	q := f.pageQueries()[0]
+	assert.Contains(t, q, "conn: latestOpinionatedReviews(first: $first, after: $cursor)")
+	assert.NotContains(t, q, "extra: ")
+}
+
+func TestEntityAdapterReadPageReviewers(t *testing.T) {
+	f := &fakeEntityGraphQL{
+		base: pullBase(),
+		conns: map[string][]map[string]any{"reviewRequests": {{"totalCount": 4, "nodes": []any{
+			map[string]any{"requestedReviewer": ghUser("alice", 42)},
+			map[string]any{"requestedReviewer": map[string]any{"__typename": "Team", "databaseId": 7, "name": "Core"}},
+			map[string]any{"requestedReviewer": nil},
+			map[string]any{"requestedReviewer": map[string]any{"__typename": "Bot", "login": "review-bot", "databaseId": 9}},
+		}}}},
+		extra: map[string]any{"totalCount": 6, "pageInfo": map[string]any{"hasNextPage": false}, "nodes": []any{
+			reviewNode("APPROVED", ghUser("alice", 42)),
+			reviewNode("CHANGES_REQUESTED", ghUser("carol", 44)),
+			reviewNode("COMMENTED", ghUser("erin", 45)),
+			reviewNode("DISMISSED", ghUser("dave", 46)),
+			reviewNode("SOMETHING_NEW", ghUser("gina", 47)),
+			reviewNode("COMMENTED", nil),
+		}},
+	}
+	a := newEntityTest(t, f)
+	_, err := a.ReadBase(context.Background(), nil)
+	require.NoError(t, err)
+	page, err := a.ReadPage(context.Background(), entityacquire.PageRequest{Need: entityacquire.NeedReviewers, Kind: ne.KindChangeProposal})
+	require.NoError(t, err)
+	assert.Empty(t, page.Next)
+	assert.Equal(t, entityUpdated+"@"+entityHead, page.Revision)
+	got := page.Members.Reviewers.Known
+	require.Len(t, got, 9)
+	type row struct {
+		kind  ne.Field[ne.ActorKind]
+		id    ne.Field[string]
+		state ne.Field[ne.ReviewerState]
+	}
+	unknownState := ne.Unknown[ne.ReviewerState](ne.ReasonUnsupported)
+	want := []row{
+		{ne.Known(ne.ActorBot), ne.Known("9"), ne.Known(ne.ReviewerUnreviewed)},
+		{ne.Known(ne.ActorHuman), ne.Known("42"), unknownState},
+		{ne.Known(ne.ActorHuman), ne.Known("44"), ne.Known(ne.ReviewerChangesRequested)},
+		{ne.Known(ne.ActorHuman), ne.Known("45"), ne.Known(ne.ReviewerReviewed)},
+		{ne.Known(ne.ActorHuman), ne.Known("46"), ne.Known(ne.ReviewerDismissed)},
+		{ne.Known(ne.ActorHuman), ne.Known("47"), unknownState},
+		{ne.Known(ne.ActorTeam), ne.Known("7"), ne.Known(ne.ReviewerUnreviewed)},
+		{ne.Unknown[ne.ActorKind](ne.ReasonUnsupported), ne.Unknown[string](ne.ReasonUnsupported), unknownState},
+		{ne.Unknown[ne.ActorKind](ne.ReasonUnsupported), ne.Unknown[string](ne.ReasonUnsupported), unknownState},
+	}
+	for i, w := range want {
+		assert.Equal(t, w, row{got[i].Subject.Kind, got[i].Subject.ID, got[i].State}, "reviewer %d", i)
+	}
+	team := got[6].Subject
+	assert.Equal(t, ne.Known("Core"), team.Name)
+	assert.True(t, team.Login.IsZero(), "a team reference carries only kind, ID, and name")
+	assert.True(t, team.Role.IsZero())
+	assert.True(t, got[0].Subject.Name.IsZero(), "an actor subject has no team name")
+	q := f.pageQueries()[0]
+	assert.Contains(t, q, "conn: reviewRequests(first: $first, after: $cursor)")
+	assert.Contains(t, q, "extra: latestReviews(first: $first)")
+	assert.Contains(t, q, "... on Team { databaseId name }")
+}
+
+func TestEntityAdapterReviewerTeamWithoutName(t *testing.T) {
+	f := &fakeEntityGraphQL{
+		base: pullBase(),
+		conns: map[string][]map[string]any{"reviewRequests": {{"totalCount": 1, "nodes": []any{
+			map[string]any{"requestedReviewer": map[string]any{"__typename": "Team", "databaseId": 7}},
+		}}}},
+		extra: map[string]any{"totalCount": 0, "nodes": []any{}},
+	}
+	a := newEntityTest(t, f)
+	_, err := a.ReadBase(context.Background(), nil)
+	require.NoError(t, err)
+	page, err := a.ReadPage(context.Background(), entityacquire.PageRequest{Need: entityacquire.NeedReviewers, Kind: ne.KindChangeProposal})
+	require.NoError(t, err)
+	require.Len(t, page.Members.Reviewers.Known, 1)
+	assert.Equal(t, ne.Unknown[string](ne.ReasonUnsupported), page.Members.Reviewers.Known[0].Subject.Name)
+}
+
+func TestEntityAdapterReadPageReviewCollectionErrors(t *testing.T) {
+	alice := ghUser("alice", 42)
+	request := func(subject any) map[string]any { return map[string]any{"requestedReviewer": subject} }
+	requests := func(total int, nodes ...any) map[string][]map[string]any {
+		return map[string][]map[string]any{"reviewRequests": {{"totalCount": total, "nodes": nodes}}}
+	}
+	latest := func(total any, next bool, nodes ...any) map[string]any {
+		return map[string]any{"totalCount": total, "pageInfo": map[string]any{"hasNextPage": next}, "nodes": nodes}
+	}
+	approvals := func(nodes ...any) map[string][]map[string]any {
+		return map[string][]map[string]any{"latestOpinionatedReviews": {{"totalCount": len(nodes), "nodes": nodes}}}
+	}
+	cases := map[string]struct {
+		need  entityacquire.Need
+		conns map[string][]map[string]any
+		extra map[string]any
+		is    error
+	}{
+		"pending approval":          {need: entityacquire.NeedCurrentApprovals, conns: approvals(reviewNode("PENDING", alice))},
+		"unknown approval state":    {need: entityacquire.NeedCurrentApprovals, conns: approvals(reviewNode("SOMETHING_NEW", alice))},
+		"duplicate approver":        {need: entityacquire.NeedCurrentApprovals, conns: approvals(reviewNode("APPROVED", alice), reviewNode("APPROVED", alice))},
+		"team without id":           {need: entityacquire.NeedReviewers, conns: requests(1, request(map[string]any{"__typename": "Team", "name": "Core"})), extra: latest(0, false)},
+		"duplicate request":         {need: entityacquire.NeedReviewers, conns: requests(2, request(alice), request(alice)), extra: latest(0, false)},
+		"duplicate latest review":   {need: entityacquire.NeedReviewers, conns: requests(0), extra: latest(2, false, reviewNode("APPROVED", alice), reviewNode("COMMENTED", alice))},
+		"pending latest review":     {need: entityacquire.NeedReviewers, conns: requests(0), extra: latest(1, false, reviewNode("PENDING", alice))},
+		"no second connection":      {need: entityacquire.NeedReviewers, conns: requests(0)},
+		"requests span pages":       {need: entityacquire.NeedReviewers, conns: requests(2, request(alice)), extra: latest(0, false), is: entityacquire.ErrLimit},
+		"latest reviews span pages": {need: entityacquire.NeedReviewers, conns: requests(0), extra: latest(1, true, reviewNode("APPROVED", alice)), is: entityacquire.ErrLimit},
+		"latest reviews uncounted":  {need: entityacquire.NeedReviewers, conns: requests(0), extra: latest(nil, false), is: entityacquire.ErrLimit},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeEntityGraphQL{base: pullBase(), conns: tc.conns, extra: tc.extra}
+			a := newEntityTest(t, f)
+			_, err := a.ReadBase(context.Background(), nil)
+			require.NoError(t, err)
+			page, err := a.ReadPage(context.Background(), entityacquire.PageRequest{Need: tc.need, Kind: ne.KindChangeProposal})
+			require.Error(t, err)
+			assert.Nil(t, page)
+			if tc.is != nil {
+				assert.ErrorIs(t, err, tc.is)
+			} else {
+				assert.NotErrorIs(t, err, entityacquire.ErrLimit)
+			}
+		})
+	}
+}
+
+func TestEntityAdapterReviewCollectionsDoNotApplyToIssues(t *testing.T) {
+	f := &fakeEntityGraphQL{base: issueBase()}
+	a := newEntityTest(t, f)
+	_, err := a.ReadBase(context.Background(), nil)
+	require.NoError(t, err)
+	for _, need := range []entityacquire.Need{entityacquire.NeedReviewers, entityacquire.NeedCurrentApprovals} {
+		_, err := a.ReadPage(context.Background(), entityacquire.PageRequest{Need: need, Kind: ne.KindWorkItem})
+		assert.ErrorIs(t, err, entityacquire.ErrUnsupported, "%s", need)
+	}
+	assert.Empty(t, f.pageQueries())
+}
+
+func TestEntityAdapterAcquireCurrentApprovals(t *testing.T) {
+	t.Run("empty single page is complete", func(t *testing.T) {
+		f := &fakeEntityGraphQL{base: pullBase(), conns: map[string][]map[string]any{
+			"latestOpinionatedReviews": {{"totalCount": 1, "nodes": []any{reviewNode("DISMISSED", ghUser("carol", 44))}}},
+		}}
+		res := acquireGitHub(t, f, `size(entity.current_approvals) == 0`)
+		assert.Equal(t, entityacquire.StatusSettled, res.Status)
+		assert.Equal(t, "true", res.Value.String())
+		require.Len(t, res.Reads, 1)
+		assert.Equal(t, ne.CoverageComplete, res.Reads[0].Coverage.Status)
+		assert.Equal(t, entityUpdated+"@"+entityHead, res.Reads[0].Coverage.SourceRevision)
+	})
+	pages := func() map[string][]map[string]any {
+		return map[string][]map[string]any{"latestOpinionatedReviews": {
+			{"totalCount": 2, "nodes": []any{reviewNode("APPROVED", ghUser("carol", 44))}},
+			{"totalCount": 2, "nodes": []any{reviewNode("APPROVED", ghUser("dave", 50))}},
+		}}
+	}
+	t.Run("witness on first page settles", func(t *testing.T) {
+		f := &fakeEntityGraphQL{base: pullBase(), conns: pages()}
+		res := acquireGitHub(t, f, `entity.current_approvals.exists(a, a.actor.login == "carol")`)
+		assert.Equal(t, entityacquire.StatusSettled, res.Status)
+		assert.Equal(t, "true", res.Value.String())
+		assert.Len(t, f.pageQueries(), 1)
+	})
+	t.Run("count over more than one page stays partial", func(t *testing.T) {
+		f := &fakeEntityGraphQL{base: pullBase(), conns: pages()}
+		res := acquireGitHub(t, f, `size(entity.current_approvals) >= 2`)
+		assert.Equal(t, entityacquire.StatusIncomplete, res.Status)
+		assert.True(t, res.Retryable())
+		assert.Len(t, f.pageQueries(), 1, "later pages are never read")
+		require.Len(t, res.Reads, 1)
+		assert.Equal(t, ne.CoveragePartial, res.Reads[0].Coverage.Status)
+	})
+}
+
+func TestEntityAdapterAcquireReviewers(t *testing.T) {
+	reviewers := func(next bool) *fakeEntityGraphQL {
+		return &fakeEntityGraphQL{
+			base: pullBase(),
+			conns: map[string][]map[string]any{"reviewRequests": {{"totalCount": 1, "nodes": []any{
+				map[string]any{"requestedReviewer": map[string]any{"__typename": "Team", "databaseId": 7, "name": "Core"}},
+			}}}},
+			extra: map[string]any{"totalCount": 1, "pageInfo": map[string]any{"hasNextPage": next}, "nodes": []any{
+				reviewNode("COMMENTED", ghUser("carol", 44)),
+			}},
+		}
+	}
+	t.Run("team request is a team subject", func(t *testing.T) {
+		f := reviewers(false)
+		res := acquireGitHub(t, f, `entity.reviewers.exists(r, r.subject.kind == "team" && r.subject.name == "Core" && r.state == "unreviewed")`)
+		assert.Equal(t, entityacquire.StatusSettled, res.Status)
+		assert.Equal(t, "true", res.Value.String())
+		assert.Len(t, f.pageQueries(), 1)
+	})
+	t.Run("absence needs a complete read", func(t *testing.T) {
+		f := reviewers(false)
+		res := acquireGitHub(t, f, `!entity.reviewers.exists(r, r.state == "changes_requested")`)
+		assert.Equal(t, entityacquire.StatusSettled, res.Status)
+		assert.Equal(t, "true", res.Value.String())
+		require.Len(t, res.Reads, 1)
+		assert.Equal(t, ne.CoverageComplete, res.Reads[0].Coverage.Status)
+	})
+	t.Run("a read spanning pages is partial and keeps no witness", func(t *testing.T) {
+		f := reviewers(true)
+		res := acquireGitHub(t, f, `entity.reviewers.exists(r, r.subject.kind == "team")`)
+		assert.Equal(t, entityacquire.StatusIncomplete, res.Status)
+		assert.True(t, res.Retryable())
+		require.Len(t, res.Reads, 1)
+		assert.Equal(t, ne.CoveragePartial, res.Reads[0].Coverage.Status)
+		assert.Zero(t, res.Reads[0].Members)
 	})
 }
