@@ -382,6 +382,7 @@ RUN install -d -o root -g sandbox -m 0775 /sandbox/opencode-config
 COPY opencode-sdk/package.json opencode-sdk/package-lock.json /usr/local/share/opencode-sdk/
 RUN node -e 'if (require("/usr/local/share/opencode-sdk/package.json").dependencies["@opencode-ai/plugin"] !== process.argv[1]) throw new Error("OpenCode SDK pin must match OPENCODE_VERSION")' "${OPENCODE_VERSION}" \
     && npm ci --prefix /usr/local/share/opencode-sdk --ignore-scripts --no-audit --no-fund \
+    && npm cache clean --force \
     && chown -R root:root /usr/local/share/opencode-sdk \
     && chmod -R a+rX,a-w /usr/local/share/opencode-sdk
 # OPENCODE_DISABLE_MODELS_FETCH: the sandbox cannot reach models.opencode.ai,
