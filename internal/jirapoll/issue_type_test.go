@@ -39,7 +39,7 @@ func TestIssueType_DiscoveryAndCEL(t *testing.T) {
 			}}}
 			client.statuses["open"] = jira.Status{StatusCategory: jira.StatusCategory{Key: "new"}}
 			client.statuses["done"] = jira.Status{StatusCategory: jira.StatusCategory{Key: "done"}}
-			p := New(client, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://example.atlassian.net", JiraProject: "PROJ"})
+			p := New(client, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://example.atlassian.net", JiraProjects: []string{"PROJ"}})
 			result, err := p.detectChanges(context.Background(), issue, time.Time{})
 			require.NoError(t, err)
 			require.Len(t, result.events, 6)

@@ -60,8 +60,8 @@ type Options struct {
 	GitLabURL               string           // GitLab instance URL when TargetForge is TargetForgeGitLab; part of the coordination namespace
 	Dispatcher              RecordDispatcher // Optional output driver that schedules records directly (GitLab)
 	JiraBaseURL             string           // Jira instance base URL
-	JiraProject             string           // Jira project key for default JQL
-	JQL                     string           // Custom JQL override
+	JiraProjects            []string         // Jira project keys every search is scoped to; required, non-empty, no duplicates
+	JQL                     string           // JQL predicate (optionally with a trailing ORDER BY) scoped to JiraProjects; empty means config.DefaultJiraPollQuery
 	OutputPath              string           // Path to write dispatch records JSON
 	M                       int              // Max candidate issues per cycle (default: 50)
 	N                       int              // Max issues to process per cycle (default: 5)

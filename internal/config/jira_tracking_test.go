@@ -207,6 +207,25 @@ func TestScopeJQLToProject(t *testing.T) {
 	}
 }
 
+func TestScopeJQLToProjects(t *testing.T) {
+	query := `labels = a OR project = OTHER ORDER BY updated DESC`
+	assert.Equal(t, ScopeJQLToProject("PROJ", query), ScopeJQLToProjects([]string{"PROJ"}, query),
+		"a one-item set scopes exactly as ScopeJQLToProject")
+	assert.Equal(t, `project in ("ALPHA", "BETA") AND (labels = a OR project = OTHER) ORDER BY updated DESC`,
+		ScopeJQLToProjects([]string{"ALPHA", "BETA"}, query))
+	assert.Equal(t, `project in ("AND", "OR") ORDER BY key`, ScopeJQLToProjects([]string{"AND", "OR"}, "ORDER BY key"),
+		"reserved-word keys stay quoted values")
+}
+
+func TestValidJiraProjectKey(t *testing.T) {
+	for _, key := range []string{"P", "PROJ", "MY_PROJ", "ABC123"} {
+		assert.True(t, ValidJiraProjectKey(key), key)
+	}
+	for _, key := range []string{"", "proj", "1PROJ", "_PROJ", "PR OJ", `PROJ"`} {
+		assert.False(t, ValidJiraProjectKey(key), key)
+	}
+}
+
 func TestScopeJQLToProject_QuotesReservedWordKey(t *testing.T) {
 	for _, key := range []string{"AND", "OR", "IN"} {
 		assert.Equal(t, `project = "`+key+`" AND (labels = a)`, ScopeJQLToProject(key, "labels = a"))

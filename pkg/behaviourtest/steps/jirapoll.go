@@ -232,11 +232,11 @@ func whenJiraPollerRuns(ctx context.Context, w *world.World) error {
 
 	outputPath := filepath.Join(w.JiraConfigDir, "dispatches.json")
 	opts := jirapoll.Options{
-		TargetRepo:  "test-org/test-repo",
-		JiraBaseURL: w.JiraMockServer.URL,
-		JiraProject: "PROJ",
-		OutputPath:  outputPath,
-		N:           50, // process all candidates
+		TargetRepo:   "test-org/test-repo",
+		JiraBaseURL:  w.JiraMockServer.URL,
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   outputPath,
+		N:            50, // process all candidates
 	}
 
 	poller := jirapoll.New(jiraClient, matcher, opts)

@@ -261,13 +261,14 @@ func extractCommand(body string) (command, instruction string) {
 // "none"), no resolution ("none", for label-added events the dispatch gate
 // authorizes by Jira's Edit Issues permission), or the Jira project role.
 //
-// roleMembership is loaded once per cycle for a single p.opts.JiraProject.
-// The poller query is scoped to that project, but as defensive validation
-// (for example a misconfigured poll.query, or an issue moved between
-// projects) an actor's project role is only honored for issues in the
-// configured project; anything else fails closed to "external" rather than
-// leaking a role granted in one project onto an issue in another (see PR
-// #5778 review).
+// A project role comes only from the roster of the event's own issue
+// project (the project part of its key), loaded once per cycle for each
+// project of p.opts.JiraProjects that needs it. The search is scoped to
+// that set, but as defensive validation (for example an issue moved
+// between projects) an issue whose project has no roster this cycle,
+// including any project outside the set (ensureRoleStructure never loads
+// one), fails closed to "external" rather than leaking a role granted in
+// one project onto an issue in another (see PR #5778 review).
 func (p *Poller) resolveRole(event JiraEvent) string {
 	aid := actorID(event)
 	if aid == "" {
@@ -279,10 +280,11 @@ func (p *Poller) resolveRole(event JiraEvent) string {
 	case roleFromLists:
 		return p.listRole(aid)
 	}
-	if p.opts.JiraProject != "" && issueProjectKey(event.IssueKey) != p.opts.JiraProject {
+	roster, ok := p.rosters[issueProjectKey(event.IssueKey)]
+	if !ok || roster == nil {
 		return "external"
 	}
-	roleName, ok := p.roleMembership[aid]
+	roleName, ok := roster.membership[aid]
 	if !ok {
 		return "external"
 	}

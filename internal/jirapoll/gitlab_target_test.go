@@ -83,12 +83,12 @@ func seedSlashCommandIssues(mc *mockClient, keys ...string) {
 
 func gitlabTargetOptions(d RecordDispatcher) Options {
 	return Options{
-		TargetRepo:  "group/sub/project",
-		TargetForge: TargetForgeGitLab,
-		GitLabURL:   "https://gitlab.example.com",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		Dispatcher:  d,
+		TargetRepo:   "group/sub/project",
+		TargetForge:  TargetForgeGitLab,
+		GitLabURL:    "https://gitlab.example.com",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		Dispatcher:   d,
 	}
 }
 

@@ -50,9 +50,16 @@ func TestLoadJiraPollSettings_ReadsConfig(t *testing.T) {
 		baseURL: "https://example.atlassian.net",
 		apiURL:  "https://gateway.example.com",
 		project: "PROJ",
-		jql:     `project = "PROJ" AND (labels = "fullsend") ORDER BY updated DESC`,
+		query:   `labels = "fullsend" ORDER BY updated DESC`,
 		enabled: true,
 	}, got)
+
+	// The poller gets the project as a one-item set and the query before
+	// scoping, and scopes it to exactly the JQL PollJQL builds.
+	opts := jiraPollOptions(jiraPollArgs{jira: got}, &celMatcher{}, noJiraEnv)
+	assert.Equal(t, []string{"PROJ"}, opts.JiraProjects)
+	assert.Equal(t, `project = "PROJ" AND (labels = "fullsend") ORDER BY updated DESC`,
+		config.ScopeJQLToProjects(opts.JiraProjects, opts.JQL))
 }
 
 func TestLoadJiraPollSettings_Defaults(t *testing.T) {
@@ -60,7 +67,9 @@ func TestLoadJiraPollSettings_Defaults(t *testing.T) {
 	got, err := loadJiraPollSettings(dir, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, config.DefaultJiraAPIURL, got.apiURL)
-	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done) ORDER BY updated DESC`, got.jql)
+	assert.Equal(t, config.DefaultJiraPollQuery, got.query)
+	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done) ORDER BY updated DESC`,
+		config.ScopeJQLToProjects([]string{got.project}, got.query))
 	assert.False(t, got.enabled, "an omitted poll mapping leaves polling disabled")
 }
 
@@ -68,7 +77,9 @@ func TestLoadJiraPollSettings_QueryWithoutOrderBy(t *testing.T) {
 	dir := writeJiraPollConfig(t, "tracker:\n  jira:\n    base_url: https://example.atlassian.net\n    project: PROJ\n    poll:\n      enabled: false\n      query: 'labels = a OR labels = b'\n")
 	got, err := loadJiraPollSettings(dir, "", "", "")
 	require.NoError(t, err)
-	assert.Equal(t, `project = "PROJ" AND (labels = a OR labels = b)`, got.jql,
+	assert.Equal(t, `labels = a OR labels = b`, got.query)
+	assert.Equal(t, `project = "PROJ" AND (labels = a OR labels = b)`,
+		config.ScopeJQLToProjects([]string{got.project}, got.query),
 		"an OR query stays inside the project scope")
 	assert.False(t, got.enabled)
 }
