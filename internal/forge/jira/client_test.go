@@ -241,6 +241,40 @@ func TestSearchIssues_Pagination(t *testing.T) {
 	assert.Equal(t, "PROJ-120", issues[119].Key)
 }
 
+// A search that still has results after maxSearchPages pages returns what
+// it read with ErrSearchTruncated; one that ends on its last allowed page
+// does not.
+func TestSearchIssues_TruncatedAtPageCap(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		lastIsLast bool
+		wantErr    error
+	}{
+		{name: "more results remain", wantErr: ErrSearchTruncated},
+		{name: "ends on the last page", lastIsLast: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client, mux := setupTest(t)
+			pages := 0
+			mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+				pages++
+				writeJSON(t, w, http.StatusOK, SearchResult{
+					Issues:        []Issue{{ID: fmt.Sprintf("%d", pages), Key: fmt.Sprintf("PROJ-%d", pages)}},
+					NextPageToken: "more",
+					IsLast:        tc.lastIsLast && pages == maxSearchPages,
+				})
+			})
+
+			issues, err := client.SearchIssues(context.Background(), "project = PROJ", 0)
+			require.ErrorIs(t, err, tc.wantErr)
+			assert.Len(t, issues, maxSearchPages)
+			assert.Equal(t, maxSearchPages, pages)
+		})
+	}
+}
+
 // SearchIssues asks for the named entity properties on every page and
 // decodes them into Issue.Properties; without names it asks for none.
 func TestSearchIssues_Properties(t *testing.T) {

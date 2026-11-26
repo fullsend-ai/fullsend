@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"regexp"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/jql"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
@@ -74,9 +76,6 @@ type Poller struct {
 
 // New creates a Jira Poller with the given options.
 func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
-	if opts.M == 0 {
-		opts.M = 50
-	}
 	if opts.N == 0 {
 		opts.N = 5
 	}
@@ -135,7 +134,8 @@ func (p *Poller) Run(ctx context.Context) error {
 	// as human follow-up re-dispatches the same agent in a loop.
 	p.selfAccountID = userID(*myself)
 
-	// Step 1: Execute JQL to get candidate issues.
+	// Step 1: Search for the issues that changed within the backfill
+	// window.
 	candidates, err := p.searchCandidates(readCtx)
 	if err != nil {
 		return fmt.Errorf("search candidates: %w", err)
@@ -425,19 +425,52 @@ func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error
 	return nil
 }
 
-// searchCandidates executes JQL and collects up to M results.
+// newestChangeFirstRe matches an ORDER BY clause whose first key is the
+// updated time, newest first.
+var newestChangeFirstRe = regexp.MustCompile(`(?i)^order\s+by\s+updated(date)?\s+desc\b`)
+
+// searchCandidates returns every issue that matches the configured query
+// and changed within the backfill window, with no row limit, in the query's
+// sort order, or oldest change first when the query has none (ADR 0085,
+// Decision item 2).
 func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
-	jql := p.opts.JQL
-	if jql == "" {
+	query := p.opts.JQL
+	if query == "" {
 		if !validProjectKey.MatchString(p.opts.JiraProject) {
 			return nil, fmt.Errorf("invalid Jira project key %q: must match %s", p.opts.JiraProject, validProjectKey.String())
 		}
-		jql = fmt.Sprintf("project = %q AND statusCategory != Done ORDER BY updated DESC", p.opts.JiraProject)
+		query = fmt.Sprintf("project = %q AND statusCategory != Done", p.opts.JiraProject)
 	}
 
 	// The search returns each candidate's lastCheck, so the activity
 	// filter reads no property per candidate (ADR 0085, Decision item 2).
-	return p.client.SearchIssues(ctx, jql, p.opts.M, p.lastCheckKey())
+	issues, err := p.client.SearchIssues(ctx, p.windowJQL(query), 0, p.lastCheckKey())
+	if errors.Is(err, jira.ErrSearchTruncated) {
+		log.Printf("WARNING: the search stopped after %d issues with more remaining; the issues beyond them were not examined this cycle. Narrow the poll query so that fewer issues match", len(issues))
+		return issues, nil
+	}
+	return issues, err
+}
+
+// windowJQL limits query to the issues whose updated value falls within the
+// backfill window, the window that already bounds a first poll and clamps an
+// old lastCheck. It keeps the query's ORDER BY and adds oldest change first
+// when the query has none. A query that sorts newest change first draws a
+// WARNING, once per cycle: under a backlog that order can leave older
+// requests waiting until they leave the window.
+func (p *Poller) windowJQL(query string) string {
+	predicate, orderBy := jql.SplitOrderBy(query)
+	windowed := fmt.Sprintf(`updated >= "-%dh"`, int(math.Ceil(p.opts.FirstPollBackfillWindow.Hours())))
+	if predicate = strings.TrimSpace(predicate); predicate != "" {
+		windowed = "(" + predicate + ") AND " + windowed
+	}
+	switch {
+	case orderBy == "":
+		orderBy = "ORDER BY updated ASC"
+	case newestChangeFirstRe.MatchString(orderBy):
+		log.Print("WARNING: the poll query sorts newest change first (ORDER BY updated DESC); oldest change first is recommended, because under a backlog older requests can wait until they leave the backfill window. Remove the ORDER BY clause or use ORDER BY updated ASC")
+	}
+	return windowed + " " + orderBy
 }
 
 // filterActive keeps the candidates with new activity (see hasNewActivity)

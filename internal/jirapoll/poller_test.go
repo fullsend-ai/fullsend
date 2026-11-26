@@ -316,9 +316,6 @@ func TestNew(t *testing.T) {
 		JiraBaseURL: "https://acme.atlassian.net",
 		JiraProject: "PROJ",
 	})
-	if p.opts.M != 50 {
-		t.Errorf("M = %d, want default 50", p.opts.M)
-	}
 	if p.opts.N != 5 {
 		t.Errorf("N = %d, want default 5", p.opts.N)
 	}
@@ -1594,32 +1591,113 @@ func TestSearchCandidatesQuotesProjectKey(t *testing.T) {
 		t.Fatalf("searchCandidates() error: %v", err)
 	}
 
-	want := `project = "PROJ" AND statusCategory != Done ORDER BY updated DESC`
+	want := `(project = "PROJ" AND statusCategory != Done) AND updated >= "-24h" ORDER BY updated ASC`
 	if mc.lastQuery != want {
 		t.Errorf("JQL = %q, want %q", mc.lastQuery, want)
 	}
 }
 
-// TestSearchCandidatesBoundsBySettingM checks that searchCandidates asks
-// SearchIssues to stop paginating once M results are collected, instead of
-// exhausting the full JQL match set and truncating client-side.
-func TestSearchCandidatesBoundsBySettingM(t *testing.T) {
+// TestSearchCandidatesHasNoRowLimit checks that searchCandidates reads every
+// row of the search instead of the first 50 (ADR 0085, Decision item 2).
+func TestSearchCandidatesHasNoRowLimit(t *testing.T) {
 	mc := newMockClient()
 	mc.searchResult = make([]jira.Issue, 200)
 	for i := range mc.searchResult {
 		mc.searchResult[i] = jira.Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1)}
 	}
-	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ", M: 50})
+	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ"})
 
 	candidates, err := p.searchCandidates(context.Background())
 	if err != nil {
 		t.Fatalf("searchCandidates() error: %v", err)
 	}
-	if len(candidates) != 50 {
-		t.Errorf("len(candidates) = %d, want 50", len(candidates))
+	if len(candidates) != 200 {
+		t.Errorf("len(candidates) = %d, want all 200", len(candidates))
 	}
-	if mc.lastLimit != 50 {
-		t.Errorf("SearchIssues called with limit %d, want 50 (p.opts.M)", mc.lastLimit)
+	if mc.lastLimit != 0 {
+		t.Errorf("SearchIssues called with limit %d, want 0 (no row limit)", mc.lastLimit)
+	}
+}
+
+// TestWindowJQL: the search is limited to the backfill window, keeps the
+// query's own ORDER BY, defaults to oldest change first, and warns only
+// when the query sorts newest change first (ADR 0085, Decision item 2).
+func TestWindowJQL(t *testing.T) {
+	cases := []struct {
+		name   string
+		query  string
+		window time.Duration
+		want   string
+		warn   bool
+	}{
+		{name: "no order by", query: `project = "PROJ" AND (labels = "fullsend")`, want: `(project = "PROJ" AND (labels = "fullsend")) AND updated >= "-24h" ORDER BY updated ASC`},
+		{name: "newest change first", query: `project = "PROJ" ORDER BY updated DESC`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY updated DESC`, warn: true},
+		{name: "newest change first, lowercase alias and a second key", query: `project = "PROJ" order by updatedDate desc, key`, want: `(project = "PROJ") AND updated >= "-24h" order by updatedDate desc, key`, warn: true},
+		{name: "oldest change first", query: `project = "PROJ" ORDER BY updated ASC`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY updated ASC`},
+		{name: "updated without a direction", query: `project = "PROJ" ORDER BY updated`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY updated`},
+		{name: "another order", query: `project = "PROJ" ORDER BY created DESC`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY created DESC`},
+		{name: "updated as a later key", query: `project = "PROJ" ORDER BY priority, updated DESC`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY priority, updated DESC`},
+		{name: "order by inside quotes", query: `summary ~ "order by updated desc"`, want: `(summary ~ "order by updated desc") AND updated >= "-24h" ORDER BY updated ASC`},
+		{name: "only an order by", query: `ORDER BY key`, want: `updated >= "-24h" ORDER BY key`},
+		{name: "longer window", query: `project = "PROJ"`, window: 72 * time.Hour, want: `(project = "PROJ") AND updated >= "-72h" ORDER BY updated ASC`},
+		{name: "part of an hour rounds up", query: `project = "PROJ"`, window: 90 * time.Minute, want: `(project = "PROJ") AND updated >= "-2h" ORDER BY updated ASC`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLog(t)
+			p := newTestPoller(newMockClient(), nil, Options{JiraProject: "PROJ", FirstPollBackfillWindow: tc.window})
+			if got := p.windowJQL(tc.query); got != tc.want {
+				t.Errorf("windowJQL() = %q, want %q", got, tc.want)
+			}
+			if got := strings.Contains(logs.String(), "WARNING: the poll query sorts newest change first"); got != tc.warn {
+				t.Errorf("warned = %v, want %v:\n%s", got, tc.warn, logs)
+			}
+		})
+	}
+}
+
+// truncatedSearchClient serves the mock's rows as a search the client cut
+// short at its page cap.
+type truncatedSearchClient struct {
+	*mockClient
+}
+
+func (c truncatedSearchClient) SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error) {
+	issues, err := c.mockClient.SearchIssues(ctx, jql, limit, properties...)
+	if err != nil {
+		return nil, err
+	}
+	return issues, jira.ErrSearchTruncated
+}
+
+// A search cut short at the client's page cap is not silent: the cycle
+// warns, serves the rows it has, and exits normally. A query that sorts
+// newest change first draws its warning once per cycle.
+func TestRunSearchWarnings(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	logs := captureLog(t)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Minute))}
+	addTriageComment(mc, "PROJ-1", "501", now.Add(-time.Minute))
+	p := newTestPoller(truncatedSearchClient{mc}, &stubMatcher{agents: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		JQL:         `project = "PROJ" ORDER BY updated DESC`,
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if len(p.dispatches) != 1 {
+		t.Errorf("dispatched %d, want the returned row served", len(p.dispatches))
+	}
+	if want := "WARNING: the search stopped after 1 issues with more remaining"; !strings.Contains(logs.String(), want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+	if n := strings.Count(logs.String(), "WARNING: the poll query sorts newest change first"); n != 1 {
+		t.Errorf("newest-first warning logged %d times, want once per cycle:\n%s", n, logs)
 	}
 }
 

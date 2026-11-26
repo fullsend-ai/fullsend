@@ -15,8 +15,10 @@ type JiraClient interface {
 	// SearchIssues executes a JQL search and returns up to limit matching
 	// issues, stopping pagination once that many results are collected.
 	// A limit <= 0 returns all matching issues (bounded by the
-	// implementation's own pagination cap). Each issue carries the entity
-	// properties named in properties that it has, in Issue.Properties.
+	// implementation's own pagination cap; a search cut short by that cap
+	// returns the issues read so far with jira.ErrSearchTruncated). Each
+	// issue carries the entity properties named in properties that it has,
+	// in Issue.Properties.
 	SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error)
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
 	// GetStatus resolves a status name to its statusCategory, used to
@@ -64,7 +66,6 @@ type Options struct {
 	JiraProject             string           // Jira project key for default JQL
 	JQL                     string           // Custom JQL override
 	OutputPath              string           // Path to write dispatch records JSON
-	M                       int              // Max candidate issues per cycle (default: 50)
 	N                       int              // Max issues to process per cycle (default: 5)
 	FirstPollBackfillWindow time.Duration    // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
 	CycleTimeLimit          time.Duration    // Reading budget per cycle, from its start through the last issue read (default: 5m, ADR 0085)

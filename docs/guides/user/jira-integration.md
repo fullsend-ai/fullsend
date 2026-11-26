@@ -994,7 +994,7 @@ pattern.
 
 ### Custom JQL
 
-By default the poller searches for all non-done issues in the project, ordered by most recently updated.
+By default the poller searches for all non-done issues in the project that changed within the last 24 hours, oldest change first.
 
 The poller reads the Jira site, project, and query only from
 [`tracker.jira`](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)
@@ -1008,15 +1008,26 @@ tracker:
     project: PROJ
     poll:
       enabled: true
-      query: 'labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC'
+      query: 'labels = "fullsend" AND statusCategory != Done'
 ```
 
 `base_url` and `project` are required. `api_url` defaults to
 `https://api.atlassian.com`. The poller always scopes the query as
-`project = "<project>" AND (<query>)`, keeping a trailing `ORDER BY` at the
-end, so the example above runs as
-`project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
-The parentheses in `poll.query` must be balanced. When `poll.query` is
+`project = "<project>" AND (<query>)`, limits it to the issues whose
+`updated` time falls within the 24-hour backfill window, and keeps a trailing
+`ORDER BY` at the end, so the example above runs as
+`(project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done)) AND updated >= "-24h" ORDER BY updated ASC`.
+The parentheses in `poll.query` must be balanced.
+
+Leave `ORDER BY` out of `poll.query` unless you need a particular order:
+without one the poller sorts oldest change first (`ORDER BY updated ASC`),
+which is the recommended order. A query with its own `ORDER BY` is searched
+in that order. The order decides which issues are read when more issues
+changed within the window than the search reads (see
+[Poll coordination](#poll-coordination)); under newest change first the
+oldest requests are the ones left out, and they can then leave the window
+unserved. A query that sorts newest change first (`ORDER BY updated DESC`)
+logs a WARNING every cycle that recommends oldest change first. When `poll.query` is
 omitted, the poller uses the default filter above. Unless `poll.enabled` is
 `true`, the poller skips the cycle without contacting Jira.
 
@@ -1435,7 +1446,7 @@ matches it. Use `labels: allowlist` if that group is broader than you want.
 
 ## Poll coordination
 
-The poller uses Jira entity properties for checkpoint tracking. It keeps no per-issue lock: it relies on one poll cycle at a time per target repository (see [Scheduled workflow](#scheduled-workflow)). Each cycle first drops the candidates with no new activity, then randomly selects up to N (default 5) of the rest for processing, spreading load across cycles. A candidate has new activity when its `updated` time is after its `lastCheck`, which the search returns with each row, clamped as described below; a candidate with no usable `lastCheck` (missing, unreadable, or in the future) or no usable `updated` time counts as new. Two properties are stored on each processed issue:
+The poller uses Jira entity properties for checkpoint tracking. It keeps no per-issue lock: it relies on one poll cycle at a time per target repository (see [Scheduled workflow](#scheduled-workflow)). Each cycle searches for every issue that matches the query and changed within the 24-hour backfill window, with no row limit, drops the candidates with no new activity, then randomly selects up to N (default 5) of the rest for processing, spreading load across cycles. A candidate has new activity when its `updated` time is after its `lastCheck`, which the search returns with each row, clamped as described below; a candidate with no usable `lastCheck` (missing, unreadable, or in the future) or no usable `updated` time counts as new. Two properties are stored on each processed issue:
 
 - **Write check** (`fullsend.poll.{owner}.{repo}.writeCheck`) — written before the poller reads an issue's comments and history, to confirm the credential can write to the issue and so commit its `lastCheck`; nothing reads it. An issue that fails the check is skipped with `WARNING: processing <KEY>: check write access to <KEY>: ...`, and a cycle in which every selected issue fails ends in an error, so a credential that cannot write shows as a failed run. Earlier versions kept a lock at `fullsend.poll.{owner}.{repo}.lock`; the poller no longer reads, writes or removes it.
 - **Last check** (`fullsend.poll.{owner}.{repo}.lastCheck`) — tracks the timestamp of the most recent processed change. Only changes newer than this timestamp trigger agent dispatch. After each look at an issue it also advances to the issue's `updated` time when that is later, so an issue with nothing new since is skipped the next cycle.
@@ -1468,10 +1479,10 @@ Three edge cases of checkpoint tracking are worth knowing:
   harmless (schedule accuracy affects latency, not correctness); the guarantee
   simply ends at 24 hours. A realistic trigger: **GitHub disables scheduled
   workflows after 60 days of repository inactivity**, which stops the poller
-  with no error anywhere. After a long gap, the starvation limit (M = 50, see
+  with no error anywhere. After a long gap, the per-cycle limit (N = 5, see
   below) compounds the problem — many issues may have accumulated new activity
-  simultaneously, and there is no rotation across cycles to reach issues
-  beyond the top M. If your deployment cannot tolerate the 24-hour bound, the
+  simultaneously, and a cycle processes only N of them, picked at random. If
+  your deployment cannot tolerate the 24-hour bound, the
   scheduler is pluggable: an external cron or Kubernetes CronJob that runs
   independently of GitHub Actions avoids the auto-disable risk.
 - **Comment edits count as new activity, and are attributed to the editor.** The poller filters comments on the later of their created and updated timestamps, so editing a comment (for example, adding a slash command to an old comment) is detected on the next cycle. Jira bumps a comment's updated timestamp on modifications other than body edits too (such as visibility changes), and any such bump counts as activity. The flip side: modifying a comment whose slash command was already dispatched makes it look new again and can re-dispatch it. An edit-detected comment is attributed to the account that last modified it (Jira's `updateAuthor`), not the original author — so a user who edits someone else's comment to inject a command is authorized on *their own* role, not the original author's.
@@ -1480,7 +1491,7 @@ Because each cron run is a fresh process, per-cycle Jira API cost is worth sizin
 
 Two more scaling limits:
 
-- **Issues beyond the top M candidates can be starved.** Each cycle's JQL search returns at most M (default 50) candidates, ordered by `updated DESC`. If a project has more than M issues with in-scope activity at once, whichever issues aren't in that top-M window this cycle are simply never selected — there's no rotation across cycles to eventually reach them. Issues with nothing new still take rows of the top M, because the activity filter runs on the rows the search returned. This is expected to self-resolve for most projects (an issue with new activity moves toward the front of `updated DESC` on its own), but a project that consistently has more than M simultaneously-active issues will have some starved indefinitely. Narrow the default `--jql` (e.g. scope to a label or a subset of issue types) if this applies to you.
+- **Every cycle lists the whole backfill window.** The search reads every issue that matches the query and changed within the last 24 hours, 50 rows per call, including issues already handled. A project where many issues change each day pays for that listing every cycle, and it counts against the cycle's five-minute time limit. The search stops after 200 calls (10,000 issues at 50 per call) and logs `WARNING: the search stopped after <N> issues with more remaining; ...`; the issues beyond them are not examined that cycle. A cycle still processes at most N (default 5) of the issues with new activity, picked at random, so under a sustained backlog an issue can lose the draw until its request leaves the window. Narrow `tracker.jira.poll.query` (for example to a label or a subset of issue types) if either applies to you.
 - **Comments are re-listed in full, oldest-first, every cycle.** The Jira REST API has no way to filter comments server-side by date, so `ListComments` always paginates from the start of an issue's comment history; the poller then filters client-side by timestamp. For issues with very long comment histories, this means re-fetching (and re-decoding) old comments every cycle just to discard them. Listings are capped at 10,000 entries per issue; an issue beyond that cap has its newest activity invisible to the poller (a WARNING is logged when the cap is hit). Each API response is bounded to 10MB, but the accumulated per-issue comment history is bounded only by the page cap — a per-issue byte budget is a tracked follow-up; against real Jira Cloud (which caps individual comments) the realistic worst case is tens of MB per issue.
 - **Sustained Jira errors can stall a cycle.** Each Jira call retries up to 5 times with exponential backoff, honoring `Retry-After` (capped at 5 minutes). Under a sustained 429 or outage a single cycle can therefore run long; the workflow's concurrency group queues subsequent cron runs rather than stacking them, and a failed cycle simply retries from its checkpoints on the next run.
 
@@ -1516,11 +1527,11 @@ When `acme/frontend` and `acme/backend` both poll issue `PROJ-42`:
 
 The two repos checkpoint independently and can process the same Jira comment — each dispatching to its own agent workflows. This is intentional: the same `/fs-triage` comment on a Jira issue may be relevant to multiple repos if their harness triggers match.
 
-### 50-candidate cap with multiple repos
+### Candidate search with multiple repos
 
-Each repo's poller runs its own JQL query and gets its own top-M (default 50) candidate window. The cap is per-poller, not global — three repos polling the same project each see up to 50 candidates per cycle, not 50 shared across all three.
+Each repo's poller runs its own JQL query and lists every matching issue that changed within the backfill window. Nothing is shared: three repos polling the same project each run the whole search, and each processes up to N (default 5) issues per cycle.
 
-However, more pollers against the same Jira project means more API calls per cycle. Each poller independently reads an entity property per candidate for the activity filter, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
+However, more pollers against the same Jira project means more API calls per cycle. Each poller independently runs its search, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
 
 - **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so it skips issues that belong to other repos.
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.

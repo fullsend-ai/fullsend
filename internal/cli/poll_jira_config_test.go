@@ -60,7 +60,7 @@ func TestLoadJiraPollSettings_Defaults(t *testing.T) {
 	got, err := loadJiraPollSettings(dir, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, config.DefaultJiraAPIURL, got.apiURL)
-	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done) ORDER BY updated DESC`, got.jql)
+	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done)`, got.jql)
 	assert.False(t, got.enabled, "an omitted poll mapping leaves polling disabled")
 }
 

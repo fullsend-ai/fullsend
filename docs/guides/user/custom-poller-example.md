@@ -103,7 +103,8 @@ jobs:
 
 The poller reads the Jira site, project, and query from `tracker.jira` in
 `.fullsend/config.yaml`, and polls only when `poll.enabled` is `true`. It
-always scopes the query to the project:
+always scopes the query to the project and to the issues that changed within
+the last 24 hours, oldest change first:
 
 ```yaml
 tracker:
@@ -112,7 +113,7 @@ tracker:
     project: MYPROJECT
     poll:
       enabled: true
-      query: 'statusCategory != Done AND updated > -1w AND type = Bug'
+      query: 'statusCategory != Done AND type = Bug'
 ```
 
 See [Jira Integration § Custom JQL](jira-integration.md#custom-jql).
