@@ -202,10 +202,13 @@ isolated Python mode and trusted PATH. Default plugins are disabled and nonempty
 `OPENCODE_CONFIG_CONTENT.plugin` or `OPENCODE_CONFIG_CONTENT.mcp` configuration is
 rejected; use the harness provider/environment credential route. Shell-startup injection
 variables are cleared for tool subprocesses.
-The launch also clears `OPENCODE_PURE`, which would disable the hook plugin.
-It drops `OPENCODE_EXPERIMENTAL*` assignments from `.env` files and clears
-inherited variables with that prefix. Experimental modes, including background
-subagents, are disabled; ordinary foreground Tasks still follow the configured permissions.
+At launch, the runner drops every `OPENCODE_*` assignment from agent-writable
+environment files and clears inherited variables with that prefix. It then
+restores its own config directory, isolation settings, and the trusted policy
+captured at bootstrap. There are no exceptions for agent-supplied names.
+Initial trusted `OPENCODE_CONFIG_CONTENT` configuration still follows steps 1
+and 2 above. Experimental modes, including background subagents, are disabled;
+ordinary foreground Tasks still follow the configured permissions.
 Disabling OpenCode default plugins is a compatibility constraint: harnesses
 must use the configured provider/environment credential route rather than
 relying on a default plugin to provide authentication or provider behavior.
@@ -257,6 +260,8 @@ image-owned SDK writable or downloading it again.
 | `OpenCode requires security.enabled: true` | Remove the old security-disabled workaround or set it to `true` |
 | `opencode hook adapter requires version 1.19.1` | Use the pinned sandbox image; v2 needs a separate adapter migration |
 | Hook adapter/scripts missing or modified (exit 97) | A security file changed after bootstrap. Recreate the sandbox; do not disable security |
+| Retry prompt missing or modified (exit 96) | The prompt file changed before launch. Recreate the sandbox or rerun from the runner so it uploads the expected prompt |
+| Hook activation missing (exit 99) | The plugin did not return the iteration's activation challenge. Inspect plugin initialization errors and recreate the sandbox with the pinned image. This check runs after execution and cannot prevent side effects; pre-execution prevention is tracked in [#9207](https://github.com/fullsend-ai/fullsend/issues/9207) |
 | `OpenCode plugin SDK missing` | Use an image with the pinned plugin SDK installed under `/usr/local/share/opencode-sdk` |
 | `ProviderModelNotFoundError` | The id is not in OpenCode's built-in catalog. Use an id from the table above |
 | Vertex `404 NOT_FOUND` for the model | Your project does not serve it. Name one it serves |

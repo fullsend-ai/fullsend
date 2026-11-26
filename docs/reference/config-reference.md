@@ -214,6 +214,11 @@ var take precedence over both. See
 [Choose a Runtime](../guides/getting-started/choosing-a-runtime.md) for
 runtime comparison.
 
+If an OpenCode harness still sets `security.enabled: false` as a workaround,
+remove that setting or set it to `true`. See
+[OpenCode troubleshooting](../runtimes/opencode.md#troubleshooting) for the
+validation error and other migration checks.
+
 ### `roles`
 
 Agent roles determine which GitHub Apps (and their associated credentials and
