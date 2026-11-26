@@ -126,7 +126,10 @@ func MapForgejoEvent(ctx context.Context, opts ForgejoEventOptions, data []byte)
 	if err := dec.Decode(&p); err != nil {
 		return nil, fmt.Errorf("forgejo event: parsing %s payload: %w", opts.EventName, err)
 	}
-	if dec.More() {
+	// Decoder.More reports false before a stray closing delimiter, so
+	// require the next Decode to hit EOF instead.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("forgejo event: %s payload has trailing data", opts.EventName)
 	}
 	if p.Repository == nil || strings.TrimSpace(p.Repository.FullName) == "" {
@@ -276,15 +279,55 @@ func (m forgejoMapper) errorf(format string, args ...any) error {
 }
 
 // boundURL checks that rawURL names a resource of the configured
-// repository on the configured instance.
+// repository on the configured instance. It parses the URL, compares scheme
+// and authority, and requires the decoded canonical path to be exactly
+// <server path>/<owner>/<repo>/<kind>/<number>, where kind is issues or
+// pulls (pulls only for a pull request). Traversal segments, encoded or not, and
+// non-canonical escapes therefore fail.
 func (m forgejoMapper) boundURL(what, rawURL string) error {
 	if strings.TrimSpace(rawURL) == "" {
 		return m.errorf("%s is missing html_url", what)
 	}
-	if len(rawURL) <= len(m.urlPrefix) || !strings.EqualFold(rawURL[:len(m.urlPrefix)], m.urlPrefix) {
+	if !m.urlUnderRepo(what, rawURL) {
 		return m.errorf("%s URL is not under the configured repository on the configured Forgejo instance", what)
 	}
 	return nil
+}
+
+func (m forgejoMapper) urlUnderRepo(what, rawURL string) bool {
+	base, err := url.Parse(m.urlPrefix)
+	if err != nil {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) ||
+		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" {
+		return false
+	}
+	if len(u.Path) <= len(base.Path) || !strings.EqualFold(u.Path[:len(base.Path)], base.Path) {
+		return false
+	}
+	rest := strings.Split(u.Path[len(base.Path):], "/")
+	if len(rest) != 2 || rest[1] == "" {
+		return false
+	}
+	// A pull request's issue object may carry either URL form, so an issue
+	// accepts both kinds; a pull request must use pulls.
+	switch {
+	case rest[0] == "pulls":
+	case rest[0] == "issues" && what == "issue":
+	default:
+		return false
+	}
+	for _, r := range rest[1] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (m forgejoMapper) issues(ev *normevent.Event) error {
@@ -309,7 +352,7 @@ func (m forgejoMapper) issues(ev *normevent.Event) error {
 	case "closed":
 		ev.Transition.Kind = normevent.TransitionClosed
 	case "labeled", "unlabeled", "label_updated", "label_cleared":
-		change, err := m.labelChange(ev.State.Labels)
+		change, err := m.labelChange(ev.State.Labels, issue.Labels != nil)
 		if err != nil {
 			return err
 		}
@@ -415,7 +458,7 @@ func (m forgejoMapper) pullRequest(ev *normevent.Event) error {
 			ev.Transition.Kind = normevent.TransitionMerged
 		}
 	case "labeled", "unlabeled", "label_updated", "label_cleared":
-		change, err := m.labelChange(ev.State.Labels)
+		change, err := m.labelChange(ev.State.Labels, pr.Labels != nil)
 		if err != nil {
 			return err
 		}
@@ -528,10 +571,15 @@ func (m forgejoMapper) changeProposal(pr *forgejoPullRequest) (*normevent.Change
 // changed label. Forgejo's label_updated covers both additions and
 // removals, so its direction comes from whether the label is in the
 // payload's label snapshot; labeled, unlabeled and label_cleared must agree
-// with that snapshot or the event fails.
-func (m forgejoMapper) labelChange(labels []string) (*normevent.LabelChange, error) {
+// with that snapshot or the event fails. A payload without a label
+// snapshot (hasSnapshot false) fails, since a missing snapshot would
+// otherwise read as an empty one.
+func (m forgejoMapper) labelChange(labels []string, hasSnapshot bool) (*normevent.LabelChange, error) {
 	if m.p.Label == nil || strings.TrimSpace(m.p.Label.Name) == "" {
 		return nil, m.errorf("payload does not name the changed label")
+	}
+	if !hasSnapshot {
+		return nil, m.errorf("payload is missing the labels snapshot")
 	}
 	name := m.p.Label.Name
 	present := slices.Contains(labels, name)

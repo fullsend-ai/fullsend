@@ -283,6 +283,64 @@ func TestMapForgejoEvent_LabelFailures(t *testing.T) {
 	}
 }
 
+func TestMapForgejoEvent_LabelSnapshotMissing(t *testing.T) {
+	for _, action := range []string{"label_updated", "labeled", "unlabeled", "label_cleared"} {
+		t.Run("issue "+action, func(t *testing.T) {
+			issue := fjIssue()
+			delete(issue, "labels")
+			ev, err := fjMap(t, fjOpts("issues"), fjPayload(action, map[string]any{
+				"issue": issue,
+				"label": map[string]any{"name": "ready-to-code"},
+			}))
+			require.Error(t, err)
+			assert.Nil(t, ev)
+			assert.Contains(t, err.Error(), "missing the labels snapshot")
+		})
+		t.Run("pull_request "+action, func(t *testing.T) {
+			pr := fjPR()
+			delete(pr, "labels")
+			ev, err := fjMap(t, fjOpts("pull_request"), fjPayload(action, map[string]any{
+				"pull_request": pr,
+				"label":        map[string]any{"name": "ready-to-code"},
+			}))
+			require.Error(t, err)
+			assert.Nil(t, ev)
+			assert.Contains(t, err.Error(), "missing the labels snapshot")
+		})
+	}
+}
+
+func TestMapForgejoEvent_BoundURLHardening(t *testing.T) {
+	base := fjServer + "/" + fjRepo
+	for name, u := range map[string]string{
+		"traversal":         base + "/../../other/repo/issues/12",
+		"encoded traversal": base + "/%2e%2e/%2e%2e/other/repo/issues/12",
+		"encoded slash":     fjServer + "/acme%2Fwidgets/issues/12",
+		"query":             base + "/issues/12?x=1",
+		"fragment":          base + "/issues/12#c1",
+		"userinfo":          "https://evil@code.example.com/forgejo/" + fjRepo + "/issues/12",
+		"wrong kind":        base + "/commits/12",
+		"extra segment":     base + "/issues/12/extra",
+		"non-numeric":       base + "/issues/abc",
+	} {
+		t.Run(name, func(t *testing.T) {
+			issue := fjIssue()
+			issue["html_url"] = u
+			ev, err := fjMap(t, fjOpts("issues"), fjPayload("opened", map[string]any{"issue": issue}))
+			require.Error(t, err)
+			assert.Nil(t, ev)
+			assert.Contains(t, err.Error(), "configured Forgejo instance")
+		})
+	}
+	t.Run("pull request URL must use pulls", func(t *testing.T) {
+		pr := fjPR()
+		pr["html_url"] = base + "/issues/34"
+		_, err := fjMap(t, fjOpts("pull_request"), fjPayload("opened", map[string]any{"pull_request": pr}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "configured Forgejo instance")
+	})
+}
+
 func TestMapForgejoEvent_IssueComment(t *testing.T) {
 	comment := map[string]any{"id": float64(555), "body": "/fs-code please fix it\nmore context", "user": fjUser("alice")}
 	ev, err := fjMap(t, fjOpts("issue_comment"), fjPayload("created", map[string]any{"issue": fjIssue("bug"), "comment": comment}))
@@ -489,6 +547,8 @@ func TestMapForgejoEvent_MalformedOrUnsupported(t *testing.T) {
 		{name: "empty payload", eventName: "issues", raw: " ", want: "parsing issues payload"},
 		{name: "invalid JSON", eventName: "issues", raw: "{not json", want: "parsing issues payload"},
 		{name: "trailing data", eventName: "issues", raw: `{"action":"opened"} {}`, want: "trailing data"},
+		{name: "trailing closing bracket", eventName: "issues", raw: `{"action":"opened"}]`, want: "trailing data"},
+		{name: "trailing closing brace", eventName: "issues", raw: `{"action":"opened"}}`, want: "trailing data"},
 		{name: "wrong field type", eventName: "issues", raw: `{"action":"opened","issue":{"number":"twelve"}}`, want: "parsing issues payload"},
 		{name: "missing repository", eventName: "issues", payload: map[string]any{"action": "opened", "sender": fjUser("alice"), "issue": fjIssue()}, want: "missing repository.full_name"},
 		{name: "other repository", eventName: "issues", payload: fjPayload("opened", map[string]any{"issue": fjIssue(), "repository": map[string]any{"full_name": "acme/gadgets"}}), want: "does not match configured repository"},
