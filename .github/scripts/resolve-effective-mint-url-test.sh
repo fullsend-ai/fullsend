@@ -11,6 +11,11 @@ SCRIPT="${SCRIPT_DIR}/resolve-effective-mint-url.sh"
 BASH_ABS="$(command -v bash)"
 FAILURES=0
 
+if ! command -v yq >/dev/null 2>&1; then
+  echo "FAIL: yq is required to run resolve-effective-mint-url-test.sh" >&2
+  exit 1
+fi
+
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "${TMPDIR}"' EXIT
 
@@ -97,9 +102,21 @@ assert_eq() {
   local name="$1" want="$2" got="$3"
   if [[ "${want}" != "${got}" ]]; then
     echo "FAIL: ${name}: want ${want@Q}, got ${got@Q}"
+    if [[ -s "${TMPDIR}/resolve-stderr.txt" ]]; then
+      echo "Resolver stderr:"
+      cat "${TMPDIR}/resolve-stderr.txt"
+    fi
     FAILURES=$((FAILURES + 1))
   fi
 }
+
+setup_repo
+if (unset GITHUB_OUTPUT; FALLBACK_MINT_URL="https://fallback.example" "${BASH_ABS}" "${SCRIPT}" 2>"${TMPDIR}/resolve-stderr.txt"); then
+  echo "FAIL: missing GITHUB_OUTPUT: expected non-zero exit"
+  FAILURES=$((FAILURES + 1))
+else
+  assert_notice_contains "missing GITHUB_OUTPUT" "GITHUB_OUTPUT is required" "$(cat "${TMPDIR}/resolve-stderr.txt")"
+fi
 
 setup_repo
 assert_eq "fallback only" "https://fallback.example" "$(run_resolve "https://fallback.example")"
@@ -120,6 +137,7 @@ assert_no_notice_override "no notice for fallback only" "$(run_resolve_stderr "h
 setup_repo
 printf 'version: "1"\nmint_url: https://base.example\n' >.fullsend/config.base.yaml
 assert_eq "base only" "https://base.example" "$(run_resolve "https://fallback.example")"
+assert_notice_contains "base override notice" "mint_url from .fullsend config overrides FULLSEND_MINT_URL" "$(run_resolve_stderr "https://fallback.example")"
 
 setup_repo
 printf 'version: "1"\n' >.fullsend/config.yaml
@@ -130,6 +148,19 @@ setup_repo
 printf 'version: "1"\nmint_url: https://overlay.example\n' >.fullsend/config.yaml
 printf 'version: "1"\nmint_url: https://base.example\n' >.fullsend/config.base.yaml
 assert_eq "overlay beats base" "https://overlay.example" "$(run_resolve "https://fallback.example")"
+
+setup_repo
+printf 'version: "1"\nmint_url: null\n' >.fullsend/config.yaml
+printf 'version: "1"\nmint_url: https://base.example\n' >.fullsend/config.base.yaml
+assert_eq "null overlay uses base" "https://base.example" "$(run_resolve "https://fallback.example")"
+
+setup_repo
+printf 'version: "1"\nmint_url: null\n' >.fullsend/config.yaml
+assert_eq "null overlay uses fallback" "https://fallback.example" "$(run_resolve "https://fallback.example")"
+
+setup_repo
+printf 'version: "1"\nmint_url: "null"\n' >.fullsend/config.yaml
+assert_eq "literal null overlay uses fallback" "https://fallback.example" "$(run_resolve "https://fallback.example")"
 
 setup_repo
 assert_eq "empty fallback" "" "$(run_resolve "")"
@@ -172,6 +203,9 @@ run_resolve_expect_fail "https://u:p@host" "reject userinfo fallback" "::error::
 
 setup_repo
 run_resolve_expect_fail $'https://mint.example\nsmuggled' "reject LF in fallback" "::error::mint_url must not contain CR or LF"
+
+setup_repo
+run_resolve_expect_fail $'https://mint.example\rsmuggled' "reject CR in fallback" "::error::mint_url must not contain CR or LF"
 
 setup_repo
 printf 'mint_url: [unclosed\n' >.fullsend/config.yaml

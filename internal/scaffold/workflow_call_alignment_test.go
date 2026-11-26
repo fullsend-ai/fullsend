@@ -1271,8 +1271,11 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 // route-resolved mint URL, not the workflow-call input snapshot (#8672).
 func TestReusableDispatchStageJobsResolvedMintURL(t *testing.T) {
 	type workflowStep struct {
+		Name string            `yaml:"name"`
+		If   string            `yaml:"if"`
 		Uses string            `yaml:"uses"`
 		With map[string]string `yaml:"with"`
+		Env  map[string]string `yaml:"env"`
 	}
 	type workflowJob struct {
 		Steps []workflowStep `yaml:"steps"`
@@ -1285,12 +1288,33 @@ func TestReusableDispatchStageJobsResolvedMintURL(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, yaml.Unmarshal(content, &workflow))
 
+	wantLocal := "${{ steps.resolve-mint.outputs.mint_url }}"
+	route, ok := workflow.Jobs["route"]
+	require.True(t, ok, "route job must exist")
+	resolverIndex := -1
+	var routeMintTokens int
+	for i, step := range route.Steps {
+		if step.Name == "Resolve effective mint URL" {
+			resolverIndex = i
+		}
+		if step.Uses == "./.defaults/.github/actions/mint-token" ||
+			step.Uses == "./.fullsend/.defaults/.github/actions/mint-token" {
+			routeMintTokens++
+			require.GreaterOrEqual(t, resolverIndex, 0, "route must resolve before minting %q", step.Name)
+			assert.Less(t, resolverIndex, i, "route must resolve before minting %q", step.Name)
+			assert.Equal(t, wantLocal, step.With["mint_url"], "route mint-token %q must use resolved URL", step.Name)
+			assert.Contains(t, step.If, "steps.resolve-mint.outcome == 'success'",
+				"route mint-token %q must not run when resolution fails", step.Name)
+		}
+	}
+	assert.Equal(t, 2, routeMintTokens, "route must check both review skip-note mint paths")
+
 	wantRoute := "${{ needs.route.outputs.mint_url }}"
 	for _, jobName := range []string{"triage", "code", "review", "fix", "retro", "prioritize"} {
 		t.Run(jobName, func(t *testing.T) {
 			job, ok := workflow.Jobs[jobName]
 			require.True(t, ok, "job %q must exist", jobName)
-			var sawMintToken, sawAgent bool
+			var sawMintToken, sawAgent, sawFailureReporter bool
 			for _, step := range job.Steps {
 				if step.Uses == "./.defaults/.github/actions/mint-token" {
 					sawMintToken = true
@@ -1304,32 +1328,51 @@ func TestReusableDispatchStageJobsResolvedMintURL(t *testing.T) {
 					assert.Equal(t, wantRoute, step.With["mint-url"],
 						"job %q agent action must use route output", jobName)
 				}
+				if step.Name == "Report "+jobName+" launch failure" {
+					sawFailureReporter = true
+					assert.True(t, sawAgent, "job %q must report failures after its resolved-URL agent consumer", jobName)
+					if jobName != "prioritize" {
+						assert.True(t, sawMintToken, "job %q must report failures after its resolved-URL token consumer", jobName)
+					}
+				}
 			}
 			if jobName != "prioritize" {
 				assert.True(t, sawMintToken, "job %q must mint an app token", jobName)
 			}
 			assert.True(t, sawAgent, "job %q must run the agent composite", jobName)
+			assert.True(t, sawFailureReporter, "job %q must include its launch-failure reporter", jobName)
 		})
 	}
 
-	wantHarness := "${{ steps.resolve-mint.outputs.mint_url }}"
 	harnessRun, ok := workflow.Jobs["harness-run"]
 	require.True(t, ok, "harness-run job must exist")
 	var harnessMintToken, harnessAgent bool
 	for _, step := range harnessRun.Steps {
 		if step.Uses == "./.defaults/.github/actions/mint-token" {
 			harnessMintToken = true
-			assert.Equal(t, wantHarness, step.With["mint_url"],
+			assert.Equal(t, wantLocal, step.With["mint_url"],
 				"harness-run mint-token must use job-local resolve output")
 		}
 		if step.Uses == "./.defaults/" {
 			harnessAgent = true
-			assert.Equal(t, wantHarness, step.With["mint-url"],
+			assert.Equal(t, wantLocal, step.With["mint-url"],
 				"harness-run agent action must use job-local resolve output")
 		}
 	}
 	assert.True(t, harnessMintToken, "harness-run must mint an app token")
 	assert.True(t, harnessAgent, "harness-run must run the agent composite")
+
+	harnessDispatch, ok := workflow.Jobs["harness-dispatch"]
+	require.True(t, ok, "harness-dispatch job must exist")
+	var sawDispatch bool
+	for _, step := range harnessDispatch.Steps {
+		if step.Name == "Run fullsend dispatch" {
+			sawDispatch = true
+			assert.Equal(t, wantLocal, step.Env["FULLSEND_MINT_URL"],
+				"harness-dispatch CLI must receive job-local resolve output")
+		}
+	}
+	assert.True(t, sawDispatch, "harness-dispatch must run the CLI")
 
 	prioritizePath := filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml")
 	prioritizeContent, err := os.ReadFile(prioritizePath)
@@ -1340,18 +1383,23 @@ func TestReusableDispatchStageJobsResolvedMintURL(t *testing.T) {
 		} `yaml:"jobs"`
 	}
 	require.NoError(t, yaml.Unmarshal(prioritizeContent, &prioritizeWF))
-	wantPrioritize := "${{ steps.resolve-mint.outputs.mint_url }}"
+	var prioritizeAgents, prioritizeMintTokens int
 	for jobName, job := range prioritizeWF.Jobs {
 		for _, step := range job.Steps {
-			if step.Uses != "./.defaults/" {
-				continue
+			if step.Uses == "./.defaults/" {
+				prioritizeAgents++
+				assert.Equal(t, wantLocal, step.With["mint-url"],
+					"reusable-prioritize job %q must use resolve-mint output", jobName)
 			}
-			assert.Equal(t, wantPrioritize, step.With["mint-url"],
-				"reusable-prioritize job %q must use resolve-mint output", jobName)
-			assert.NotEqual(t, "${{ inputs.mint_url }}", step.With["mint-url"],
-				"reusable-prioritize job %q must not use workflow input", jobName)
+			if step.Uses == "./.defaults/.github/actions/mint-token" {
+				prioritizeMintTokens++
+				assert.Equal(t, wantLocal, step.With["mint_url"],
+					"reusable-prioritize job %q mint-token must use resolve-mint output", jobName)
+			}
 		}
 	}
+	assert.Positive(t, prioritizeAgents, "reusable-prioritize must run at least one agent composite")
+	assert.Positive(t, prioritizeMintTokens, "reusable-prioritize must mint at least one app token")
 }
 
 // TestReusableDispatchMintResolverFetchesFromWorkflow ensures upstream-mode
