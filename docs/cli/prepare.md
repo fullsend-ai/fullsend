@@ -44,7 +44,10 @@ that the runs use. The image can depend on all of them.
 
 1. Composes the agent's harness through the same code path as `fullsend run`:
    the agent source from `config.yaml` or the agents repository, the `base:`
-   chain, the agent's `harness:` blocks, `lock.yaml` pins, and overlays.
+   chain, the agent's `harness:` blocks, `lock.yaml` pins, and overlays. The
+   agents repository can be a Forgejo repository when `FULLSEND_FORGEJO_URL` and
+   the other `FULLSEND_FORGEJO_*` variables are set (see
+   [Agent definitions from a Forgejo instance](run.md#agent-definitions-from-a-forgejo-instance)).
 2. Applies the `FULLSEND_SANDBOX_IMAGE` override, if set.
 3. Checks that the OpenShell CLI is installed and that a gateway is running.
 4. Pre-pulls the image the way `fullsend run` does (see

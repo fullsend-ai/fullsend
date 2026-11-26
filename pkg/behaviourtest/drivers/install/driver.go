@@ -190,6 +190,18 @@ type MintURLReporter interface {
 	MintURL() string
 }
 
+// AgentSourceEnvReporter is an optional Driver interface reporting the
+// environment that points fullsend at the agent definitions the driver's
+// environment hosts, such as the agent-definition repository the
+// forgejo-dev stack seeds, so built-in agents resolve there instead of
+// from fullsend-ai/agents on GitHub. It is separate from Driver so
+// external Driver implementations keep compiling.
+type AgentSourceEnvReporter interface {
+	// AgentSourceEnv returns the environment variables to set for
+	// fullsend; empty when the driver hosts no agent definitions.
+	AgentSourceEnv() map[string]string
+}
+
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
 // The default implementation is e2etest.TryRunCLI. Inject a custom
 // function in tests to avoid shelling out.

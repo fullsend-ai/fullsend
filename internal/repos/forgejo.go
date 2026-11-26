@@ -195,6 +195,16 @@ func validateForgejoURL(field, raw string) error {
 	return nil
 }
 
+// ValidateForgejoURL applies the forgejo.instances[].url rules to raw,
+// naming field in the error: an absolute https URL with an optional path
+// prefix and no credentials, query, or fragment, or plain http for a
+// loopback host.
+func ValidateForgejoURL(field, raw string) error { return validateForgejoURL(field, raw) }
+
+// SplitForgejoPath splits an owner/repo path relative to a Forgejo
+// instance, reporting false when either part is not a valid Forgejo name.
+func SplitForgejoPath(p string) (owner, repo string, ok bool) { return splitForgejoPath(p) }
+
 func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true

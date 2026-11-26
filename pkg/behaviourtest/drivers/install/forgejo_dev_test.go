@@ -27,6 +27,10 @@ type fakeForgejoStack struct {
 
 func (s *fakeForgejoStack) URL() string { return "http://127.0.0.1:3000/" }
 
+func (s *fakeForgejoStack) AgentSourceEnv() map[string]string {
+	return map[string]string{"FULLSEND_FORGEJO_AGENTS_REF": "abc"}
+}
+
 func (s *fakeForgejoStack) Teardown(context.Context) error {
 	s.teardowns++
 	return s.teardownErr
@@ -56,6 +60,9 @@ func TestNewForgejoDev(t *testing.T) {
 
 	assert.NotImplements(t, (*LeaseDriver)(nil), d, "the driver must not act as the GitHub slot pool driver")
 	assert.NotImplements(t, (*MintURLReporter)(nil), d)
+	require.Implements(t, (*AgentSourceEnvReporter)(nil), d)
+	assert.Equal(t, map[string]string{"FULLSEND_FORGEJO_AGENTS_REF": "abc"}, d.(AgentSourceEnvReporter).AgentSourceEnv(),
+		"the driver reports the stack's agent-definition source")
 	assert.Equal(t, ForgejoDevCapacity, d.Capacity())
 	assert.Equal(t, 2, ForgejoDevCapacity)
 
