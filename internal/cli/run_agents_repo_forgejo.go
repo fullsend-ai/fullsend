@@ -308,7 +308,9 @@ func gitBlobID(content []byte, idLen int) string {
 	if idLen == 64 {
 		h = sha256.New()
 	} else {
-		h = sha1.New()
+		// Git blob IDs use SHA-1 for compatibility with forge APIs.
+		// nosemgrep: go.lang.security.audit.crypto.use-of-sha1
+		h = sha1.New() //nolint:gosec // Git's blob hash algorithm, not used for security
 	}
 	h.Write([]byte("blob " + strconv.Itoa(len(content)) + "\x00"))
 	h.Write(content)
