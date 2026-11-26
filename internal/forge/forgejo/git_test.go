@@ -133,3 +133,29 @@ func TestClient_GetBlob(t *testing.T) {
 	_, err = c.GetBlob(ctx, "acme", "agents", "missing", 10)
 	assert.ErrorIs(t, err, forge.ErrNotFound)
 }
+
+// TestClient_GetBlob_LargeBlob checks that a blob well over what fits in
+// maxResponseBytes once base64-encoded, but within the content limit, is
+// read in full, and that a response far over the limit is a size error.
+func TestClient_GetBlob_LargeBlob(t *testing.T) {
+	const limit = 10 << 20
+	content := []byte(strings.Repeat("x", 8<<20))
+	enc := base64.StdEncoding.EncodeToString(content)
+	require.Greater(t, int64(len(enc)), int64(maxResponseBytes), "the encoded blob must exceed the general response cap")
+
+	huge := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("y", 12<<20)))
+	c, _ := newGitAPIClient(t, map[string]string{
+		repoAPI + "/git/blobs/big?":  fmt.Sprintf(`{"content":%q,"encoding":"base64","size":%d}`, enc, len(content)),
+		repoAPI + "/git/blobs/huge?": fmt.Sprintf(`{"content":%q,"encoding":"base64","size":%d}`, huge, 12<<20),
+	})
+	ctx := context.Background()
+
+	got, err := c.GetBlob(ctx, "acme", "agents", "big", limit)
+	require.NoError(t, err)
+	assert.Equal(t, content, got)
+
+	// A response too large to be a blob within the limit is rejected before
+	// it is decoded, with a size error rather than a decode error.
+	_, err = c.GetBlob(ctx, "acme", "agents", "huge", limit)
+	assert.ErrorContains(t, err, "response exceeds")
+}

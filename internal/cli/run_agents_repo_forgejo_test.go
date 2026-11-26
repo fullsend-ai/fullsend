@@ -456,7 +456,7 @@ func TestResolveAgentSource_ForgejoFailures(t *testing.T) {
 			setup: func(_ *testing.T, _ *fakeForgejoGit, opts *harness.ComposeOpts) {
 				opts.OrgAllowlist = []string{"https://raw.githubusercontent.com/fullsend-ai/agents/"}
 			},
-			wantErr: "is not in allowed_remote_resources (add " + "http://",
+			wantErr: `is not in allowed_remote_resources (add "http://`,
 		},
 		{
 			name: "content does not match its object ID",

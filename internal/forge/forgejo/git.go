@@ -3,6 +3,7 @@ package forgejo
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -84,17 +85,36 @@ func (c *LiveClient) GetTree(ctx context.Context, owner, repo, sha string, recur
 	}
 }
 
+// blobJSONOverhead is the room left in a blob response for its JSON fields
+// other than the base64 content.
+const blobJSONOverhead = 4096
+
+// blobResponseLimit returns the largest JSON blob response worth reading
+// for decoded content of limit bytes: the base64 encoding (4 bytes per 3,
+// with a line break every 60 characters at most) plus a fixed allowance for
+// the rest of the JSON document.
+func blobResponseLimit(limit int64) int64 {
+	encoded := (limit + 2) / 3 * 4
+	return encoded + encoded/60 + 1 + blobJSONOverhead
+}
+
 // GetBlob returns the content of blob sha in owner/repo, or an error
 // wrapping forge.ErrNotFound when it does not exist. Content larger than
-// limit bytes is an error.
+// limit bytes is an error. The response is read with a cap that allows for
+// base64 expansion, so a blob of up to limit bytes is not cut off by the
+// client's general response-size cap.
 func (c *LiveClient) GetBlob(ctx context.Context, owner, repo, sha string, limit int64) ([]byte, error) {
 	var out struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 		Size     int64  `json:"size"`
 	}
-	if err := c.do(ctx, http.MethodGet, c.repoURL(owner, repo, "/git/blobs/"+url.PathEscape(sha)), nil, &out); err != nil {
+	body, err := c.send(ctx, http.MethodGet, c.repoURL(owner, repo, "/git/blobs/"+url.PathEscape(sha)), nil, "application/json", blobResponseLimit(limit), true)
+	if err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("blob %q in %q/%q: decoding response: %w", sha, owner, repo, err)
 	}
 	if out.Size > limit {
 		return nil, fmt.Errorf("blob %q in %q/%q is %d bytes, over the %d-byte limit", sha, owner, repo, out.Size, limit)

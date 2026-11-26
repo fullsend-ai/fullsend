@@ -73,7 +73,9 @@ type forgejoAgentsSource struct {
 }
 
 // forgejoAgentsSourceFn returns the configured Forgejo agent-definition
-// source, nil when none is configured. It is a test seam.
+// source, nil when none is configured. Override in tests to point at a fake
+// Forgejo instance or to force a configuration error without setting
+// environment variables.
 var forgejoAgentsSourceFn = func() (*forgejoAgentsSource, error) {
 	return forgejoAgentsSourceFromEnv(os.Getenv, nil)
 }
@@ -349,7 +351,7 @@ func fetchForgejoAgentsRepoFile(ctx context.Context, src *forgejoAgentsSource, r
 	rawURL := src.fileURL(relPath)
 	allowedBy := harness.MatchingAllowedPrefixInList(rawURL, composeOpts.OrgAllowlist)
 	if allowedBy == "" {
-		return "", none, fmt.Errorf("%s from %s: URL %s is not in allowed_remote_resources (add %s to allowed_remote_resources in config.yaml)", noun, src, rawURL, src.allowPrefix())
+		return "", none, fmt.Errorf("%s from %s: URL %q is not in allowed_remote_resources (add %q to allowed_remote_resources in config.yaml)", noun, src, rawURL, src.allowPrefix())
 	}
 
 	if composeOpts.FetchPolicy.Offline {
@@ -395,7 +397,7 @@ func recordAgentsRepoFile(composeOpts harness.ComposeOpts, rawURL, contentHash, 
 	var none harness.Dependency
 	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, contentHash)
 	if err != nil {
-		return "", none, fmt.Errorf("resolving cache path for %s: %w", rawURL, err)
+		return "", none, fmt.Errorf("resolving cache path for %q: %w", rawURL, err)
 	}
 	localPath := filepath.Join(cachePath, "content")
 	if composeOpts.AuditLogPath != "" {
