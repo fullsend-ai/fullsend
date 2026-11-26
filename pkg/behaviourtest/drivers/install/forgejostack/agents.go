@@ -15,8 +15,10 @@ import (
 // fullsend-ai/agents on GitHub, so behaviour tests on the stack resolve
 // built-in agents from the stack itself and need no live GitHub access.
 const (
+	// AgentsOwner is the organization that owns the seeded repository.
 	AgentsOwner = "fullsend-ai"
-	AgentsRepo  = "agents"
+	// AgentsRepo is the name of the seeded agent-definition repository.
+	AgentsRepo = "agents"
 )
 
 // Environment variables that point fullsend at a Forgejo agent-definition
@@ -110,15 +112,16 @@ func (s *Stack) seedAgentDefinitions(ctx context.Context) error {
 func (s *Stack) AgentsRef() string { return s.agentsRef }
 
 // AgentSourceEnv returns the environment that makes fullsend resolve
-// built-in agents from the seeded repository at its pinned commit.
+// built-in agents from this stack's seeded repository at its pinned
+// commit.
 func (s *Stack) AgentSourceEnv() map[string]string {
-	return AgentSourceEnv(s.url, s.agentsRef)
+	return AgentSourceEnvFor(s.url, s.agentsRef)
 }
 
-// AgentSourceEnv returns the environment that makes fullsend resolve
-// built-in agents from AgentsOwner/AgentsRepo at commit ref on the Forgejo
+// AgentSourceEnvFor builds the same environment for any Forgejo instance:
+// it points fullsend at AgentsOwner/AgentsRepo at commit ref on the
 // instance at baseURL.
-func AgentSourceEnv(baseURL, ref string) map[string]string {
+func AgentSourceEnvFor(baseURL, ref string) map[string]string {
 	return map[string]string{
 		agentsURLEnv:  strings.TrimSuffix(baseURL, "/"),
 		agentsRepoEnv: AgentsOwner + "/" + AgentsRepo,

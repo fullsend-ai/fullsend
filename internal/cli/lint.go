@@ -341,6 +341,9 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 			agentOpts.SourceURL = fetchDeps[0].URL
 			// A harness from the configured Forgejo source reads its
 			// companion files through that source, as in fullsend run.
+			// lint has no forge client and never had the GHES host fetch
+			// hooks, so it applies the Forgejo helper directly instead of
+			// useAgentsRepoHostFetch.
 			useConfiguredForgejoAgentsRepoFetch(&agentOpts)
 		}
 		agentOpts.Blocks = config.HarnessBlocksFor(entries, agentName)

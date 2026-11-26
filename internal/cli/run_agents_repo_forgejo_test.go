@@ -371,7 +371,7 @@ func TestResolveAgentSource_ForgejoDevFixture(t *testing.T) {
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	t.Setenv(forgejoTokenEnv, "")
-	env := forgejostack.AgentSourceEnv(srv.URL+"/", forgejoTestSHA)
+	env := forgejostack.AgentSourceEnvFor(srv.URL+"/", forgejoTestSHA)
 	require.ElementsMatch(t, []string{forgejoURLEnv, forgejoAgentsRepoEnv, forgejoAgentsRefEnv}, slices.Collect(maps.Keys(env)))
 	for k, v := range env {
 		t.Setenv(k, v)

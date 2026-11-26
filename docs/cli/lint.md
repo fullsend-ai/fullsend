@@ -42,7 +42,10 @@ Each enabled `agents:` entry is resolved and composed through the same machinery
   fetched from the allowlisted hosts with caching.
 - Override-only entries (settings only, `source:` unset) resolve their harness from the
   [agents repository](https://github.com/fullsend-ai/agents), exactly as run does —
-  linting a built-in agent lints the fetched upstream harness. Under `--offline` these
+  linting a built-in agent lints the fetched upstream harness. When `FULLSEND_FORGEJO_URL`
+  is set, they resolve from the configured Forgejo repository at its pinned commit
+  instead (see [Agent definitions from a Forgejo instance](run.md#agent-definitions-from-a-forgejo-instance)).
+  Under `--offline` these
   use the agents revision most recently cached by an online run in the same `.fullsend`
   directory. Run that online run with the same forge (`--forge` or CI auto-detection)
   as the offline run; otherwise the forge-specific files are not cached and the

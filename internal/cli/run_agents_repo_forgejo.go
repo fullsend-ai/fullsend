@@ -153,8 +153,9 @@ func (s *forgejoAgentsSource) relPathOf(rawURL string) (string, error) {
 
 // forgeInfo describes relPath at the pinned commit for directory fetches.
 // Forge carries the instance host and any path prefix, so the clone URL
-// built from it is unique to the instance; agentsTreeFetcher recognises
-// the requests that are for the source by it.
+// built from it is unique to the instance; the opts.TreeFetcher hook that
+// useForgejoAgentsRepoFetch installs recognises the requests that are for
+// the source by it.
 func (s *forgejoAgentsSource) forgeInfo(relPath string) *forge.ForgeURLInfo {
 	host := strings.TrimPrefix(strings.TrimPrefix(s.baseURL, "https://"), "http://")
 	return &forge.ForgeURLInfo{
