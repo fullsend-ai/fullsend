@@ -546,47 +546,6 @@ func TestCloseMergeAndUpdatePullRequest(t *testing.T) {
 	assert.True(t, forge.IsNotFound(c.CloseChangeProposal(ctx, "o", "r", 99)))
 }
 
-func TestConversationComments(t *testing.T) {
-	ctx := context.Background()
-	f, c := newFakePulls(t)
-	comment := func(id int, body string) map[string]any {
-		return map[string]any{
-			"id": id, "body": body, "user": map[string]any{"login": "bot"},
-			"html_url":   fmt.Sprintf("https://forgejo.example/forgejo/o/r/pulls/4#issuecomment-%d", id),
-			"created_at": "2026-01-01T00:00:00Z",
-		}
-	}
-	f.handle("GET /issues/4/comments", respond(200, []any{comment(1, "first"), comment(2, "second")}))
-	f.handle("POST /issues/4/comments", respond(201, comment(3, "new")))
-	f.handle("GET /issues/comments/3", respond(200, comment(3, "new")))
-	f.handle("PATCH /issues/comments/3", respond(200, comment(3, "edited")))
-
-	comments, err := c.ListIssueComments(ctx, "o", "r", 4)
-	require.NoError(t, err)
-	require.Len(t, comments, 2)
-	assert.Equal(t, forge.IssueComment{ID: 1, HTMLURL: "https://forgejo.example/forgejo/o/r/pulls/4#issuecomment-1", Body: "first", Author: "bot", CreatedAt: "2026-01-01T00:00:00Z"}, comments[0])
-
-	created, err := c.CreateIssueComment(ctx, "o", "r", 4, "new")
-	require.NoError(t, err)
-	assert.Equal(t, 3, created.ID)
-	got, err := c.GetIssueComment(ctx, "o", "r", 3)
-	require.NoError(t, err)
-	assert.Equal(t, "new", got.Body)
-	require.NoError(t, c.UpdateIssueComment(ctx, "o", "r", 3, "edited"))
-
-	reqs := f.reqs()
-	assert.Equal(t, map[string]any{"body": "new"}, reqs[1].Body)
-	assert.Equal(t, map[string]any{"body": "edited"}, reqs[3].Body)
-
-	_, err = c.ListIssueComments(ctx, "o", "r", 99)
-	assert.True(t, forge.IsNotFound(err))
-	_, err = c.CreateIssueComment(ctx, "o", "r", 99, "x")
-	assert.True(t, forge.IsNotFound(err))
-	_, err = c.GetIssueComment(ctx, "o", "r", 99)
-	assert.True(t, forge.IsNotFound(err))
-	assert.True(t, forge.IsNotFound(c.UpdateIssueComment(ctx, "o", "r", 99, "x")))
-}
-
 func TestGetCombinedStatus(t *testing.T) {
 	ctx := context.Background()
 	f, c := newFakePulls(t)

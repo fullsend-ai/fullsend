@@ -641,67 +641,6 @@ func (c *LiveClient) UpdatePullRequestBranch(ctx context.Context, owner, repo st
 	return nil
 }
 
-// issueComment is the subset of Forgejo's Comment the client reads.
-type issueComment struct {
-	ID      int    `json:"id"`
-	HTMLURL string `json:"html_url"`
-	Body    string `json:"body"`
-	User    struct {
-		Login string `json:"login"`
-	} `json:"user"`
-	CreatedAt string `json:"created_at"`
-}
-
-func (ic issueComment) toIssueComment() forge.IssueComment {
-	return forge.IssueComment{ID: ic.ID, HTMLURL: ic.HTMLURL, Body: ic.Body, Author: ic.User.Login, CreatedAt: ic.CreatedAt}
-}
-
-// ListIssueComments returns the conversation comments of issue or pull
-// request number, oldest first. Forgejo returns them in one response.
-func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {
-	var comments []issueComment
-	if err := c.do(ctx, http.MethodGet, c.repoURL(owner, repo, "/issues/"+strconv.Itoa(number)+"/comments"), nil, &comments); err != nil {
-		return nil, classify(err, nil)
-	}
-	out := make([]forge.IssueComment, 0, len(comments))
-	for _, ic := range comments {
-		out = append(out, ic.toIssueComment())
-	}
-	return out, nil
-}
-
-// CreateIssueComment adds a conversation comment to issue or pull request
-// number.
-func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
-	var out issueComment
-	req := map[string]string{"body": body}
-	if err := c.do(ctx, http.MethodPost, c.repoURL(owner, repo, "/issues/"+strconv.Itoa(number)+"/comments"), req, &out); err != nil {
-		return nil, fmt.Errorf("commenting on %d in %q/%q: %w", number, owner, repo, classify(err, nil))
-	}
-	ic := out.toIssueComment()
-	return &ic, nil
-}
-
-// GetIssueComment returns conversation comment commentID, or an error
-// wrapping forge.ErrNotFound when it does not exist in owner/repo.
-func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error) {
-	var out issueComment
-	if err := c.do(ctx, http.MethodGet, c.repoURL(owner, repo, "/issues/comments/"+strconv.Itoa(commentID)), nil, &out); err != nil {
-		return nil, classify(err, nil)
-	}
-	ic := out.toIssueComment()
-	return &ic, nil
-}
-
-// UpdateIssueComment replaces the body of conversation comment commentID.
-func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error {
-	req := map[string]string{"body": body}
-	if err := c.do(ctx, http.MethodPatch, c.repoURL(owner, repo, "/issues/comments/"+strconv.Itoa(commentID)), req, nil); err != nil {
-		return fmt.Errorf("updating comment %d in %q/%q: %w", commentID, owner, repo, classify(err, nil))
-	}
-	return nil
-}
-
 // CommitStatus is one CI context's latest status on a commit.
 type CommitStatus struct {
 	// Context names the check, e.g. "ci / test (pull_request)".
