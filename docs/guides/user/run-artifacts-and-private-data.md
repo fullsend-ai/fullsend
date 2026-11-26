@@ -123,8 +123,9 @@ names the source.
 1. A run with a valid normalized event uses its `source.system`, lowercased
    first, so an event that says `Jira` still matches your `jira` key.
 2. A GitHub Actions run started directly by a GitHub issue, pull request,
-   comment or review event is `github`. The standard GitHub stage jobs work
-   this way.
+   comment or review event is `github`. The standard GitHub stage jobs do
+   not take this path: they receive the normalized event through
+   `.fullsend/dispatch/event-payload.json` and resolve under rule 1.
 3. Everything else is unknown and gets the strictest level you configured:
    - manual and scheduled runs;
    - a dispatch with no valid normalized event;
@@ -132,10 +133,11 @@ names the source.
      up;
    - a GitLab event too large to pass along.
 
-The job log says which rule applied. A GitHub comment run logs:
+The job log says which rule applied. A GitHub comment run started by a
+routed stage job logs:
 
 ```text
-Run artifact level all: run source "github" (native issue_comment event)
+Run artifact level all: run source "github" from the normalized event
 ```
 
 ## What `metadata` keeps and removes

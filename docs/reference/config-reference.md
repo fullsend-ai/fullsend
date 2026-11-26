@@ -1336,8 +1336,10 @@ and prints the rule it applied on stderr:
 2. A run with no normalized event in any payload, on GitHub Actions, started
    by a native GitHub event (`issues`, `issue_comment`, `pull_request`,
    `pull_request_target`, `pull_request_review` or
-   `pull_request_review_comment`) is `github`. This covers the standard
-   GitHub stage jobs, which receive no normalized event.
+   `pull_request_review_comment`) is `github`. The standard GitHub stage
+   jobs receive the normalized event through
+   `.fullsend/dispatch/event-payload.json` and resolve under rule 1; this
+   rule is the fallback for a run started directly by a GitHub event.
 3. Everything else is unknown: manual and scheduled runs, a dispatch without
    a valid normalized event, a dispatch payload that names a source in
    `_normalized_event.source.system` whose event is invalid or names a
