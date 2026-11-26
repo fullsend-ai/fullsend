@@ -1682,12 +1682,18 @@ jobs:
       #
       # This ladder is the third copy of the CLI install/cache machinery:
       # keep a cache-key or path change in sync with the CEL route ladder
-      # above and the harness-dispatch ladder below. Unlike the cel-* steps
-      # it is NOT continue-on-error: the payload embed below is essential to
-      # the stage jobs' event contract, so an install or normalization
-      # failure fails closed here where the CEL ladder degrades to bash
-      # routing (a vendored binary too old for --print-event blocks the
-      # stages until the repo re-vendors, by the same policy).
+      # above and the harness-dispatch ladder below. Its cache steps
+      # (restore, validate, expose, prepare, save) are continue-on-error
+      # like the cel-* steps — the cache is an optimization, so no
+      # cache-service failure may block the route job every stage job
+      # needs (at the pinned actions/cache v6.1.0 a restore error fails
+      # the step, while save logs save errors as warnings and exits 0)
+      # — while the CLI install and the payload step below stay
+      # fail-closed: the payload embed is essential to the stage jobs'
+      # event contract, so an install or normalization failure fails
+      # closed here where the CEL ladder degrades to bash routing (a
+      # vendored binary too old for --print-event blocks the stages until
+      # the repo re-vendors, by the same policy).
       #
       # Every step here gates on the same effective stage as the job-level
       # `stage` output: when the review is skipped on an unchanged-diff
@@ -1712,6 +1718,7 @@ jobs:
 
       - name: Restore fullsend CLI cache for event payload
         if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream'
+        continue-on-error: true
         id: payload-cli-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1720,6 +1727,7 @@ jobs:
 
       - name: Validate cached fullsend CLI for event payload
         id: payload-cli-cache-validation
+        continue-on-error: true
         if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
@@ -1766,6 +1774,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for event payload
+        continue-on-error: true
         if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit == 'true' && steps.payload-cli-cache-validation.outputs.valid == 'true'
         shell: bash
         run: |
@@ -1778,6 +1787,7 @@ jobs:
 
       - name: Prepare fullsend CLI cache artifact for event payload
         id: payload-cli-cache-prepare
+        continue-on-error: true
         if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && (steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true')
         shell: bash
         run: |
@@ -1787,6 +1797,7 @@ jobs:
           "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1
 
       - name: Save fullsend CLI cache for event payload
+        continue-on-error: true
         if: steps.route.outputs.stage != '' && steps.review-skip-publish.outputs.skipped != 'true' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && (steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true') && steps.payload-cli-cache-prepare.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1862,15 +1873,35 @@ jobs:
           # (AISDLC-505), the way harness dispatch embeds it (#6748). This
           # fails closed on purpose: a stage job running without its event
           # is the defect this fixes, so a normalization failure stops the
-          # route job rather than emitting a payload with no event.
+          # route job rather than emitting a payload with no event. The
+          # CLI's own stderr rides on the annotation so a vendored or
+          # preinstalled binary too old for --print-event shows its
+          # unknown-flag error in the checks UI instead of only the raw
+          # log (a capability probe stays out by design: probing past an
+          # unverifiable binary and continuing would reopen a silent
+          # no-event path).
+          PAYLOAD_NORM_ERR=".payload-normalize.stderr"
           NORMALIZED_EVENT=$(fullsend dispatch \
             --input-driver gha-event \
             --config-dir .fullsend \
             --event-action "${EVENT_ACTION}" \
-            --print-event) || {
-            echo "::error::Failed to normalize the event for the routed stage"
+            --print-event 2>"${PAYLOAD_NORM_ERR}") || {
+            NORM_ERR_TEXT="$(tr '\r\n' '  ' < "${PAYLOAD_NORM_ERR}")"
+            NORM_ERR_TEXT="${NORM_ERR_TEXT% }"
+            if [[ -n "${NORM_ERR_TEXT}" ]]; then
+              echo "::error::Failed to normalize the event for the routed stage: ${NORM_ERR_TEXT}"
+            else
+              echo "::error::Failed to normalize the event for the routed stage"
+            fi
+            cat "${PAYLOAD_NORM_ERR}" >&2 || true
+            rm -f "${PAYLOAD_NORM_ERR}"
             exit 1
           }
+          # The CLI's stderr carries success-path diagnostics too (a
+          # denied bot role is a warning, not an error), so it reaches
+          # the log before the scratch file goes.
+          cat "${PAYLOAD_NORM_ERR}" >&2 || true
+          rm -f "${PAYLOAD_NORM_ERR}"
           EVENT_PAYLOAD=$(printf '%s' "${EVENT_PAYLOAD}" \
             | jq -c --argjson normalized "${NORMALIZED_EVENT}" '._normalized_event = $normalized')
 
