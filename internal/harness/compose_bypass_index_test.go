@@ -238,6 +238,91 @@ func TestFetchBaseScriptOrDir_BypassRecordsChangedScriptDir(t *testing.T) {
 	assert.Equal(t, "#!/bin/sh\necho v2, changed upstream", readFile(t, contentPath))
 }
 
+// TestFetchBaseDir_BypassURLIndexSkipsLegacyPluginIndex pins the plugins
+// arm of the URL-index bypass — the one re-resolve path whose cache hit
+// can come from the legacy-marker fallback: with a warm cache whose only
+// index entries are the legacy `<dirURL>/plugin.json` keys pointing at the
+// old plugin tree, normal resolution serves that cached tree, while
+// BypassURLIndex (what `fullsend lock --update` sets) skips the legacy
+// fallback, fetches the changed upstream tree once and records the fresh
+// entries under the current key. Reverting the bypass guard on the legacy
+// fallback (`if !indexHit` without `!opts.bypassIndexKey(keyURL)`) makes
+// the bypass case fail: the stale legacy entry would be served instead.
+func TestFetchBaseDir_BypassURLIndexSkipsLegacyPluginIndex(t *testing.T) {
+	const (
+		baseURLDir = "https://raw.githubusercontent.com/org/repo/ref1/"
+		pluginPath = "plugins/gopls-lsp"
+	)
+	dirURL := baseURLDir + pluginPath
+	keyURL := dirURL + "/" // basePluginKind.keyFile
+	legacyKey := dirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	// The upstream plugin tree changed; the fetcher counts its calls.
+	upstream := map[string][]byte{
+		"plugin.json": []byte(`{"name":"gopls-lsp","version":"2, changed upstream"}`),
+	}
+	// The expected hash comes from the fixture alone, never from a write
+	// into the cache under test: the tree the bypass records must be the
+	// one the code under test caches, not one the test placed there.
+	newTreeHash := fetch.ComputeTreeHash(upstream)
+
+	// seedLegacyPluginIndex builds the warm cache: only the legacy
+	// plugin.json index keys exist, pointing at the old plugin tree, so a
+	// cache hit can only come from the legacy fallback.
+	seedLegacyPluginIndex := func(t *testing.T) (cacheDir string, oldTreeHash string) {
+		t.Helper()
+		cacheDir = filepath.Join(t.TempDir(), "cache")
+		oldTreeHash = seedLockedTree(t, cacheDir, legacyKey,
+			map[string][]byte{"plugin.json": []byte(`{"name":"gopls-lsp","version":"1"}`)}, true)
+		require.NoError(t, urlIndexPut(cacheDir, legacyKey, oldTreeHash))
+		require.NoError(t, urlIndexPut(cacheDir, "plugin:"+legacyKey, oldTreeHash))
+		require.NotEqual(t, oldTreeHash, newTreeHash, "the changed upstream tree must hash differently")
+		return cacheDir, oldTreeHash
+	}
+
+	t.Run("normal resolution keeps the cached legacy tree", func(t *testing.T) {
+		cacheDir, oldTreeHash := seedLegacyPluginIndex(t)
+		dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]", baseURLDir,
+			pluginPath, allowlist, ComposeOpts{
+				WorkspaceRoot: cacheDir,
+				TreeFetcher: func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+					t.Error("the tree fetcher must not run without the bypass")
+					return nil, errUnexpectedFetch
+				},
+			})
+		require.NoError(t, err)
+		assert.True(t, dep.CacheHit, "without the bypass the legacy index entry must be served")
+		assert.Equal(t, oldTreeHash, dep.SHA256)
+		assert.Equal(t, `{"name":"gopls-lsp","version":"1"}`, readFile(t, filepath.Join(localDir, "plugin.json")))
+	})
+
+	t.Run("bypass re-resolves and records the current key", func(t *testing.T) {
+		cacheDir, _ := seedLegacyPluginIndex(t)
+		calls := 0
+		dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]", baseURLDir,
+			pluginPath, allowlist, ComposeOpts{
+				WorkspaceRoot:  cacheDir,
+				BypassURLIndex: true,
+				TreeFetcher: func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+					calls++
+					return upstream, nil
+				},
+			})
+		require.NoError(t, err)
+		assert.Equal(t, 1, calls, "the bypass must re-resolve the plugin directory from the fetcher")
+		assert.False(t, dep.CacheHit, "the bypass must not serve the legacy entry's cached tree")
+		assert.Equal(t, newTreeHash, dep.SHA256, "the update must record the changed tree's hash")
+		assert.Equal(t, `{"name":"gopls-lsp","version":"2, changed upstream"}`, readFile(t, filepath.Join(localDir, "plugin.json")))
+		// The fresh entries are recorded under the current key, both of them.
+		for _, key := range []string{keyURL, "plugin:" + keyURL} {
+			got, ok := urlIndexLookup(cacheDir, key)
+			require.True(t, ok, "index key %s", key)
+			assert.Equal(t, newTreeHash, got, "index key %s must point at the new tree", key)
+		}
+	})
+}
+
 // errUnexpectedFetch is the error the normal-resolution control returns from
 // its tree fetcher, which must never be called.
 var errUnexpectedFetch = errors.New("tree fetcher must not be called")

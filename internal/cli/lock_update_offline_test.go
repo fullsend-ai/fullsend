@@ -38,3 +38,29 @@ func TestRunLock_UpdateWarmCacheOfflineKeepsCachedHash(t *testing.T) {
 	assert.Equal(t, fetch.ComputeSHA256(agentV1), dep.SHA256,
 		"warm-cache --update --offline must re-pin from the cache, not fail")
 }
+
+// TestRunLock_UpdateColdCacheOfflineAdvisesNetwork pins the cold-cache arm
+// of the offline miss advice under BypassURLIndex: with nothing cached for
+// the harness's URL base but the base harness itself, `lock --update
+// --offline` can neither re-resolve from the source (offline) nor re-pin
+// from an index entry it never wrote, so the error says re-resolving
+// requires network access and to rerun without --offline — never the lock
+// command the user just ran. The warm-cache neighbour is pinned by
+// TestRunLock_UpdateWarmCacheOfflineKeepsCachedHash above; the non-bypass
+// miss (a plain offline lock) by the lock advice family.
+func TestRunLock_UpdateColdCacheOfflineAdvisesNetwork(t *testing.T) {
+	agentV1 := []byte("agent v1")
+	s := newLockAdviceSetup(t, agentV1)
+
+	// Seed only the base harness itself, so the offline update gets past
+	// the base fetch and misses on the base's relative files: no cached
+	// copy and no URL index entry for them.
+	require.NoError(t, fetch.CachePut(s.dir, s.srv.URL+"/harness/base.yaml", s.files["/harness/base.yaml"]))
+
+	err := runLock(context.Background(), "code", s.dir, "", true, resolveFlags{offline: true}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in cache and offline mode is enabled")
+	assert.Contains(t, err.Error(), "re-resolving from the source requires network access; rerun without --offline")
+	// The advice does not name the command the user just ran.
+	assert.NotContains(t, err.Error(), "fullsend lock")
+}
