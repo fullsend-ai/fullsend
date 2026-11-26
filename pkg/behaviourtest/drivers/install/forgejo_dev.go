@@ -28,6 +28,7 @@ const forgejoDevStartTimeout = 20 * time.Minute
 // forgejoStack is the part of *forgejostack.Stack the driver uses.
 type forgejoStack interface {
 	URL() string
+	AgentSourceEnv() map[string]string
 	Teardown(ctx context.Context) error
 }
 
@@ -38,7 +39,8 @@ type forgejoStackStarter func(ctx context.Context, logf func(string, ...any)) (f
 //
 // Its factory starts an isolated managed Forgejo and Forgejo Runner
 // stack (package forgejostack) on the host's Docker or Podman engine and
-// returns once the stack is ready; Finalize tears it down. Repository
+// returns once the stack is ready; Finalize tears it down. AgentSourceEnv
+// reports the stack's seeded agent-definition repository. Repository
 // allocation and release are not implemented yet: they return an error
 // that satisfies errors.Is(err, drivers.ErrNotImplemented) and names the
 // operation. It never falls back to the GitHub pool drivers.
@@ -49,7 +51,10 @@ type forgejoDevDriver struct {
 	finalizeErr  error
 }
 
-var _ Driver = (*forgejoDevDriver)(nil)
+var (
+	_ Driver                 = (*forgejoDevDriver)(nil)
+	_ AgentSourceEnvReporter = (*forgejoDevDriver)(nil)
+)
 
 // NewForgejoDev is the install Factory for ENVIRONMENT=forgejo-dev. It
 // starts the managed Forgejo stack and fails, with an
@@ -109,6 +114,13 @@ func (d *forgejoDevDriver) Finalize(ctx context.Context) error {
 		}
 	})
 	return d.finalizeErr
+}
+
+// AgentSourceEnv returns the environment that makes fullsend resolve
+// built-in agents from the stack's seeded agent-definition repository at
+// its pinned commit, so no scenario needs live GitHub for them.
+func (d *forgejoDevDriver) AgentSourceEnv() map[string]string {
+	return d.stack.AgentSourceEnv()
 }
 
 func (d *forgejoDevDriver) Capacity() int {

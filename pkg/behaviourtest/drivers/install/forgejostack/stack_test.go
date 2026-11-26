@@ -173,7 +173,15 @@ type fakeForgejo struct {
 	workflow    atomic.Value
 	failCreate  bool
 	password    atomic.Value
+	// seedFail selects a failure of the agent-definition seeding: "org",
+	// "repo", "commit", "garbled", or "no-sha".
+	seedFail string
+	// seeded holds the fixture files committed to the agents repository.
+	seeded atomic.Value
 }
+
+// fakeAgentsCommit is the commit the fake reports for the seeded fixture.
+const fakeAgentsCommit = "89abcdef0123456789abcdef0123456789abcdef"
 
 func (f *fakeForgejo) handler() http.Handler {
 	mux := http.NewServeMux()
@@ -212,6 +220,75 @@ func (f *fakeForgejo) handler() http.Handler {
 		assert.Equal(f.t, readinessRepo, body["name"])
 		assert.Equal(f.t, true, body["auto_init"])
 		w.WriteHeader(http.StatusCreated)
+	})
+	mux.HandleFunc("POST /api/v1/orgs", func(w http.ResponseWriter, r *http.Request) {
+		if !auth(w, r) {
+			return
+		}
+		var body map[string]any
+		if !assert.NoError(f.t, json.NewDecoder(r.Body).Decode(&body)) {
+			return
+		}
+		assert.Equal(f.t, AgentsOwner, body["username"])
+		assert.Equal(f.t, "public", body["visibility"])
+		if f.seedFail == "org" {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"user already exists"}`))
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	})
+	mux.HandleFunc("POST /api/v1/orgs/"+AgentsOwner+"/repos", func(w http.ResponseWriter, r *http.Request) {
+		if !auth(w, r) {
+			return
+		}
+		var body map[string]any
+		if !assert.NoError(f.t, json.NewDecoder(r.Body).Decode(&body)) {
+			return
+		}
+		assert.Equal(f.t, AgentsRepo, body["name"])
+		assert.Equal(f.t, true, body["auto_init"])
+		assert.Equal(f.t, false, body["private"])
+		if f.seedFail == "repo" {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	})
+	mux.HandleFunc("POST /api/v1/repos/"+AgentsOwner+"/"+AgentsRepo+"/contents", func(w http.ResponseWriter, r *http.Request) {
+		if !auth(w, r) {
+			return
+		}
+		var body struct {
+			Branch string
+			Files  []struct{ Operation, Path, Content string }
+		}
+		if !assert.NoError(f.t, json.NewDecoder(r.Body).Decode(&body)) {
+			return
+		}
+		assert.Equal(f.t, defaultBranch, body.Branch)
+		files := map[string]string{}
+		for _, file := range body.Files {
+			assert.Equal(f.t, "create", file.Operation)
+			data, err := base64.StdEncoding.DecodeString(file.Content)
+			assert.NoError(f.t, err)
+			files[file.Path] = string(data)
+		}
+		f.seeded.Store(files)
+		switch f.seedFail {
+		case "commit":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"database is locked"}`))
+		case "garbled":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"commit":`))
+		case "no-sha":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"commit":{"sha":"main"}}`))
+		default:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"commit":{"sha":"` + fakeAgentsCommit + `"}}`))
+		}
 	})
 	repo := "/api/v1/repos/" + adminUser + "/" + readinessRepo
 	mux.HandleFunc("PATCH "+repo, func(w http.ResponseWriter, r *http.Request) {
@@ -266,6 +343,7 @@ type forgejoOpts struct {
 	healthAfter int32
 	runStatuses []string
 	failCreate  bool
+	seedFail    string
 }
 
 // startFakeForgejo serves f on 127.0.0.1 and returns its port and client.
@@ -354,6 +432,14 @@ func TestStart_ReadyAndTeardown(t *testing.T) {
 	assert.Equal(t, []string{"forgejo", "admin", "user", "create", "--admin", "--username", adminUser}, engine.execs[0][:7])
 	assert.Contains(t, engine.execs[0], ff.password.Load(), "the API is called with the password the admin was created with")
 	assert.Equal(t, []string{"forgejo", "actions", "generate-runner-token"}, engine.execs[1])
+
+	assert.Equal(t, fakeAgentsCommit, s.AgentsRef())
+	assert.Equal(t, AgentFixtureFiles(), ff.seeded.Load(), "the whole fixture is committed")
+	assert.Equal(t, map[string]string{
+		"FULLSEND_FORGEJO_URL":         strings.TrimSuffix(wantURL, "/"),
+		"FULLSEND_FORGEJO_AGENTS_REPO": "fullsend-ai/agents",
+		"FULLSEND_FORGEJO_AGENTS_REF":  fakeAgentsCommit,
+	}, s.AgentSourceEnv())
 
 	workflow, _ := ff.workflow.Load().(string)
 	assert.Contains(t, workflow, "runs-on: docker")
@@ -481,6 +567,36 @@ func TestStart_Failures(t *testing.T) {
 			wantRemoved: []string{"id-stack-test-forgejo"},
 		},
 		{
+			name:        "agents organization cannot be created",
+			forgejo:     forgejoOpts{seedFail: "org"},
+			wantErr:     []string{"startup: seeding the agent-definition repository: creating organization fullsend-ai: POST api/v1/orgs: HTTP 422"},
+			wantRemoved: []string{"id-stack-test-forgejo"},
+		},
+		{
+			name:        "agents repository cannot be created",
+			forgejo:     forgejoOpts{seedFail: "repo"},
+			wantErr:     []string{"creating repository fullsend-ai/agents: POST api/v1/orgs/fullsend-ai/repos: HTTP 409"},
+			wantRemoved: []string{"id-stack-test-forgejo"},
+		},
+		{
+			name:        "agents fixture cannot be committed",
+			forgejo:     forgejoOpts{seedFail: "commit"},
+			wantErr:     []string{"committing the fixture: HTTP 500: {\"message\":\"database is locked\"}"},
+			wantRemoved: []string{"id-stack-test-forgejo"},
+		},
+		{
+			name:        "agents commit response unreadable",
+			forgejo:     forgejoOpts{seedFail: "garbled"},
+			wantErr:     []string{"committing the fixture: unexpected end of JSON input"},
+			wantRemoved: []string{"id-stack-test-forgejo"},
+		},
+		{
+			name:        "agents commit response has no SHA",
+			forgejo:     forgejoOpts{seedFail: "no-sha"},
+			wantErr:     []string{"committing the fixture: response has no commit SHA"},
+			wantRemoved: []string{"id-stack-test-forgejo"},
+		},
+		{
 			name:        "runner container fails to create",
 			setup:       func(e *fakeEngine) { e.createErr["runner"] = errors.New("no such image") },
 			wantErr:     []string{"startup: no such image"},
@@ -531,7 +647,7 @@ func TestStart_Failures(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ff := &fakeForgejo{healthAfter: tc.forgejo.healthAfter, runStatuses: tc.forgejo.runStatuses, failCreate: tc.forgejo.failCreate}
+			ff := &fakeForgejo{healthAfter: tc.forgejo.healthAfter, runStatuses: tc.forgejo.runStatuses, failCreate: tc.forgejo.failCreate, seedFail: tc.forgejo.seedFail}
 			if ff.runStatuses == nil {
 				ff.runStatuses = []string{"success"}
 			}

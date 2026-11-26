@@ -8,10 +8,11 @@
 // than an overwrite. It also reads Forgejo Actions runs, jobs, artifacts,
 // and logs (actions.go) for the behaviour-test CI driver, reads and
 // updates issues, issue comments, and labels (issues.go) for the triage
-// and polling flows, and implements the branch, pull-request, review,
+// and polling flows, implements the branch, pull-request, review,
 // conversation-comment, and commit-status operations of the code, review,
-// and fix flows (pulls.go). Operations Forgejo support does not yet cover
-// are not part of this adapter.
+// and fix flows (pulls.go), and reads git commits, trees, and blobs by
+// object ID (git.go) for agent definitions pinned to a commit. Operations
+// Forgejo support does not yet cover are not part of this adapter.
 package forgejo
 
 import (

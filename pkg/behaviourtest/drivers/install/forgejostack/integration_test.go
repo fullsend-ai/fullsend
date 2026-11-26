@@ -2,6 +2,7 @@ package forgejostack
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"testing"
@@ -45,6 +46,20 @@ func TestStack_Integration(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "canonical URL from the behaviour-test process")
+
+	// The seeded agent-definition repository is public and serves the
+	// fixture at the pinned commit.
+	ref := s.AgentsRef()
+	require.Regexp(t, commitSHAPattern, ref)
+	for path, want := range AgentFixtureFiles() {
+		resp, err := http.Get(s.URL() + AgentsOwner + "/" + AgentsRepo + "/raw/commit/" + ref + "/" + path)
+		require.NoError(t, err)
+		got, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, path)
+		assert.Equal(t, want, string(got), path)
+	}
 
 	res, err := engine.Exec(ctx, s.containerID("runner"), []string{"wget", "-q", "-O", "/dev/null", s.URL() + "api/healthz"})
 	require.NoError(t, err)
