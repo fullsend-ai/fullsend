@@ -494,7 +494,7 @@ func TestOpenCodeCloudLocationExport(t *testing.T) {
 	}
 }
 
-func TestOpenCodeLaunch_DropsExperimentalFlags(t *testing.T) {
+func TestOpenCodeLaunch_DropsUntrustedOpenCodeSettings(t *testing.T) {
 	for _, source := range []string{"inherited", ".env", ".env.d/harness.env", ".fullsend/iteration.env"} {
 		t.Run(source, func(t *testing.T) {
 			f := newEnvDataFixture(t)
@@ -502,6 +502,11 @@ func TestOpenCodeLaunch_DropsExperimentalFlags(t *testing.T) {
 				"OPENCODE_EXPERIMENTAL=true",
 				"OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true",
 				"OPENCODE_EXPERIMENTAL_FUTURE_FLAG=true",
+				"OPENCODE_TEST_MANAGED_CONFIG_DIR=/tmp/hostile-managed-config",
+				"OPENCODE_FUTURE_SETTING=untrusted",
+				"OPENCODE_CONFIG_DIR=/tmp/hostile-config",
+				"OPENCODE_DISABLE_PROJECT_CONFIG=false",
+				"OPENCODE_CONFIG_CONTENT=untrusted",
 			}
 			f.write(t, ".env", "export KEPT=yes\n"+strings.Join(envDataControlLines(f.ws), "\n")+"\n")
 			var inherited []string
@@ -516,9 +521,15 @@ func TestOpenCodeLaunch_DropsExperimentalFlags(t *testing.T) {
 			}
 			trusted := openCodeTrustedEnv{ConfigContent: `{"permission":{"task":"allow"}}`}
 			out, stderr, err := f.loadIn(t, "", inherited,
-				openCodeTrustedEnvPin(trusted)+" && "+openCodeTrustedEnvRestore()+" && env -0", openCodeEnvDataDrop...)
+				openCodeTrustedEnvPin(trusted)+" && "+openCodeTrustedEnvRestore()+" && env -0", openCodeLaunchEnvDataDrop...)
 			require.NoError(t, err, stderr)
 			assert.NotContains(t, out, "OPENCODE_EXPERIMENTAL", "experimental flags must not reach OpenCode")
+			assert.NotContains(t, out, "OPENCODE_TEST_MANAGED_CONFIG_DIR=")
+			assert.NotContains(t, out, "OPENCODE_FUTURE_SETTING=")
+			assert.Contains(t, out, "OPENCODE_CONFIG_DIR="+(OpenCodeRuntime{}).ConfigDir()+"\x00")
+			for _, name := range []string{"OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_EXTERNAL_SKILLS", "OPENCODE_DISABLE_DEFAULT_PLUGINS", "OPENCODE_DISABLE_MODELS_FETCH"} {
+				assert.Contains(t, out, name+"=true\x00", "runner-owned setting must be reconstructed")
+			}
 			assert.Contains(t, out, "KEPT=yes\x00", "ordinary environment exports still apply")
 			assert.Contains(t, out, "OPENCODE_CONFIG_CONTENT="+trusted.ConfigContent+"\x00", "foreground Task permissions stay intact")
 			if source != "inherited" {

@@ -139,6 +139,11 @@ var openCodeEnvDataDrop = []string{
 	"OPENCODE_EXPERIMENTAL*",
 }
 
+// Bootstrap captures the initial, trusted OPENCODE_CONFIG_CONTENT before an
+// agent runs. Later environment files have no authority over any OPENCODE_ name;
+// the runner reconstructs the supported settings from its own policy instead.
+var openCodeLaunchEnvDataDrop = append(append([]string(nil), openCodeEnvDataDrop...), "OPENCODE_*")
+
 // Sandbox-side layout. The transcript and the exit-code file live under
 // openCodeRunnerSubdir, not output/, so ExtractOutputFiles does not collect
 // them and ClearIterationArtifacts wipes them each iteration (a stale rc
@@ -214,11 +219,10 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 		// .env is read as data, never sourced (envDataLoad, #8574): no line
 		// of it or of an .env.d file runs as shell, and untrusted launch
 		// controls and read-only pins are never taken from it.
-		"&& "+envDataLoad(envFile, openCodeEnvDataDrop...),
+		"&& "+envDataLoad(envFile, openCodeLaunchEnvDataDrop...),
 		// .env is agent-writable: re-pin config exports, unset injected
 		// overrides, and
 		// restore the pinned trusted values.
-		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& "+openCodeTrustedEnvRestore(),
 		`&& "$`+openCodeRmVar+`" -rf -- `+r.openCodeOverridePaths(false),
 		`&& "$`+openCodePrintfVar+`" '%s' `+shellQuote(configJSON)+" > "+shellQuote(configPath),
@@ -403,13 +407,13 @@ var openCodeDangerousEnvVars = []string{
 }
 
 func openCodeTrustedEnvRestore() string {
-	// The loader drops experimental assignments, but inherited flags still
+	// The loader drops OPENCODE_ assignments, but inherited flags still
 	// exist in the launch shell. Its pinned Python emits only valid names,
 	// so word splitting here cannot introduce shell syntax or glob patterns.
-	experimental := `import os, re; print(" ".join(k for k in os.environ if k.startswith("OPENCODE_EXPERIMENTAL") and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k)))`
-	return envDataExportsVar + `="$("$` + envDataPythonVar + `" -I -S -c ` + shellQuote(experimental) + `)"` +
+	names := `import os, re; print(" ".join(k for k in os.environ if k.startswith("OPENCODE_") and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k)))`
+	return envDataExportsVar + `="$("$` + envDataPythonVar + `" -I -S -c ` + shellQuote(names) + `)"` +
 		" && unset $" + envDataExportsVar + " && unset " + envDataExportsVar +
-		" && unset " + strings.Join(openCodeDangerousEnvVars, " ") +
+		" && " + strings.Join((OpenCodeRuntime{}).EnvExports(), " && ") +
 		` && export OPENCODE_CONFIG_CONTENT="$` + openCodeConfigContentPinVar +
 		`" GOOGLE_APPLICATION_CREDENTIALS="$` + openCodeCredentialsPathPinVar +
 		`" HOME="$` + openCodeHomePinVar +

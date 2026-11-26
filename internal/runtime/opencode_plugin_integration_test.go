@@ -53,7 +53,7 @@ func TestOpenCodeNativeHooks(t *testing.T) {
 	for _, scenario := range []string{"pre-block", "rewrite", "post-block", "nested", "ls-only",
 		"bash-patterns", "native-bash-patterns", "trusted-bash-patterns", "native-trusted-bash-patterns",
 		"error-rewrite", "error-canary", "error-scanner-failure", "nested-error", "repo-config-isolation",
-		"bash-failed-verification", "trusted-file-patterns", "nested-trusted-bash", "relative-paths", "stdin-prompt"} {
+		"bash-failed-verification", "trusted-file-patterns", "nested-trusted-bash", "relative-paths", "stdin-prompt", "shell-env"} {
 		t.Run(scenario, func(t *testing.T) {
 			runOpenCodeHookProbe(t, binary, gotVersion, scenario, openCodeHookProbeDeadline(scenario))
 		})
@@ -91,6 +91,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	}
 	configDir := filepath.Join(dir, "config")
 	configIsolation := scenario == "repo-config-isolation"
+	shellEnv := scenario == "shell-env"
 	stdinPrompt := scenario == "stdin-prompt"
 	failedVerification := scenario == "bash-failed-verification"
 	filePatterns := scenario == "trusted-file-patterns"
@@ -131,6 +132,9 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		SandboxHooks: &harness.SandboxHooks{Tirith: &harness.TirithConfig{Enabled: &disabled}},
 	}})
 	def := &piAgentDef{Model: "probe/model", BashAllowlist: []string{"printf", "cat", "curl", "touch"}}
+	if shellEnv {
+		def.BashAllowlist = append(def.BashAllowlist, "fullsend_probe_function")
+	}
 	trustedPolicy := json.RawMessage(`{"*":"allow"}`)
 	if patternProbe {
 		def.Tools, def.BashAllowlist = []string{"Bash"}, []string{"printf", "cat"}
@@ -175,6 +179,10 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	policy := openCodeHookPolicy(filepath.Join(configDir, "hooks"), workspace, def, rules)
 	policy.Python = python
 	policy.ShellHome = dir
+	if shellEnv {
+		policy.ShellHome = filepath.Join(dir, "command-home")
+		require.NoError(t, os.MkdirAll(policy.ShellHome, 0o700))
+	}
 	policy.Env = map[string]string{"PATH": os.Getenv("PATH"), "FULLSEND_CANARY_TOKEN": "FULLSEND_PROBE_ORIGINAL_post-block"}
 	if failedVerification {
 		policy.Env["PATH"] = filepath.Join(work, "bin") + string(os.PathListSeparator) + policy.Env["PATH"]
@@ -282,10 +290,19 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		require.NoError(t, os.WriteFile(poison, []byte("import {writeFileSync} from 'node:fs'; export default async()=>{writeFileSync("+strconv.Quote(filepath.Join(work, "poison-loaded"))+",'loaded'); return {};};"), 0o600))
 		poisonConfig, _ := json.Marshal(map[string]any{"plugin": []string{"file://" + poison}})
 		require.NoError(t, os.WriteFile(filepath.Join(work, "poison.json"), poisonConfig, 0o600))
-		require.NoError(t, os.WriteFile(filepath.Join(work, ".env"), []byte("OPENCODE_CONFIG="+filepath.Join(work, "poison.json")+"\nOPENCODE_PURE=true\n"), 0o600))
+		managed := filepath.Join(work, "managed-config")
+		require.NoError(t, os.MkdirAll(managed, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(managed, "opencode.json"), poisonConfig, 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(work, ".env"), []byte("OPENCODE_CONFIG="+filepath.Join(work, "poison.json")+"\nOPENCODE_PURE=true\nOPENCODE_TEST_MANAGED_CONFIG_DIR="+managed+"\n"), 0o600))
 		require.NoError(t, os.MkdirAll(filepath.Join(work, ".opencode"), 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(work, ".opencode", "opencode.json"), poisonConfig, 0o600))
 		steps["root"] = []openCodeProbeCall{stepsForAllowedProbe(), probeCall("rewrite")}
+	}
+	if shellEnv {
+		steps["root"] = []openCodeProbeCall{stepsForAllowedProbe(), {name: "bash", args: map[string]any{
+			"description": "probe-shell-env",
+			"command":     `printf 'CONFIG=<%s> BASH_ENV=<%s> ENV=<%s> PS4=<%s>\nHOME=<%s>\nPATH=<%s>\nXDG_CONFIG_HOME=<%s>\nXDG_CACHE_HOME=<%s>\nXDG_DATA_HOME=<%s>\nXDG_STATE_HOME=<%s>\n' "$FULLSEND_OPENCODE_HOOK_CONFIG" "$BASH_ENV" "$ENV" "$PS4" "$HOME" "$PATH" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"; fullsend_probe_function || printf 'NO_IMPORTED_FUNCTION\n'`,
+		}}}
 	}
 	if stdinPrompt {
 		steps["root"] = []openCodeProbeCall{stepsForAllowedProbe(), probeCall("rewrite")}
@@ -428,7 +445,8 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		for _, arg := range args {
 			launch = append(launch, shellQuote(arg))
 		}
-		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", openCodeTrustedEnvPin(trusted)+" && "+envDataTrustedPin()+" && "+envDataLoad(filepath.Join(work, ".env"), openCodeEnvDataDrop...)+" && "+openCodeTrustedEnvRestore()+" && "+openCodeSDKCacheRestoreFrom(sdkDir, configDir)+" && exec "+strings.Join(launch, " "))
+		restore := strings.ReplaceAll(openCodeTrustedEnvRestore(), (OpenCodeRuntime{}).ConfigDir(), configDir)
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", openCodeTrustedEnvPin(trusted)+" && "+envDataTrustedPin()+" && "+envDataLoad(filepath.Join(work, ".env"), openCodeLaunchEnvDataDrop...)+" && "+restore+" && "+openCodeSDKCacheRestoreFrom(sdkDir, configDir)+" && exec "+strings.Join(launch, " "))
 	}
 	cmd.Dir = work
 	// Do not inherit provider credentials, user plugins, or the harness config.
@@ -446,7 +464,10 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		openCodeHookConfigEnv + "=" + openCodeHookConfigJSON(policy),
 	}
 	if configIsolation {
-		cmd.Env = append(cmd.Env, "OPENCODE_PURE=true")
+		cmd.Env = append(cmd.Env, "OPENCODE_PURE=true", "OPENCODE_TEST_MANAGED_CONFIG_DIR="+filepath.Join(work, "managed-config"))
+	}
+	if shellEnv {
+		cmd.Env = append(cmd.Env, "SHELL=/bin/bash", "BASH_ENV=/nonexistent/fullsend-startup-sentinel", "ENV=/nonexistent/fullsend-env-sentinel", "PS4=FULLSEND_PS4_SENTINEL", "BASH_FUNC_fullsend_probe_function%%=() { printf IMPORTED_FUNCTION_SENTINEL; }")
 	}
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
@@ -480,6 +501,19 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		control := openCodeProbeResultFor(t, captured, "probe-allowed")
 		assert.False(t, control.IsError, "control command must execute successfully")
 		assert.Contains(t, string(control.Content), "executed", "control command output must reach a model continuation; output: %s", output)
+	}
+	if shellEnv {
+		result := openCodeProbeResultFor(t, captured, "probe-shell-env")
+		require.False(t, result.IsError, "environment probe must execute through the native Bash tool: %s", result.Content)
+		text := string(result.Content)
+		assert.Contains(t, text, "CONFIG=<> BASH_ENV=<> ENV=<> PS4=<>")
+		assert.Contains(t, text, "HOME=<"+policy.ShellHome+">")
+		assert.Contains(t, text, "PATH=<"+policy.Env["PATH"]+":"+filepath.Join(workspace, "bin")+">")
+		for name, suffix := range map[string]string{"XDG_CONFIG_HOME": ".config", "XDG_CACHE_HOME": ".cache", "XDG_DATA_HOME": ".local/share", "XDG_STATE_HOME": ".local/state"} {
+			assert.Contains(t, text, name+"=<"+filepath.Join(policy.ShellHome, suffix)+">")
+		}
+		assert.Contains(t, text, "NO_IMPORTED_FUNCTION")
+		assert.NotContains(t, text, "IMPORTED_FUNCTION_SENTINEL")
 	}
 	assert.NoFileExists(t, filepath.Join(work, "forbidden"))
 	assert.NotContains(t, string(captured), "FULLSEND_PROBE_ORIGINAL_", "raw output reached a model request")
