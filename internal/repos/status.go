@@ -184,6 +184,9 @@ type StatusResult struct {
 	Repos    []RepoStatus  `json:"repos"`
 	Summary  StatusSummary `json:"summary"`
 	Warnings []string      `json:"warnings,omitempty"`
+	// Forgejo reports the declared Forgejo repositories the command
+	// selected (see ForgejoLifecycle.Status).
+	Forgejo []ForgejoRepoResult `json:"forgejo,omitempty"`
 }
 
 // Status compares the manifest's desired state against the actual forge
@@ -192,6 +195,9 @@ type StatusResult struct {
 // The optional release supplies the running binary's ref/tag for matching
 // embedded scaffold templates after release-default manifest writeback.
 func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string, release ...DriftConfig) (*StatusResult, error) {
+	// ADR 0175: status treats a saved allow_insecure_pipeline_variables
+	// opt-in as expected, the same way install does.
+	ctx = WithGitLabPipelineVarOptIns(ctx, manifest)
 	resolved, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
@@ -394,6 +400,20 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status
 	}
+	// jiraAuthorizationEnvError is the configuration error install would fail
+	// on: the release the repository's jobs run cannot load a config that uses
+	// groups_from or accounts_from.
+	jiraAuthorizationEnvError := func() error {
+		if !presetLoaded {
+			return nil
+		}
+		jira, err := effectiveJiraPollState(cfg, cfg.ProposedBase)
+		if err != nil {
+			return nil
+		}
+		d := convergeDiscovery{resolved: cfg, components: components, jira: jira}
+		return checkJiraAuthorizationEnvSupport(ctx, d, ConvergeConfig{UpstreamRef: dcfg.UpstreamRef, UpstreamTag: dcfg.UpstreamTag}, resolver)
+	}
 	if !anyComponentPresent(components) {
 		// Leftover credentials of an unselected method are drift even
 		// when none of the selected method's components exist.
@@ -409,6 +429,12 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		cfg.FreshInstall = true
 		checkPresetDrift(ctx, cfg, store, &status)
 		if status.Error != "" {
+			return status
+		}
+		// Before the drift check, which would report the config as
+		// compatible with the pinned ref's schema.
+		if err := jiraAuthorizationEnvError(); err != nil {
+			status.Error = err.Error()
 			return status
 		}
 		checkManagedConfigDrift(ctx, cfg, &status)
@@ -453,6 +479,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			Expected: expected,
 			Actual:   actual,
 		})
+	}
+
+	if err := jiraAuthorizationEnvError(); err != nil {
+		status.Error = err.Error()
+		return status
 	}
 
 	// Report the configuration error install would fail on: nothing will

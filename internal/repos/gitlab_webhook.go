@@ -764,7 +764,7 @@ func gitlabTriggerProjectSafetyProblem(ctx context.Context, client forge.Client,
 	if err != nil {
 		return "", safeAPIError("reading ci_pipeline_variables_minimum_override_role", err)
 	}
-	if role != forge.PipelineVarOverrideNoOneAllowed {
+	if !gitlabPipelineVarRoleAccepted(ctx, owner, repo, role) {
 		return fmt.Sprintf("webhook fast-path deferred: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed", displayPipelineVarRole(role)), nil
 	}
 	// A copied account trigger can start a pipeline on any ref. If job tokens

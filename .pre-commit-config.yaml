@@ -34,7 +34,7 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        entry: uvx ty@0.0.99 check --ignore import-not-found --ignore unresolved-attribute
+        entry: uvx ty@0.0.109 check --ignore import-not-found --ignore missing-attribute --ignore missing-union-attribute
         language: system
         types: [python]
 
@@ -85,7 +85,7 @@ repos:
         pass_filenames: false
 
   - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.11
+    rev: v1.7.12
     hooks:
       - id: actionlint
         files: |

@@ -1,0 +1,34 @@
+---
+# fullsend reusable dispatch workflow for Forgejo Actions.
+#
+# repos install publishes the files under bundle/ to the instance's declared
+# workflow-host repository, or copies them into a repository whose manifest
+# entry resolves vendor: true. Consumer shims call this workflow on the same
+# Forgejo instance, pinned to the immutable commit of the published bundle.
+# It is never fetched from GitHub.
+#
+# This bundle routes the triggering event and reports it. Agent stages are
+# added here as Forgejo agent support lands. Any change to the bundle produces
+# a new bundle version, and repos install pins consumers to it.
+name: fullsend-dispatch
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: Runner label for fullsend jobs.
+        type: string
+        required: false
+        default: docker
+
+jobs:
+  route:
+    runs-on: ${{ inputs.runs_on }}
+    steps:
+      - name: Report the routed event
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          printf 'fullsend: %s event (%s) on %s\n' "$EVENT_NAME" "${EVENT_ACTION:-none}" "$REPOSITORY"

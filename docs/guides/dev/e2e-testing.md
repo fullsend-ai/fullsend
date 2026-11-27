@@ -54,7 +54,9 @@ The obsolete admin install/uninstall suite and `make e2e-test` target have
 been removed. CI keeps both the regular behaviour and playback suites.
 Pull requests run them on a GitHub emulator
 ([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml)),
-and `e2e.yml` runs them live in the merge queue and on push to `main`.
+and `e2e.yml` runs them live in the merge queue and on push to `main`. A
+user with write access can also run them live on a pull request with
+`/ok-to-test <sha> live`.
 
 To run playback manually, select **E2E Tests → Run workflow**, choose the branch,
 and leave **Run the playback behaviour suite** enabled. From the CLI:
@@ -108,19 +110,34 @@ Required repository secrets:
 | `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
 | `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
 
+Secrets for the `e2e-org-pool` GitHub Environment (do **not** also add these
+as repository secrets — every workflow could then read the org-admin token,
+which is exactly what the Environment exists to prevent):
+
+| Secret | Purpose |
+|--------|---------|
+| `TEST_BOTSEND_PAT` | Org-admin PAT for `botsend`; lives only in the `e2e-org-pool` GitHub Environment (restricted to `main`); used only by the *E2E Org Pool* workflow to run `e2e/org-pool/setup-org.sh` from `main` |
+
+The actor PATs (`TEST_ACTOR_WRITE_PAT`, `TEST_ACTOR_TRIAGE_PAT`,
+`TEST_ACTOR_OUTSIDER_PAT`) stay repository secrets only. The *E2E Org Pool*
+workflow's environment job can still read repository secrets, so there is no
+need to copy them into the Environment — and copying them would create two
+copies that can drift apart on rotation.
+
 Mint URL uses the hosted public endpoint by default (same as `fullsend github setup --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
 ### Behaviour test GitHub Environments
 
-The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (the merge queue) and `stage` (push to `main`). It skips pull requests, `workflow_dispatch`, and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
+The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (the merge queue, and a pull request after `/ok-to-test <sha> live`) and `stage` (push to `main`). It skips other pull request runs, `workflow_dispatch`, and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
 
-The non-required `forgejo-behaviour` job uses the GitHub Environment `forgejo-stage` on pushes to `main` and `forgejo-dev` for authorized pull requests, the merge queue, and `/ok-to-test` runs for authorized fork pull requests. This separates mainline deployments in the Environments view; the job still sets `ENVIRONMENT=forgejo-dev` for every event because there is only one Forgejo driver target. It also sets `BEHAVIOUR_SCM=forgejo`, `BEHAVIOUR_CI=forgejoactions`, and `GODOG_TAGS=@forgejo`. The current job needs no GCP, Cloudflare, or actor credentials. GitHub creates each environment on first use. If future Forgejo-specific secrets are needed, configure them in both environments (or use appropriately scoped repository secrets) and add them to the artifact-redaction step before passing them to the test process.
+The non-required `forgejo-behaviour` job uses the GitHub Environment `forgejo-stage` on pushes to `main` and `forgejo-dev` for authorized pull requests, the merge queue, and `/ok-to-test` runs for authorized fork pull requests. This separates mainline deployments in the Environments view; the job still sets `ENVIRONMENT=forgejo-dev` for every event because there is only one Forgejo driver target. It also sets `BEHAVIOUR_SCM=forgejo`, `BEHAVIOUR_CI=forgejoactions`, and `GODOG_TAGS=@forgejo`. The current job needs no GCP, Cloudflare, or actor credentials. `make behaviour-test` starts and tears down the managed Forgejo stack itself on the runner's Docker engine, so the job has no separate provisioning step (see [Managed forgejo-dev stack](behaviour-drivers.md#managed-forgejo-dev-stack)). GitHub creates each environment on first use. If future Forgejo-specific secrets are needed, configure them in both environments (or use appropriately scoped repository secrets) and add them to the artifact-redaction step before passing them to the test process.
 
-After the environments exist, restrict `stage` to `main`:
-
-1. Open the repository **Settings → Environments → `stage`**.
-2. Under **Deployment branches and tags**, choose **Selected branches and tags**.
-3. Add a branch rule for `main`.
+The `stage` environment is restricted to `main` through
+[`.github/safe-settings/settings.yml`](../../../.github/safe-settings/settings.yml)
+(`deployment_branch_policy` on `stage`). Environments, their branch policies,
+variables, and reviewers are managed total-state by the safe-settings workflow:
+restrictions made in the GitHub UI are undone by the next run, so edit the
+settings file instead.
 
 ### Cloudflare Worker mint BT credentials
 
@@ -202,6 +219,13 @@ tests locally can assume the pool orgs are already provisioned.
    e2e/org-pool/setup-org.sh halfsend
    ```
 
+   Pass `--dry-run` to verify state read-only and print planned changes
+   without mutating anything:
+
+   ```bash
+   e2e/org-pool/setup-org.sh --dry-run 07
+   ```
+
    If an actor invitation is still pending, the script accepts it when the
    actor PATs are exported:
 
@@ -210,9 +234,33 @@ tests locally can assume the pool orgs are already provisioned.
      e2e/org-pool/setup-org.sh 07
    ```
 
-The behaviour job in `.github/workflows/e2e.yml` does not run this script;
-CI runs it are planned as a follow-up once the scripts land on `main`
-(#8886). Until then, an org owner runs it per org to correct drift.
+The dedicated *E2E Org Pool* workflow (`.github/workflows/e2e-org-pool.yml`)
+keeps the STAGE org and every pool org configured. Runs that touch
+GitHub — pushes to `main` (path-filtered to `e2e/org-pool/**`, the
+workflow file, and `pkg/behaviourtest/drivers/install/slotpool.go`), manual
+dispatches, and a weekly schedule — check out
+`e2e/org-pool` from `main` — never from the PR head — and run
+`setup-org.sh` for real with the org-admin `TEST_BOTSEND_PAT` secret plus
+the actor PAT secrets, correcting drift. Pull requests never touch
+GitHub: they run the stub-based `setup-org_test.sh` on the PR head, with
+no secrets, so PR changes are exercised without exposing credentials.
+
+`TEST_BOTSEND_PAT` lives in the `e2e-org-pool` GitHub Environment, which
+must be restricted to the `main` branch, so pull-request runs can never
+reach the org-admin token. The actor PATs are repository secrets (see
+above) and are readable by the environment job without being copied into
+the Environment. `TEST_BOTSEND_PAT` is a long-lived classic PAT
+because the setup performs org-admin operations (creating teams,
+assigning organization roles, writing actions variables, accepting
+invitations) that the short-lived per-repo mint tokens cannot do; its
+blast radius is `botsend`'s admin membership in the pool orgs.
+`TEST_ACTOR_OUTSIDER_PAT` is deliberately not passed: the script only
+verifies that the outsider has no org membership, using the admin token.
+
+Because the push trigger is path-filtered, a pending actor invitation is
+not necessarily accepted by the next run on `main`. Run `setup-org.sh`
+locally with the actor PATs exported, or trigger the workflow manually,
+within the 7-day invitation window.
 
 Verify foreign authorization:
 
@@ -273,11 +321,16 @@ The setup scripts in `e2e/org-pool/` create or verify this
 model idempotently on `halfsend-NN` and on the STAGE org `halfsend`.
 `setup-manual.sh` invites the actors and accepts the invitations itself
 when the actor PATs are exported. `setup-org.sh` accepts pending
-invitations with the actor PATs; a CI step that provides them from the
-repository secrets `TEST_ACTOR_WRITE_PAT` and `TEST_ACTOR_TRIAGE_PAT` is
-planned but does not exist yet, so run locally with the PATs exported as
-shown above, within 7 days of the invitation — GitHub expires pending
-org invitations after 7 days. It fails when an actor has no membership
+invitations with the actor PATs; the *E2E Org Pool* workflow provides
+them from the repository secrets `TEST_ACTOR_WRITE_PAT` and
+`TEST_ACTOR_TRIAGE_PAT` on its runs (a path-matching push to `main`, a
+manual dispatch, or the weekly schedule), so a pending invitation is
+accepted by the next such run — or by a local run with the PATs exported
+(pull-request runs never execute `setup-org.sh`; they run the stub-based
+`setup-org_test.sh` instead, so invitations stay pending until one of
+those runs accepts them). Whichever it is, it must happen within 7 days
+of the invitation — GitHub expires pending org invitations after 7
+days. It fails when an actor has no membership
 at all.
 
 Accounts and PATs are managed under
@@ -828,17 +881,20 @@ Pull requests from any author, forks included, run the behaviour and playback
 scenarios on the GitHub emulator
 ([`behaviour-github-emulator.yml`](../../../.github/workflows/behaviour-github-emulator.yml),
 required check `behaviour-github-emulator`) with no authorization. The live `behaviour` and `playback` jobs in `e2e.yml`,
-which use repository secrets, run only in the merge queue and on push to
-`main`; on a pull request they skip. The only `e2e.yml` suite that runs PR-head
-code on a pull request is the optional `forgejo-behaviour` job, so a
-**gate job** authorizes every PR run of it first (see workflow comments for
-why it is a separate job).
+which use repository secrets, run in the merge queue and on push to
+`main`; on a pull request they skip unless a maintainer asks for them with
+`/ok-to-test <sha> live` (see
+[Run the live suites on a pull request](#run-the-live-suites-on-a-pull-request)).
+Otherwise the only `e2e.yml` suite that runs PR-head code on a pull request is
+the optional `forgejo-behaviour` job. A **gate job** authorizes every PR run of
+these suites first (see workflow comments for why it is a separate job).
 
 | Path | Trigger | What runs |
 |---|---|---|
 | Same-repository PR | `pull_request` (opened, synchronize, reopened) | The gate authorizes the author, then `forgejo-behaviour` runs on the PR head; `behaviour` and `playback` skip |
 | Fork PR | `pull_request` | Nothing from `e2e.yml`: fork `pull_request` runs get no secrets, so all suites are skipped |
 | Fork PR after `/ok-to-test <sha>` | `issue_comment` | The gate authorizes the commenter and the sha the comment names, then `forgejo-behaviour` runs on that sha and reports a check named `forgejo-behaviour` on it |
+| Any PR after `/ok-to-test <sha> live` | `issue_comment` | The same gate as `/ok-to-test <sha>`. On that sha, `forgejo-behaviour` runs as above, and the live `behaviour` and `playback` jobs run in the `dev` environment and report the non-required checks `behaviour-live` and `playback-live` |
 | Merge queue, push to `main`, `workflow_dispatch` | unchanged | No gate; `behaviour` and `playback` run live |
 
 A same-repository `pull_request` run takes `e2e.yml` from the PR merge ref, not
@@ -857,7 +913,9 @@ automatically.
 
 ### Who needs `/ok-to-test`
 
-`/ok-to-test` is needed only for the optional `forgejo-behaviour` suite. Every
+`/ok-to-test` is needed only for the optional `forgejo-behaviour` suite, and
+`/ok-to-test <sha> live` for an optional live run (see
+[Run the live suites on a pull request](#run-the-live-suites-on-a-pull-request)). Every
 PR, forks included, runs the required `behaviour-github-emulator` check
 without it.
 
@@ -895,6 +953,53 @@ runs. A bare `/ok-to-test` with no sha runs nothing either.
 Any later push needs a new `/ok-to-test <sha>` from a user with write access
 after reviewing the new changes.
 
+### Run the live suites on a pull request
+
+Pull requests run `behaviour` and `playback` on the GitHub emulator only. The
+live suites otherwise first run in the merge queue, and a failure there drops
+the entry and rebuilds every entry behind it. Ask for a live run before the PR
+is enqueued when the change needs something only the live suites cover:
+
+- the real-model scenarios (Claude, Codex, pi, OpenCode, the inference
+  gateway), for example a PR that bumps a runtime or changes the gateway;
+- the deployed mint and real App installations and permissions;
+- anything else that only real GitHub shows.
+
+A live run takes a `dev` pool org for up to 90 minutes, as a merge queue entry
+does. Ask for one only when the PR needs it.
+
+To ask, a user with write access reviews the latest push and comments, on the
+first line:
+
+```text
+/ok-to-test <full 40-character sha> live
+```
+
+`live` is one lowercase word after the sha. It passes the same gate as
+`/ok-to-test <sha>`: write access, the command on the first line, and a PR head
+that is the named sha. It works on fork and same-repository PRs. Any other
+word after the sha (`LIVE`, `live please`, or `live` before the sha) is
+refused as `missing_sha`, and nothing runs.
+
+When the gate authorizes the comment, these checks appear on the named sha.
+Wait for them in the PR's **Checks** tab:
+
+| Check | What runs |
+|---|---|
+| `forgejo-behaviour` | The Forgejo suite, as for `/ok-to-test <sha>` |
+| `behaviour-live` | The live `behaviour` job, in the `dev` environment, with the same steps as the merge queue |
+| `playback-live` | The live `playback` job, in the `dev` environment, with the same steps as the merge queue |
+
+The live checks are **not required**, and they have their own names on
+purpose. The PR's required `behaviour` and `playback` checks still report as
+skipped, and the merge queue still runs them. A live run adds information
+before the PR is enqueued; it never stands in for a required check or blocks
+the merge.
+
+The live jobs keep the behaviour relevance filter: on a PR with no
+behaviour-relevant change, `behaviour-live` reports success without running
+scenarios.
+
 ### Blocked runs
 
 When the gate **runs** and denies authorization, a sticky PR comment (marker
@@ -907,7 +1012,7 @@ The comment names a reason. What to do next:
 |---|---|
 | `untrusted_commenter` | The person who commented `/ok-to-test` does not have write access (for example a Triage user). Do not repeat it yourself. Ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](../../../MAINTAINERS.md), to comment `/ok-to-test <sha>` after reviewing the latest push. |
 | `stale_ok_to_test` | The comment named a commit that is not the PR head, usually because of a push after the review. A user with write access reviews the changes and comments `/ok-to-test <sha>` with the current head sha. |
-| `missing_sha` | The comment did not name a commit on its first line (for example a bare `/ok-to-test`). A user with write access comments `/ok-to-test <sha>` with the full sha of the commit they reviewed. The gate comment shows the current head; review it before naming it. |
+| `missing_sha` | The comment did not name a commit on its first line (for example a bare `/ok-to-test`), or had a word after the sha other than a lowercase `live`. A user with write access comments `/ok-to-test <sha>`, or `/ok-to-test <sha> live` for the live suites, with the full sha of the commit they reviewed. The gate comment shows the current head; review it before naming it. |
 | `error` | The GitHub API failed during the check. Re-run the workflow. |
 | `unauthorized` | The author of a same-repository PR does not have write access. Ask a user with write access to review the PR and comment `/ok-to-test <sha>`. If you do have write access, the permission lookup may have failed: re-run the workflow first. |
 
@@ -928,10 +1033,15 @@ the "How to check" links in [LADDER.md](../../../LADDER.md).
    that sha. Only the authorize/report job holds `checks: write` and
    `pull-requests: write`; it creates the `forgejo-behaviour` check run on the
    head sha and completes it from the suite result.
-3. **Gate** — base checkout only; never checks out PR head
+3. **`/ok-to-test <sha> live` comment** — the same workflow and gate. When
+   the gate writes `live=true`, the authorize job also creates the
+   `behaviour-live` and `playback-live` check runs on the head sha, passes
+   `live` to the suite, and the report job completes both checks from the
+   `behaviour` and `playback` results.
+4. **Gate** — base checkout only; never checks out PR head
    ([`scripts/check-e2e-authorization.sh`](../../../scripts/check-e2e-authorization.sh)).
-4. **Behaviour / playback** — never on a pull request;
-   `contents: read` and `id-token: write` only;
+5. **Behaviour / playback** — on a pull request only after
+   `/ok-to-test <sha> live`; `contents: read` and `id-token: write` only;
    checkout the commit under test, authenticate to GCP via WIF, mint
    cross-org tokens per pool org, `make behaviour-test` (or
    `make playback-test` for the playback job)

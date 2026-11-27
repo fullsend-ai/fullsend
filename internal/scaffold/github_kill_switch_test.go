@@ -35,15 +35,20 @@ type ghWorkflowFile struct {
 // Actions run.
 func extractReusableDispatchStepScript(t *testing.T, jobName, stepName string) string {
 	t.Helper()
-	path := filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml")
-	content, err := os.ReadFile(path)
+	return extractWorkflowStepScript(t, "reusable-dispatch.yml", jobName, stepName)
+}
+
+// extractWorkflowStepScript does the same for any file in .github/workflows.
+func extractWorkflowStepScript(t *testing.T, file, jobName, stepName string) string {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", file))
 	require.NoError(t, err)
 
 	var wf ghWorkflowFile
 	require.NoError(t, yaml.Unmarshal(content, &wf))
 
 	job, ok := wf.Jobs[jobName]
-	require.True(t, ok, "job %q not found in reusable-dispatch.yml", jobName)
+	require.True(t, ok, "job %q not found in %s", jobName, file)
 	for _, step := range job.Steps {
 		if step.Name == stepName {
 			require.NotEmpty(t, step.Run, "step %q has no run script", stepName)

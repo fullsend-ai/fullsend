@@ -20,11 +20,11 @@ v1 reference implementations:
 - `pkg/behaviourtest/drivers/scm/gitlab/`
 - `pkg/behaviourtest/drivers/ci/githubactions/`
 - `pkg/behaviourtest/drivers/ci/gitlabci/`
-- `pkg/behaviourtest/drivers/scm/forgejo/` and `pkg/behaviourtest/drivers/ci/forgejoactions/` (minimal stubs; see [Forgejo driver stubs](#forgejo-driver-stubs))
+- `pkg/behaviourtest/drivers/scm/forgejo/` (minimal stub) and `pkg/behaviourtest/drivers/ci/forgejoactions/` (Forgejo Actions); see [Forgejo drivers](#forgejo-drivers)
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_previews.go` (RepoPoolCFMintPreviews)
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_stage.go` (RepoPoolCFMintStage)
 - `pkg/behaviourtest/drivers/install/repopool_external_mint.go` (RepoPoolExternalMint)
-- `pkg/behaviourtest/drivers/install/forgejo_dev.go` (NewForgejoDev, minimal stub)
+- `pkg/behaviourtest/drivers/install/forgejo_dev.go` (NewForgejoDev: managed Forgejo stack lifecycle in `pkg/behaviourtest/drivers/install/forgejostack/`; repository allocation not implemented yet)
 - `pkg/behaviourtest/drivers/install/common/setup.go` (shared helpers: `RunGitHubSetup`, `ResolveInferenceWIFProvider`, `InferenceStatusWIFProvider`, `ProvisionInference`)
 
 ## Runner configuration
@@ -50,7 +50,7 @@ The suite uses a single unified `install.Driver` constructed via `install.Factor
 |-------------|---------|------|-----|-------------|
 | `dev` (default) | `NewRepoPoolCFMintPreviews` | One public CF Worker preview per mint group leased in the run (four at 12 slots per org) | Pool orgs `halfsend-01` … `halfsend-22` | Vendored binary |
 | `stage` | `NewRepoPoolCFMintStage` | Durable CF Worker at `stage-mint.fullsend.sh` | `halfsend` (single unsuffixed org) | Non-vendored, `--fullsend-ref=main` |
-| `forgejo-dev` | `NewForgejoDev` | None | None (stub; see [Forgejo driver stubs](#forgejo-driver-stubs)) | Not implemented |
+| `forgejo-dev` | `NewForgejoDev` | None | Managed local Forgejo + Runner stack (see [Managed forgejo-dev stack](#managed-forgejo-dev-stack)) | Not implemented |
 
 Any other `ENVIRONMENT` value fails at suite startup; it never falls back to a GitHub factory.
 
@@ -76,18 +76,43 @@ When the [job-scoped trace collector](behaviour-testing.md#job-scoped-trace-coll
 
 `Finalize` (RepoPoolCFMintPreviews) abandons every org's preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. The RepoPoolCFMintStage driver's teardown is a no-op (the durable Worker persists across runs). The RepoPoolExternalMint driver's teardown is a no-op.
 
-### Forgejo driver stubs
+### Forgejo drivers
 
 `ENVIRONMENT=forgejo-dev` selects the Forgejo drivers. When `BEHAVIOUR_SCM` and `BEHAVIOUR_CI` are unset, they default to `forgejo` and `forgejoactions`. The Forgejo drivers only run together and only in `forgejo-dev`. If you mix them, for example `forgejo-dev` with `BEHAVIOUR_SCM=github`, or `BEHAVIOUR_SCM=forgejo` with `ENVIRONMENT=dev`, the suite fails at startup with an error that names the conflicting variables. It does not fall back to the GitHub or GitLab drivers.
 
-The drivers are minimal stubs for now:
+The SCM driver is still a minimal stub, and the install driver only manages the Forgejo stack. Forgejo scenarios therefore cannot run end to end yet, so no scenario is tagged `@forgejo` for the CI driver alone:
 
-- `scm/forgejo` and `ci/forgejoactions` implement `scm.Driver` and `ci.Driver`. Every method returns an error. The CI stub implements none of the optional CI extensions.
-- `install.NewForgejoDev` returns an `install.Driver` that provisions nothing. `AllocateRepo` and `DeallocateRepo` return an error, `Finalize` is a no-op, and `Capacity` is `install.ForgejoDevCapacity` (2). It is not an `install.LeaseDriver`.
-- In `forgejo-dev`, the runner's `PoolConfig` has no layout, `TokenFor` or `NewClient`. The stub driver does not implement `install.SuiteBootstrap`, so the runner's concurrency defaults to `Capacity` and the template `World` has no default org. The run never enumerates the GitHub pool, mints GitHub tokens or builds GitHub clients.
+- `scm/forgejo` implements `scm.Driver`. Every method returns an error.
+- `ci/forgejoactions` implements `ci.Driver` and the optional `ci.RunLister`, `ci.EmptyMatrixWaiter`, and `ci.AgentArtifactDownloader` extensions. Every API call goes through the Forgejo adapter's read-only Actions operations in `internal/forge/forgejo` (run list and get, jobs, per-run artifacts, artifact download, and job logs), which take the base URL with any path prefix. The driver only observes runs; it never dispatches, cancels, or reruns one. See [Forgejo Actions CI driver](#forgejo-actions-ci-driver).
+- `install.NewForgejoDev` starts the [managed forgejo-dev stack](#managed-forgejo-dev-stack) and returns an `install.Driver` whose `Finalize` tears it down and whose `AgentSourceEnv` (`install.AgentSourceEnvReporter`) points `fullsend` at the stack's agent-definition fixture. `AllocateRepo` and `DeallocateRepo` return an error, and `Capacity` is `install.ForgejoDevCapacity` (2, the runner's capacity). It is not an `install.LeaseDriver`.
+- In `forgejo-dev`, the runner's `PoolConfig` has no layout, `TokenFor` or `NewClient`. The driver does not implement `install.SuiteBootstrap`, so the runner's concurrency defaults to `Capacity` and the template `World` has no default org. The run never enumerates the GitHub pool, mints GitHub tokens or builds GitHub clients.
 - The GitHub token check lives in the install drivers that need GitHub access (`NewRepoPoolCFMintPreviews`, `NewRepoPoolCFMintStage`, `NewRepoPoolExternalMint`), not in the runner's general env loading (`e2etest.LoadEnvConfig`). They fail with `e2etest.ErrNoLocalGitHubToken` when a local run has no token, and the suite runner skips the run on that error. `NewForgejoDev` does not need a GitHub token.
 
 Each stub error is a `*drivers.NotImplementedError` (package `pkg/behaviourtest/drivers`) that names the driver and the operation, for example `forgejo SCM driver: CreateIssue: not implemented`. It satisfies `errors.Is(err, drivers.ErrNotImplemented)`. Use the same sentinel for any other driver operation that is not supported yet.
+
+#### Forgejo Actions CI driver
+
+`ci/forgejoactions` keeps the `ci.Driver` contract of the GitHub Actions driver, with these Forgejo specifics:
+
+- **Run matching:** a run matches by workflow file name, event, and creation time, truncated to whole seconds. Forgejo identifies a workflow by its file name only, so the directory of the workflow path does not matter. The event is the run's `trigger_event` (the workflow's `on` key, for example `pull_request_target`) when Forgejo reports it, and the webhook event otherwise. When no matching run appears, `WaitForWorkflow` returns a `*ci.NotDispatchedError`, so steps retry once with the clock-skew buffer and the failure diagnostics list the repository's runs. `ListRecentRuns` sets `forge.WorkflowRun.Path` to the workflow file name.
+- **Status:** Forgejo's `success`, `failure`, `cancelled`, and `skipped` become a `completed` run with that conclusion, `running` becomes `in_progress`, `waiting` becomes `queued`, and `blocked` becomes `waiting`.
+- **Artifacts:** every artifact comes from the run that uploaded it, by the existing names (`fullsend-<agent>`, optionally with `.matrix-<n>`). The `...After` downloads scan the runs created since the trigger, newest first, and download from the newest run whose own listing has a match. Agent downloads only use completed runs. The driver never uses a repository-wide artifact listing. An instance that serves artifacts directly from object storage answers the download with a redirect, which the adapter refuses like every redirect of an authenticated request.
+- **Agent jobs:** harness agents are recognised by the GitHub Actions job names (`Harness run (<agent>)`, or the stage name such as `Triage` for a built-in stage), matched by suffix, or by the agent's artifact in a completed run.
+- **Empty matrix:** a harness run settles as an empty matrix when it completed, its `Harness dispatch` job succeeded, and no `Harness run (<agent>)` job was scheduled. The unexpanded matrix job may be skipped or absent: Forgejo replaces a matrix job with its expanded jobs once the matrix is known.
+
+#### Managed forgejo-dev stack
+
+`make behaviour-test` with `ENVIRONMENT=forgejo-dev` owns the stack's whole lifecycle; CI runs no separate provisioning step. Package `pkg/behaviourtest/drivers/install/forgejostack` implements it:
+
+- **Pinned versions:** Forgejo 17.0.1 (rootless server image) and Forgejo Runner 13.2.1. `forgejostack/versions.go` is the only place that names them. Bump them there, together, along with the job image that the runner labels `docker` and `ubuntu-latest` map to.
+- **Engine:** the stack runs on the host's Docker or Podman engine. It talks to the engine through its Unix socket using the Docker Engine API, which Podman also serves. `DOCKER_HOST`, then `CONTAINER_HOST`, select the socket and must be `unix://` URLs. With neither set, the first existing default is used: `/var/run/docker.sock`, then `$XDG_RUNTIME_DIR/podman/podman.sock`, then `/run/podman/podman.sock`. The socket is mounted into the runner, which starts job containers on the same engine. It is not mounted into the job containers.
+- **Canonical URL:** `http://127.0.0.1:<port>/`, on a free loopback port picked per run. Forgejo, the runner, and every job container share the host network namespace, and Forgejo listens on loopback only. The one URL therefore reaches the same server from the behaviour-test process, the runner, and job containers. This holds under rootful Docker and under Podman, rootful or rootless, and Forgejo is not exposed beyond the host. Rootless Docker is not supported: its host network is the daemon's own namespace, not the test process's, so startup detects it and fails fast with an infrastructure error. The trade-off is that job containers share the host's network namespace. That is acceptable for a disposable test stack running Fullsend's own workflows, but this profile needs a Linux host engine.
+- **Startup and readiness:** the factory pulls the images and starts Forgejo with SQLite, Actions enabled, and registration and SSH disabled. It waits for `api/healthz` at the canonical URL, then creates a local-only admin user, seeds the agent-definition fixture (see below) and registers a runner with capacity 2. Finally it pushes a readiness workflow whose job runs in a job container and fetches the canonical URL. The factory returns only after that run succeeds. A successful run shows that the runner picks up jobs at the canonical URL and that job containers can reach it. It then logs the Forgejo and Runner versions. Startup is bounded at 20 minutes, the health check at 3, and the readiness job at 10.
+- **Agent-definition fixture:** the stack creates a public `fullsend-ai/agents` repository and commits a minimal fixture to it in one commit: a triage harness and the agent prompt and policy it references (`forgejostack.AgentFixtureFiles`). `Stack.AgentsRef` is that commit. The driver implements the optional `install.AgentSourceEnvReporter` interface: `AgentSourceEnv` returns `FULLSEND_FORGEJO_URL`, `FULLSEND_FORGEJO_AGENTS_REPO` and `FULLSEND_FORGEJO_AGENTS_REF` for the stack. With them set, `fullsend` resolves built-in agents from the stack at that commit and never from GitHub (see [Agent definitions from a Forgejo instance](../../cli/run.md#agent-definitions-from-a-forgejo-instance)). Repository configs must also allow `<canonical URL>fullsend-ai/agents/raw/` in `allowed_remote_resources`.
+- **Teardown:** `Finalize` (registered as test cleanup, so it runs at the end of the CI job) stops the runner. It then removes every container labelled `ai.fullsend.behaviour.forgejo-stack=<stack name>`: leftover job containers, the runner, and Forgejo, with their anonymous volumes. The stack keeps no other engine resources.
+- **Diagnostics:** startup, readiness, and teardown failures are infrastructure-classified (`behaviourfail.Mark`). A factory failure fails the run at bootstrap through the normal completion report, so it is eligible for the one infrastructure retry. The error names the failed phase and includes the last 50 log lines of each started container. A failed startup removes what it started. A teardown error is logged as `driver finalize: …` like other drivers' teardown errors.
+
+`TestStack_Integration` in `forgejostack` runs the real stack when `FULLSEND_FORGEJO_STACK_TEST=1`. It checks the canonical URL from the test process and from the runner container (startup already checked it from a job container), that the agent-definition fixture is served at its pinned commit, and that teardown leaves no stack container behind. Run it once per engine by pointing `DOCKER_HOST` or `CONTAINER_HOST` at each engine's socket.
 
 ## Adding an SCM driver
 
@@ -166,6 +191,6 @@ Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios aga
 
 - [x] GitLab SCM driver (implemented; `@skip:gitlab` tag removal pending)
 - [x] GitLab CI driver (implemented; suite wiring currently uses a GitHub-backed `forge.Client` — not yet live-testable against real GitLab backends)
-- [ ] Forgejo SCM, Forgejo Actions CI, and `forgejo-dev` install drivers (selection and not-implemented stubs only; see [Forgejo driver stubs](#forgejo-driver-stubs))
+- [ ] Forgejo SCM, Forgejo Actions CI, and `forgejo-dev` install drivers (selection, not-implemented SCM/CI stubs, and the managed stack lifecycle; see [Forgejo drivers](#forgejo-drivers))
 - [ ] Tekton CI driver
 - [ ] Non-GitHub install backends

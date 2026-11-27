@@ -169,11 +169,14 @@ run_case() {
   auth="$(grep -o 'authorized=[^ ]*' <<<"${output}" | cut -d= -f2)"
   reason="$(grep -o 'reason=[^ ]*' <<<"${output}" | cut -d= -f2)"
   removed="$(grep -o 'label_removed=[^ ]*' <<<"${output}" | cut -d= -f2)"
+  local live
+  live="$(grep -o ' live=[^ ]*' <<<"${output}" | cut -d= -f2)"
 
-  if [[ "${auth}" != "${expected_auth}" || "${reason}" != "${expected_reason}" || "${removed}" != "${expected_removed}" ]]; then
+  # Only an authorized `/ok-to-test <sha> live` comment sets live=true.
+  if [[ "${auth}" != "${expected_auth}" || "${reason}" != "${expected_reason}" || "${removed}" != "${expected_removed}" || "${live}" != "false" ]]; then
     echo "FAIL: ${name}"
-    echo "  expected authorized=${expected_auth} reason=${expected_reason} label_removed=${expected_removed}"
-    echo "  got      authorized=${auth} reason=${reason} label_removed=${removed}"
+    echo "  expected authorized=${expected_auth} reason=${expected_reason} label_removed=${expected_removed} live=false"
+    echo "  got      authorized=${auth} reason=${reason} label_removed=${removed} live=${live}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -509,18 +512,21 @@ write_comment() {
   }' >"${COMMENT_JSON}"
 }
 
+# run_cmd_case NAME AUTHORIZED REASON HEAD_SHA [LIVE]; LIVE defaults to false.
 run_cmd_case() {
   local name="$1" expected_auth="$2" expected_reason="$3" expected_sha="$4"
+  local expected_live="${5:-false}"
   : >"${GH_LOG}"
-  local output auth reason sha
+  local output auth reason sha live
   output="$("${AUTH_SCRIPT}" 42 "fullsend-ai/fullsend")"
   auth="$(grep -o 'authorized=[^ ]*' <<<"${output}" | cut -d= -f2)"
   reason="$(grep -o 'reason=[^ ]*' <<<"${output}" | cut -d= -f2)"
   sha="$(grep -o 'head_sha=[^ ]*' <<<"${output}" | cut -d= -f2)"
-  if [[ "${auth}" != "${expected_auth}" || "${reason}" != "${expected_reason}" || "${sha}" != "${expected_sha}" ]]; then
+  live="$(grep -o ' live=[^ ]*' <<<"${output}" | cut -d= -f2)"
+  if [[ "${auth}" != "${expected_auth}" || "${reason}" != "${expected_reason}" || "${sha}" != "${expected_sha}" || "${live}" != "${expected_live}" ]]; then
     echo "FAIL: ${name}"
-    echo "  expected authorized=${expected_auth} reason=${expected_reason} head_sha=${expected_sha}"
-    echo "  got      authorized=${auth} reason=${reason} head_sha=${sha}"
+    echo "  expected authorized=${expected_auth} reason=${expected_reason} head_sha=${expected_sha} live=${expected_live}"
+    echo "  got      authorized=${auth} reason=${reason} head_sha=${sha} live=${live}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -618,6 +624,47 @@ write_comment "/ok-to-test ${HEAD_SHA}"
 HEAD_SHA="${OTHER_SHA}" write_cmd_pr
 run_logged_cmd_case "old head sha after a push to a look-alike commit is stale" "false" "stale_ok_to_test" "${OTHER_SHA}"
 write_cmd_pr
+write_comment "/ok-to-test ${HEAD_SHA}"
+
+# `/ok-to-test <sha> live` asks for the live suites; the gate is unchanged.
+run_logged_cmd_case "plain /ok-to-test <sha> is not live" "true" "ok_to_test" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA} live"
+run_logged_cmd_case "/ok-to-test <sha> live authorizes live" "true" "ok_to_test" "${HEAD_SHA}" "true"
+LIVE_OUTPUT="${TMPDIR}/github-output"
+: >"${LIVE_OUTPUT}"
+GITHUB_OUTPUT="${LIVE_OUTPUT}" "${AUTH_SCRIPT}" 42 "fullsend-ai/fullsend" >/dev/null
+if grep -qx 'live=true' "${LIVE_OUTPUT}" && grep -qx 'authorized=true' "${LIVE_OUTPUT}"; then
+  echo "PASS: /ok-to-test <sha> live writes live=true to GITHUB_OUTPUT"
+else
+  echo "FAIL: /ok-to-test <sha> live writes live=true to GITHUB_OUTPUT"
+  sed 's/^/  /' "${LIVE_OUTPUT}"
+  FAILURES=$((FAILURES + 1))
+fi
+write_comment "/ok-to-test   ${HEAD_SHA}   live   "
+run_logged_cmd_case "extra spaces around live authorize live" "true" "ok_to_test" "${HEAD_SHA}" "true"
+write_comment "/ok-to-test ${HEAD_SHA} live"$'\r\n'"Reviewed the diff."
+run_logged_cmd_case "CRLF line ending after live authorizes live" "true" "ok_to_test" "${HEAD_SHA}" "true"
+write_comment "/ok-to-test ${HEAD_SHA}"$'\n'"live"
+run_logged_cmd_case "live on the second line is not live" "true" "ok_to_test" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA} LIVE"
+run_logged_cmd_case "uppercase LIVE is missing_sha" "false" "missing_sha" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA} live please"
+run_logged_cmd_case "a word after live is missing_sha" "false" "missing_sha" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA}live"
+run_logged_cmd_case "live without a space before it is missing_sha" "false" "missing_sha" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test live ${HEAD_SHA}"
+run_logged_cmd_case "live before the sha is missing_sha" "false" "missing_sha" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA:0:7} live"
+run_logged_cmd_case "short sha with live is missing_sha" "false" "missing_sha" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${OTHER_SHA} live"
+run_logged_cmd_case "live on a stale sha is not live" "false" "stale_ok_to_test" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA} live"
+set_role "maint" "triage"
+run_logged_cmd_case "live from triage commenter is not live" "false" "untrusted_commenter" "" "false"
+set_role "maint" "write"
+export GH_FAIL="pulls"
+run_logged_cmd_case "live with PR API failure is not live" "false" "error" "" "false"
+export GH_FAIL="false"
 write_comment "/ok-to-test ${HEAD_SHA}"
 
 # Comment identity comes from the API by id.

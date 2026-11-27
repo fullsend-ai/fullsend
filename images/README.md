@@ -147,7 +147,7 @@ Every binary downloaded during the build is **version-pinned** and
 | Tool | Pinning | Verification |
 |------|---------|-------------|
 | OpenShell base image | Manifest list digest (`@sha256:...`) | Immutable OCI content hash |
-| ONNX Runtime (runner) | `ORT_VERSION` + `ORT_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
+| ONNX Runtime (runner) | `ORT_VERSION` + `ORT_SHA256` of the `Microsoft.ML.OnnxRuntime` NuGet package (both arches in one `.nupkg`) | `sha256sum -c` |
 | ProtectAI DeBERTa model (runner) | `PROTECTAI_MODEL_REV` + per-file SHA256 | `sha256sum -c` |
 | libtokenizers (runner) | `TOKENIZERS_VERSION` + `TOKENIZERS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Gitleaks | `GITLEAKS_VERSION` + `GITLEAKS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
@@ -174,7 +174,7 @@ Each tool section in the Containerfile has an update comment with the
 source URL for checksums.  When bumping a version:
 
 1. Download the new release checksums from the URL in the comment.
-2. Update both `*_SHA256_AMD64` and `*_SHA256_ARM64` ARGs.
+2. Update both `*_SHA256_AMD64` and `*_SHA256_ARM64` ARGs (ONNX Runtime has a single `ORT_SHA256`: one NuGet package covers both arches).
 3. The base image digest can be updated by running
    `podman manifest inspect <image>:<tag>` and extracting the index digest.
 
@@ -211,7 +211,8 @@ share `scripts/renovate/lib-checksums.sh` and are tested by
 | `RIPGREP` | sandbox | release `.tar.gz.sha256` assets |
 | `LYCHEE` | code | release `.tar.gz.sha256` assets |
 | `GH`, `GITLEAKS` (sandbox + runner), `GITSIGN` | runner, sandbox, code | release checksums file |
-| `FD`, `OPENCODE`, `ORT` | sandbox, runner | sha256 digest GitHub records for each release asset (no upstream checksum file) |
+| `FD`, `OPENCODE` | sandbox | sha256 digest GitHub records for each release asset (no upstream checksum file) |
+| `ORT` | runner | SHA512 the NuGet catalog records for the `Microsoft.ML.OnnxRuntime` package (one `.nupkg` for both arches, so a single `ORT_SHA256`) |
 | `GCLOUD` | runner | nothing — Google lists checksums only for the current release on its HTML install page, so the hash is computed from the HTTPS download |
 
 These pins stay manual:

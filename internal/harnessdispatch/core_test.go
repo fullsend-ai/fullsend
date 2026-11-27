@@ -221,6 +221,35 @@ func TestDispatch_OwnersUpgradesActorRole(t *testing.T) {
 	assert.Equal(t, normevent.RoleNone, ev.Actor.Role)
 }
 
+func TestDispatch_OwnersDoesNotUpgradeForgejoActor(t *testing.T) {
+	// Forgejo actor logins are unverified until the permission lookup
+	// exists, so an OWNERS approver or reviewer entry must not lift a
+	// role-none Forgejo actor past the gate.
+	for _, section := range []string{"approvers", "reviewers"} {
+		t.Run(section, func(t *testing.T) {
+			ev := mustEvent(t, "issue-opened.json")
+			ev.Source.System = normevent.SystemForgejo
+
+			dir := t.TempDir()
+			configDir := writeHarnessConfigSubdir(t, dir, issueOpenedCoderHarnessYAML(), func(cfg config.PerRepoConfigWriter) {
+				cfg.SetOwnersFileAuthEnabled(true)
+			})
+			ev.Actor.ID = "test-approver"
+			ev.Actor.Role = normevent.RoleNone
+
+			require.NoError(t, os.WriteFile(
+				filepath.Join(dir, "OWNERS"),
+				[]byte(section+":\n  - test-approver\n"),
+				0o644,
+			))
+
+			refs, err := Dispatch(context.Background(), Options{ConfigDir: configDir, Event: ev})
+			require.NoError(t, err)
+			assert.Empty(t, refs, "OWNERS must not upgrade a Forgejo actor")
+		})
+	}
+}
+
 func TestDispatch_OwnersReviewerDeniedWriteLevel(t *testing.T) {
 	dir := t.TempDir()
 

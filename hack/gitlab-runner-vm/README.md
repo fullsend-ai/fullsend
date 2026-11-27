@@ -548,10 +548,22 @@ accumulate until `podman pull` fails with `no space left on device`.
    pre-pulled `RUNNER_IMAGE` and OpenShell supervisor tag.
 2. Installs `~/.local/lib/fullsend/podman-prune.sh` and a user systemd
    timer (`fullsend-podman-prune.timer`, hourly, Nice=19) that skips
-   the run when a `runner-*` or `openshell-*` container is in-flight.
+   the run when a `runner-*`, `openshell-*`, or `openshell.managed` agent sandbox
+   container (`fs-*`) is in-flight.
 3. Invokes the same helper from `prepare.sh` (before the job image pull)
    and `cleanup.sh` (after the job container is gone) so a busy runner
    still reclaims space between jobs.
+
+### Configuration environment variables
+
+`podman-prune.sh` supports the following configuration environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `FULLSEND_PODMAN_LOW_DISK_KIB` | `10485760` (10 GiB) | Available disk space threshold on `/` in KiB. When free space drops below this threshold, the script bypasses the grace window and prunes stopped containers immediately with `until=0s`. Setting this to `0` or empty (`""`) disables low-disk checking; non-numeric values fall back cleanly to disabled. |
+| `FULLSEND_PODMAN_PRUNE_UNTIL` | `30m` | Grace period duration filter passed to `podman container prune --filter until=<val>`. Reclaims containers stopped for longer than this duration during normal runs. |
+| `FULLSEND_PODMAN_KEEP_IMAGES` | `~/.config/fullsend-gitlab-runner/keep-images` | Path to the file containing image references and digests protected from being removed during prune runs. |
+| `FULLSEND_PODMAN_PRUNE_EXTRA_KEEP` | (empty) | Space- or newline-separated list of additional image references or digests to protect from pruning for the current run (e.g. injected dynamically by `prepare.sh`). |
 
 To apply this to an already-provisioned VM, copy the updated
 `hack/gitlab-runner-vm/` files onto the VM and re-run `setup.sh` with

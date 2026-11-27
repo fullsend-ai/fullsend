@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/propagation"
 )
 
 const (
@@ -142,6 +144,11 @@ func (c *Client) do(ctx context.Context, method, path, token string, body any) (
 	if c.conn.Namespace != "" {
 		req.Header.Set("X-Vault-Namespace", c.conn.Namespace)
 	}
+	// Propagate the caller's W3C trace context (traceparent, tracestate)
+	// so a Vault request can be correlated with the run's trace: Vault and
+	// OpenBao can log these headers in their audit log. Nothing is sent
+	// when ctx carries no valid span context.
+	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
 	resp, err := c.http.Do(req)
 	if err != nil {
 		// The error names the URL, which holds no secret; drop the

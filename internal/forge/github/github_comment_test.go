@@ -306,7 +306,7 @@ func TestListIssueComments_SinglePage(t *testing.T) {
 		assert.Equal(t, "1", r.URL.Query().Get("page"))
 
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"id": 1, "body": "first", "user": map[string]any{"login": "alice"}, "created_at": "2026-01-01T00:00:00Z"},
+			{"id": 1, "body": "first", "user": map[string]any{"login": "alice"}, "created_at": "2026-01-01T00:00:00Z", "performed_via_github_app": map[string]any{"client_id": "app-client"}},
 			{"id": 2, "body": "second", "user": map[string]any{"login": "bob"}, "created_at": "2026-01-02T00:00:00Z"},
 		})
 	}))
@@ -319,9 +319,11 @@ func TestListIssueComments_SinglePage(t *testing.T) {
 	assert.Equal(t, 1, comments[0].ID)
 	assert.Equal(t, "first", comments[0].Body)
 	assert.Equal(t, "alice", comments[0].Author)
+	assert.Equal(t, "app-client", comments[0].AppClientID)
 	assert.Equal(t, 2, comments[1].ID)
 	assert.Equal(t, "second", comments[1].Body)
 	assert.Equal(t, "bob", comments[1].Author)
+	assert.Empty(t, comments[1].AppClientID)
 }
 
 func TestListIssueComments_Pagination(t *testing.T) {
@@ -363,6 +365,32 @@ func TestListIssueComments_Pagination(t *testing.T) {
 	assert.Equal(t, 2, page, "should have fetched exactly 2 pages")
 	assert.Equal(t, 101, comments[100].ID)
 	assert.Equal(t, "last", comments[100].Body)
+}
+
+func TestListIssueComments_PaginationLimitFailsOpen(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		assert.LessOrEqual(t, page, 100)
+		comments := make([]map[string]any, 100)
+		for i := range comments {
+			comments[i] = map[string]any{
+				"id":         i + 1,
+				"body":       "comment",
+				"user":       map[string]any{"login": "bot"},
+				"created_at": "2026-01-01T00:00:00Z",
+			}
+		}
+		json.NewEncoder(w).Encode(comments)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comments, err := client.ListIssueComments(context.Background(), "owner", "repo", 5)
+	assert.Error(t, err)
+	assert.Nil(t, comments)
+	assert.ErrorIs(t, err, forge.ErrPaginationLimit)
+	assert.Equal(t, 100, page)
 }
 
 func TestListIssueComments_APIError(t *testing.T) {
@@ -657,6 +685,7 @@ func TestListPullRequestReviews(t *testing.T) {
 				"state":        "APPROVED",
 				"body":         "LGTM",
 				"submitted_at": "2026-01-01T00:00:00Z",
+				"commit_id":    "deadbeef",
 			},
 		})
 	}))
@@ -671,6 +700,34 @@ func TestListPullRequestReviews(t *testing.T) {
 	assert.Equal(t, "reviewer", reviews[0].User)
 	assert.Equal(t, "APPROVED", reviews[0].State)
 	assert.Equal(t, "LGTM", reviews[0].Body)
+	assert.Equal(t, "deadbeef", reviews[0].CommitID)
+}
+
+func TestListPullRequestReviews_PaginationLimitFailsOpen(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		assert.LessOrEqual(t, page, 100)
+		reviews := make([]map[string]any, 100)
+		for i := range reviews {
+			reviews[i] = map[string]any{
+				"id":           i + 1,
+				"user":         map[string]any{"login": "bot"},
+				"state":        "APPROVED",
+				"submitted_at": "2026-01-01T00:00:00Z",
+				"commit_id":    "head",
+			}
+		}
+		json.NewEncoder(w).Encode(reviews)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	reviews, err := client.ListPullRequestReviews(context.Background(), "owner", "repo", 3)
+	assert.Error(t, err)
+	assert.Nil(t, reviews)
+	assert.ErrorIs(t, err, forge.ErrPaginationLimit)
+	assert.Equal(t, 100, page)
 }
 
 func TestAddIssueReaction(t *testing.T) {

@@ -37,7 +37,7 @@ func statusByName(t *testing.T, result *StatusResult) map[string]RepoStatus {
 func singleRepoGitHubManifest(auth string) *Manifest {
 	return &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Inference: InferenceSettings{Auth: auth}},
+		Defaults: DefaultsConfig{Inference: InferenceSettings{Auth: InferenceAuthSelection(auth)}},
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -56,7 +56,7 @@ func populateInstalledGitLabRepo(fc *forge.FakeClient, fullName string) {
 func singleRepoGitLabManifest(auth string) *Manifest {
 	return &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Inference: InferenceSettings{Auth: auth}},
+		Defaults: DefaultsConfig{Inference: InferenceSettings{Auth: InferenceAuthSelection(auth)}},
 		GitLab: &PlatformConfig{
 			URL:   "https://gitlab.example.com",
 			Repos: []RepoEntry{{Name: "acme/api"}},
@@ -297,9 +297,11 @@ func TestUninstall_RemovesAllManagedInferenceSecretsIdempotently(t *testing.T) {
 		{"github missing auth", ForgeGitHub, ""},
 		{"github invalid auth", ForgeGitHub, "bogus"},
 		{"github openai", ForgeGitHub, InferenceAuthOpenAIAPIKey},
+		{"github mix", ForgeGitHub, mixKeyVertex},
 		{"gitlab missing auth", ForgeGitLab, ""},
 		{"gitlab invalid auth", ForgeGitLab, "bogus"},
 		{"gitlab vertex", ForgeGitLab, InferenceAuthVertexWIF},
+		{"gitlab mix", ForgeGitLab, mixKeyVertex},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := newInstalledFakeClient("acme/api")
@@ -316,7 +318,7 @@ func TestUninstall_RemovesAllManagedInferenceSecretsIdempotently(t *testing.T) {
 			client.Secrets["acme/api/"+testUnprefixedOpenAIKey] = true
 			client.Secrets["acme/api/DEPLOY_TOKEN"] = true
 
-			m.Defaults.Inference.Auth = tc.auth
+			m.Defaults.Inference.Auth = InferenceAuthSelection(tc.auth)
 			require.NoError(t, m.ValidateForUninstall())
 
 			run := func() UninstallResult {

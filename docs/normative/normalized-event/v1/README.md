@@ -4,7 +4,7 @@ Forge-neutral routing input for `fullsend dispatch` and harness CEL `trigger`
 expressions ([ADR 0061](../../../ADRs/0061-harness-cel-dispatch.md)).
 
 The field names and transition vocabulary are forge-neutral; **v1 normative
-scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
+scope covers GitHub, GitLab, Forgejo, and Jira** (see [Scope](#scope-v1)).
 
 ## Contract
 
@@ -36,9 +36,11 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
 ## Scope (v1)
 
 v1 adapters and examples target **GitHub** webhooks, **GitLab** cron-poll
-and native-webhook input, and **Jira poll** input:
+and native-webhook input, **Forgejo** Actions event input, and **Jira poll**
+input:
 
-- `source.system` is `github`, `gitlab`, `jira`, `manual`, or `schedule`.
+- `source.system` is `github`, `gitlab`, `forgejo`, `jira`, `manual`, or
+  `schedule`.
 - `repo` is the target fullsend repository (`owner/repo` for GitHub,
   `group/subgroup/project` for GitLab) for all systems — including Jira poll
   events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
@@ -59,6 +61,8 @@ and native-webhook input, and **Jira poll** input:
   sandbox SSRF guard stopped the agent runs before they read the issue. CE
   is non-gating for this validation (see
   [Validation status](#gitlab-webhook-validation-status));
+  `forgejo-event` maps Forgejo Actions event payloads (see
+  [Forgejo adapter notes](#forgejo-adapter-notes));
   `jira-poll` is the production Jira poll adapter; `json` supports tests and
   replay.
 - `entity.kind: conversation` covers GitHub Discussions and future chat
@@ -141,6 +145,7 @@ Input drivers map native forge events into this struct:
 | `gha-event` | `GITHUB_EVENT_PATH` + `gh` snapshot for labels and change-proposal metadata | Production; Discussions → `entity.kind: conversation` planned ([ADR 0086](../../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
 | `gitlab-poll` | GitLab CI event payload (cron-polled; [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) | Production (poll) |
 | `gitlab-webhook` | `TRIGGER_PAYLOAD`, a file-type CI/CD variable whose value is a path to the webhook body delivered by a native "use a webhook" pipeline trigger pinned to the protected default branch: the file's contents are **untrusted hinting only** (resource IDs, event type). The adapter MUST accept only GitLab's own file-type `TRIGGER_PAYLOAD` variable — never a caller-supplied path override, and never following a symlink out of the runner-provided location — read the file, and re-fetch the referenced entities from the GitLab API. Provenance splits by field: `entity`, `state`, `actor`, and `state.labels` MUST come **solely** from the project-pinned API re-fetch, failing closed on any missing or mismatched resource. `transition.kind` (and `source.raw_type`/`raw_action`) has no API-snapshot equivalent — a resource `GET` cannot distinguish opened/labeled/synchronized/merged for an MR, or added/edited for a note — so it MAY be taken from the payload's object-kind/action hint **only after** the payload action is mapped onto the v1 transition vocabulary and validated by the fail-closed consistency checks enumerated in [GitLab webhook transition provenance](#gitlab-webhook-transition-provenance-gitlab-webhook) below. Any action that contradicts the snapshot, or that cannot be checked against it, MUST fail closed. Required transition sub-objects follow the same field-split: `transition.comment` and `transition.review` MUST be populated from the re-fetch, while `transition.label` (`name` and `action`, which a current-state snapshot cannot recover) is taken from the payload's `changes.labels` diff and admitted only after the present/absent snapshot check — see the subsection for the per-label fan-out. This is **not** a pure snapshot re-fetch — the payload action is untrusted until the check passes. The enumerated checks are *current-state* predicates and do not by themselves prove the action just occurred, so **snapshot-consistent replay** remains a named residual trigger-token risk (see the subsection); the adapter MUST use event-time evidence to bind the action **and the actor that performed it** to a recent occurrence and fail closed when no matching event links them. For transitions whose snapshot carries no actor (e.g. `label_changed`), GitLab's resource label/state events — which record user, action, and time — are a **required** part of the re-fetch; a users/members `GET` of the payload-named actor is **not** sufficient actor provenance. **Actor-to-transition attribution** is a distinct requirement, separate from replay (see the subsection). Any identifier read from the payload MUST be validated against its expected format before use in an API path; moreover every re-fetch URL MUST be constructed from the pinned API host (the `CI_JOB_TOKEN` job record's project, plus the pinned API root described below) combined with those validated identifiers, and the adapter MUST NOT follow any URL, host, or `path_with_namespace` taken from the payload (e.g. `project.web_url`, `object_attributes.url`, `repository.git_http_url`, `project.path_with_namespace`) — doing so would turn the payload into SSRF against the PAT-bearing client and would bypass the API-root pin. The payload's contents MUST NOT be logged or echoed. **Project identity** MUST come from the running job's `CI_JOB_TOKEN` job record (`GET /api/v4/job`) as the **sole** project-identity source — never from the trigger-overridable `CI_PROJECT_ID`, `CI_API_V4_URL`, `CI_SERVER_URL`, or `FULLSEND_GITLAB_URL` environment values, which the adapter MUST ignore for identity. An `id_tokens` JWT is **not** an independent or interchangeable identity source (it lands in an ordinary env var a same-named trigger variable can outrank); if a JWT is used at all it MUST be **bound** to the `CI_JOB_TOKEN`-authenticated job record by matching its `job_id`/`project_id` claims — in addition to JWKS signature verification — and MUST NOT stand alone. **Host/base-URL:** the adapter MUST target the API root from the same identity pin, never `CI_API_V4_URL`, `CI_SERVER_URL`, or `FULLSEND_GITLAB_URL` directly, and MUST fail closed when no pinned API root is available. The shipped dispatcher passes the validated https API root that bootstrapped the `CI_JOB_TOKEN` job lookup (`FULLSEND_PINNED_GITLAB_URL`). That bootstrap value is still in the overridable class, so its trust rests on the `ci_pipeline_variables_minimum_override_role=no_one_allowed` restriction, which install verifies before it provisions the webhook, and on the inherited CI/CD variable trust assumption in the [GitLab configuration guide](../../../guides/getting-started/configuring-gitlab.md#inherited-cicd-variable-trust). A base-URL pin independent of that restriction is not specified ([ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md), Consequences) | Shipped (webhook fast-path); live-validated on GitLab.com Free and self-managed EE; on self-managed CE, earlier runs used a patched agents helper and the latest rerun's agent runs were stopped by the sandbox SSRF guard (CE is non-gating) — see [Validation status](#gitlab-webhook-validation-status) |
+| `forgejo-event` | `FORGEJO_EVENT_PATH` (else `GITHUB_EVENT_PATH`) payload of a Forgejo Actions `issues`, `issue_comment`, `pull_request`, `pull_request_target` or `pull_request_review` event, bound to the configured instance and repository; fails closed on unsupported or malformed payloads. See [Forgejo adapter notes](#forgejo-adapter-notes) | Payload mapping; verified actor roles and current-state re-reads are not wired yet |
 | `jira-poll` | Jira issue search + changelog/comments since `lastCheck` ([jira-poll-adapter.md](jira-poll-adapter.md), [ADR 0063](../../../ADRs/0063-polling-based-work-discovery.md)) | Production (poll) |
 | `json` | stdin or `--input-file` | Tests, replay |
 
@@ -304,6 +309,7 @@ before the run starts.
 |--------|---------------------------|------------|
 | GitHub (`gha-event`) | `issue.assignees[].login` or `pull_request.assignees[].login` in the webhook payload (the legacy single `assignee` only when the payload has no `assignees` array); no extra API call | Case-insensitive against the actor login (the reviewer for `pull_request_review`) |
 | GitLab (`gitlab-poll`, `gitlab-webhook`) | Issues: `assignees[].id` from the same issue fetch the author check uses. Merge requests: `assignees[].id` from the MR object that supplies the MR author | Numeric user ID against the resolved actor ID |
+| Forgejo (`forgejo-event`) | `issue.assignees[].login` or `pull_request.assignees[].login` in the event payload (the legacy single `assignee` only when the payload has no `assignees` array); no extra API call | Case-insensitive against the sender login |
 | Jira (`jira-poll`) | `fields.assignee`, requested alongside `reporter` in the search fields | The same identifier as `actor.id`: `accountId`, or `name` when `accountId` is unavailable (Data Center/Server), matching the `is_entity_author` fallback |
 
 Both fields are best-effort **routing** facts, not authorization. They can
@@ -608,7 +614,7 @@ GitLab is a normative v1 source system ([gitlab-implementation.md](../../../prob
 | MR events | Cron-polled MR or `gitlab-webhook` `merge_request` payload → `entity.kind: change_proposal`. The webhook fast path accepts only the `open`, `merge`, and `close` actions; see [GitLab webhook transition provenance](#gitlab-webhook-transition-provenance-gitlab-webhook) (native `merge_request_event` CI dispatch removed in [#7322](https://github.com/fullsend-ai/fullsend/issues/7322); see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md) and [ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)) |
 | Issue opened | Cron poll (`created_at` > both the discovery watermark and a persisted installation cutoff, `state == "opened"`) → `entity.kind: work_item`, `transition.kind: opened`; backstop for a missed webhook delivery, keyed like the webhook's issue open so a delivered webhook is not dispatched twice. The cutoff is set when install/converge seeds the events branch, falling back to the start of the first events poll when none is persisted; it is persisted once and independent of the watermark, so an issue created before installation is never recovered. |
 | MR opened | Cron poll (`created_at` > watermark) → `transition.kind: opened` (review) |
-| MR pushed | Cron poll (`state == "opened"`, the version that introduced the current head replaced a different head, version `created_at` > watermark) → `transition.kind: synchronized` (review); keyed on the head SHA so a head is dispatched once; the actor is the MR author because diff versions record no pusher, so fork MRs are not dispatched (fork MR re-review is currently unsupported) |
+| MR pushed | Cron poll (`state == "opened"`, the version that introduced the current head replaced a different head, version `created_at` > watermark) → `transition.kind: synchronized` (review); keyed on the head SHA so a head is dispatched once; the actor is the MR author because diff versions record no pusher, so fork MRs are not dispatched (re-review a fork MR with `/fs-review`, the only slash command the router accepts on fork MRs) |
 | MR merge | Cron poll (`merged_at` > watermark) → `transition.kind: merged` (retro; GitLab merge and close are distinct events) |
 | MR closed (unmerged) | Cron poll (`closed_at` > watermark, `merged_at` empty) → `transition.kind: closed` (retro) |
 | Notes | `note` → `transition.kind: comment_added` |
@@ -945,3 +951,37 @@ gate is tracked in [#8835](https://github.com/fullsend-ai/fullsend/issues/8835).
 | Snapshot-consistent replay | Closed: risk accepted | The builder rejects re-fetched event-time evidence older than 30 minutes ([`webhookMaxEventAge`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L56)) and shares occurrence-aware dispatch keys with the poller ([ADR 0132](../../../ADRs/0132-occurrence-aware-shared-poller-state.md)). The [residual replay risk](#gitlab-webhook-transition-provenance-gitlab-webhook) above remains. Delivery is also at-least-once: a webhook and a poll cycle that both read state before either persists can each dispatch the same event ([`webhook_dispatch.go`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook_dispatch.go#L74-L84)). The [maintainer decision on #8835](https://github.com/fullsend-ai/fullsend/issues/8835#issuecomment-6452638835) accepts bounded at-least-once replay, not exactly-once dispatch. The accepted residuals are a duplicate dispatch when concurrent webhook and poller runs both read state before either saves, a retry after pipeline creation succeeds but state persistence fails, and a partial stage fan-out that redispatches a stage that succeeded when another stage failed. A replayed event must still pass re-fetch, freshness, actor binding, and authorization, and replay is skipped once its dispatch key is saved. |
 | Actor-to-transition attribution | Closed for the rows the builder accepts | [`bindActor`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L607) requires the payload-named actor to equal the actor the re-fetch records for the transition: the note author; the MR author, merger, or closer; the issue author or closer; or the user on the latest matching resource label event. Both `reopen` rows have no event-time actor evidence and are rejected. MR label changes and other MR updates are ignored without dispatch, as are note edits and bare issue updates; a malformed MR `changes.labels` value is rejected. Any row added later MUST bind its actor the same way or fail closed. |
 | Live validation ([#8245](https://github.com/fullsend-ai/fullsend/issues/8245)) | Closed for GitLab.com Free and self-managed EE | See [Validation status](#gitlab-webhook-validation-status). Self-managed CE is non-gating, and stock agents on custom-port CE remain unverified. |
+
+## Forgejo adapter notes
+
+Forgejo is a v1 source system. The `forgejo-event` input driver
+(`internal/harnessdispatch/input/forgejoevent.go`) maps the payload Forgejo
+Actions writes for the triggering event. `fullsend dispatch` selects it with
+`--input-driver forgejo-event`, and by default when `FORGEJO_ACTIONS` or
+`GITEA_ACTIONS` is `true`. Forgejo runners also set `GITHUB_EVENT_PATH`,
+so this check runs first and a Forgejo payload is never mapped as a GitHub
+event.
+
+| Concern | Mapping |
+|---------|---------|
+| `source.system` | `forgejo` |
+| `source.raw_type` / `raw_action` | The Actions event name and the payload's native `action`, unchanged (for example `pull_request` / `synchronized`) |
+| `repo` | The configured `owner/repo` (`--repo`, else `FORGEJO_REPOSITORY`, else `GITHUB_REPOSITORY`) |
+| Instance and repository binding | The payload's `repository.full_name` MUST equal the configured repository, and every entity URL MUST start with `<server URL>/<owner>/<repo>/`. The server URL comes from `FORGEJO_SERVER_URL`, else `GITHUB_SERVER_URL`, and may include a path prefix. A payload from another forge, instance or repository fails |
+| Issues (`issues`) | `opened` → `opened`, `reopened` → `reopened`, `edited` → `edited`, `closed` → `closed`, label actions → `label_changed`, `assigned`/`unassigned`/`milestoned`/`demilestoned` → `updated`. An `issues` payload whose issue is a pull request fails |
+| Comments (`issue_comment`) | `created` → `comment_added`, `edited` → `comment_edited`, `deleted` → `comment_deleted`. `transition.comment.id` is the Forgejo comment ID. `command` and `instruction` are extracted only for `created`, so an edit never re-issues a slash command. On a pull request (`is_pull`, or `issue.pull_request` present), `entity.linked_change_proposal` is set, and `state.change_proposal` is set only when the payload carries the pull request object |
+| Pull requests (`pull_request`, `pull_request_target`) | `opened`, `reopened`, `synchronized` → `synchronized`, `ready_for_review` → `marked_ready`, `closed` → `merged` when `pull_request.merged` is true and `closed` otherwise, label actions → `label_changed`, `edited` → `edited`, assignment, milestone and review-request actions → `updated`. An `edited` event that removes a default work-in-progress title prefix (`WIP:` or `[WIP]`, case-insensitive) while the payload states `draft: false` maps to `marked_ready`. `state.change_proposal.head_sha` is required. A base repository other than the configured repository fails |
+| Reviews (`pull_request_review`) | `reviewed` or `submitted` → `review_submitted`. `review.type` (`pull_request_review_approved`, `_rejected`, `_comment`) maps to `approved`, `changes_requested` or `commented`. Forgejo v17 has no Actions trigger for reviews, so this mapping serves payloads that carry one; submitted reviews reach agents through polling |
+| Labels | Forgejo reports `label_updated` for both additions and removals, and `label_cleared` for removals. The payload MUST name the changed label in `label.name`. The driver also accepts `labeled` and `unlabeled`. For `label_updated`, the action is `added` when the label is in the payload's label snapshot and `removed` otherwise. `labeled`, `unlabeled` and `label_cleared` MUST agree with that snapshot. A label action that does not name its label, or that contradicts the snapshot, fails. Label changes it cannot attribute are left to polling reconciliation |
+| Actor | `actor.id` is `sender.login`. `actor.kind` is `bot` for Forgejo's built-in Actions user (ID `-2`, login `forgejo-actions`), the author of changes made with `FORGEJO_TOKEN`, and `human` otherwise |
+| Role | `actor.role` comes only from a verified permission lookup the caller supplies. With no lookup, or a failed one, the role is `none`, and the authorization gate denies the event. `fullsend dispatch` does not wire a Forgejo permission lookup yet |
+| Unsupported input | Empty or invalid JSON, trailing data, a payload over 8 MiB, a missing `repository`, `sender` or `action`, an unknown event name or action, and a missing required object (issue, comment and its ID, pull request and its head SHA and base, review) all return an error and no event |
+
+The payload is a **candidate** event. Before dispatch, the Forgejo design
+also requires re-reading current resource state through `forge.Client`,
+for example to confirm merged versus unmerged closes, and verifying actor
+permissions. It also requires deduplicating with durable poll state
+keyed by instance, repository, resource and event identity (comment ID, PR
+head SHA or observed transition). The driver supplies those identity fields.
+It does not perform the re-read or the permission lookup, because the
+Forgejo `forge.Client` operations they need do not exist yet.

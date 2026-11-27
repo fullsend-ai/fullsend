@@ -134,6 +134,10 @@ The rest of ADR 0021 stands: full transcripts by default, and credential
 scanning as an invariant check. Per-agent levels and artifact retention are
 out of scope.
 
+Journal commits are outside this ADR's run-artifact filtering scope. Their
+access and evidence-retention requirements are defined in
+[ADR 0165](0165-recover-work-through-repository-owned-operation-journals.md).
+
 ## Forge scope
 
 - **GitHub:** the existing upload step uploads the staged copy and skips the

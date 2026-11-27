@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
@@ -58,7 +59,8 @@ const (
 // the repository's runs. A run that shows up during the grace period
 // measures a late dispatch; no run at all points to a lost event (#9469).
 // The diagnostics run only for a *ci.NotDispatchedError, which only the
-// GitHub Actions driver returns, so this applies to GitHub Actions only.
+// GitHub Actions and Forgejo Actions drivers return, so this applies to
+// those drivers only.
 // It runs outside failureLogBudget so it cannot starve the log collection
 // that follows, and is bounded per process by dispatchGraceBudget. It is
 // skipped when no verdict can be computed (the CI driver is not a
@@ -96,11 +98,15 @@ var (
 // when the test ends. It is the single reset entry point, also for tests
 // in other packages (such as the suite's After hook tests); tests that
 // call it must not run in parallel with other tests that use the grace
-// wait.
-func ResetDispatchGraceForTest(t testing.TB) {
+// wait. An optional grace replaces dispatchDiagnosticsGrace for the test,
+// so tests in other packages can run a full but short grace wait.
+func ResetDispatchGraceForTest(t testing.TB, grace ...time.Duration) {
 	t.Helper()
 	origBudget, origGrace := dispatchGraceBudget, dispatchDiagnosticsGrace
 	dispatchGraceBudget = newGraceBudget(dispatchGraceBudgetTotal)
+	if len(grace) > 0 {
+		dispatchDiagnosticsGrace = grace[0]
+	}
 	t.Cleanup(func() { dispatchGraceBudget, dispatchDiagnosticsGrace = origBudget, origGrace })
 }
 
@@ -557,26 +563,42 @@ func logRedacted(w *world.World, format string, args ...any) {
 // Like saveWorkflowRunLogs it is best-effort, a no-op when
 // BEHAVIOUR_ARTIFACT_DIR is unset, redacts everything it writes, and
 // writes files 0o600.
-func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) {
+//
+// It returns the error the caller should record for the scenario. That
+// is scenarioErr, except when the dispatch diagnostics find that the
+// waited-for workflow never ran at all in a repo installed fresh for
+// this scenario: the error is then marked infrastructure (see
+// markFreshRepoNoRun, #9779). Without BEHAVIOUR_ARTIFACT_DIR no
+// diagnostics run, so scenarioErr is returned unchanged.
+func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) error {
 	if w == nil {
-		return
+		return scenarioErr
 	}
 	RegisterRedactionLiterals(w)
 	artifactDir := strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR"))
 	if artifactDir == "" {
 		logRedacted(w, "collect failure logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for failed scenario %q", RedactText(w.ScenarioName))
-		return
+		return scenarioErr
 	}
 
 	// Dispatch diagnostics run first: the grace period gives a late run
 	// time to appear, so the run-log collection below also saves it. They
-	// need the details only *ci.NotDispatchedError (GitHub Actions)
-	// carries; another driver's not-dispatched timeout, which wraps only
+	// need the details only *ci.NotDispatchedError (GitHub Actions and
+	// Forgejo Actions) carries; another driver's not-dispatched timeout, which wraps only
 	// ci.ErrWorkflowNotDispatched, gets none.
 	var dispatch string
 	var waited *ci.NotDispatchedError
+	recordErr := scenarioErr
 	if errors.As(scenarioErr, &waited) {
-		dispatch = collectDispatchDiagnostics(ctx, w, waited)
+		var neverRan bool
+		dispatch, neverRan = collectDispatchDiagnostics(ctx, w, waited)
+		if neverRan {
+			var marked bool
+			recordErr, marked = markFreshRepoNoRun(w, scenarioErr)
+			if marked {
+				dispatch += "  classification: infrastructure: the workflow never ran in a repository installed fresh for this scenario, so Actions most likely dropped the first event\n"
+			}
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, failureLogBudget)
@@ -601,9 +623,39 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 	summaryPath, err := writeFailureSummary(artifactDir, w.ScenarioName, b.String())
 	if err != nil {
 		logRedacted(w, "collect failure logs: %v", err)
-		return
+		return recordErr
 	}
 	logRedacted(w, "collect failure logs: failure summary for scenario %q saved to %s", RedactText(w.ScenarioName), summaryPath)
+	return recordErr
+}
+
+// freshRepoNoRunReason is the behaviourfail reason markFreshRepoNoRun
+// gives a not-dispatched failure on a freshly installed repo.
+const freshRepoNoRunReason = "dispatch: fresh repo started no run"
+
+// markFreshRepoNoRun marks err infrastructure when the scenario's
+// repository was installed fresh for this scenario (World.RepoFreshlyInstalled)
+// and is still the leased one. The caller has already established that
+// the waited-for workflow never ran there, for any event, after the full
+// grace wait. GetWorkflow can report the workflow active before Actions
+// reacts to events, and an event sent in that gap starts no run (#9779);
+// the suite's single retry then reruns the scenario on another repo. A
+// workflow that is broken for real fails the retry the same way, so the
+// mark cannot hide a regression for more than that one retry.
+//
+// An err with a joined branch anywhere in its chain is returned
+// unmarked: a mark on the whole error would override the classifier's
+// rule that an independent scenario cause keeps the error scenario.
+func markFreshRepoNoRun(w *world.World, err error) (error, bool) {
+	if !w.RepoFreshlyInstalled || w.LeasedRepoName == "" || w.RepoName != w.LeasedRepoName {
+		return err, false
+	}
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if _, joined := e.(interface{ Unwrap() []error }); joined {
+			return err, false
+		}
+	}
+	return behaviourfail.Mark(err, freshRepoNoRunReason), true
 }
 
 // collectScenarioRunLogs saves the logs of the scenario's runs that are
@@ -694,7 +746,7 @@ func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 }
 
 // collectDispatchDiagnostics records, for a scenario that failed because
-// no workflow run appeared (GitHub Actions only), what the repository
+// no workflow run appeared (GitHub Actions and Forgejo Actions only), what the repository
 // shows after a grace period: a note when the wait was skipped (no
 // budget left, or no verdict possible) or shortened, the time of the
 // listing and the real elapsed wait, the scenario's issue with its
@@ -704,9 +756,13 @@ func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 // runs before teardown deletes the repository, so the evidence survives
 // in the artifact. Every lookup is best-effort and reports its own
 // failure in place of its section.
-func collectDispatchDiagnostics(ctx context.Context, w *world.World, waited *ci.NotDispatchedError) string {
+//
+// neverRan reports describeDispatchRuns' verdict that the waited-for
+// workflow has no run at all in the repository; it is false whenever
+// the evidence is incomplete.
+func collectDispatchDiagnostics(ctx context.Context, w *world.World, waited *ci.NotDispatchedError) (_ string, neverRan bool) {
 	if w.RepoName == "" {
-		return "  none: the repository identity is unavailable, so dispatch diagnostics could not be collected\n"
+		return "  none: the repository identity is unavailable, so dispatch diagnostics could not be collected\n", false
 	}
 
 	budget := dispatchGraceBudget
@@ -763,8 +819,9 @@ func collectDispatchDiagnostics(ctx context.Context, w *world.World, waited *ci.
 		listedAt.UTC().Format(time.RFC3339), elapsed.Round(time.Second), graceStart.UTC().Format(time.RFC3339))
 	issueLine, issueCreated := describeDispatchIssue(ctx, w)
 	b.WriteString(issueLine)
-	b.WriteString(describeDispatchRuns(ctx, w, waited, graceStart, issueCreated, partialWait))
-	return b.String()
+	runs, neverRan := describeDispatchRuns(ctx, w, waited, graceStart, issueCreated, partialWait)
+	b.WriteString(runs)
+	return b.String(), neverRan
 }
 
 // describeDispatchIssue reports the scenario's issue with its creation
@@ -800,16 +857,21 @@ func describeDispatchIssue(ctx context.Context, w *world.World) (string, time.Ti
 // short; the verdict is then inconclusive rather than a lost event or a
 // clean "predates the wait". A missing run is also inconclusive when the
 // listing was truncated, since the run may be among the unlisted ones.
-func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDispatchedError, graceStart, issueCreated time.Time, partialWait string) string {
+//
+// neverRan is true only for the conclusive "no matching run exists"
+// verdict when, in addition, no listed run is of the waited-for workflow
+// for any event, or of a workflow whose file the forge did not report:
+// the workflow has never reacted to an event in this repository.
+func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDispatchedError, graceStart, issueCreated time.Time, partialWait string) (_ string, neverRan bool) {
 	lister, ok := w.CI.(ci.RunLister)
 	if !ok {
-		return "  workflow runs: not listed: the CI driver cannot list workflow runs (it does not implement ci.RunLister)\n"
+		return "  workflow runs: not listed: the CI driver cannot list workflow runs (it does not implement ci.RunLister)\n", false
 	}
 	listCtx, cancel := context.WithTimeout(ctx, logFetchTimeout)
 	defer cancel()
 	runs, err := lister.ListRecentRuns(listCtx, w.Org, w.RepoName, maxListedFailureRuns)
 	if err != nil {
-		return fmt.Sprintf("  workflow runs: listing failed: %v\n", err)
+		return fmt.Sprintf("  workflow runs: listing failed: %v\n", err), false
 	}
 
 	var b strings.Builder
@@ -829,7 +891,7 @@ func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDis
 
 	if waited == nil || waited.WorkflowFile == "" {
 		b.WriteString("  matching run after the wait: unknown: the error does not record which workflow and event were waited for\n")
-		return b.String()
+		return b.String(), false
 	}
 	label := waited.WorkflowFile
 	if waited.Event != "" {
@@ -891,6 +953,13 @@ func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDis
 	case matching.Len() == 0:
 		fmt.Fprintf(&b, "  matching %s run created after the wait ended: no (%s): no matching run exists, which suggests the event produced no run\n",
 			label, skewNote)
+		neverRan = true
+		for _, run := range runs {
+			if run.Path == "" || filepath.Base(run.Path) == waited.WorkflowFile {
+				neverRan = false
+				break
+			}
+		}
 	case partialWait != "":
 		fmt.Fprintf(&b, "  matching %s run created after the wait ended: no (inconclusive: %s; %s): the matching runs listed above predate the end of the wait\n",
 			label, partialWait, skewNote)
@@ -898,7 +967,7 @@ func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDis
 		fmt.Fprintf(&b, "  matching %s run created after the wait ended: no (%s): the matching runs listed above predate the end of the wait\n",
 			label, skewNote)
 	}
-	return b.String()
+	return b.String(), neverRan
 }
 
 // formatSignedDuration renders d with an explicit sign, e.g. "+5m12s".

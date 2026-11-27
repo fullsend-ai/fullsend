@@ -160,7 +160,23 @@ The repository's existing infrastructure provides all the coordination needed:
   [ADR 0149](../ADRs/0149-coalesce-entity-source-discovery-queries.md)
   combines source queries into one logical candidate search and routes each
   possible result locally. A bound run rechecks source-query membership,
-  including when an event supplies the candidate.
+  including when an event supplies the candidate. The discovery guarantees
+  for completeness, caps, and recovery are in
+  [Entity discovery v1](../normative/entity-discovery/v1/README.md).
+  [ADR 0079](../ADRs/0079-bind-entity-execution-through-named-sources.md)
+  binds named, typed harness entity slots to repository-owned source lists.
+  Harness provider filters further narrow those queries before full CEL
+  evaluation, with effective primary selections combined for discovery.
+  The configuration clone selects the native provider independently of where
+  agents execute. Provider-default connections can override its instance;
+  reserved source names supply queries and repository scopes, including
+  explicitly configured external providers.
+  Only the source slot schedules work; other slots supply scopes for the run
+  without automatic joins or broadcast outputs. It permits provider-native
+  membership with exact local checks or
+  batched remote checks; actor-filtered agent predicates remain independent.
+  CI supplies execution and verified recurring discovery, while coordination
+  stays in entity state and receipts rather than an agent workflow graph.
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 
@@ -177,6 +193,12 @@ This principle aligns with what Yegge's Gas City project calls "Zero Framework C
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) is the useful contrast case. It uses an event-driven FastAPI/Redis/LangGraph worker and durable checkpoints to move work forward, which is operationally sensible, but it also centralizes workflow truth and treats Jira labels/comments as approval signals. Fullsend can borrow the event-driven resume mechanics without moving merge authority or intent authorization out of repository-visible controls.
 
 [OpenAI Symphony](../landscape.md#openai-symphony) is the other useful contrast: a long-running central daemon that owns scheduling state, candidate selection, and retry. Where Gas City puts a controller on the path but forbids it from containing judgment, Symphony's orchestrator visibly contains it (priority sort, blocker rules, reconciliation). Fullsend can borrow Symphony's workspace safety invariants and continuation-turn semantics without adopting the daemon.
+
+Cross-host scheduling and partial external writes need deterministic recovery
+without adding a coordinator agent; see
+[durable work recovery](durable-work-recovery.md).
+[ADR 0165](../ADRs/0165-recover-work-through-repository-owned-operation-journals.md)
+chooses repository-owned operation journals; implementation remains open.
 
 ### How agents communicate
 
@@ -232,6 +254,10 @@ The multi-agent framework space is expanding rapidly, with new entries appearing
 - Should agents be stateless (fresh context per task) or stateful (accumulated knowledge of the codebase)? Stateless is safer (no poisoned state persists) but less efficient.
 - Should there be one instance of each agent type per repo, per org, or shared? Per-repo is simpler but more expensive. Shared agents need careful isolation. [ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md) fixes the per-harness, repository, and entity serialization scope; [ADR 0144](../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md) permits a bound process to remain resident. If a centrally managed service is offered, its per-tenant repository configuration will use the existing `repos.yaml` v1 format; source of truth, execution topology, and isolation remain open ([ADR 0123](../ADRs/0123-tenant-configuration-from-repos-yaml.md); infrastructure constrains this — see [agent-infrastructure.md](agent-infrastructure.md).)
 - ~~What's the right model for agent identity? Agents need GitHub accounts to post comments and status checks. Separate bot accounts per agent role? A single bot account with role indicated in the comment? GitHub App installations?~~ Decided in [ADR 0007](../ADRs/0007-per-role-github-apps.md): per-role GitHub Apps with manifest-based creation.
+  [ADR 0071](../ADRs/0071-share-github-api-cache-with-read-only-mint-tokens.md)
+  permits equivalent read-only roles to share a minted token for the same
+  authorized scope, with each request independently authorized and attributed;
+  write identities remain per-role.
 - How do we test the interaction model? Can we simulate adversarial scenarios (injection attempts, unauthorized changes, agent disagreements) in a sandbox repo?
 - How does the two-phase review model work in practice? Does the code agent run all six sub-agents locally, or a subset? Is the pre-PR review a lighter version? (Depends on [agent-infrastructure.md](agent-infrastructure.md) — what compute is available where.)
 - What's the iteration limit before human escalation? Too low and humans get pulled in constantly. Too high and the system wastes resources on unresolvable conflicts.
