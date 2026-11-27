@@ -86,6 +86,16 @@ type ScaffoldMetadataOpts struct {
 	// OldVersion, when non-empty, overrides the existing-version detection
 	// from the workflow file. Only meaningful on the upgrade path.
 	OldVersion string
+
+	// DeliveredFiles, when non-nil, are the scaffold files about to be
+	// committed. The new version is then read from the version marker in
+	// those files, because the delivered scaffold can be rendered at a
+	// repository's fullsend_ref pin that differs from the running CLI's
+	// release. A nil value means the upstreamTag argument is used as the
+	// new version; a non-nil value whose files carry no version marker
+	// leaves the new version unknown, so the change is not described as a
+	// version bump.
+	DeliveredFiles []forge.TreeFile
 }
 
 // BuildScaffoldPRMetadata returns PR metadata appropriate for the operation
@@ -111,7 +121,11 @@ func BuildScaffoldPRMetadata(ctx context.Context, client forge.Client,
 	if oldVersion == "" {
 		oldVersion = detectExistingVersion(ctx, client, owner, repo)
 	}
-	return upgradeMetadata(oldVersion, upstreamTag)
+	newVersion := upstreamTag
+	if o.DeliveredFiles != nil {
+		newVersion = detectDeliveredVersion(o.DeliveredFiles)
+	}
+	return upgradeMetadata(oldVersion, newVersion)
 }
 
 // UninstallPRMetadata returns commit/PR metadata for scaffold file removal.
@@ -215,4 +229,25 @@ func RuntimeSection(runtime string) string {
 		"single run with `fullsend run --runtime`. To put one agent on another runtime or model, " +
 		"set runtime/model/effort on its `agents:` entry in the same file (`fullsend agent set <name> --runtime pi`). " +
 		"See https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md."
+}
+
+// detectDeliveredVersion extracts the version tag from the scaffold files
+// about to be committed, using the same markers as detectExistingVersion.
+// Returns an empty string if none of the files carries a version.
+func detectDeliveredVersion(files []forge.TreeFile) string {
+	for _, src := range versionSources {
+		for _, f := range files {
+			if f.Path != src.path || f.Delete {
+				continue
+			}
+			content, err := f.Bytes()
+			if err != nil {
+				continue
+			}
+			if matches := src.pattern.FindSubmatch(content); len(matches) > 1 {
+				return string(matches[1])
+			}
+		}
+	}
+	return ""
 }

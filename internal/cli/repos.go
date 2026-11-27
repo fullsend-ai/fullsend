@@ -1097,7 +1097,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
 		meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag,
-			repos.ScaffoldMetadataOpts{GuardInstalled: &installed})
+			repos.ScaffoldMetadataOpts{GuardInstalled: &installed, DeliveredFiles: files})
 		if rc.Forge == repos.ForgeGitLab {
 			meta.CommitMsg += " [skip ci]"
 			meta.PRTitle += " [skip ci]"

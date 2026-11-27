@@ -125,6 +125,72 @@ func TestBuildScaffoldPRMetadata_GitLabUpgrade(t *testing.T) {
 	assert.Equal(t, "fullsend/bump-v0.57.1", meta.Branch)
 }
 
+// A repo pinned to a release that differs from the running CLI is rendered
+// at the pin, not the CLI tag. A config-only change delivers no versioned
+// file, so it must not be titled as a bump to the CLI release (#9901).
+func TestBuildScaffoldPRMetadata_PinnedRepoConfigOnlyChange(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents = map[string][]byte{
+		"acme/widget/.github/workflows/fullsend.yaml": []byte(
+			"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v0.56.0\n"),
+	}
+	installed := true
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.57.1",
+		ScaffoldMetadataOpts{
+			GuardInstalled: &installed,
+			DeliveredFiles: []forge.TreeFile{{Path: ".fullsend/config.yaml", Content: []byte("a: b\n")}},
+		})
+
+	assert.Equal(t, "chore: update fullsend per-repo installation", meta.CommitMsg)
+	assert.NotContains(t, meta.CommitMsg, "bump")
+	assert.Equal(t, DefaultScaffoldBranch, meta.Branch)
+}
+
+// A delivered shim rendered at the pin carrying the installed version is
+// not a bump even though the CLI release differs.
+func TestBuildScaffoldPRMetadata_PinnedRepoSameDeliveredVersion(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents = map[string][]byte{
+		"acme/widget/.github/workflows/fullsend.yaml": []byte(
+			"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v0.56.0\n"),
+	}
+	installed := true
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.57.1",
+		ScaffoldMetadataOpts{
+			GuardInstalled: &installed,
+			DeliveredFiles: []forge.TreeFile{{
+				Path: ".github/workflows/fullsend.yaml",
+				Content: []byte(
+					"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v0.56.0\n"),
+			}},
+		})
+
+	assert.Equal(t, "chore: update fullsend per-repo installation", meta.CommitMsg)
+	assert.Equal(t, DefaultScaffoldBranch, meta.Branch)
+}
+
+// The new version comes from the delivered scaffold, not the CLI tag.
+func TestBuildScaffoldPRMetadata_PinnedRepoDeliveredBump(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents = map[string][]byte{
+		"acme/widget/.github/workflows/fullsend.yaml": []byte(
+			"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v0.55.0\n"),
+	}
+	installed := true
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.57.1",
+		ScaffoldMetadataOpts{
+			GuardInstalled: &installed,
+			DeliveredFiles: []forge.TreeFile{{
+				Path: ".github/workflows/fullsend.yaml",
+				Content: []byte(
+					"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@def456 # v0.56.0\n"),
+			}},
+		})
+
+	assert.Equal(t, "chore: bump fullsend from v0.55.0 to v0.56.0", meta.CommitMsg)
+	assert.Equal(t, "fullsend/bump-v0.56.0", meta.Branch)
+}
+
 func TestBuildScaffoldPRMetadata_UpgradeWithNoVersions(t *testing.T) {
 	fc := forge.NewFakeClient()
 	installed := true
