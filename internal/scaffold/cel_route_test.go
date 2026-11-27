@@ -870,7 +870,7 @@ func TestValidateAgentsConfigStep_AcceptsOverrideOnlySettings(t *testing.T) {
 // route steps identical.
 func TestCELRouteSanitizerCopiesMatch(t *testing.T) {
 	var defs []string
-	for _, step := range []string{"Detect CEL route opt-in", "Evaluate CEL route", "Finalize stage"} {
+	for _, step := range []string{"Detect CEL route opt-in", "Evaluate CEL route", "Finalize stage", "Build event payload"} {
 		script := extractReusableDispatchStepScript(t, "route", step)
 		start := strings.Index(script, "gha_text() {")
 		require.GreaterOrEqual(t, start, 0, "step %q must define gha_text", step)
@@ -878,6 +878,37 @@ func TestCELRouteSanitizerCopiesMatch(t *testing.T) {
 		require.Greater(t, end, 0)
 		defs = append(defs, script[start:start+end])
 	}
-	assert.Equal(t, defs[0], defs[1])
-	assert.Equal(t, defs[0], defs[2])
+	for i := 1; i < len(defs); i++ {
+		assert.Equal(t, defs[0], defs[i],
+			"the gha_text copy in step %d must match the CEL route steps verbatim, as the file's comment promises", i)
+	}
+}
+
+// TestVendoredPayloadInstallFailsClosed executes the payload ladder's
+// vendored install step through the same extract-and-execute machinery the
+// CEL route steps get: with the vendored marker present but
+// .fullsend/bin/fullsend missing, the step must fail with the
+// 'broken --vendor install' annotation — the fail-closed branch of the
+// vendored mode, executed rather than shipped untested.
+func TestVendoredPayloadInstallFailsClosed(t *testing.T) {
+	script := extractReusableDispatchStepScript(t, "route", "Install fullsend CLI for event payload (vendored)")
+	dir := t.TempDir()
+	// The vendored marker is present but the binary it promises is missing.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".defaults"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".defaults", "action.yml"), []byte("name: defaults\n"), 0o644))
+	outPath := filepath.Join(dir, "output")
+	require.NoError(t, os.WriteFile(outPath, nil, 0o644))
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"GITHUB_OUTPUT=" + outPath,
+		"GITHUB_PATH=" + filepath.Join(dir, "path"),
+		"RUNNER_TEMP=" + t.TempDir(),
+	}
+	b, err := cmd.CombinedOutput()
+	require.Error(t, err, "the vendored install must fail closed when the vendored binary is missing:\n%s", b)
+	assert.Contains(t, string(b),
+		"::error::broken --vendor install: vendored marker present but .fullsend/bin/fullsend is missing",
+		"the failure annotation must name the broken vendored install, so the operator sees the re-vendor cause in the checks UI")
 }

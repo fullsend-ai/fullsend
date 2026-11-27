@@ -13,7 +13,7 @@ e 2 4 features/dispatch/fork-bash-routing.feature:16 features/dispatch/dispatch.
 f 2 4 features/dispatch/owners-auth.feature:43 features/dispatch/base-dispatch.feature:7 features/dispatch/reaction-notifications.feature:10 features/dispatch/runner-secret-overlay-guard.feature:54
 g 2 4 features/platform/bot-actor-authorization.feature:163 features/dispatch/fork-dispatch.feature:134 features/dispatch/url-dispatch.feature:64 features/dispatch/runner-secret-overlay-guard.feature:23
 h 2 4 features/code/branch-namespace.feature:31 features/triage/triage.feature:6 features/runtime/agent-settings.feature:13 features/dispatch/owners-auth.feature:55
-i 2 4 features/dispatch/triage-prioritize-cel-route.feature:13 features/platform/actor-authorization.feature:55 features/platform/mint-status.feature:32
+i 2 4 features/dispatch/triage-prioritize-cel-route.feature:13 features/platform/actor-authorization.feature:55 features/platform/mint-status.feature:32 features/dispatch/stage-event-overlay.feature:24
 j 2 4 features/dispatch/retro-cel-route.feature:13 features/dispatch/dispatch.feature:31 features/dispatch/triage-prioritize-cel-route.feature:36 features/dispatch/retro-cel-route.feature:57 features/dispatch/jira-transport-bounds.feature:48
 k 2 4 features/dispatch/fork-dispatch.feature:17 features/dispatch/dispatch.feature:6 features/dispatch/url-dispatch.feature:7 features/dispatch/retro-cel-route.feature:38 features/dispatch/jira-transport-bounds.feature:34 features/dispatch/jira-poll-dispatch.feature:40
 l 2 4 features/platform/bot-actor-authorization.feature:115 features/dispatch/fork-dispatch.feature:94 features/dispatch/owners-auth.feature:73 features/dispatch/jira-poll-dispatch.feature:31 features/dispatch/jira-poll-dispatch.feature:24

@@ -1192,8 +1192,10 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 }
 
 // TestReusableDispatchJobsReceiveMintOIDC validates permissions and mint URL
-// wiring for both gha-event dispatch steps (#8814). The OIDC token remains
-// job-local and is not copied into outputs, logs, or matrix data.
+// wiring for every gha-event dispatch step (#8814): the CEL route, the
+// harness dispatch and the route job's event payload builder. The OIDC
+// token remains job-local and is not copied into outputs, logs, or matrix
+// data.
 func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 	type workflowStep struct {
 		Name string            `yaml:"name"`
@@ -1218,6 +1220,7 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 		stepName string
 	}{
 		{jobName: "route", stepName: "Evaluate CEL route"},
+		{jobName: "route", stepName: "Build event payload"},
 		{jobName: "harness-dispatch", stepName: "Run fullsend dispatch"},
 	} {
 		t.Run(tc.jobName, func(t *testing.T) {
@@ -1248,6 +1251,180 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 	}
 	assert.NotContains(t, string(content), "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 		"the workflow must not copy the OIDC request token into logs or matrix data")
+}
+
+// TestRouteJobPayloadStepPinsPrintEventCall pins the route job's payload
+// builder beyond the string _normalized_event (which the jq embed line also
+// matches, so a removed or broken `fullsend dispatch --print-event` call would
+// still pass TestRouteJobPayloadEmbedsNormalizedEvent): the step must invoke
+// the normalizer with --print-event, --event-action and --config-dir, and it
+// and the payload-cli install steps may not set continue-on-error — the embed
+// fails closed by design (AISDLC-505). The ladder's cache steps (restore,
+// validate, expose, prepare, save) must be continue-on-error like the CEL
+// route ladder's: the cache is an optimization, so no cache-service
+// failure may block the route job every stage job needs (at the pinned
+// actions/cache v6.1.0 a restore error fails the step, while save logs
+// save errors as warnings and exits 0). Every
+// payload step must also gate on the review-skip guard the job-level `stage`
+// output uses, so an unchanged-diff synchronize push (review skipped, no stage
+// job) runs neither the ladder nor the payload step.
+func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
+	type workflowStep struct {
+		Name            string            `yaml:"name"`
+		Run             string            `yaml:"run"`
+		If              string            `yaml:"if"`
+		Env             map[string]string `yaml:"env"`
+		With            map[string]any    `yaml:"with"`
+		ContinueOnError any               `yaml:"continue-on-error"`
+	}
+	type workflowJob struct {
+		Steps []workflowStep `yaml:"steps"`
+	}
+	var workflow struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	route, ok := workflow.Jobs["route"]
+	require.True(t, ok, "reusable-dispatch.yml must have a route job")
+
+	var payload workflowStep
+	ladder := make([]workflowStep, 0, 10)
+	for _, step := range route.Steps {
+		if step.Name == "Build event payload" {
+			payload = step
+		}
+		if strings.Contains(step.Name, "event payload") {
+			ladder = append(ladder, step)
+		}
+	}
+	require.NotEmpty(t, payload.Name, "the route job must keep its 'Build event payload' step")
+	require.Len(t, ladder, 10,
+		"the payload step plus the nine payload-cli install ladder steps must stay in the route job")
+
+	assert.Contains(t, payload.Run, "--print-event",
+		"the payload step must normalize the event with `fullsend dispatch --print-event`; without it the stage jobs get no _normalized_event")
+	assert.Contains(t, payload.Run, `--event-action "${EVENT_ACTION}"`,
+		"the payload step must pass the event action so the normalizer resolves the transition")
+	assert.Contains(t, payload.Run, "--config-dir .fullsend",
+		"the payload step must resolve the repository config the same way the routed stages do")
+	assert.Contains(t, payload.Run, "--input-driver gha-event",
+		"the payload step must pin the GitHub event driver: the CLI's default flips to forgejo-event under FORGEJO_ACTIONS/GITEA_ACTIONS, and the payload must normalize the GitHub event, not the Forgejo one")
+	assert.Contains(t, payload.If, "steps.route.outputs.stage != ''",
+		"the payload step must gate on the routed stage like the job-level `stage` output, so no stage job runs without its payload")
+	assert.Contains(t, payload.If, "steps.agent-check.outputs.skipped != 'true'",
+		"the payload step must gate on the agent-check guard like the ladder and the job-level `stage` output, so a skipped agent check runs no payload work")
+
+	// A fork PR's workflow_run must reach the normalization as the rebuilt
+	// pull_request event — the raw workflow_run event is not one the event
+	// loader maps, and normalizing it fails the route job for exactly the
+	// stages this workflow serves. Same rebuild as the CEL route step.
+	assert.Contains(t, payload.Run, `== "workflow_run"`,
+		"the payload step must branch on the workflow_run trigger before normalizing")
+	assert.Contains(t, payload.Run, `GITHUB_EVENT_NAME="pull_request"`,
+		"the payload step must normalize the rebuilt pull_request event for a fork PR's workflow_run")
+	assert.Equal(t, "${{ steps.fork-pr.outputs.pr_file }}", payload.Env["FORK_PR_FILE"],
+		"the rebuild must read the PR the resolve step fetched from the API")
+	assert.Equal(t, "${{ steps.bash-route.outputs.event_action }}", payload.Env["ROUTED_ACTION"],
+		"the rebuild must carry the routed action")
+	assert.Equal(t, "${{ steps.bash-route.outputs.event_sender }}", payload.Env["ROUTED_SENDER"],
+		"the rebuild must carry the routed sender")
+
+	// The ladder's cache steps are best effort like the CEL route
+	// ladder's; the install steps and the payload step stay fail-closed,
+	// their output being what the stage jobs need.
+	cacheSteps := map[string]bool{
+		"Restore fullsend CLI cache for event payload":          true,
+		"Validate cached fullsend CLI for event payload":        true,
+		"Expose cached fullsend CLI for event payload":          true,
+		"Prepare fullsend CLI cache artifact for event payload": true,
+		"Save fullsend CLI cache for event payload":             true,
+	}
+	for _, step := range ladder {
+		if cacheSteps[step.Name] {
+			assert.Equal(t, true, step.ContinueOnError,
+				"cache step %q must be continue-on-error like the CEL route ladder: the cache is an optimization, so no cache-service failure may block the route job every stage job needs (at the pinned actions/cache v6.1.0 a restore error fails the step, while save logs save errors as warnings and exits 0)", step.Name)
+			continue
+		}
+		switch v := step.ContinueOnError.(type) {
+		case nil:
+		case bool:
+			assert.False(t, v,
+				"step %q must not set continue-on-error: the payload embed fails closed (an install or normalization failure stops the route job)", step.Name)
+		default:
+			assert.Fail(t, "step %q must not set continue-on-error (got %v): the payload embed fails closed", step.Name, v)
+		}
+	}
+
+	const reviewSkipGuard = "steps.review-skip-publish.outputs.skipped != 'true'"
+	for _, step := range ladder {
+		assert.Contains(t, step.If, reviewSkipGuard,
+			"step %q must gate on the review-skip guard like the job-level `stage` output, so an unchanged-diff synchronize push with the review skipped runs no payload work", step.Name)
+	}
+
+	// The ladder's upstream checkout is new code, not legacy debt: it must
+	// not leave the job token in .git/config of the sparse checkout, where
+	// later steps running with elevated permissions could read it; the
+	// sibling upstream-install checkouts that still omit the flag are
+	// recorded as follow-ups.
+	for _, step := range ladder {
+		if step.Name == "Checkout upstream install action for event payload" {
+			assert.Equal(t, false, step.With["persist-credentials"],
+				"the payload ladder's upstream checkout must set persist-credentials: false so the job token does not persist into .git/config of the sparse checkout")
+		}
+	}
+
+	// Main's #9663 hardened every CLI ladder; the payload ladder mirrors that
+	// shape: a restored cache entry is validated before it is exposed, an
+	// invalid entry re-runs the install, the artifact is proven with
+	// `dispatch --help` before it is saved, and the keys carry the runner
+	// architecture.
+	var validate, installUpstream, expose, prepare, save workflowStep
+	for _, step := range ladder {
+		switch step.Name {
+		case "Validate cached fullsend CLI for event payload":
+			validate = step
+		case "Install fullsend CLI for event payload (upstream workflow)":
+			installUpstream = step
+		case "Expose cached fullsend CLI for event payload":
+			expose = step
+		case "Prepare fullsend CLI cache artifact for event payload":
+			prepare = step
+		case "Save fullsend CLI cache for event payload":
+			save = step
+		}
+	}
+	const invalidCache = "(steps.payload-cli-cache.outputs.cache-hit != 'true' || steps.payload-cli-cache-validation.outputs.valid != 'true')"
+	require.NotEmpty(t, validate.Name, "the payload ladder must validate a restored cache entry before exposing it (main #9663)")
+	assert.Contains(t, validate.Run, "dispatch --help",
+		"the validate step must prove the cached binary answers `dispatch --help` before it is exposed")
+	assert.Contains(t, installUpstream.If, invalidCache,
+		"the upstream install must re-run when the cached binary is missing or invalid (main #9663)")
+	assert.Contains(t, expose.If, "steps.payload-cli-cache-validation.outputs.valid == 'true'",
+		"the expose step must run only on a validated cache hit (main #9663)")
+	assert.Contains(t, prepare.Run, "dispatch --help",
+		"the prepare step must prove the binary with `dispatch --help` before it is saved (main #9663)")
+	assert.Contains(t, save.If, invalidCache,
+		"the save must run only when the cache missed or held an invalid binary (main #9663)")
+	assert.Contains(t, save.If, "steps.payload-cli-cache-prepare.outcome == 'success'",
+		"the save must be gated on the prepare outcome (main #9663)")
+	assert.Equal(t, 2, strings.Count(string(content), "fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ runner.arch }}-"),
+		"both payload ladder cache keys must carry runner.arch so an entry restored across architectures is not exposed (main #9663)")
+
+	// The three CLI ladders (CEL route, payload, harness-dispatch; restore
+	// and save each) share one cache-key schema — mode, runner.arch, a
+	// hashFiles segment, the trusted workflow SHA — so in upstream mode,
+	// where hashFiles resolves empty, they share one saved CLI instead of
+	// the route job paying a second source build per non-sharing ladder.
+	// The hunk's own comment declares the keys stay in sync; this freezes
+	// the shared shape so drift fails the suite instead of staying
+	// invisible.
+	keyRe := regexp.MustCompile(`(?m)^\s*key: fullsend-cli-\$\{\{ steps\.[a-z-]+\.outputs\.mode \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ hashFiles\('[^']+'\) \}\}-\$\{\{ \(github\.event_name == 'pull_request'`)
+	assert.Len(t, keyRe.FindAllString(string(content), -1), 6,
+		"all six CLI ladder cache keys (CEL route, payload and harness-dispatch, restore and save each) must carry the shared schema: mode, runner.arch, a hashFiles segment and the trusted workflow SHA")
 }
 
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch
@@ -1457,6 +1634,48 @@ func TestOwnersCheckoutRefPin(t *testing.T) {
 				"should find at least one checkout step with OWNERS in sparse-checkout")
 		})
 	}
+}
+
+// TestReusableDispatchSparseCheckoutNoDuplicates pins every checkout's
+// sparse-checkout list in reusable-dispatch.yml to one entry per path:
+// duplicate entries are dead weight a rebase can quietly accumulate on top
+// of a list main already carries.
+func TestReusableDispatchSparseCheckoutNoDuplicates(t *testing.T) {
+	type workflowStep struct {
+		Name string `yaml:"name"`
+		With struct {
+			SparseCheckout string `yaml:"sparse-checkout"`
+		} `yaml:"with"`
+	}
+	type workflowJob struct {
+		Steps []workflowStep `yaml:"steps"`
+	}
+	var workflow struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+	content := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	var checked int
+	for job, j := range workflow.Jobs {
+		for _, step := range j.Steps {
+			if step.With.SparseCheckout == "" {
+				continue
+			}
+			checked++
+			seen := map[string]bool{}
+			for _, line := range strings.Split(step.With.SparseCheckout, "\n") {
+				entry := strings.TrimSpace(line)
+				if entry == "" {
+					continue
+				}
+				assert.False(t, seen[entry],
+					"job %q step %q lists sparse-checkout entry %q twice", job, step.Name, entry)
+				seen[entry] = true
+			}
+		}
+	}
+	require.NotZero(t, checked, "should find sparse-checkout lists to check")
 }
 
 // TestShimScaffoldBranchFilter validates that the shim template skips dispatch

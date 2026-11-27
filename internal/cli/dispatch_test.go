@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
 func TestRunDispatch_JSONDriver(t *testing.T) {
@@ -118,6 +119,193 @@ func TestNewDispatchCmd_Flags(t *testing.T) {
 	assert.Contains(t, forgeToken.Usage, "GH_TOKEN")
 	assert.Contains(t, forgeToken.Usage, "GITHUB_TOKEN")
 	assert.Contains(t, forgeToken.Usage, "gh auth token")
+
+	printEvent := cmd.Flags().Lookup("print-event")
+	require.NotNil(t, printEvent)
+	assert.Equal(t, "false", printEvent.DefValue)
+}
+
+// writePrintEventFixture writes the JSON-driver event fixture --print-event
+// tests share and returns its path.
+func writePrintEventFixture(t *testing.T) string {
+	t.Helper()
+	eventJSON := []byte(`{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 42, "url": "https://github.com/fullsend-ai/demo/issues/42"},
+  "transition": {"kind": "label_changed", "label": {"name": "ready-for-ping", "action": "added"}},
+  "actor": {"id": "alice", "kind": "human", "role": "write", "is_entity_author": false},
+  "state": {"labels": ["ready-for-ping"]},
+  "source": {"system": "github", "raw_type": "issues", "raw_action": "labeled"}
+}`)
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(eventPath, eventJSON, 0o644))
+	return eventPath
+}
+
+// TestRunDispatch_PrintEvent_JSONDriver checks --print-event: the command
+// prints the loaded event's complete normalized form (the map
+// buildEventPayload embeds as _normalized_event) as one JSON object and
+// exits without evaluating triggers, so no config or harnesses are needed.
+func TestRunDispatch_PrintEvent_JSONDriver(t *testing.T) {
+	out, err := captureDispatch(t, dispatchOpts{
+		inputDriver: "json",
+		inputFile:   writePrintEventFixture(t),
+		printEvent:  true,
+	})
+	require.NoError(t, err)
+
+	var printed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &printed), "stdout must be one JSON object: %s", out)
+	assert.Equal(t, "fullsend-ai/demo", printed["repo"])
+	entity, ok := printed["entity"].(map[string]any)
+	require.True(t, ok, "entity must be an object")
+	assert.Equal(t, "work_item", entity["kind"])
+	assert.Equal(t, float64(42), entity["id"])
+	source, ok := printed["source"].(map[string]any)
+	require.True(t, ok, "source must be an object")
+	assert.Equal(t, "github", source["system"])
+	assert.Equal(t, "issues", source["raw_type"])
+	// The printed form must survive the validation fullsend run applies to
+	// a _normalized_event recovered from a dispatch payload.
+	parsed, err := normevent.ParseJSON([]byte(out))
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	// And it must be exactly the form buildEventPayload embeds: ToMap is
+	// the marshal round-trip of the same event, so the printed JSON and
+	// the embedded map cannot drift apart silently.
+	asMap, err := parsed.ToMap()
+	require.NoError(t, err)
+	assert.Equal(t, asMap, printed)
+}
+
+// TestRunDispatch_PrintEventGHAEventBotRole pins the security-adjacent half
+// of --print-event on the gha-event driver: the printed event carries the
+// bot-role resolution the harness dispatch path applies (ADR 0107), so a
+// payload embedding it cannot smuggle an unresolved bot past an
+// actor.bot_role trigger, and a regression that prints the event before the
+// lookup (or drops the gha-event guard) fails here.
+func TestRunDispatch_PrintEventGHAEventBotRole(t *testing.T) {
+	writeGHABotPREvent(t, "opened", "")
+	resolver := &fakeBotRoleResolver{role: "coder"}
+	useBotRoleResolver(t, resolver)
+
+	out, err := captureDispatch(t, dispatchOpts{
+		inputDriver: "gha-event",
+		printEvent:  true,
+	})
+	require.NoError(t, err)
+	require.Len(t, resolver.queries, 1, "the bot-role lookup must run before printing")
+
+	var printed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &printed), "stdout must be one JSON object: %s", out)
+	actor, ok := printed["actor"].(map[string]any)
+	require.True(t, ok, "actor must be an object")
+	assert.Equal(t, "coder", actor["bot_role"], "the printed event must carry the resolved bot role")
+	assert.Equal(t, true, actor["role_verified"])
+
+	parsed, err := normevent.ParseJSON([]byte(out))
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+}
+
+func TestRunDispatch_PrintEventRejectsRoute(t *testing.T) {
+	err := runDispatch(context.Background(), dispatchOpts{
+		inputDriver: "json",
+		inputFile:   "-",
+		printEvent:  true,
+		route:       "retro",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be combined with --route")
+}
+
+// TestRequireLoadedEventFailsClosed pins the nil-event guard behind
+// --print-event: a driver that produced no event and no error must fail the
+// command, not marshal null — the route job would embed
+// _normalized_event = null and the stage jobs would run with no event,
+// silently inverting the fail-closed policy.
+func TestRequireLoadedEventFailsClosed(t *testing.T) {
+	err := requireLoadedEvent(nil, "gha-event")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gha-event",
+		"the error must name the driver that loaded no event")
+	assert.Contains(t, err.Error(), "no event")
+
+	require.NoError(t, requireLoadedEvent(&normevent.Event{}, "gha-event"),
+		"a loaded event passes the guard")
+}
+
+// TestRunDispatch_PrintEventIgnoresOutputDriver pins the documented
+// contract that --output-driver is ignored under --print-event: the command
+// prints the loaded event's normalized form as one JSON object, never the
+// dispatch matrix the driver would otherwise shape.
+func TestRunDispatch_PrintEventIgnoresOutputDriver(t *testing.T) {
+	out, err := captureDispatch(t, dispatchOpts{
+		inputDriver:  "json",
+		inputFile:    writePrintEventFixture(t),
+		outputDriver: "json",
+		printEvent:   true,
+	})
+	require.NoError(t, err)
+
+	var printed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &printed),
+		"stdout must be one JSON object even with --output-driver set: %s", out)
+	assert.Equal(t, "fullsend-ai/demo", printed["repo"])
+	assert.NotContains(t, printed, "include",
+		"--output-driver must not shape --print-event output into a harness matrix")
+}
+
+// TestRunDispatch_RouteIgnoresOutputDriver pins the documented contract
+// that --output-driver is ignored under --route: the command prints the
+// route decision as one JSON line, never the dispatch matrix.
+func TestRunDispatch_RouteIgnoresOutputDriver(t *testing.T) {
+	dir := writeRouteFixture(t, routeFixture{
+		agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml", Trigger: strings.TrimPrefix(routeTestCommentOnlyTrigger, "trigger: >\n")}},
+		files: map[string]string{
+			"harness/review.yaml": routeTestHarnessBody,
+		},
+	})
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(eventPath, []byte(routeReviewComment), 0o644))
+
+	out, err := captureDispatch(t, dispatchOpts{
+		inputDriver:  "json",
+		inputFile:    eventPath,
+		configDir:    dir,
+		route:        "review",
+		outputDriver: "gha-matrix",
+	})
+	require.NoError(t, err)
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	require.Len(t, lines, 1, "stdout must hold exactly one JSON line even with --output-driver set: %q", out)
+	var got routeDecision
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &got))
+	assert.Equal(t, routeDecision{
+		Agent:    "review",
+		Decision: routeRun,
+		Reason:   "trigger matched",
+		Harness:  "config:harness/review.yaml",
+	}, got)
+}
+
+// TestDispatchCmd_PrintEvent exercises the cobra wiring end to end: the
+// --print-event flag reaches runDispatch through the command's RunE.
+func TestDispatchCmd_PrintEvent(t *testing.T) {
+	eventPath := writePrintEventFixture(t)
+
+	cmd := newDispatchCmd()
+	cmd.SetArgs([]string{"--input-driver", "json", "--input-file", eventPath, "--print-event"})
+	var execErr error
+	out := captureStdout(t, func() {
+		execErr = cmd.Execute()
+	})
+	require.NoError(t, execErr)
+
+	var printed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &printed), "stdout must be one JSON object: %s", out)
+	assert.Equal(t, "fullsend-ai/demo", printed["repo"])
 }
 
 func TestRunDispatch_JSONDriverWithoutGitHubToken(t *testing.T) {

@@ -690,34 +690,271 @@ func TestEvaluateCELRouteWorkflowRun(t *testing.T) {
 }
 
 // The event payload of a fork PR's workflow_run carries the API PR, in the
-// shape the issue_comment path gives the stage jobs.
+// shape the issue_comment path gives the stage jobs, and the step normalizes
+// the rebuilt pull_request event — never the raw workflow_run event, which
+// the event loader rejects. The rebuild derives the sender's type from the
+// login suffix (Bot for a [bot]-suffixed login, User otherwise), and the
+// loader replay's actor kind follows it, so a regression that mis-derives
+// bot senders as User fails here instead of silently skipping the ADR 0107
+// lookup in the real step.
 func TestBuildEventPayloadWorkflowRun(t *testing.T) {
+	for _, tc := range []struct {
+		sender     string
+		senderType string
+		actorKind  normevent.ActorKind
+	}{
+		{"contributor", "User", normevent.ActorHuman},
+		{"fullsend-ai-review[bot]", "Bot", normevent.ActorBot},
+	} {
+		t.Run(tc.sender, func(t *testing.T) {
+			dir := t.TempDir()
+			event := filepath.Join(dir, "event.json")
+			require.NoError(t, os.WriteFile(event, []byte(`{"action":"completed","workflow_run":{"event":"pull_request","pull_requests":[]}}`), 0o644))
+			prJSON := `{"number":7,"html_url":"https://github.com/acme/widgets/pull/7","head":{"ref":"fix-typo","sha":"` + forkHeadSHA + `","repo":{"full_name":"contributor/widgets"}},"base":{"ref":"main","repo":{"full_name":"acme/widgets"}}}`
+			// The fork PR file "Resolve fork pull request for workflow_run" wrote.
+			workDir := filepath.Join(dir, "work")
+			require.NoError(t, os.MkdirAll(workDir, 0o755))
+			prFile := filepath.Join(workDir, "pull_request.json")
+			require.NoError(t, os.WriteFile(prFile, []byte(prJSON), 0o644))
+			script := extractReusableDispatchStepScript(t, "route", "Build event payload")
+			// The step normalizes the event through the dispatch CLI before
+			// embedding it (AISDLC-505). The stub captures exactly what the CLI is
+			// given — event name, arguments, event file — so the test can replay
+			// them through the real event loader, and prints a normalized event.
+			capture := filepath.Join(dir, "capture")
+			bin := filepath.Join(dir, "bin")
+			require.NoError(t, os.MkdirAll(bin, 0o755))
+			stub := "#!/bin/sh\n" +
+				"{ echo \"name=$GITHUB_EVENT_NAME\"; printf '%s\\n' \"$*\"; cat \"$GITHUB_EVENT_PATH\"; } > " + capture + "\n" +
+				"printf '%s\\n' '{\"actor\":{\"id\":\"octobot\",\"login\":\"octobot\",\"type\":\"Bot\"}}'\n"
+			require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(stub), 0o755))
+			out := filepath.Join(dir, "output")
+			require.NoError(t, os.WriteFile(out, nil, 0o644))
+			cmd := exec.Command("bash", "-c", script)
+			cmd.Dir = dir
+			cmd.Env = []string{
+				"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"GITHUB_OUTPUT=" + out,
+				"GITHUB_EVENT_NAME=workflow_run",
+				"GITHUB_EVENT_PATH=" + event,
+				"PR_HEAD_JSON=" + prJSON,
+				"FORK_PR_FILE=" + prFile,
+				"ROUTED_ACTION=synchronize",
+				"ROUTED_SENDER=" + tc.sender,
+				"EVENT_ACTION=completed",
+			}
+			b, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(b))
+
+			// The raw workflow_run event is not a loadable event: this is why the
+			// step must rebuild the pull_request event before normalizing.
+			_, err = input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+				EventPath: event, EventName: "workflow_run", EventAction: "completed", Repository: "acme/widgets",
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unsupported github event name")
+
+			// The CLI saw the rebuilt pull_request event, not the raw one.
+			captured, err := os.ReadFile(capture)
+			require.NoError(t, err)
+			lines := strings.SplitN(string(captured), "\n", 3)
+			require.GreaterOrEqual(t, len(lines), 3)
+			assert.Equal(t, "name=pull_request", lines[0],
+				"the payload step must normalize the rebuilt pull_request event, not the raw workflow_run event")
+			assert.Contains(t, lines[1], "--event-action synchronize",
+				"the payload step must pass the routed action, not the workflow_run 'completed' action")
+			var rebuilt struct {
+				Action      string         `json:"action"`
+				PullRequest map[string]any `json:"pull_request"`
+				Sender      struct {
+					Login string `json:"login"`
+					Type  string `json:"type"`
+				} `json:"sender"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(lines[2]), &rebuilt))
+			assert.Equal(t, "synchronize", rebuilt.Action)
+			assert.EqualValues(t, 7, rebuilt.PullRequest["number"])
+			assert.Equal(t, tc.sender, rebuilt.Sender.Login)
+			assert.Equal(t, tc.senderType, rebuilt.Sender.Type,
+				"the rebuild must derive the sender's type from the login suffix")
+
+			// The same event file the CLI was given loads through the real event
+			// loader as the pull_request event it stands for.
+			eventFile := filepath.Join(dir, "rebuilt.json")
+			require.NoError(t, os.WriteFile(eventFile, []byte(lines[2]), 0o644))
+			norm, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+				EventPath: eventFile, EventName: "pull_request", EventAction: "synchronize", Repository: "acme/widgets",
+			})
+			require.NoError(t, err)
+			assert.Equal(t, normevent.TransitionSynchronized, norm.Transition.Kind)
+			assert.Equal(t, normevent.EntityChangeProposal, norm.Entity.Kind)
+			assert.Equal(t, 7, norm.Entity.ID)
+			assert.Equal(t, tc.sender, norm.Actor.ID)
+			assert.Equal(t, tc.actorKind, norm.Actor.Kind,
+				"the loader replay's actor kind must follow the rebuilt sender's type")
+
+			// The payload carries the API PR and the normalized event.
+			raw, err := os.ReadFile(out)
+			require.NoError(t, err)
+			outLines := strings.Split(string(raw), "\n")
+			require.GreaterOrEqual(t, len(outLines), 2)
+			var payload struct {
+				Issue           any            `json:"issue"`
+				Comment         any            `json:"comment"`
+				PullRequest     map[string]any `json:"pull_request"`
+				NormalizedEvent map[string]any `json:"_normalized_event"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(outLines[1]), &payload))
+			assert.Nil(t, payload.Issue)
+			assert.Nil(t, payload.Comment)
+			assert.EqualValues(t, 7, payload.PullRequest["number"])
+			assert.Equal(t, forkHeadSHA, payload.PullRequest["head"].(map[string]any)["sha"])
+			// The stubbed dispatch CLI's normalized event rides in the payload the
+			// stage jobs write to the dispatch file `fullsend run` reads.
+			assert.Equal(t, "octobot", payload.NormalizedEvent["actor"].(map[string]any)["login"])
+		})
+	}
+}
+
+// A same-repo pull_request event reaches the payload step's normalization
+// unchanged: the workflow_run rebuild must not touch it.
+func TestBuildEventPayloadPullRequestUnchanged(t *testing.T) {
 	dir := t.TempDir()
+	prEvent := `{"action":"opened","pull_request":{"number":7,"html_url":"https://github.com/acme/widgets/pull/7",` +
+		`"head":{"ref":"fix-typo","sha":"` + forkHeadSHA + `","repo":{"full_name":"acme/widgets"}},` +
+		`"base":{"ref":"main","repo":{"full_name":"acme/widgets"}}},"sender":{"login":"writer","type":"User"}}`
 	event := filepath.Join(dir, "event.json")
-	require.NoError(t, os.WriteFile(event, []byte(`{"action":"completed","workflow_run":{"event":"pull_request","pull_requests":[]}}`), 0o644))
-	prJSON := `{"number":7,"html_url":"https://github.com/acme/widgets/pull/7","head":{"ref":"fix-typo","sha":"` + forkHeadSHA + `","repo":{"full_name":"contributor/widgets"}},"base":{"ref":"main","repo":{"full_name":"acme/widgets"}}}`
+	require.NoError(t, os.WriteFile(event, []byte(prEvent), 0o644))
 	script := extractReusableDispatchStepScript(t, "route", "Build event payload")
+	capture := filepath.Join(dir, "capture")
+	bin := filepath.Join(dir, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	stub := "#!/bin/sh\n" +
+		"{ echo \"name=$GITHUB_EVENT_NAME\"; printf '%s\\n' \"$*\"; cat \"$GITHUB_EVENT_PATH\"; } > " + capture + "\n" +
+		"printf '%s\\n' '{\"actor\":{\"id\":\"octobot\",\"login\":\"octobot\",\"type\":\"Bot\"}}'\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(stub), 0o755))
 	out := filepath.Join(dir, "output")
 	require.NoError(t, os.WriteFile(out, nil, 0o644))
 	cmd := exec.Command("bash", "-c", script)
 	cmd.Dir = dir
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GITHUB_OUTPUT=" + out, "GITHUB_EVENT_PATH=" + event, "PR_HEAD_JSON=" + prJSON}
+	cmd.Env = []string{
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GITHUB_OUTPUT=" + out,
+		"GITHUB_EVENT_NAME=pull_request",
+		"GITHUB_EVENT_PATH=" + event,
+		"PR_HEAD_JSON=",
+		"EVENT_ACTION=opened",
+	}
 	b, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(b))
-	raw, err := os.ReadFile(out)
+	captured, err := os.ReadFile(capture)
 	require.NoError(t, err)
-	lines := strings.Split(string(raw), "\n")
-	require.GreaterOrEqual(t, len(lines), 2)
-	var payload struct {
-		Issue       any            `json:"issue"`
-		Comment     any            `json:"comment"`
-		PullRequest map[string]any `json:"pull_request"`
+	lines := strings.SplitN(string(captured), "\n", 3)
+	assert.Equal(t, "name=pull_request", lines[0])
+	assert.Contains(t, lines[1], "--event-action opened")
+	assert.JSONEq(t, prEvent, lines[2],
+		"a pull_request event reaches the normalization exactly as GitHub delivered it")
+}
+
+// The payload step's fail-closed handler: a CLI that cannot normalize the
+// event — a vendored or preinstalled binary too old for --print-event, say —
+// fails the step, and the CLI's own stderr rides on the ::error:: annotation
+// so the checks UI shows the cause (cobra's unknown-flag error) instead of
+// only the raw log. The error branch cannot drift silently.
+func TestBuildEventPayloadFailsClosedWithCLIError(t *testing.T) {
+	dir := t.TempDir()
+	prEvent := `{"action":"opened","pull_request":{"number":7,"html_url":"https://github.com/acme/widgets/pull/7",` +
+		`"head":{"ref":"fix-typo","sha":"` + forkHeadSHA + `","repo":{"full_name":"acme/widgets"}},` +
+		`"base":{"ref":"main","repo":{"full_name":"acme/widgets"}}},"sender":{"login":"writer","type":"User"}}`
+	event := filepath.Join(dir, "event.json")
+	require.NoError(t, os.WriteFile(event, []byte(prEvent), 0o644))
+	script := extractReusableDispatchStepScript(t, "route", "Build event payload")
+	bin := filepath.Join(dir, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	stub := "#!/bin/sh\n" +
+		"echo 'Error: unknown flag: --print-event' >&2\n" +
+		"exit 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(stub), 0o755))
+	out := filepath.Join(dir, "output")
+	require.NoError(t, os.WriteFile(out, nil, 0o644))
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = []string{
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GITHUB_OUTPUT=" + out,
+		"GITHUB_EVENT_NAME=pull_request",
+		"GITHUB_EVENT_PATH=" + event,
+		"PR_HEAD_JSON=",
+		"EVENT_ACTION=opened",
 	}
-	require.NoError(t, json.Unmarshal([]byte(lines[1]), &payload))
-	assert.Nil(t, payload.Issue)
-	assert.Nil(t, payload.Comment)
-	assert.EqualValues(t, 7, payload.PullRequest["number"])
-	assert.Equal(t, forkHeadSHA, payload.PullRequest["head"].(map[string]any)["sha"])
+	b, err := cmd.CombinedOutput()
+	require.Error(t, err, "the payload step must fail closed when the CLI cannot normalize the event")
+	assert.Contains(t, string(b),
+		"::error::Failed to normalize the event for the routed stage: Error: unknown flag: --print-event",
+		"the CLI's stderr must ride on the failure annotation, so a binary too old for --print-event shows its cause in the checks UI")
+}
+
+// The failure annotation sanitizes the CLI's stderr the way the CEL route
+// steps do (gha_text: control characters dropped, % encoded, :: broken up):
+// the captured stderr can echo untrusted event fields — an actor login, a
+// repo or title — and the route job holds id-token: write, so a %0A that
+// survives the CR/LF fold must not terminate the workflow command and forge
+// further commands or annotations.
+func TestBuildEventPayloadSanitizesCLIErrorAnnotation(t *testing.T) {
+	dir := t.TempDir()
+	prEvent := `{"action":"opened","pull_request":{"number":7,"html_url":"https://github.com/acme/widgets/pull/7",` +
+		`"head":{"ref":"fix-typo","sha":"` + forkHeadSHA + `","repo":{"full_name":"acme/widgets"}},` +
+		`"base":{"ref":"main","repo":{"full_name":"acme/widgets"}}},"sender":{"login":"writer","type":"User"}}`
+	event := filepath.Join(dir, "event.json")
+	require.NoError(t, os.WriteFile(event, []byte(prEvent), 0o644))
+	script := extractReusableDispatchStepScript(t, "route", "Build event payload")
+	bin := filepath.Join(dir, "bin")
+	require.NoError(t, os.MkdirAll(bin, 0o755))
+	// stderr carries a %0A sequence, a ::workflow-command:: lookalike, a
+	// control byte and a line that itself starts with a workflow command:
+	// none may reach the annotation as-is, and no replayed line may forge
+	// a command on stderr, where the runner parses them too.
+	stub := "#!/bin/sh\n" +
+		"printf 'Error: line1\\nline2 %%0A ::error::forged\\001\\n::error::replay-forged\\n' >&2\n" +
+		"exit 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(stub), 0o755))
+	out := filepath.Join(dir, "output")
+	require.NoError(t, os.WriteFile(out, nil, 0o644))
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = []string{
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GITHUB_OUTPUT=" + out,
+		"GITHUB_EVENT_NAME=pull_request",
+		"GITHUB_EVENT_PATH=" + event,
+		"PR_HEAD_JSON=",
+		"EVENT_ACTION=opened",
+	}
+	b, err := cmd.CombinedOutput()
+	require.Error(t, err, "the payload step must fail closed when the CLI cannot normalize the event")
+	// The CR/LF fold turns the newline into a space, gha_text drops the
+	// control byte, encodes % and breaks :: up.
+	assert.Contains(t, string(b),
+		"::error::Failed to normalize the event for the routed stage: Error: line1 line2 %250A : :error: :forged",
+		"the annotation must carry the CLI's stderr sanitized like the CEL route steps: control characters dropped, % encoded, :: broken up")
+	assert.NotContains(t, string(b),
+		"routed stage: Error: line1 line2 %0A",
+		"an unsanitized %0A must not reach the annotation: it decodes into a newline on the runner and could forge workflow commands in the id-token-holding job")
+	// The raw replay to the log goes through gha_text line by line, so
+	// the forged command stays visible but cannot survive as one: the
+	// runner parses workflow commands on stderr as well as stdout
+	// (ScriptHandler wires ErrorDataReceived through its own
+	// command-processing OutputManager) and trims leading whitespace
+	// before the :: check, so a line-start prefix would not stop a
+	// command.
+	assert.Contains(t, string(b),
+		": :error: :replay-forged",
+		"the replayed stderr must reach the log sanitized, keeping the diagnostics visible")
+	assert.NotContains(t, string(b),
+		"::error::replay-forged",
+		"no replayed line may carry a workflow command unsanitized: the runner parses stderr for commands in the id-token-holding job")
+	assert.Equal(t, 2, strings.Count(script, "gha_replay \"${PAYLOAD_NORM_ERR}\" || true"),
+		"both stderr replays (failure and success path) must sanitize each line through gha_text so no replayed line can forge a workflow command")
 }
 
 // The wiring around the steps: the resolve step runs only on workflow_run
