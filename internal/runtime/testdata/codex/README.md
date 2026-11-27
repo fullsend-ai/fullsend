@@ -7,10 +7,18 @@ Inputs for `parseCodexStream` (`internal/runtime/codex_progress.go`) and its tes
 | Fixture | Origin |
 |---|---|
 | `basic_run.ndjson` | **Live capture**, 2026-11-18, `@openai/codex@0.170.0` (`npx`), model `gpt-5.6-luna`, host ChatGPT login. Captured by the committed `regen.sh`; the script rewrote only the throwaway working directory to `/sandbox/workspace/repo`. No manual edits. The 14 events include one reasoning item, `ls .` listing `raw.ndjson`, and `cat hello.txt` returning `hi`. The two `error` items before `turn.started` are Codex's startup warning that the capturing host's own config sets the deprecated `[features] multi_agent`; fullsend's runner config does not set that key, and the parser skips `error` items. |
+| `mcp_tool_call.ndjson` | **Live capture**, 2026-11-16, `@openai/codex@0.166.0` (`npx`), model `gpt-5.6-luna`, `OPENAI_API_KEY` login in a throwaway `CODEX_HOME`. Captured by the committed `regen-mcp.sh` against the stub server in `mcp_stub.mjs`; no host path reached it and there are no manual edits. Three `mcp_tool_call` items: `lookup` succeeds (text in `result.content`, `structured_content: null`), `fail` returns a result flagged `isError` (status `failed`, its text in `result`, `error: null`), and `broken` gets a JSON-RPC error (`result: null`, a multi-line `error.message`). |
 | everything else | Hand-authored to the structs below. |
 
-`regen.sh` re-captures `basic_run.ndjson` only. It reads `ARG CODEX_VERSION` from
+`regen.sh` re-captures `basic_run.ndjson` only; `regen-mcp.sh` re-captures
+`mcp_tool_call.ndjson`. Both read `ARG CODEX_VERSION` from
 `images/sandbox/Containerfile`; `CODEX_VERSION` overrides that pin when set.
+
+`regen-mcp.sh` pre-approves the stub's tools
+(`mcp_servers.stub.default_tools_approval_mode="approve"`): under
+`approval_policy = "never"` codex 0.166.0 otherwise refuses every MCP call,
+each item failing with `MCP tool call requires approval, but approval policy is
+never`.
 
 The capture prompt requests `cat hello.txt` for verification to avoid `ls -l`
 host metadata. The script normalizes only the working directory; review other
@@ -28,7 +36,7 @@ to preserve the parser's live reasoning-event coverage.
 | `turn_failed.ndjson` | `turn.failed` after a failed command — the run is an error, with the bounded message. |
 | `error_event.ndjson` | An `error` **item** (a warning/model-reroute) and a **top-level** `error`, both followed by `turn.completed`: neither fails the run. |
 | `critical_error_only.ndjson` | A top-level `error` and then nothing: no terminal event, so the run is incomplete and the parked message is the reason. |
-| `mcp_and_file_change.ndjson` | `file_change` (add/update/delete, and a failed patch), `mcp_tool_call` (success and error), `web_search`, `collab_tool_call`, `todo_list`, a `declined` command, and a multi-line command. |
+| `mcp_and_file_change.ndjson` | `file_change` (add/update/delete, and a failed patch), `mcp_tool_call` (success and error), `web_search` (with its two `id` keys, as codex writes it), `collab_tool_call`, `todo_list`, a `declined` command, and a multi-line command. |
 | `malformed_line.ndjson` | Garbage, half-written and empty lines mid-stream: skipped, the run still completes. |
 | `truncated.ndjson` | Killed mid-write — the last line stops mid-token and there is no terminal event. (The repo's `end-of-file-fixer` hook keeps a trailing newline after it; the line is still unparseable, which is what the fixture tests.) |
 | `unknown_types.ndjson` | An unknown top-level event type and an unknown item type: skipped, the run still completes. |
@@ -159,7 +167,10 @@ mcp_tool_call     {server, tool, arguments, result: {content[], _meta?,
 collab_tool_call  {tool: spawn_agent|send_input|wait|close_agent,
                    sender_thread_id, receiver_thread_ids[], prompt|null,
                    agents_states{}, status: in_progress|completed|failed}
-web_search        {id, query, action{type: search|open_page|find_in_page, …}}
+web_search        {id, query, action{type: search|open_page|find_in_page, …},
+                   results?: [any JSON] (rust-v0.166.0)}
+                  (this id is the search's raw id, a second "id" key
+                   after the item's item_N, which the parser uses)
 todo_list         {items: [{text, completed}]}
 error             {message}
 ```
@@ -199,6 +210,7 @@ in `parseCodexStream`:
   incomplete, failed run, not a success.
 - `file_change` is documented as "emitted only as a completed event", but the
   live capture shows `item.started` **and** `item.completed` for it. The parser
-  maps only `item.completed`, so this costs nothing either way.
+  reports a call only at `item.completed`; an `item.started` gives it its start
+  instant and, when the completed line is over 1 MiB, the item itself.
 - `codex exec` has **no `--ask-for-approval` flag** in 0.152.1; the approval
   policy is a `-c approval_policy=never` override.

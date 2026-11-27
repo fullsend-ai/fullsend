@@ -339,6 +339,32 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 			return []string{c.Result("stop").OutputMessages}
 		}
 	}
+	// The codex parser's real path: one item, started then completed,
+	// through ParseCodexStream into the collector.
+	codexWire := func(item string) string {
+		return `{"type":"item.started","item":` + item + "}\n" +
+			`{"type":"item.completed","item":` + item + "}\n"
+	}
+	codexCommand := func(command, output string, exitCode int) string {
+		return `{"id":"item_1","type":"command_execution","command":` + jsonStr(command) +
+			`,"aggregated_output":` + jsonStr(output) + `,"exit_code":` + strconv.Itoa(exitCode) + `,"status":"completed"}`
+	}
+	codexMcp := func(args, result, errMsg string) string {
+		errPart := "null"
+		if errMsg != "" {
+			errPart = `{"message":` + jsonStr(errMsg) + `}`
+		}
+		return `{"id":"item_1","type":"mcp_tool_call","server":"github","tool":"get_issue","arguments":` + args +
+			`,"result":` + result + `,"error":` + errPart + `,"status":"completed"}`
+	}
+	viaCodex := func(wire func(text string) string) func(*testing.T, string) []string {
+		return func(t *testing.T, text string) []string {
+			c := collector()
+			_, err := agentruntime.ParseCodexStream(strings.NewReader(wire(text)), c.Handle)
+			require.NoError(t, err)
+			return []string{c.Result("stop").OutputMessages}
+		}
+	}
 	surfaces := []surface{
 		{"redactText", func(_ *testing.T, text string) []string {
 			var findings []security.Finding
@@ -412,6 +438,33 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 		{"pi result with no start", viaPi(func(text string) string {
 			return `{"type":"tool_execution_end","toolCallId":"toolu_01","toolName":"bash","result":` + piResult(text) + `,"isError":false}` + "\n"
 		})},
+		{"codex command and output", viaCodex(func(text string) string {
+			return codexWire(codexCommand(text, text, 0))
+		})},
+		{"codex failed command", viaCodex(func(text string) string {
+			return codexWire(codexCommand("ls", text, 1))
+		})},
+		{"codex file change path", viaCodex(func(text string) string {
+			return codexWire(`{"id":"item_1","type":"file_change","changes":[{"path":` + jsonStr(text) + `,"kind":"update"},{"path":"/x","kind":"add"}],"status":"completed"}`)
+		})},
+		{"codex MCP result", viaCodex(func(text string) string {
+			return codexWire(codexMcp(`{}`, `{"content":[{"type":"text","text":`+jsonStr(text)+`}],"structured_content":null}`, ""))
+		})},
+		{"codex MCP error", viaCodex(func(text string) string {
+			return codexWire(codexMcp(`{}`, "null", text))
+		})},
+		{"codex MCP arguments", viaCodex(func(text string) string {
+			return codexWire(codexMcp(`{"query":`+jsonStr(text)+`}`, "null", ""))
+		})},
+		{"codex web search", viaCodex(func(text string) string {
+			return codexWire(`{"id":"item_1","type":"web_search","query":` + jsonStr(text) + `}`)
+		})},
+		{"codex MCP structured content", viaCodex(func(text string) string {
+			return codexWire(codexMcp(`{}`, `{"content":[],"structured_content":{"body":`+jsonStr(text)+`}}`, ""))
+		})},
+		{"codex MCP structured content, secret-named key", viaCodex(func(text string) string {
+			return codexWire(codexMcp(`{}`, `{"content":[],"structured_content":{"password":`+jsonStr(text)+`}}`, ""))
+		})},
 		{"input message", func(t *testing.T, text string) []string {
 			// The real path: the feedback is redacted, then composed into the
 			// retry prompt (sanitized, cut, framed), then recorded.
@@ -438,6 +491,21 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 			wire := `{"type":"tool_execution_start","toolCallId":` + jsonStr(text) + `,"toolName":"bash","args":{}}` + "\n" +
 				`{"type":"tool_execution_end","toolCallId":` + jsonStr(text) + `,"toolName":"bash","result":"","isError":false}` + "\n"
 			_, err := agentruntime.ParsePiStream(strings.NewReader(wire), tr.Handle)
+			require.NoError(t, err)
+			var out []string
+			for _, s := range endedToolSpans(rec) {
+				out = append(out, s.Name)
+				for _, kv := range s.Attributes {
+					out = append(out, kv.Value.Emit())
+				}
+			}
+			return out
+		}},
+		{"codex span id", func(t *testing.T, text string) []string {
+			tr, rec, _ := toolSpanFixture(t)
+			tr.runnerEnv = runnerEnv
+			wire := codexWire(`{"id":` + jsonStr(text) + `,"type":"command_execution","command":"ls","aggregated_output":"","exit_code":0,"status":"completed"}`)
+			_, err := agentruntime.ParseCodexStream(strings.NewReader(wire), tr.Handle)
 			require.NoError(t, err)
 			var out []string
 			for _, s := range endedToolSpans(rec) {
@@ -479,4 +547,43 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestCodexStructuredContentIsNotRecorded covers a secret only its field name
+// identifies: no pattern matches the value alone, so it must not reach the
+// record without that name. The invariant test's secrets each have a form
+// the redactor knows, so its structured-content surfaces cannot show this.
+func TestCodexStructuredContentIsNotRecorded(t *testing.T) {
+	const value = "Zq9xLm2Pw7KdR4tY"
+	var findings []security.Finding
+	require.Equal(t, value, redactText(security.OutputPipeline(), nil, value, &findings),
+		"control: the redactor must not recognise the value by itself")
+
+	record := func(t *testing.T, result, status string) string {
+		t.Helper()
+		item := `{"id":"item_1","type":"mcp_tool_call","server":"s","tool":"t","arguments":{},"result":` + result +
+			`,"error":null,"status":"` + status + `"}`
+		c := newContentCollector(maxContentBytes)
+		_, err := agentruntime.ParseCodexStream(strings.NewReader(
+			`{"type":"item.started","item":`+item+"}\n"+`{"type":"item.completed","item":`+item+"}\n"), c.Handle)
+		require.NoError(t, err)
+		return c.Result("stop").OutputMessages
+	}
+
+	for _, key := range []string{"password", "value"} {
+		for _, status := range []string{"completed", "failed"} {
+			t.Run(key+"/"+status, func(t *testing.T) {
+				structured := `{"` + key + `":"` + value + `","nested":{"` + key + `":["` + value + `"]}}`
+				out := record(t, `{"content":[],"structured_content":`+structured+`}`, status)
+				require.Contains(t, out, `"tool_call"`, "control: the call is recorded")
+				require.NotContains(t, out, value)
+			})
+		}
+	}
+
+	t.Run("the same object as a text block is masked by its key", func(t *testing.T) {
+		out := record(t, `{"content":[{"type":"text","text":`+strconv.Quote(`{"password":"`+value+`"}`)+`}],"structured_content":null}`, "completed")
+		require.Contains(t, out, `"tool_call_response"`)
+		require.NotContains(t, out, value)
+	})
 }

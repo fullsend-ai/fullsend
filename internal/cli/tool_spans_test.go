@@ -232,7 +232,8 @@ func TestToolSpanTracker_StartIsStampedBeforeTheNameScan(t *testing.T) {
 }
 
 func TestToolSpanTracker_EventsWithoutIDProduceNoSpan(t *testing.T) {
-	// pi and codex emit ToolUseEvent without an id and never a result.
+	// A call the wire left without an id (a pi end with no start, a codex
+	// item with no id) gets no span; neither does a stray id-less result.
 	tr, rec, _ := toolSpanFixture(t)
 
 	tr.Handle(agentruntime.ToolUseEvent{Name: "bash", Summary: "ls"})
@@ -677,6 +678,103 @@ func TestToolSpanTracker_PiCutOffCallIsUnanswered(t *testing.T) {
 	assert.Equal(t, "execute_tool bash", spans[0].Name)
 	assert.Contains(t, spans[0].Attributes, attribute.String("error.type", "unanswered"))
 	assert.False(t, spans[0].StartTime.Before(before))
+}
+
+// parseCodexFixture runs a codex exec --json fixture through the real parser
+// into the tracker.
+func parseCodexFixture(t *testing.T, tr *toolSpanTracker, name string) {
+	t.Helper()
+	f, err := os.Open(filepath.Join("..", "runtime", "testdata", "codex", name))
+	require.NoError(t, err)
+	t.Cleanup(func() { f.Close() })
+	_, err = agentruntime.ParseCodexStream(f, tr.Handle)
+	require.NoError(t, err)
+}
+
+func TestToolSpanTracker_CodexLiveCaptureHasNoUnansweredCall(t *testing.T) {
+	// The live codex capture through the real parser: one execute_tool span
+	// per call, each closed by its own result. The spans are compared as a
+	// set, not in order, so a re-capture in which the model orders the
+	// calls differently needs no edit here.
+	tr, rec, _ := toolSpanFixture(t)
+	parseCodexFixture(t, tr, "basic_run.ndjson")
+	assert.Zero(t, tr.Finish())
+
+	var names []string
+	ids := map[string]bool{}
+	for _, s := range endedToolSpans(rec) {
+		names = append(names, s.Name)
+		attrs := toolSpanAttrs(s)
+		id := attrs[attribute.Key("gen_ai.tool.call.id")].AsString()
+		assert.NotEmpty(t, id, s.Name)
+		assert.False(t, ids[id], "call id %q has one span", id)
+		ids[id] = true
+		assert.NotContains(t, attrs, attribute.Key("error.type"), s.Name)
+		assert.NotContains(t, attrs, attribute.Key("fullsend.tool.unmatched"), s.Name)
+		assert.Equal(t, codes.Ok, s.Status.Code, s.Name)
+	}
+	assert.ElementsMatch(t, []string{"execute_tool Bash", "execute_tool Write", "execute_tool Bash"}, names,
+		"the capture's two commands and its file write")
+}
+
+func TestToolSpanTracker_CodexEveryItemKind(t *testing.T) {
+	tr, rec, _ := toolSpanFixture(t)
+	parseCodexFixture(t, tr, "mcp_and_file_change.ndjson")
+	assert.Zero(t, tr.Finish())
+
+	failed := map[string]bool{}
+	var ids []string
+	for _, s := range endedToolSpans(rec) {
+		attrs := toolSpanAttrs(s)
+		id := attrs[attribute.Key("gen_ai.tool.call.id")].AsString()
+		ids = append(ids, id)
+		if v, ok := attrs[attribute.Key("error.type")]; ok {
+			assert.Equal(t, "tool_error", v.AsString(), "no call in the fixture is unanswered")
+			failed[id] = true
+		}
+	}
+	assert.Equal(t, []string{
+		"item_1#0", "item_1#1", "item_1#2", "item_2", "item_3",
+		"item_4", "item_5", "item_6", "item_8", "item_9",
+	}, ids, "one span per call, each file of a patch its own")
+	assert.Equal(t, map[string]bool{"item_2": true, "item_4": true, "item_8": true}, failed,
+		"the failed patch, the errored MCP call and the declined command")
+}
+
+func TestToolSpanTracker_CodexUnfinishedItemEndsUnanswered(t *testing.T) {
+	// At turn end codex completes every item that started without
+	// completing, still in_progress (reconcile_unfinished_started_items):
+	// the call never finished, so its span is not Ok.
+	tr, rec, _ := toolSpanFixture(t)
+	item := `{"id":"item_1","type":"command_execution","command":"sleep 60","aggregated_output":"","exit_code":null,"status":"in_progress"}`
+	wire := `{"type":"item.started","item":` + item + "}\n" +
+		`{"type":"item.completed","item":` + item + "}\n" +
+		`{"type":"turn.failed","error":{"message":"stopped"}}` + "\n"
+	_, err := agentruntime.ParseCodexStream(strings.NewReader(wire), tr.Handle)
+	require.NoError(t, err)
+	assert.Zero(t, tr.Finish())
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.Equal(t, "unanswered", toolSpanAttrs(spans[0])[attribute.Key("error.type")].AsString())
+	assert.Equal(t, codes.Error, spans[0].Status.Code)
+}
+
+func TestToolSpanTracker_CodexOversizedEndIsAnsweredNotDropped(t *testing.T) {
+	tr, rec, _ := toolSpanFixture(t)
+	big := strings.Repeat("x", 1024*1024)
+	wire := `{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"cat big.log","aggregated_output":"","exit_code":null,"status":"in_progress"}}` + "\n" +
+		`{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat big.log","aggregated_output":"` + big + `","exit_code":0,"status":"completed"}}` + "\n"
+	_, err := agentruntime.ParseCodexStream(strings.NewReader(wire), tr.Handle)
+	require.NoError(t, err)
+	assert.Zero(t, tr.Finish())
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.Equal(t, "execute_tool Bash", spans[0].Name)
+	assert.Contains(t, spans[0].Attributes, attribute.Bool("fullsend.tool.result_oversized", true))
+	assert.NotContains(t, toolSpanAttrs(spans[0]), attribute.Key("error.type"))
+	assert.Equal(t, codes.Unset, spans[0].Status.Code)
 }
 
 func TestToolSpanTracker_PiOversizedEndIsAnsweredNotUnanswered(t *testing.T) {

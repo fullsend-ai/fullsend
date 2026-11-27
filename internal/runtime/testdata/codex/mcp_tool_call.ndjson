@@ -1,0 +1,11 @@
+{"type":"thread.started","thread_id":"01a1e5bc-ac7d-72d3-b6e8-1101b74da6ec"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll use the available stub MCP tools only, making the three calls sequentially."}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"stub","tool":"lookup","arguments":{"key":"alpha"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"stub","tool":"lookup","arguments":{"key":"alpha"},"result":{"content":[{"type":"text","text":"value for alpha: 42"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"mcp_tool_call","server":"stub","tool":"fail","arguments":{"key":"beta"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"stub","tool":"fail","arguments":{"key":"beta"},"result":{"content":[{"type":"text","text":"backend unavailable for beta"}],"structured_content":null},"error":null,"status":"failed"}}
+{"type":"item.started","item":{"id":"item_3","type":"mcp_tool_call","server":"stub","tool":"broken","arguments":{"key":"gamma"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","server":"stub","tool":"broken","arguments":{"key":"gamma"},"result":null,"error":{"message":"tool call error: tool call failed for `stub/broken`\n\nCaused by:\n    Mcp error: -32603: handler crashed on gamma"},"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":39528,"cached_input_tokens":25086,"cache_write_input_tokens":14433,"output_tokens":212,"reasoning_output_tokens":45}}
