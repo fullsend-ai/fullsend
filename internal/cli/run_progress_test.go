@@ -286,6 +286,30 @@ func TestFailureLine(t *testing.T) {
 	}
 }
 
+// At quiet the completion comment must not carry text the agent can write, such
+// as an output file name, so an error that quotes one supplies a fixed wording.
+// Every other error posts its message as before (ADR 0163 covers the job log
+// only; applying it to the whole comment is #9627), and the run error keeps the
+// full text either way.
+func TestFailureStatusDetail(t *testing.T) {
+	const agentName = "SECRET-NAME.json"
+	scanErr := &outputScanError{err: fmt.Errorf("could not read %s: denied", agentName), files: 2}
+	for _, level := range []string{"", config.ProgressVerbosityFull, config.ProgressVerbosityTools} {
+		assert.Equal(t, "could not read SECRET-NAME.json: denied", failureStatusDetail(scanErr, level),
+			"level %q posts the error as before", level)
+	}
+	for _, level := range []string{config.ProgressVerbosityQuiet, "bogus"} {
+		assert.Equal(t, "post-agent output scan failed: 2 file(s) could not be scanned",
+			failureStatusDetail(scanErr, level))
+	}
+
+	plain := fmt.Errorf("could not copy %s", agentName)
+	for _, level := range []string{"", config.ProgressVerbosityFull, config.ProgressVerbosityTools, config.ProgressVerbosityQuiet} {
+		assert.Equal(t, "could not copy SECRET-NAME.json", failureStatusDetail(plain, level),
+			"an error with no fixed wording posts its message as before")
+	}
+}
+
 func TestAuditChainFailure(t *testing.T) {
 	const broken = "entry 2: hash mismatch: expected abc, got SECRET-HASH"
 	for _, level := range []string{"", config.ProgressVerbosityFull, config.ProgressVerbosityTools} {

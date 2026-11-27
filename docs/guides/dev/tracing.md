@@ -357,7 +357,7 @@ characters or a URL `maskURLs` would mask, since the cut can take the `@`
 that marks a password (`promptHidesAlterations`) — is recorded `***` whole; the
 prompt the agent is sent is not changed, and the mask the first
 scan leaves for a connection-string password of ten or more bytes matches
-its own pattern and counts a finding —
+its own pattern, counts a finding, and is itself masked `***` —
 and sets `gen_ai.input.messages` on the span
 before the runtime starts, so each finalize path carries it. Its findings
 join the iteration's, and its encoded size is charged against

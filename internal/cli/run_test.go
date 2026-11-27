@@ -5,6 +5,7 @@ import (
 	"context"
 	"debug/elf"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -5401,6 +5402,97 @@ func TestPostScriptGate(t *testing.T) {
 		timedOut := runTerminalError(false, false, true, -1, "", 1, time.Hour, time.Hour)
 		got := postScriptGate(noLoop, false, false, timedOut, writeResult(t, "agent-result.json", `{}`))
 		assert.False(t, got.run)
+	})
+	t.Run("no loop, output scan failed, valid result", func(t *testing.T) {
+		t.Parallel()
+		// collectPostScanSecurityArtifacts wraps the scan error, so the gate
+		// must find it through the wrap and the join with an audit-chain error.
+		scanErr := fmt.Errorf("%s: %w", postAgentScanFailurePrefix,
+			&outputScanError{err: errors.New("could not write sanitized notes.md: no space left on device"), files: 1})
+		runErr := errors.Join(scanErr, errors.New("audit log integrity check failed: hash mismatch"))
+		got := postScriptGate(noLoop, false, false, runErr, writeResult(t, "agent-result.json", `{"action":"approve"}`))
+		assert.True(t, got.run, "an intact result must still be posted when the scan fails")
+		assert.Zero(t, got.agentExitCode)
+		assert.Contains(t, got.message, "agent-result.json")
+		assert.Contains(t, got.message, "the run still fails")
+	})
+	t.Run("no loop, output scan failed, no result", func(t *testing.T) {
+		t.Parallel()
+		got := postScriptGate(noLoop, false, false, &outputScanError{err: errors.New("could not read notes.md"), files: 1}, t.TempDir())
+		assert.False(t, got.run)
+		assert.Contains(t, got.message, "left no result file that parses")
+	})
+	t.Run("no loop, output scan quarantined the result", func(t *testing.T) {
+		t.Parallel()
+		// The quarantine marker is valid JSON, so it would otherwise pass for a
+		// result and be posted as the review.
+		for _, marker := range []string{
+			unwritableOutputMarker,
+			`{"error":"output removed because redaction would invalidate JSON"}`,
+			`{"error":"output removed because a private key block spans JSON framing"}`,
+		} {
+			dir := writeResult(t, "agent-result.json", marker)
+			got := postScriptGate(noLoop, false, false, &outputScanError{err: errors.New("could not sanitize agent-result.json"), files: 1}, dir)
+			assert.False(t, got.run, marker)
+			assert.Contains(t, got.message, "left no result file that parses", marker)
+		}
+	})
+	t.Run("no loop, output scan could not redact the result", func(t *testing.T) {
+		t.Parallel()
+		// The scan's write or sanitize failed *and* the quarantine could not
+		// replace the file, so the unredacted bytes are still on disk and still
+		// parse. Posting them would publish exactly what the scan failed to redact.
+		for _, unredacted := range []string{
+			`{"action":"approve","body":"token ghp_FAKEtesttoken000000000000000000000000"}`,
+			`{"action":"approve","body":"secret"}`,
+		} {
+			dir := writeResult(t, "agent-result.json", unredacted)
+			resultPath := filepath.Join(dir, "agent-result.json")
+			scanErr := &outputScanError{
+				err:    errors.New("could not write sanitized agent-result.json: no space left on device"),
+				files:  1,
+				failed: []string{resultPath},
+			}
+			got := postScriptGate(noLoop, false, false, scanErr, dir)
+			assert.False(t, got.run, "a result file the scan could not redact must not be posted")
+			assert.Contains(t, got.message, "could not redact the result file")
+
+			// A failure on a directory above the result file hides it the same
+			// way: the walk never scanned what is under it.
+			parent := &outputScanError{err: errors.New("could not read iteration-1"), files: 1, failed: []string{dir}}
+			assert.False(t, postScriptGate(noLoop, false, false, parent, dir).run)
+		}
+	})
+	t.Run("no loop, failed agent and failed scan, valid result", func(t *testing.T) {
+		t.Parallel()
+		// Step 9f joins the terminal error with the scan error, so an agent that
+		// also failed keeps its agentFailedError through the join.
+		scanErr := &outputScanError{err: errors.New("could not write sanitized notes.md: no space left on device"), files: 1}
+		runErr := postScanRunError(agentFailed, fmt.Errorf("%s: %w", postAgentScanFailurePrefix, scanErr))
+		var agentErr *agentFailedError
+		var scanAsErr *outputScanError
+		require.ErrorAs(t, runErr, &agentErr, "the agent failure must survive the join")
+		require.ErrorAs(t, runErr, &scanAsErr, "the scan failure must survive the join")
+		assert.Contains(t, runErr.Error(), "agent failed with exit code 1")
+		assert.Contains(t, runErr.Error(), "post-agent output scan failed")
+
+		got := postScriptGate(noLoop, false, false, runErr, writeResult(t, "agent-result.json", `{"action":"approve"}`))
+		assert.True(t, got.run, "an intact result is still posted")
+		assert.Equal(t, 1, got.agentExitCode,
+			"the post-script runs with FULLSEND_AGENT_EXIT_CODE after an agent failure")
+	})
+	t.Run("no loop, failed agent, quarantined result", func(t *testing.T) {
+		t.Parallel()
+		dir := writeResult(t, "agent-result.json", unwritableOutputMarker)
+		assert.False(t, postScriptGate(noLoop, false, false, agentFailed, dir).run,
+			"a marker must never be posted as the agent's result")
+	})
+	t.Run("loop, output scan failed with a result present", func(t *testing.T) {
+		t.Parallel()
+		got := postScriptGate(withLoop, false, false, &outputScanError{err: errors.New("could not read notes.md"), files: 1},
+			writeResult(t, "agent-result.json", `{}`))
+		assert.False(t, got.run, "ADR 0022 still requires a validated result")
+		assert.Equal(t, "Skipping post-script: validation did not pass", got.message)
 	})
 	t.Run("loop, validation passed", func(t *testing.T) {
 		t.Parallel()

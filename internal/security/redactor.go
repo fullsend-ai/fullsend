@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Runtime secrets are exact credential values the runner learned during
@@ -16,6 +17,12 @@ import (
 // pattern runs. Values shorter than minRuntimeSecretLen are ignored so a
 // trivial string can never blank out ordinary output.
 const minRuntimeSecretLen = 8
+
+// minJSONFieldLen is the shortest value masked as a json_field. It is counted in
+// runes, matching the {8,} quantifier the json_field value used before the
+// pattern was widened to span escaped quotes inside a JSON string. The other
+// structural patterns enforce their own minimum in the pattern itself.
+const minJSONFieldLen = 8
 
 var (
 	runtimeSecretsMu sync.RWMutex
@@ -63,6 +70,11 @@ func resetRuntimeSecrets() {
 	runtimeSecrets = nil
 }
 
+// ResetRuntimeSecretsForTest clears the registry for tests.
+func ResetRuntimeSecretsForTest() {
+	resetRuntimeSecrets()
+}
+
 // SecretRedactor scans text for API keys, tokens, credentials, and
 // sensitive patterns, replacing them with masked versions. Adapted from
 // Hermes Agent's agent/redact.py.
@@ -87,6 +99,21 @@ func NewSecretRedactor() *SecretRedactor {
 func (s *SecretRedactor) Name() string { return "secret_redactor" }
 
 func (s *SecretRedactor) Scan(text string) ScanResult {
+	return s.scan(text, false)
+}
+
+// ScanWholeValueSecrets masks only the secrets whose match is the entire value:
+// registered runtime values and private-key blocks. It is meant for bytes a leaf
+// scan has already redacted, where a pattern match can be a redaction
+// placeholder plus JSON escape characters rather than a new secret (#5705).
+func (s *SecretRedactor) ScanWholeValueSecrets(text string) ScanResult {
+	return s.scan(text, true)
+}
+
+// scan runs the pattern set. wholeValueOnly restricts it to the patterns whose
+// match is the whole secret, which are the only ones that can still be present
+// in bytes an earlier pass already redacted.
+func (s *SecretRedactor) scan(text string, wholeValueOnly bool) ScanResult {
 	result := ScanResult{Safe: true, Sanitized: text}
 	current := text
 
@@ -110,29 +137,37 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 
 	// Prefix-based patterns (full match is the secret).
 	// Use ReplaceAll to catch duplicate occurrences of the same secret.
-	for _, p := range s.prefixPatterns {
-		// Deduplicate matches so we report each unique secret once.
-		seen := map[string]bool{}
-		matches := p.regex.FindAllString(current, -1)
-		for _, match := range matches {
-			if seen[match] {
-				continue
+	if !wholeValueOnly {
+		for _, p := range s.prefixPatterns {
+			// Deduplicate matches so we report each unique secret once.
+			seen := map[string]bool{}
+			matches := p.regex.FindAllString(current, -1)
+			for _, match := range matches {
+				if seen[match] {
+					continue
+				}
+				seen[match] = true
+				masked := Mask(match)
+				result.Findings = append(result.Findings, Finding{
+					Scanner:  "secret_redactor",
+					Name:     p.name,
+					Severity: "critical",
+					Detail:   fmt.Sprintf("Redacted %s (%d chars) -> %s", p.name, len(match), masked),
+				})
+				current = strings.ReplaceAll(current, match, masked)
+				result.Safe = false
 			}
-			seen[match] = true
-			masked := mask(match)
-			result.Findings = append(result.Findings, Finding{
-				Scanner:  "secret_redactor",
-				Name:     p.name,
-				Severity: "critical",
-				Detail:   fmt.Sprintf("Redacted %s (%d chars) -> %s", p.name, len(match), masked),
-			})
-			current = strings.ReplaceAll(current, match, masked)
-			result.Safe = false
 		}
 	}
 
-	// Structural patterns (capture group is the secret)
+	// Structural patterns (capture group is the secret). Only the private-key
+	// block is safe to match in whole-value mode: every other pattern captures a
+	// value out of surrounding text, so a match on bytes that already carry a
+	// redaction placeholder can be that placeholder rather than a secret.
 	for _, p := range s.structuralPatterns {
+		if wholeValueOnly && p.name != "private_key" {
+			continue
+		}
 		// Private key: replace full match (no capture group needed).
 		if p.name == "private_key" {
 			matches := p.regex.FindAllString(current, -1)
@@ -173,7 +208,46 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 			}
 
 			secret := current[start:end]
-			masked := mask(secret)
+			// If the matched secret ends with a backslash and is immediately
+			// followed by a quote delimiter, the trailing backslash was escaping
+			// that delimiter (e.g. \" in JSON or code strings). Preserve the
+			// escape by excluding the backslash from the redacted secret span.
+			// json_field spans escaped quotes in its own value pattern, so its
+			// capture already ends at the delimiter it belongs to.
+			if p.name != "json_field" && end < len(current) && (current[end] == '"' || current[end] == '\'') {
+				numBackslashes := 0
+				for k := len(secret) - 1; k >= 0 && secret[k] == '\\'; k-- {
+					numBackslashes++
+				}
+				if numBackslashes%2 == 1 {
+					secret = secret[:len(secret)-1]
+					end--
+				}
+			}
+			if len(secret) == 0 {
+				continue
+			}
+			// A captured value is always masked, even when it already looks
+			// like a mask. The shape of a placeholder (4 characters and "...",
+			// or "***") is also the shape of a real short secret:
+			// db_connection_password accepts a value of 4 characters or more,
+			// so skipping every 7-byte capture that ends in "..." left a real
+			// password such as postgres://u:abcd...@host in the output. Callers
+			// that rescan bytes an earlier pass already redacted use
+			// ScanWholeValueSecrets, which runs no value pattern, so they never
+			// reach this loop; a full Scan over redacted text can therefore
+			// only be re-masking a placeholder into "***", never a secret into
+			// itself.
+			//
+			// Only json_field needs the length gate here: its value pattern
+			// matches any length, while env_assignment, auth_header and
+			// db_connection_password enforce their own minimum in the pattern.
+			// The gate counts runes and runs on the trimmed span, so the bytes
+			// actually masked are never shorter than the documented minimum.
+			if p.name == "json_field" && utf8.RuneCountInString(secret) < minJSONFieldLen {
+				continue
+			}
+			masked := Mask(secret)
 			result.Findings = append(result.Findings, Finding{
 				Scanner:  "secret_redactor",
 				Name:     p.name,
@@ -194,11 +268,34 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 	return result
 }
 
-func mask(value string) string {
+// Mask returns a redacted representation of a secret value.
+func Mask(value string) string {
 	if len(value) < 10 {
 		return "***"
 	}
-	return value[:4] + "..."
+	prefix := value[:4]
+	// A prefix that carries an escape or a quote delimiter cannot be written
+	// back: in a JSON or YAML string it would escape or close the surrounding
+	// quoting and break the document (#5705). The quote case covers a YAML
+	// single-quoted value whose doubled quote ('') falls inside the prefix:
+	// keeping half of the pair leaves a lone quote that ends the string early.
+	if strings.ContainsAny(prefix, "\\'\"") {
+		return "***"
+	}
+	return prefix + "..."
+}
+
+// isAlreadyMasked reports whether value is already a redaction placeholder
+// produced by Mask. Trailing backslashes are ignored: a placeholder that sits in
+// a JSON string can be followed by escape characters once the string is
+// re-encoded, and that tail must not turn the placeholder into a new secret
+// (#5705).
+//
+// Only callers that know the value came from Mask may use this. The shape alone
+// cannot tell a placeholder from a real short secret, so Scan does not apply it.
+func isAlreadyMasked(value string) bool {
+	value = strings.TrimRight(value, `\`)
+	return value == "***" || len(value) == 7 && strings.HasSuffix(value, "...")
 }
 
 func defaultPrefixPatterns() []secretPattern {
@@ -254,7 +351,21 @@ func defaultStructuralPatterns() []secretPattern {
 		// the mask keeps it visible. A bare value still ends at the first
 		// space, as in the PostToolUse hook.
 		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*(?:['"](?:(?:basic|bearer|token)[ \t]+)?)?([^\s"'}\]),;]{8,})['"]?`},
-		{"json_field", `(?:"[^"]*(?i:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?i:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"([^"]{8,})"|'([^']{8,})')`},
+		// json_field captures a value out of a quoted field. The double-quoted
+		// branch and the second single-quoted branch consume escaped delimiters, so
+		// a JSON or YAML string with an embedded quote is matched whole. The first
+		// single-quoted branch covers a value that ends in a literal backslash,
+		// where that backslash must not escape the closing quote; it comes first
+		// because Go's regexp alternation is leftmost-first, so the escape-reading
+		// branch would otherwise match first and read the closing quote of
+		// 'api_key': 'secret\' in a YAML flow mapping as an escape, running on to
+		// the next quote on the same line and swallowing the field that follows.
+		// That branch therefore matches only when the quote after the backslash is
+		// followed by a field or line boundary. The last branch keeps a raw newline
+		// inside a single-quoted value matchable, as it was before the escape
+		// handling was added: it cannot cross a quote, so it never swallows the
+		// field that follows. The minimum length is enforced in scan, not here.
+		{"json_field", `(?i)(?:"[^"]*(?:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"((?:\\[\s\S]|[^"\\])*)"|'((?:''|[^'\r\n])*\\)'[ \t]*(?:,|\}|\]|$)|'((?:''|\\\r?\n|\\.|[^'\r\n\\])*[^'\r\n\\])'|'([^']*)')`},
 		// The optional quote covers YAML: authorization: "Bearer <token>".
 		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*['"]?(?:(?:Basic|Bearer|Token)\s+)?([^\s"'}\]),;]{12,})`},
 		{"private_key", `-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----`},

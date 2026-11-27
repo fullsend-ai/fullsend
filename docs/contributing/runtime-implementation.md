@@ -624,6 +624,140 @@ The post-run output scan skips `<runDir>/skills/` and
 origins and warnings are documented in
 [Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file).
 
+### The post-run output scan
+
+`scanOutputFiles` runs the output pipeline (Unicode normalization, then secret
+redaction) over every file under the run directory (`<runDir>/`, including
+`iteration-N/` transcripts) except the skips above, any directory named
+`security` (which holds `findings.jsonl`), and the telemetry
+JSONL. Valid JSON is sanitized structurally so redaction never changes its
+syntax. A leading UTF-8 BOM does not send a document to the text scan either:
+it is stripped before the token walk and restored on write, and a clean document
+comes back byte for byte. The walk visits every object key and scalar leaf
+individually through a token-preserving walk that keeps member order and
+duplicate keys, so an earlier value that map decoding would drop is still
+scanned, and a secret spanning JSON framing stays visible in the rewritten
+bytes. A sanitized key that would collide with a different member is
+disambiguated (`<key>_<N>`). The bytes actually written are scanned as well, but
+only for whole-value secrets — registered runtime values and private-key blocks,
+the two patterns a leaf scan cannot see once a member value is masked. Every
+other pattern has already been applied to the decoded key or leaf, so a match on
+the serialized bytes would be a redaction placeholder plus JSON escape
+characters, not a secret. A private-key block spanning members is detected in a
+decoded view of the document before masking a member value can hide its BEGIN
+marker. Such a block is neutralized member by member. The members the match
+starts and ends in carry marker text, so they are always masked — even when a
+marker is split across two members and neither fragment looks like one alone. A
+string value between them is masked when it carries a block marker or a run that
+looks like PEM body material: at least 16 characters of the base64 alphabet that
+mix upper case, lower case and digits and include a character outside the hex
+range. The length floor alone is not enough — a long word such as
+`misconfiguration` and a path such as `internal/security/jsonsanitize` both reach
+it while using only base64 characters — so the case and digit mix is what tells
+body material from free text. Object keys keep their names, so a document that
+merely quotes the PEM header in one finding and the footer in another keeps its
+shape — every required field of a review result is still present, and its
+enum-valued fields (`action`, `severity`, `category`) and patterned fields
+(`head_sha`, finding `id`) keep values `review-result.schema.json` accepts —
+instead of being dropped whole or rewritten into a document the schema rejects. A
+key name is treated as block content only when the match starts or ends in it, the
+name itself carries a marker, or the name is a body line of the same shape a value
+is tested for; then it is masked too, because it cannot be written back as
+structure. A key whose name is base64 body material is key material rather than
+structure, and keeping it would write the body back after the markers were masked,
+where the written-bytes rescan can no longer see the block. A value that neither
+carries a marker nor holds a run of that shape keeps its content: nothing
+distinguishes a quoted marker pair from a split block, so the choice is between
+masking free text and enum values, which loses the review, and keeping a fragment
+too short to be recognized as key material. Because one member holds only one line
+of a body, the values between the boundary members are also decided on their
+joined text: consecutive base64-only values are concatenated, and if the result
+looks like a body line — upper case, lower case and a base64-only character —
+every value in that run is masked. That catches a body split into short or
+digit-free chunks, while an object key, a value with punctuation or whitespace, a
+hex-only run or a lowercase word breaks the run. A key never joins the run: a key
+is structure, and letting one join a group that also holds body material renames
+required schema keys such as `severity` and `file`. A hex-only run is kept for the
+same reason the enum values are: a PEM body is base64, while a hex run is more
+likely a commit SHA or a finding id. A single isolated fragment below the floor,
+with no neighbour to join it to, is still kept.
+`.jsonl`/`.ndjson` files are sanitized one record at a time to preserve the
+record framing; a secret that spans records cannot be redacted without
+rewriting that framing, so only the records that carry it are replaced, and a
+record that merely sits between a quoted header and a quoted footer keeps its
+content. A BOM-prefixed record is treated as JSON like any other, so a marker
+written with \u escapes in it is still decoded. A private-key block spanning
+records is detected in a decoded view of the stream, before per-record masking
+can remove its BEGIN marker. The boundary records
+always carry marker text, so they are always replaced; a record between them is
+replaced only when its leaves hold a block marker or PEM body material, decided
+the same way as in a single document — including the joined run of consecutive
+base64-only values, which catches a body split into short or digit-free chunks.
+After the per-record pass the rebuilt stream is rescanned, but only for
+whole-value secrets — registered runtime values and
+private-key blocks, the same set the single-document path scans in its written
+form. Running the value patterns again would re-match a redaction placeholder
+followed by JSON escape bytes: in encoded JSON a `\n` escape is two non-space
+bytes, so `env_assignment` runs past the end of a value the record pass already
+redacted and every such match would replace a correct record with a cross-record
+marker. Localization inside the changed region is
+conservative but per record: a record is kept only when its bytes are unique in
+the stream and reappear as a whole line in the redacted stream, because a
+repeated record could otherwise let an untouched copy stand in for the covered
+one. Records outside the changed region, duplicates included, are copied through
+unchanged.
+
+Some content cannot be redacted in place. A JSON document or JSONL record is
+replaced with a valid fail-closed marker instead — never with corrupted
+syntax — when a private-key block cannot be localized to members or when a
+match spans record boundaries. Markers look like
+`{"error":"output removed because …"}` and are logged
+as findings in `security/findings.jsonl`. Because a replaced file or record loses
+everything the agent wrote into it, and because the run still exits 0, the reason
+a marker states is also emitted as a `::error::` workflow command whenever the
+job sets `GITHUB_ACTIONS=true`: one line for a file replaced whole, and one per
+distinct reason for a JSONL file whose records were replaced. GitHub Actions
+renders these as error annotations. Forgejo Actions also sets `GITHUB_ACTIONS=true`,
+so its runner writes the same lines, but Forgejo has no annotation view: the
+runner prints them in the step log and the exit status stays 0.
+
+A sanitized file that cannot be written, a file that cannot be read, and a file
+that cannot be sanitized at all, do not stop the walk: every remaining file is
+still scanned and redacted, and the run fails closed afterwards with all failures
+joined. A file that cannot be read is contained exactly like one that cannot be
+written, because its bytes were never scanned; an entry the walk cannot open fails
+the run without being quarantined, since it may be a directory whose files were
+never reached. The unredacted file is replaced with the fail-closed marker so its
+bytes do not reach the uploaded artifact when the filesystem allows it; if the
+marker write and the fallback removal both fail, that failure is added to the
+joined error rather than left unreported, so the run says the unredacted file is
+still on disk. In `quiet` mode the printed log counts the affected paths
+instead of naming them (ADR 0163); the run error and telemetry keep the path
+and the wrapped cause at every level, and only the printed line is trimmed. The
+completion comment on the issue or pull request counts them too: an output file
+name is the agent's to choose, and Actions log masking does not apply to a
+comment, so at `quiet` a failed scan posts how many files it could not handle
+instead of naming one. The scan failure is the only run error the comment
+rewrites today; applying the level to the rest is tracked in
+[#9627](https://github.com/fullsend-ai/fullsend/issues/9627).
+
+A failed scan fails the run but does not silence the agent's own result. The
+post-script runs after the scan, so when the run failed with a scan error the
+gate skips it — unless the result file the harness names (`agent-result.json`
+by default) survived the scan and still holds a JSON object. Then the
+post-script runs, posts the result, and the run still fails, so one unreadable
+or unwritable file somewhere else under the run directory cannot turn a
+completed report into silence. A result file the scan replaced with a
+fail-closed marker does not count: the marker is valid JSON, but it is not the
+agent's result, and posting it would report a removal as the review. Neither does
+a result file the scan failed *on*: when its write or sanitization failed and the
+quarantine then could not replace or remove it, the unredacted bytes are still on
+disk and still parse, so the gate refuses to post them. The paths the scan could
+not handle are kept internal for that decision and never printed or posted. The
+scan error is joined with the run's own terminal outcome rather than replacing it,
+so a run whose agent also failed still fails with both causes and the post-script
+still receives `FULLSEND_AGENT_EXIT_CODE`.
+
 ## Agent rule layering
 
 When `fullsend run` executes an agent, Claude Code loads instructions from

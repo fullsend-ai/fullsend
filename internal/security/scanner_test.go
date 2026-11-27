@@ -2,6 +2,7 @@ package security
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -261,6 +262,40 @@ func TestSecretRedactor(t *testing.T) {
 		assert.True(t, result.Safe || !hasFinding(result, "db_connection_password"))
 	})
 
+	// A real password can look like a mask placeholder: the placeholder shape
+	// (4 characters and "...") is 7 bytes, and db_connection_password accepts a
+	// value of 4 or more, so a shape test in the redactor skipped it and left
+	// the password in the output (#5705).
+	t.Run("db password shaped like a mask placeholder redacted", func(t *testing.T) {
+		result := r.Scan("postgres://user:abcd...@host:5432/db")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "db_connection_password"))
+		assert.Equal(t, "postgres://user:***@host:5432/db", result.Sanitized)
+	})
+
+	// Rescanning redacted text with a full Scan re-masks the placeholder: a
+	// seven-byte placeholder is shorter than ten, so Mask returns "***". The
+	// text stays redacted; only the informative prefix is lost. Callers that
+	// rescan bytes an earlier pass redacted use ScanWholeValueSecrets, which
+	// runs no value pattern and leaves the placeholder alone.
+	t.Run("db password placeholder remasked on a full rescan", func(t *testing.T) {
+		first := r.Scan("postgres://user:hunter2secret@host:5432/db")
+		require.False(t, first.Safe)
+		require.Equal(t, "postgres://user:hunt...@host:5432/db", first.Sanitized)
+
+		second := r.Scan(first.Sanitized)
+		assert.Equal(t, "postgres://user:***@host:5432/db", second.Sanitized,
+			"a placeholder is still redacted, never left as itself")
+		assert.False(t, second.Safe)
+	})
+
+	t.Run("whole-value rescan leaves a placeholder intact", func(t *testing.T) {
+		const redacted = "postgres://user:hunt...@host:5432/db"
+		result := r.ScanWholeValueSecrets(redacted)
+		assert.True(t, result.Safe)
+		assert.Empty(t, result.Sanitized, "the earlier redaction must survive a whole-value rescan")
+	})
+
 	t.Run("db password with multiple @ redacted", func(t *testing.T) {
 		result := r.Scan("postgres://user:P@ss@w0rd@host:5432/db")
 		assert.False(t, result.Safe)
@@ -381,6 +416,240 @@ func TestSecretRedactor(t *testing.T) {
 		assert.True(t, hasFinding(result, "auth_header"))
 		assert.True(t, json.Valid([]byte(result.Sanitized)),
 			"output is not valid JSON: %s", result.Sanitized)
+	})
+
+	t.Run("env assignment does not eat escaping backslash in JSON string", func(t *testing.T) {
+		// Regression test (#5705): [^\s"'}\]),;]{8,} previously consumed \
+		// inside JSON string values before an escaped quote, leaving unescaped
+		// quote syntax like token_usage = metr..."token_usage").
+		tokenVar := "token" + "_usage"
+		input := fmt.Sprintf(`{"remediation": "Guard against null values with %s = metrics.get(\"token_usage\") or {}"}`, tokenVar)
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.True(t, json.Valid([]byte(result.Sanitized)),
+			"output must remain valid JSON: %s", result.Sanitized)
+		assert.Contains(t, result.Sanitized, `\"token_usage\"`)
+	})
+
+	t.Run("env assignment redacts credentials containing backslashes", func(t *testing.T) {
+		result := r.Scan(`TOKEN=ab\cdEFGHijkl`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.NotContains(t, result.Sanitized, `ab\cdEFGHijkl`)
+
+		// Boundary test: exactly 8 characters containing multiple backslashes
+		resultBoundary := r.Scan(`TOKEN=a\b\c\def`)
+		assert.False(t, resultBoundary.Safe)
+		assert.True(t, hasFinding(resultBoundary, "env_assignment"))
+		assert.NotContains(t, resultBoundary.Sanitized, `a\b\c\def`)
+
+		// Trailing backslash before boundary
+		resultTrailing := r.Scan(`TOKEN=abcdefg\`)
+		assert.False(t, resultTrailing.Safe)
+		assert.True(t, hasFinding(resultTrailing, "env_assignment"))
+		assert.NotContains(t, resultTrailing.Sanitized, `abcdefg\`)
+
+		// Exact-minimum-length boundary tests (8 chars) ending in backslash before quote delimiters
+		resultSingleQuote := r.Scan("TOKEN='abcdefg\\'")
+		assert.False(t, resultSingleQuote.Safe)
+		assert.True(t, hasFinding(resultSingleQuote, "env_assignment"))
+		assert.NotContains(t, resultSingleQuote.Sanitized, "abcdefg")
+		assert.Contains(t, resultSingleQuote.Sanitized, `\'`)
+
+		resultDoubleQuote := r.Scan(`TOKEN="abcdefg\""`)
+		assert.False(t, resultDoubleQuote.Safe)
+		assert.True(t, hasFinding(resultDoubleQuote, "env_assignment"))
+		assert.NotContains(t, resultDoubleQuote.Sanitized, "abcdefg")
+		assert.Contains(t, resultDoubleQuote.Sanitized, `\"`)
+	})
+
+	t.Run("db connection redacts password containing backslashes", func(t *testing.T) {
+		result := r.Scan(`postgres://user:pa\ss@host:5432/db`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "db_connection_password"))
+		assert.NotContains(t, result.Sanitized, `pa\ss`)
+
+		// Boundary test: exactly 4 characters containing interior backslash
+		resultInterior := r.Scan(`postgres://user:p\ss@host:5432/db`)
+		assert.False(t, resultInterior.Safe)
+		assert.True(t, hasFinding(resultInterior, "db_connection_password"))
+		assert.NotContains(t, resultInterior.Sanitized, `p\ss`)
+
+		// Boundary test: trailing backslash before delimiter @
+		resultTrailing := r.Scan(`postgres://user:p\s\@host:5432/db`)
+		assert.False(t, resultTrailing.Safe)
+		assert.True(t, hasFinding(resultTrailing, "db_connection_password"))
+		assert.NotContains(t, resultTrailing.Sanitized, `p\s\`)
+	})
+
+	t.Run("auth header redacts credentials containing backslashes", func(t *testing.T) {
+		result := r.Scan(`Authorization: Bearer ab\cdEFGHijkl1234`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "auth_header"))
+		assert.NotContains(t, result.Sanitized, `ab\cdEFGHijkl1234`)
+
+		// Boundary test: exactly 12 characters containing multiple backslashes
+		resultBoundary := r.Scan(`Authorization: Bearer a\b\c\d\e\f\g`)
+		assert.False(t, resultBoundary.Safe)
+		assert.True(t, hasFinding(resultBoundary, "auth_header"))
+		assert.NotContains(t, resultBoundary.Sanitized, `a\b\c\d\e\f\g`)
+
+		// Exact-minimum-length boundary tests (12 chars) ending in backslash before quote delimiters
+		resAuthSingle := r.Scan("authorization: 'Bearer abcdefghijk\\'")
+		assert.False(t, resAuthSingle.Safe)
+		assert.True(t, hasFinding(resAuthSingle, "auth_header"))
+		assert.NotContains(t, resAuthSingle.Sanitized, "abcdefghijk")
+		assert.Contains(t, resAuthSingle.Sanitized, `\'`)
+
+		resAuthDouble := r.Scan(`authorization: "Bearer abcdefghijk\""`)
+		assert.False(t, resAuthDouble.Safe)
+		assert.True(t, hasFinding(resAuthDouble, "auth_header"))
+		assert.NotContains(t, resAuthDouble.Sanitized, "abcdefghijk")
+		assert.Contains(t, resAuthDouble.Sanitized, `\"`)
+
+		resAuthUnprefixedSingle := r.Scan("authorization: 'abcdefghijk\\'")
+		assert.False(t, resAuthUnprefixedSingle.Safe)
+		assert.True(t, hasFinding(resAuthUnprefixedSingle, "auth_header"))
+		assert.NotContains(t, resAuthUnprefixedSingle.Sanitized, "abcdefghijk")
+		assert.Contains(t, resAuthUnprefixedSingle.Sanitized, `\'`)
+
+		resAuthUnprefixedDouble := r.Scan(`authorization: "abcdefghijk\""`)
+		assert.False(t, resAuthUnprefixedDouble.Safe)
+		assert.True(t, hasFinding(resAuthUnprefixedDouble, "auth_header"))
+		assert.NotContains(t, resAuthUnprefixedDouble.Sanitized, "abcdefghijk")
+		assert.Contains(t, resAuthUnprefixedDouble.Sanitized, `\"`)
+	})
+
+	t.Run("json_field with embedded escaped quote preserves valid JSON", func(t *testing.T) {
+		input := `{"password": "abcdefghijkl\"rest"}`
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.True(t, json.Valid([]byte(result.Sanitized)),
+			"output must remain valid JSON: %s", result.Sanitized)
+		assert.NotContains(t, result.Sanitized, "abcdefghijkl")
+	})
+
+	t.Run("json_field masks backslashes in literal quoted values", func(t *testing.T) {
+		result := r.Scan(`'password': 'ab\\cdef'`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, `ab\\cdef`)
+	})
+
+	t.Run("json_field handles escaped apostrophe through the full value", func(t *testing.T) {
+		result := r.Scan(`'password': 'abcdefgh\'remaining_secret'`)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "remaining_secret")
+	})
+
+	t.Run("json_field counts literal trailing backslash toward minimum", func(t *testing.T) {
+		result := r.Scan("'password': 'abcdefg\\'")
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "abcdefg")
+	})
+
+	t.Run("json_field handles doubled apostrophe in YAML scalar", func(t *testing.T) {
+		result := r.Scan("'password': 'abcdefgh''remaining_secret'")
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "remaining_secret")
+	})
+
+	t.Run("json_field keeps YAML single-quoted value valid when doubled quote falls in the mask prefix", func(t *testing.T) {
+		// The mask prefix would end on half of the doubled '' pair, leaving a
+		// lone quote that closes the YAML string early. The value must fall back
+		// to the fixed placeholder instead (#5705).
+		result := r.Scan("'api_token': 'abc''defghijk'")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "defghijk")
+		assert.Equal(t, "'api_token': '***'", result.Sanitized,
+			"a prefix carrying a quote must not be written back")
+	})
+
+	t.Run("json_field handles backslash followed by physical newline", func(t *testing.T) {
+		result := r.Scan("'password': 'abcdefgh\\\nijklmnop'")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "ijklmnop")
+	})
+
+	t.Run("json_field handles adjacent sensitive YAML fields with trailing backslash", func(t *testing.T) {
+		input := "'password': 'abcdefgh\\'\n'secret': 'ijklmnop'"
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		findings := 0
+		for _, f := range result.Findings {
+			if f.Name == "json_field" {
+				findings++
+			}
+		}
+		assert.Equal(t, 2, findings, "both adjacent fields must be detected and redacted")
+		assert.NotContains(t, result.Sanitized, "abcdefgh")
+		assert.NotContains(t, result.Sanitized, "ijklmnop")
+	})
+
+	t.Run("json_field trailing backslash in a flow mapping keeps the next field", func(t *testing.T) {
+		// Go's regexp alternation is leftmost-first, so the escape-reading branch
+		// used to match first and read the closing quote as an escaped quote,
+		// running on to the next quote on the same line and swallowing the field
+		// that follows in a YAML flow mapping (#5705).
+		input := `{'api_key': 'abcdefghi\', 'x': 'yyyyyyyyyyyy'}`
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "abcdefghi")
+		assert.Contains(t, result.Sanitized, "'x': 'yyyyyyyyyyyy'", "the field that follows must survive intact")
+	})
+
+	t.Run("json_field redacts a single-quoted value spanning a raw newline", func(t *testing.T) {
+		// Base matched `'([^']{8,})'`, which crosses newlines. Handling escaped
+		// delimiters must not narrow the pattern: a raw newline inside the
+		// value is still part of the secret.
+		result := r.Scan("'password': 'line1\nline2line3'")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "line2line3")
+	})
+
+	t.Run("json_field multi-line value does not swallow the next field", func(t *testing.T) {
+		input := "'password': 'line1\nline2line3'\n'secret': 'ijklmnop'"
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		findings := 0
+		for _, f := range result.Findings {
+			if f.Name == "json_field" {
+				findings++
+			}
+		}
+		assert.Equal(t, 2, findings, "both fields must be detected and redacted")
+		assert.NotContains(t, result.Sanitized, "line2line3")
+		assert.NotContains(t, result.Sanitized, "ijklmnop")
+	})
+
+	t.Run("json_field minimum counts runes, not bytes", func(t *testing.T) {
+		// Three CJK characters are nine bytes. The {8,} quantifier the value
+		// pattern used before it spanned escaped quotes counted characters, so
+		// a byte count would start masking values it never masked.
+		short := r.Scan(`{"password": "秘密の鍵"}`)
+		assert.True(t, short.Safe, "a value below the minimum must not be masked: %s", short.Sanitized)
+
+		exact := r.Scan(`{"password": "秘密の鍵ですよね"}`) // 8 runes
+		assert.False(t, exact.Safe)
+		assert.True(t, hasFinding(exact, "json_field"))
+	})
+
+	t.Run("mask does not leave dangling escape sequence", func(t *testing.T) {
+		input1 := `Authorization: Bearer abc\ndefghijkl`
+		result1 := r.Scan(input1)
+		assert.False(t, result1.Safe)
+		assert.Equal(t, "Authorization: Bearer ***", result1.Sanitized)
+
+		input2 := `Authorization: Bearer \u1234efghijkl`
+		result2 := r.Scan(input2)
+		assert.False(t, result2.Safe)
+		assert.Equal(t, "Authorization: Bearer ***", result2.Sanitized)
 	})
 }
 
