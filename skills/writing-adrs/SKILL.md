@@ -53,13 +53,64 @@ reflect the current state of architectural decisions. When a new ADR is accepted
 to reflect the latest decision. It is the single place a reader can go to
 understand what is true *now*, without tracing a chain of ADRs.
 
-## When to Use
+## When to Use This Skill
 
 - A specific decision has emerged from discussion in a problem doc
 - You need to frame an upcoming decision
 - An ADR has been accepted and living documents need updating
 
 Do NOT use for open-ended exploration -- that belongs in problem docs.
+
+## Decide Whether to Write a New ADR
+
+An ADR is most useful when it establishes an **invariant**: a durable rule that
+future designs, implementations, and reviews must preserve. Before writing one,
+state the proposed invariant in a sentence and check existing ADRs and normative
+contracts for it. The size of the implementation does not determine whether it
+needs an ADR.
+
+**Write a new ADR when:**
+
+- The choice establishes a new architectural invariant, such as the forge
+  abstraction in [ADR 0005](../../docs/ADRs/0005-forge-abstraction-layer.md) or
+  the credential boundary in
+  [ADR 0017](../../docs/ADRs/0017-credential-isolation-for-sandboxed-agents.md).
+- The choice establishes materially different security boundaries,
+  cross-component contracts, compatibility obligations, or operating models.
+- The choice changes or supersedes an invariant in an Accepted ADR. Preserve
+  the old record and write a new one for the changed decision.
+
+**Do not write a new ADR when:**
+
+- You are **applying an existing invariant** to another runtime, provider,
+  forge, field, or workflow. For example,
+  [ADR 0094](../../docs/ADRs/0094-pi-extensions-are-harness-resources.md)
+  requires extension tools to obey the same tool allowlist as other
+  tools. Applying that rule to another extension does not establish a new
+  invariant.
+- A contract version change by itself does not establish a new invariant.
+  For example, [ADR 0170][entity-context-snapshot ADR] adopts snapshot v2 as
+  the model-facing field gate for every normalized-entity provider/kind pair.
+  Its expanded coverage and compatibility choices are the architectural
+  decision, not the version number.
+- The change fixes a bug, chooses an internal algorithm, tunes a limit, or
+  adds a test mechanism without changing a durable rule. Send a normal PR that
+  explains the rationale and update the relevant guide, reference, normative
+  spec or user doc.
+- The change only sets a local file location, internal naming convention, or
+  documentation layout. Put the convention in contributor guidance and enforce
+  it with linters where useful.
+- You are correcting or clarifying an Accepted ADR without changing its
+  decision. Use a minor annotation as allowed above, and keep living documents
+  current.
+
+[entity-context-snapshot ADR]:
+  ../../docs/ADRs/0170-align-entity-context-snapshot-with-normalized-entity.md
+
+If the choice is still open, explore the alternatives in a problem doc. A new
+field, command, forge, or agent does not by itself establish a new invariant.
+Implementing a security control under an existing boundary does not either;
+changing that boundary may.
 
 ## The Rules
 
