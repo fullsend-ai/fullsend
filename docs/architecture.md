@@ -162,6 +162,11 @@ repo baseline and overrides)
 
 **Decided:**
 
+- Static peer context: harnesses may declare concise guidance about their
+  capabilities and limits for recipients whose effective entity slots match.
+  Fullsend selects notes after harness composition and repository bindings are
+  resolved. These notes do not affect authorization or dispatch
+  ([ADR 0176](ADRs/0176-give-agents-context-about-enabled-peers.md)).
 - Output schema enforcement: a harness post-script validates every agent's
   output against a declared JSON schema on the host. Non-compliant output
   triggers a retry (capped); exhaustion is a hard failure — no unvalidated
@@ -353,7 +358,10 @@ repo baseline and overrides)
 **Open questions:**
 
 - Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Security hooks are injected as a runner-owned `hooks.json` loaded via `--settings`; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
-- How is codebase context assembled? (See [codebase-context.md](problems/codebase-context.md).)
+- How is codebase context assembled? Static peer context is selected by
+  effective entity slots ([ADR 0176](ADRs/0176-give-agents-context-about-enabled-peers.md));
+  broader repository and organization context remains open (see
+  [codebase-context.md](problems/codebase-context.md)).
 - How do we version and test harness configurations? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests in fullsend-ai/agents test the full pipeline including harness-assembled configuration — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md), [ADR 0139](ADRs/0139-agent-functional-test-suite-lives-in-agents-repo.md). Harness versioning is decided in [ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md); per-version field-value schemas remain open.)
 
 ## Agent Runtime

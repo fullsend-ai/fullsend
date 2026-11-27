@@ -12,6 +12,12 @@ The implication: context files are high-leverage but dangerous. Every bad line m
 
 Context comes from multiple levels. Each layer has different properties:
 
+Fullsend also has a static, cross-agent context source: harnesses may declare
+peer guidance about their stable capabilities and limits, and Fullsend selects
+it using the recipient's effective entity slots. This guidance is distinct from
+repository-specific instructions and current run outcomes
+([ADR 0176](../ADRs/0176-give-agents-context-about-enabled-peers.md)).
+
 **Layer 1 — the code itself.** Type signatures, module structure, test names, inline comments. Agents discover this independently. Do NOT duplicate it in context files (the research finding: duplication hurts).
 
 **Layer 2 — per-repo context (CLAUDE.md + BOOKMARKS.md).** Repo-specific non-obvious instructions: build quirks, testing procedures, design philosophy. Must be human-written, minimal, and focused on what agents cannot discover from the code. BOOKMARKS.md provides progressive disclosure — a curated index of references the agent loads on demand, keeping CLAUDE.md small.
