@@ -51,22 +51,26 @@ func TestReviewDedupCommandValidation(t *testing.T) {
 	}
 }
 
-func TestPublishReviewSkip_CreatesAndUpdatesVerifiedNote(t *testing.T) {
+func TestPublishReviewSkip_EverySkipAppendsNewComment(t *testing.T) {
 	ctx := context.Background()
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
 	fc.IssueComments = map[string][]forge.IssueComment{}
-	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, "https://example.test/review", "client"))
+	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, "https://example.test/review"))
 	require.Len(t, fc.IssueComments["o/r/1"], 1)
 	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "unchanged")
+	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "https://example.test/review")
 
 	fc.IssueComments["o/r/1"][0].AppClientID = "client"
-	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, "", "client"))
-	require.Len(t, fc.IssueComments["o/r/1"], 1)
-	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "https://example.test/review")
+	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, ""))
+	require.Len(t, fc.IssueComments["o/r/1"], 2)
+	assert.Contains(t, fc.IssueComments["o/r/1"][1].Body, "unchanged")
+	assert.NotContains(t, fc.IssueComments["o/r/1"][1].Body, "https://example.test/review")
+	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "https://example.test/review")
+	assert.Empty(t, fc.UpdatedComments)
 }
 
-func TestPublishReviewSkip_UpdatesNewestVerifiedNote(t *testing.T) {
+func TestPublishReviewSkip_LeavesEarlierNotesUntouched(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
 	fc.IssueComments = map[string][]forge.IssueComment{
@@ -76,11 +80,12 @@ func TestPublishReviewSkip_UpdatesNewestVerifiedNote(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, "", "client"))
-	require.Len(t, fc.UpdatedComments, 1)
-	assert.Equal(t, 11, fc.UpdatedComments[0].CommentID)
-	assert.Contains(t, fc.IssueComments["o/r/1"][1].Body, "unchanged")
-	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "old")
+	require.NoError(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, ""))
+	require.Empty(t, fc.UpdatedComments)
+	require.Len(t, fc.IssueComments["o/r/1"], 3)
+	assert.Contains(t, fc.IssueComments["o/r/1"][2].Body, "unchanged")
+	assert.Equal(t, reviewSkipMarker+"\nold", fc.IssueComments["o/r/1"][0].Body)
+	assert.Equal(t, reviewSkipMarker+"\nnewest", fc.IssueComments["o/r/1"][1].Body)
 }
 
 type reviewDedupInfoSequenceClient struct {
@@ -225,12 +230,8 @@ func TestDecideReviewDedup_FailsOpenForIncompleteInputs(t *testing.T) {
 func TestPublishReviewSkip_FailsOpenOnPublicationErrors(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
-	fc.Errors = map[string]error{"ListIssueComments": assert.AnError}
-	assert.Error(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, "", "client"))
-
-	fc.Errors = nil
-	fc.AuthenticatedUser = ""
-	assert.Error(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, "", "client"))
+	fc.Errors = map[string]error{"CreateIssueComment": assert.AnError}
+	assert.Error(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, ""))
 }
 
 func TestSupersedeReviewSkip_UpdatesOnlyVerifiedBotNotes(t *testing.T) {
@@ -250,6 +251,27 @@ func TestSupersedeReviewSkip_UpdatesOnlyVerifiedBotNotes(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "superseded by a full review")
 	assert.Equal(t, reviewSkipMarker+"\nleave me alone", comments[1].Body)
 	assert.Equal(t, reviewSkipMarker+"\nleave me alone", comments[2].Body)
+}
+
+func TestSupersedeReviewSkip_SkipsAlreadySupersededNotes(t *testing.T) {
+	fc := forge.NewFakeClient()
+	alreadySuperseded := reviewSkipMarker + "\nFullsend's earlier unchanged-diff skip note " + supersededSkipPhrase +
+		" a full review for commit 0000000000000000000000000000000000000000."
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {
+			{ID: 1, Author: "o-review[bot]", AppClientID: "client", Body: reviewSkipMarker + "\nold"},
+			{ID: 2, Author: "o-review[bot]", AppClientID: "client", Body: alreadySuperseded},
+		},
+	}
+
+	require.NoError(t, supersedeReviewSkip(context.Background(), fc, "o", "r", 1,
+		"0123456789012345678901234567890123456789", "fullsend-ai", "client"))
+
+	comments := fc.IssueComments["o/r/1"]
+	assert.Contains(t, comments[0].Body, "superseded by a full review for commit 012345678901")
+	assert.Equal(t, alreadySuperseded, comments[1].Body)
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Equal(t, 1, fc.UpdatedComments[0].CommentID)
 }
 
 func TestSupersedeReviewSkip_WithoutClientIDIsNoop(t *testing.T) {

@@ -166,18 +166,23 @@ func TestGeneratedPostScriptOkDryRunPostsNothing(t *testing.T) {
 	}
 }
 
-// TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists runs the
-// live ok path (no dry run) against a stub `fullsend` on PATH that records
-// its arguments. The script must delegate the "is there an earlier findings
+// TestGeneratedPostScriptOkAppendsViaOnlyIfExists runs the live ok path
+// (no dry run) against a stub `fullsend` on PATH that records its
+// arguments. The script must delegate the "is there an earlier findings
 // comment" decision to `fullsend issues post-comment --only-if-exists`
-// rather than reimplementing it with raw API calls in shell.
-func TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists(t *testing.T) {
+// rather than reimplementing it with raw API calls in shell — and with
+// this change's CLI the all-clear that follows is appended as a new
+// comment (only a runner pinned between #6966 and this change still
+// replaces in place). The stub's --help lists both --only-if-exists and
+// --keep-history, a CLI of this change's generation: the deprecated flag
+// is still listed, so it is passed (a pinned runner honours it).
+func TestGeneratedPostScriptOkAppendsViaOnlyIfExists(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not installed; the generated post-script needs it")
 	}
 	binDir := t.TempDir()
 	argsFile := filepath.Join(binDir, "args")
-	stub := "#!/usr/bin/env bash\nif [[ \"$*\" == *--help* ]]; then echo '  --only-if-exists   update an existing comment but never create one'; exit 0; fi\nprintf '%s\\n' \"$@\" > " + argsFile + "\ncat >/dev/null\n"
+	stub := "#!/usr/bin/env bash\nif [[ \"$*\" == *--help* ]]; then echo '  --only-if-exists   update an existing comment but never create one'; echo '  --keep-history      append previous content as collapsed history blocks'; exit 0; fi\nprintf '%s\\n' \"$@\" > " + argsFile + "\ncat >/dev/null\n"
 	if err := os.WriteFile(filepath.Join(binDir, "fullsend"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +211,56 @@ func TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists(t *testing.
 		if !strings.Contains(args, want) {
 			t.Errorf("fullsend was called without %q; args:\n%s", strings.TrimSpace(want), args)
 		}
+	}
+}
+
+// TestGeneratedPostScriptOkWithoutKeepHistoryFlagStillPosts pins the
+// forward-compatibility path: the generated script is rendered once into
+// each repository and never regenerated, so a runner's CLI whose
+// post-command has removed --keep-history (the cleanup #9517 schedules)
+// must still get the all-clear posted. The script probes --help and passes
+// the flag only when the CLI lists it.
+func TestGeneratedPostScriptOkWithoutKeepHistoryFlagStillPosts(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	binDir := t.TempDir()
+	argsFile := filepath.Join(binDir, "args")
+	// A post-cleanup CLI: --help lists --only-if-exists but no
+	// --keep-history, and any real call with the removed flag would fail —
+	// so the stub fails loudly if invoked with it.
+	stub := "#!/usr/bin/env bash\nif [[ \"$*\" == *--help* ]]; then echo '  --only-if-exists   update an existing comment but never create one'; exit 0; fi\nif [[ \"$*\" == *--keep-history* ]]; then echo 'Error: unknown flag: --keep-history' >&2; exit 1; fi\nprintf '%s\\n' \"$@\" > " + argsFile + "\ncat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(binDir, "fullsend"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "ok", "summary": "All clear", "comment": "All added documentation links resolve."},
+	})
+	cmd := exec.Command("bash", script)
+	cmd.Dir = runDir
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ISSUE_URL=https://github.com/fullsend-ai/demo/pull/99",
+		"GH_TOKEN=test-token",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ok on a CLI without --keep-history must exit 0, got %v; stderr:\n%s", err, stderr.String())
+	}
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("the script never invoked fullsend on the ok path: %v; stderr:\n%s", err, stderr.String())
+	}
+	args := string(got)
+	for _, want := range []string{"issues\npost-comment\n", "--only-if-exists\n", "--marker\n", "fullsend-ai/demo\n", "99\n"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("fullsend was called without %q; args:\n%s", strings.TrimSpace(want), args)
+		}
+	}
+	if strings.Contains(args, "--keep-history") {
+		t.Errorf("fullsend was called with the removed --keep-history flag; args:\n%s", args)
 	}
 }
 

@@ -15,6 +15,11 @@ import (
 
 const reviewSkipMarker = "<!-- fullsend:review-skip -->"
 
+// supersededSkipPhrase appears in a skip note a full review already rewrote; a
+// later full review leaves such a note alone so it keeps the commit that
+// superseded it.
+const supersededSkipPhrase = "was superseded by"
+
 // newReviewDedupCmd owns the unchanged-synchronize review decision. It is
 // deliberately fail-open: a missing or unverifiable input prints skip=false
 // and exits successfully so routing can continue with a full review.
@@ -60,7 +65,7 @@ func newReviewDedupCmd() *cobra.Command {
 			result := decideReviewDedup(cmd.Context(), client, owner, repoName, pr, appSet, appClientID)
 			writeReviewDedupOutput(cmd, result)
 			if publish && result.Skip {
-				if err := publishReviewSkip(cmd.Context(), client, owner, repoName, pr, result.PriorURL, appClientID); err != nil {
+				if err := publishReviewSkip(cmd.Context(), client, owner, repoName, pr, result.PriorURL); err != nil {
 					fmt.Fprintln(cmd.ErrOrStderr(), "::warning::Could not publish review skip note; running review")
 					fmt.Fprintln(cmd.OutOrStdout(), "skipped=false")
 					return nil
@@ -78,7 +83,7 @@ func newReviewDedupCmd() *cobra.Command {
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "forge instance URL")
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "review bot app-set name")
 	cmd.Flags().StringVar(&appClientID, "app-client-id", "", "verified review GitHub App client ID")
-	cmd.Flags().BoolVar(&publish, "publish", false, "publish or update the skip note after a skip decision")
+	cmd.Flags().BoolVar(&publish, "publish", false, "publish a new skip note after a skip decision")
 	cmd.Flags().BoolVar(&supersede, "supersede", false, "mark existing app-verified skip notes as superseded")
 	cmd.Flags().StringVar(&headSHA, "head-sha", "", "head commit to include in a superseded skip note")
 	_ = cmd.MarkFlagRequired("repo")
@@ -261,42 +266,29 @@ func hasApprovedReview(reviews []forge.PullRequestReview, owner, appSet, head st
 	return latest != nil && latest.State == "APPROVED" && latest.CommitID != "" && strings.EqualFold(latest.CommitID, head)
 }
 
-func publishReviewSkip(ctx context.Context, client forge.Client, owner, repo string, pr int, priorURL, appClientID string) error {
+// publishReviewSkip posts a new skip note at the end of the thread for every
+// skipped review, like every other posting door; it never lists comments,
+// resolves the posting identity, or updates an earlier note in place.
+func publishReviewSkip(ctx context.Context, client forge.Client, owner, repo string, pr int, priorURL string) error {
 	body := reviewSkipMarker + "\nFullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review"
 	if priorURL != "" {
 		body += " (" + priorURL + ")"
 	}
 	body += ". No new review findings were generated."
-	comments, err := client.ListIssueComments(ctx, owner, repo, pr)
-	if err != nil {
-		return err
-	}
-	botUser, err := client.GetAuthenticatedUser(ctx)
-	if err != nil || botUser == "" {
-		return fmt.Errorf("cannot verify authenticated review bot")
-	}
-	var latest *forge.IssueComment
-	for i := range comments {
-		comment := &comments[i]
-		if comment.Author != botUser || comment.AppClientID != appClientID || !strings.HasPrefix(comment.Body, reviewSkipMarker) {
-			continue
-		}
-		if latest == nil || comment.CreatedAt > latest.CreatedAt || (comment.CreatedAt == latest.CreatedAt && comment.ID > latest.ID) {
-			latest = comment
-		}
-	}
-	if latest != nil {
-		return client.UpdateIssueComment(ctx, owner, repo, latest.ID, body)
-	}
-	_, err = client.CreateIssueComment(ctx, owner, repo, pr, body)
+	_, err := client.CreateIssueComment(ctx, owner, repo, pr, body)
 	return err
 }
 
+// supersedeReviewSkip edits the bot's earlier skip notes in place — unlike
+// the append-only publishReviewSkip — because superseding marks history
+// rather than reporting a new event: the thread keeps one skip note per app
+// (each saying which commit it was superseded by) instead of a chain of
+// them.
 func supersedeReviewSkip(ctx context.Context, client forge.Client, owner, repo string, pr int, headSHA, appSet, appClientID string) error {
 	if !hexSHARe.MatchString(headSHA) {
 		headSHA = "unknown head"
 	}
-	body := reviewSkipMarker + "\nFullsend's earlier unchanged-diff skip note was superseded by a full review for commit " + headSHA + "."
+	body := reviewSkipMarker + "\nFullsend's earlier unchanged-diff skip note " + supersededSkipPhrase + " a full review for commit " + headSHA + "."
 	if appClientID == "" {
 		return nil
 	}
@@ -306,7 +298,7 @@ func supersedeReviewSkip(ctx context.Context, client forge.Client, owner, repo s
 	}
 	logins := reviewBotLogins(owner, appSet)
 	for _, comment := range comments {
-		if logins[comment.Author] && comment.AppClientID == appClientID && strings.HasPrefix(comment.Body, reviewSkipMarker) {
+		if logins[comment.Author] && comment.AppClientID == appClientID && strings.HasPrefix(comment.Body, reviewSkipMarker) && !strings.Contains(comment.Body, supersededSkipPhrase) {
 			if err := client.UpdateIssueComment(ctx, owner, repo, comment.ID, body); err != nil {
 				return err
 			}

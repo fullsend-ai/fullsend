@@ -18,12 +18,12 @@ import (
 // a marker (case-insensitive, any whitespace).
 var liveMarkerRe = regexp.MustCompile(`(?i)<!--\s*fullsend\s*:`)
 
-// TestPost_NeutralizesMarkersInBody_AcrossUpdates posts agent output that
-// carries marker syntax, then updates the same comment repeatedly. The
-// runner's own marker must be the only live marker after every update,
-// with exactly one copy, and agent-written marker text must come out
-// inert both in the current body and in history.
-func TestPost_NeutralizesMarkersInBody_AcrossUpdates(t *testing.T) {
+// TestPost_NeutralizesMarkersInBody_AcrossRuns posts agent output that
+// carries marker syntax four times. Every run must add its own comment,
+// and in each comment the runner's own marker must be the only live
+// marker, with exactly one copy, and agent-written marker text must come
+// out inert.
+func TestPost_NeutralizesMarkersInBody_AcrossRuns(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
@@ -39,22 +39,22 @@ func TestPost_NeutralizesMarkersInBody_AcrossUpdates(t *testing.T) {
 		require.NoError(t, err)
 
 		comments := client.IssueComments["o/r/1"]
-		require.Len(t, comments, 1, "run %s must update the same comment", run)
-		body := comments[0].Body
+		require.Len(t, comments, i+1, "run %s must add a new comment", run)
+		body := comments[i].Body
 
-		assert.True(t, strings.HasPrefix(body, cfg.Marker+"\n"), "run %s: marker must stay at the start", run)
+		assert.True(t, strings.HasPrefix(body, cfg.Marker+"\n"), "run %s: marker must be at the start", run)
 		assert.Equal(t, 1, strings.Count(body, cfg.Marker), "run %s: exactly one runner marker", run)
 		assert.Equal(t, 1, strings.Count(body, "fullsend:review-agent"),
-			"run %s: no escaped copy of the runner's marker lands in history", run)
+			"run %s: no escaped copy of the runner's marker", run)
 		assert.Len(t, liveMarkerRe.FindAllString(body, -1), 1, "run %s: only the runner's marker is live", run)
-		assert.Equal(t, i+1, strings.Count(body, "&lt;!-- fullsend:agent-status:999 -->"),
-			"run %s: agent marker text is escaped once per run, not re-escaped", run)
+		assert.Equal(t, 1, strings.Count(body, "&lt;!-- fullsend:agent-status:999 -->"),
+			"run %s: agent marker text is escaped once, not re-escaped", run)
 		assert.NotContains(t, body, "&amp;lt;", "run %s: pre-escaped text must be unchanged", run)
 		assert.NotContains(t, body, "&lt;&lt;", "run %s: escaping must not stack", run)
 		assert.Contains(t, body, "Run "+run+" ")
 	}
 
-	// The comment cannot be confused with a sibling's sticky comment.
+	// The comments cannot be confused with a sibling's comments.
 	comments := client.IssueComments["o/r/1"]
 	assert.Nil(t, FindMarkedComment(comments, "<!-- fullsend:agent-status:999 -->", "bot"))
 	assert.Nil(t, FindMarkedComment(comments, "<!-- fullsend:triage-agent -->", "bot"))
@@ -134,6 +134,18 @@ var trustedLineRe = regexp.MustCompile(`^<!-- fullsend:review-findings-v2:[A-Za-
 
 const trustedLine = "<!-- fullsend:review-findings-v2:eyJhIjoxfQ== -->"
 
+// The review door's other two trusted leading lines (the diff-hash and
+// head markers), and the anchored pattern that accepts any of the three,
+// which the size-cap tests hand out as the caller's TrustedLeadingLine.
+// They live here beside trustedLine/trustedLineRe so the marker
+// vocabulary is defined once: a vocab change is one edit, not lockstep
+// copies per test.
+const hashLine = "<!-- fullsend:review-diff-hash:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -->"
+
+const headLine = "<!-- fullsend:review-head:0123456789abcdef0123456789abcdef01234567 -->"
+
+var trustedLinesRe = regexp.MustCompile(`^(?:<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->|<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->|<!-- fullsend:review-head:[0-9a-fA-F]{40,64} -->)$`)
+
 func TestNeutralizeBody_TrustedLeadingLine(t *testing.T) {
 	cfg := Config{TrustedLeadingLine: trustedLineRe}
 	escaped := "&lt;!-- fullsend:review-findings-v2:eyJhIjoxfQ== -->"
@@ -202,9 +214,9 @@ func TestNeutralizeBody_TrustedLeadingLines(t *testing.T) {
 	assert.Equal(t, trustedLine+"\n"+second+"\n\nReview &lt;!-- fullsend:agent-status:1 -->", neutralizeBody(body, cfg))
 }
 
-// A trusted leading line stays live in the current body across updates,
-// while each earlier copy is escaped as it moves into history.
-func TestPost_TrustedLeadingLine_AcrossUpdates(t *testing.T) {
+// A trusted leading line stays live in every posted comment; nothing is
+// folded into history, so no earlier copy is ever re-escaped.
+func TestPost_TrustedLeadingLine_AcrossRuns(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
@@ -216,13 +228,13 @@ func TestPost_TrustedLeadingLine_AcrossUpdates(t *testing.T) {
 		require.NoError(t, err)
 
 		comments := client.IssueComments["o/r/1"]
-		require.Len(t, comments, 1)
-		got := comments[0].Body
+		require.Len(t, comments, i)
+		got := comments[i-1].Body
 
 		assert.True(t, strings.HasPrefix(got, cfg.Marker+"\n"+trustedLine+"\n\nReview &lt;!-- fullsend:triage-agent -->"),
 			"run %d: trusted line follows the runner marker unescaped", i)
 		assert.Len(t, liveMarkerRe.FindAllString(got, -1), 2, "run %d: only the runner marker and trusted line are live", i)
-		assert.Equal(t, i-1, strings.Count(got, "&lt;!-- fullsend:review-findings-v2:"),
-			"run %d: earlier trusted lines are escaped in history", i)
+		assert.Zero(t, strings.Count(got, "&lt;!-- fullsend:review-findings-v2:"),
+			"run %d: the trusted line is never escaped", i)
 	}
 }

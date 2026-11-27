@@ -16,8 +16,8 @@ commands when:
 - A custom agent needs to post results back to **Jira** or **GitLab**.
 - An agent script needs to **read** issue content (title, body, labels,
   comments) from any tracker as structured JSON.
-- You need **sticky comments** (find-and-update-by-marker) on a
-  non-GitHub tracker.
+- An agent needs to **post a marked comment** (findable by its hidden
+  marker) on a non-GitHub tracker.
 - A workflow depends on **typed issue links** in Jira (for example, a
   bug that blocks a task).
 - A planning or decomposition script needs to **create** issues,
@@ -215,13 +215,10 @@ an error rather than being silently ignored.
 
 ## `fullsend issues post-comment`
 
-Posts a comment with a sticky marker on an issue. On re-runs, finds
-the existing comment by its marker and its own author (see
-[Trust model](#trust-model)) and edits in-place. By default,
-old content is collapsed into `<details>` blocks to preserve history;
-set `keep_history: false` in config.yaml (or pass `--keep-history=false`)
-to replace the body with no history.
-This prevents comment flooding on re-runs. For GitHub and GitLab, the marker is embedded as an invisible
+Posts a comment carrying a hidden marker on an issue. Every run adds
+a new comment at the end of the thread: nothing is edited in place and
+there are no collapsed "Previous run" sections — the thread itself is
+the history. For GitHub and GitLab, the marker is embedded as an invisible
 HTML comment in the body. For Jira, the marker is stored as a comment
 entity property (Jira has no HTML comments, so a body-embedded marker
 would be visible to users).
@@ -241,12 +238,12 @@ echo "Triage complete. See PR #99." | fullsend issues post-comment \
 | `--tracker` | Yes (unless config default set) | Tracker backend: `github`, `gitlab`, or `jira` |
 | `--project` | GitHub/GitLab | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira, default: `tracker.jira.project`) |
 | `--number` | Yes | Issue number (must be a positive integer) |
-| `--marker` | Yes | Sticky marker for idempotent updates (e.g. `<!-- fullsend:my-agent -->`). GitHub/GitLab: hidden HTML comment in body. Jira: comment entity property. |
+| `--marker` | Yes | Marker identifying this agent's comments (e.g. `<!-- fullsend:my-agent -->`). GitHub/GitLab: hidden HTML comment in body. Jira: comment entity property. |
 | `--result` | No | Path to comment body file, or `-` for stdin (default: `-`) |
 | `--token` | No | GitHub/GitLab API token (default: env var per tracker). Rejected for Jira |
-| `--dry-run` | No | Print what would be posted without posting or editing anything |
-| `--keep-history` | No | Append previous content as collapsed history blocks (default: `true`; set `false` to replace in-place) |
-| `--only-if-exists` | No | Update an existing comment with this marker but never create one. Use it for an all-clear result, so a findings comment from an earlier run is updated in place (the old findings are kept as collapsed history unless `--keep-history=false`) while a clean first run posts nothing. Only a comment whose author is exactly the identity posting matches; if that identity cannot be resolved, the command fails without posting. |
+| `--dry-run` | No | Print what would be posted without posting anything |
+| `--keep-history` | No | Deprecated: no effect. Every result is posted as a new comment; the flag stays accepted so existing callers keep working |
+| `--only-if-exists` | No | Post only when an earlier comment with this marker exists, so a run with no earlier comment posts nothing. Use it for an all-clear result, so it follows earlier findings at the end of the thread while a clean first run posts nothing. Only a comment whose author is exactly the identity posting matches; if that identity cannot be resolved, the command fails without posting. |
 | `--fullsend-dir` | Jira | Path to `.fullsend` config directory. Supplies defaults from its `config.yaml` when flags are omitted, including the [Jira connection settings](#jira-connection-settings) |
 
 ### Jira marker storage
@@ -383,21 +380,20 @@ for how the `tracker` field resolves through the config overlay chain.
 
 ## Trust model
 
-An existing comment is edited only when it carries the marker **and**
-its author is exactly the identity the command posts as: the login on
-GitHub and GitLab, where markers are hidden HTML comments in the body,
-and the account ID (from `GET /myself`) on Jira, where markers are
-comment entity properties. Display names and login shapes are never
-trusted. A comment anyone else wrote with the same marker, as body text
-or as a comment property on their own comment, is ignored, never edited.
-Anyone who can edit the command's own comments (a repository maintainer,
-or a Jira user with Edit All Comments) is still trusted: their edits are
-kept as history when the comment is next updated.
+A comment counts as this command's own only when it carries the marker
+**and** its author is exactly the identity the command posts as: the
+login on GitHub and GitLab, where markers are hidden HTML comments in
+the body, and the account ID (from `GET /myself`) on Jira, where
+markers are comment entity properties. Display names and login shapes
+are never trusted. A comment anyone else wrote with the same marker, as
+body text or as a comment property on their own comment, never counts,
+so it cannot gate `--only-if-exists` and it is never edited.
 
-If that identity cannot be resolved after a short retry, the command
-fails with an error naming the cause and posts or edits nothing, with or
-without `--only-if-exists`. Posting a new comment instead would leave the
-earlier one behind with content no later run updates. To recover:
+Every run posts a new comment, so a plain post resolves no identity.
+With `--only-if-exists`, if that identity cannot be resolved after a
+short retry the command fails with an error naming the cause and posts
+nothing — otherwise a planted marker could decide whether the comment
+is posted. To recover:
 
 1. Rerun the command. A transient API failure clears on its own.
 2. If it fails again, check that the token can read its own identity:
