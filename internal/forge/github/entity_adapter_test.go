@@ -79,6 +79,15 @@ func (f *fakeEntityGraphQL) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			assert.Contains(f.t, req.Query, alias+": state")
 			base[alias] = state
 		}
+		if events, ok := base["closedEvents"]; ok {
+			delete(base, "closedEvents")
+			alias := "issueClosedEvents"
+			if base["__typename"] == "PullRequest" {
+				alias = "pullRequestClosedEvents"
+			}
+			assert.Contains(f.t, req.Query, alias+": timelineItems(itemTypes: [CLOSED_EVENT], last: 1)")
+			base[alias] = events
+		}
 		json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
 			"id": "R_1", "nameWithOwner": "Owner/Repo", "issueOrPullRequest": base,
 		}}})
@@ -143,8 +152,14 @@ func issueBase() map[string]any {
 		"url": "https://GitHub.com/Owner/Repo/issues/7", "state": "CLOSED",
 		"createdAt": "2026-11-01T09:00:00Z", "updatedAt": entityUpdated,
 		"stateReason": "NOT_PLANNED", "closedAt": "2026-11-20T12:30:00Z",
-		"author": map[string]any{"__typename": "User", "login": "alice", "databaseId": 42},
+		"closedEvents": closedEvents("2026-11-20T12:30:00Z", map[string]any{"__typename": "User", "login": "carol", "databaseId": 44}),
+		"author":       map[string]any{"__typename": "User", "login": "alice", "databaseId": 42},
 	}
+}
+
+// closedEvents is a base read's most recent ClosedEvent connection.
+func closedEvents(createdAt string, actor any) map[string]any {
+	return map[string]any{"nodes": []any{map[string]any{"__typename": "ClosedEvent", "createdAt": createdAt, "actor": actor}}}
 }
 
 func pullBase() map[string]any {
@@ -157,6 +172,7 @@ func pullBase() map[string]any {
 		"author":      map[string]any{"__typename": "User", "login": "bob", "databaseId": 43},
 		"baseRefName": "main", "headRefName": "feature", "isCrossRepository": true, "isDraft": false,
 		"baseRepository": map[string]any{"nameWithOwner": "Owner/Repo"}, "headRepository": nil,
+		"closedEvents": closedEvents("2026-11-20T12:30:00Z", map[string]any{"__typename": "Bot", "login": "merge-bot", "databaseId": 7}),
 	}
 }
 
@@ -239,7 +255,12 @@ func TestEntityAdapterReadBaseIssue(t *testing.T) {
 	assert.True(t, author.BotRole.IsZero())
 
 	assert.Equal(t, ne.Known(ne.Timestamp("2026-11-20T12:30:00.000000000Z")), e.Lifecycle.ClosedAt)
-	assert.Equal(t, ne.Unknown[ne.Actor](ne.ReasonUnsupported), e.Lifecycle.ClosedBy)
+	closer, ok := e.Lifecycle.ClosedBy.Value()
+	require.True(t, ok, "the most recent close event at the close time names the closer")
+	assert.Equal(t, ne.Known("44"), closer.ID)
+	assert.Equal(t, ne.Known("carol"), closer.Login)
+	assert.Equal(t, ne.Known(ne.ActorHuman), closer.Kind)
+	assert.Equal(t, ne.Unknown[ne.Role](ne.ReasonNotLoaded), closer.Role)
 	assert.True(t, e.Lifecycle.MergedAt.IsZero(), "merge facts do not apply to an issue")
 
 	w, ok := e.WorkItem.Value()
@@ -274,6 +295,10 @@ func TestEntityAdapterReadBasePullRequest(t *testing.T) {
 	assert.Equal(t, ne.Unknown[string](ne.ReasonNotLoaded), merger.BotRole)
 	assert.Equal(t, ne.Known(ne.Timestamp("2026-11-20T12:30:00.000000000Z")), e.Lifecycle.MergedAt)
 	assert.Equal(t, ne.Known(ne.Timestamp("2026-11-20T12:30:00.000000000Z")), e.Lifecycle.ClosedAt)
+	closer, ok := e.Lifecycle.ClosedBy.Value()
+	require.True(t, ok)
+	assert.Equal(t, ne.Known("7"), closer.ID)
+	assert.Equal(t, ne.Known(ne.ActorBot), closer.Kind)
 
 	cp, ok := e.ChangeProposal.Value()
 	require.True(t, ok)
@@ -358,6 +383,69 @@ func TestEntityAdapterMissingCloseTimes(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, ne.Unknown[string](ne.ReasonUnsupported), merger.ID)
 	assert.Equal(t, ne.Unknown[ne.ActorKind](ne.ReasonUnsupported), merger.Kind)
+}
+
+func TestEntityAdapterClosedByNeedsCurrentCloseEvent(t *testing.T) {
+	user := map[string]any{"__typename": "User", "login": "carol", "databaseId": 44}
+	for name, tc := range map[string]struct {
+		closedAt any
+		events   any
+		want     ne.UnknownReason
+	}{
+		"no close event":            {closedAt: "2026-11-20T12:30:00Z", events: map[string]any{"nodes": []any{}}},
+		"connection not returned":   {closedAt: "2026-11-20T12:30:00Z", events: nil},
+		"event of an earlier close": {closedAt: "2026-11-20T12:30:00Z", events: closedEvents("2026-11-19T08:00:00Z", user)},
+		"unparseable event time":    {closedAt: "2026-11-20T12:30:00Z", events: closedEvents("not a time", user)},
+		"unresolved close time":     {closedAt: nil, events: closedEvents("2026-11-20T12:30:00Z", user)},
+		"unexpected item type": {closedAt: "2026-11-20T12:30:00Z", events: map[string]any{"nodes": []any{
+			map[string]any{"__typename": "ReopenedEvent"},
+		}}},
+		"deleted closer": {closedAt: "2026-11-20T12:30:00Z", events: closedEvents("2026-11-20T12:30:00Z", nil), want: ne.ReasonUnsupported},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, b := range []map[string]any{issueBase(), pullBase()} {
+				b["closedAt"] = tc.closedAt
+				b["closedEvents"] = tc.events
+				f := &fakeEntityGraphQL{base: b}
+				a := newEntityTest(t, f)
+				base, err := a.ReadBase(context.Background(), []entityacquire.Need{entityacquire.NeedLifecycle})
+				require.NoError(t, err, "an unresolved closer never fails the read")
+				want := tc.want
+				if want == "" {
+					want = ne.ReasonFailed
+				}
+				assert.Equal(t, ne.Unknown[ne.Actor](want), base.Entity.Lifecycle.ClosedBy, b["__typename"])
+			}
+		})
+	}
+}
+
+func TestEntityAdapterBaseQueryReadsCloseEventWithLifecycle(t *testing.T) {
+	for _, alias := range []string{"issueClosedEvents", "pullRequestClosedEvents"} {
+		assert.Contains(t, entityBaseQuery, alias+": timelineItems(itemTypes: [CLOSED_EVENT], last: 1) @include(if: $lifecycle)")
+	}
+	b := issueBase()
+	b["state"] = "OPEN"
+	f := &fakeEntityGraphQL{base: b}
+	a := newEntityTest(t, f)
+	base, err := a.ReadBase(context.Background(), []entityacquire.Need{entityacquire.NeedLifecycle})
+	require.NoError(t, err)
+	assert.True(t, base.Entity.Lifecycle.ClosedBy.IsNull(), "an open entity has no current closer, whatever its history")
+}
+
+func TestEntityAdapterAcquireClosedBy(t *testing.T) {
+	f := &fakeEntityGraphQL{base: issueBase()}
+	res := acquireGitHub(t, f, `entity.lifecycle.closed_by.login == "carol"`)
+	assert.Equal(t, entityacquire.StatusSettled, res.Status)
+	assert.Equal(t, "true", res.Value.String())
+	require.Len(t, f.requests, 1, "the closer is read with the base read")
+	assert.Equal(t, true, f.requests[0].Variables["lifecycle"])
+
+	b := issueBase()
+	b["closedEvents"] = closedEvents("2026-11-19T08:00:00Z", map[string]any{"__typename": "User", "login": "dave", "databaseId": 45})
+	res = acquireGitHub(t, &fakeEntityGraphQL{base: b}, `entity.lifecycle.closed_by.login != "carol"`)
+	assert.Equal(t, entityacquire.StatusIncomplete, res.Status, "an earlier close's actor is never the current closer")
+	assert.True(t, res.Retryable())
 }
 
 func TestEntityAdapterWorkItemOpen(t *testing.T) {
