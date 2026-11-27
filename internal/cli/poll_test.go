@@ -147,6 +147,8 @@ trigger: |
 	require.NoError(t, err)
 	require.Equal(t, normevent.SystemJira, ev.Source.System)
 
+	// The other built-ins resolve with no trigger, so only code matches.
+	stubJiraBuiltins(t, map[string]string{})
 	m, err := newCELMatcher(context.Background(), dir)
 	require.NoError(t, err)
 	records, err := m.Match(context.Background(), ev)
@@ -718,6 +720,7 @@ func TestCELMatcher_JiraLabelRule(t *testing.T) {
 }
 
 func TestNewCELMatcher_LoadsJiraAuthorization(t *testing.T) {
+	stubJiraBuiltins(t, nil)
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
 authorization:
@@ -769,6 +772,7 @@ authorization:
 func noJiraEnv(string) string { return "" }
 
 func TestJiraPollOptions_ForwardsAuthorization(t *testing.T) {
+	stubJiraBuiltins(t, nil)
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
 authorization:
@@ -846,6 +850,7 @@ authorization:
 }
 
 func TestNewCELMatcher_RejectsInvalidAuthorization(t *testing.T) {
+	stubJiraBuiltins(t, nil)
 	tests := map[string]struct {
 		yaml    string
 		wantErr string
@@ -887,6 +892,7 @@ func TestJiraPollAuthorization_EmptyListsStayConfigured(t *testing.T) {
 }
 
 func TestNewCELMatcher_NullListKeysStayConfigured(t *testing.T) {
+	stubJiraBuiltins(t, nil)
 	for name, key := range map[string]string{
 		"bare write":   "write:",
 		"null write":   "write: null",
@@ -908,6 +914,7 @@ func TestNewCELMatcher_NullListKeysStayConfigured(t *testing.T) {
 }
 
 func TestNewCELMatcher_RejectsAliasedMisspelledJiraKey(t *testing.T) {
+	stubJiraBuiltins(t, nil)
 	dir := t.TempDir()
 	yamlText := "version: \"1\"\njira_provider: &jp jira\nauthorization:\n  - provider: *jp\n    lables: allowlist\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yamlText), 0o644))

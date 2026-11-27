@@ -63,6 +63,7 @@ type Poller struct {
 	eventsSeen          int                                  // events converted this cycle
 	eventsInvalid       int                                  // events skipped this cycle because they failed validation
 	eventsMatchErrors   int                                  // events dropped this cycle because matcher.Match errored
+	unmatched           []unmatchedEvent                     // validated events this cycle that matched no agent
 }
 
 // ctxSleep sleeps for d or until ctx is cancelled, whichever comes first,
@@ -103,6 +104,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	cycleID := uuid.New().String()
 	p.dispatches = nil
 	p.eventsSeen, p.eventsInvalid, p.eventsMatchErrors = 0, 0, 0
+	p.unmatched = nil
 	p.statusCategoryCache = make(map[string]string)
 	p.rosters = make(map[string]*projectRoster)
 	p.userGroups = make(map[string][]jira.UserGroupInfo)
@@ -293,6 +295,7 @@ func (p *Poller) Run(ctx context.Context) error {
 
 	log.Printf("poll complete: %d candidates, %d unlocked, %d selected, %d dispatches",
 		len(candidates), len(unlocked), len(selected), len(p.dispatches))
+	p.warnNoMatch(len(selected))
 	if dispatchErrors > 0 {
 		return fmt.Errorf("failed to dispatch records for %d issue(s); their lastCheck was not advanced, so they are retried next cycle: %w", dispatchErrors, firstDispatchErr)
 	}
@@ -681,6 +684,12 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 				log.Printf("WARNING: matching event %s: %v", event.Key(), matchErr)
 				p.eventsMatchErrors++
 				continue
+			}
+			// Only an event that looks like a request (a /fs-* command
+			// or a label change) feeds the no-match warning; an ordinary
+			// comment is expected to match no agent.
+			if len(records) == 0 && looksLikeRequest(&ne) {
+				p.unmatched = append(p.unmatched, unmatchedEvent{issueKey: event.IssueKey, event: describeEvent(&ne)})
 			}
 			p.dispatches = append(p.dispatches, records...)
 		}

@@ -2383,3 +2383,35 @@ func TestPerRepoConfig_LocalAgentEntries(t *testing.T) {
 	assert.Equal(t, []AgentEntry{{Name: "code", Model: "sonnet"}}, local, "only the overlay's own entries")
 	assert.Len(t, cfg.AgentEntries(), 2, "merged view includes the base")
 }
+
+func TestBuiltinAgentSelected(t *testing.T) {
+	cases := []struct {
+		name  string
+		agent string
+		roles []string
+		want  bool
+	}{
+		{"no roles selects every built-in", "code", nil, true},
+		{"empty roles selects no built-in", "code", []string{}, false},
+		{"empty roles selects no triage", "triage", []string{}, false},
+		{"empty roles still selects a custom agent", "my-agent", []string{}, true},
+		{"triage role selects triage", "triage", []string{"triage"}, true},
+		{"triage role does not select code", "code", []string{"triage"}, false},
+		{"coder role selects code", "code", []string{"coder"}, true},
+		{"code is not a role", "code", []string{"code"}, false},
+		{"coder role selects fix", "fix", []string{"coder"}, true},
+		{"fix role selects fix", "fix", []string{"fix"}, true},
+		{"fix role does not select code", "code", []string{"fix"}, false},
+		{"agent name is case-insensitive", "Code", []string{"coder"}, true},
+		{"custom agent is not scoped by roles", "my-agent", []string{"triage"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, BuiltinAgentSelected(tc.agent, tc.roles))
+		})
+	}
+	for _, agent := range ValidAgentNames() {
+		_, ok := builtinAgentRoles[agent]
+		assert.True(t, ok, "built-in agent %q has a role mapping", agent)
+	}
+}

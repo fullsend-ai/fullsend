@@ -158,6 +158,7 @@ func TestPollCmd_JiraPollGitLabAuthFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600))
 
 	clearPollEnv(t)
+	stubJiraBuiltins(t, nil)
 	t.Setenv("CI_SERVER_TLS_CA_FILE", caFile)
 	t.Setenv(forge.SecretGitLabPollerToken, "bad-tok")
 	t.Setenv("CI_COMMIT_REF_NAME", "main")

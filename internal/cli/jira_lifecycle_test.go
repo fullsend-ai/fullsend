@@ -211,6 +211,9 @@ func newJiraLifecycle(t *testing.T, host string) *jiraLifecycle {
 	require.NoError(t, err)
 
 	configDir := writeLifecycleConfig(t)
+	// The config registers triage, code, review and retro; the remaining
+	// built-ins resolve with no trigger, so they dispatch nothing.
+	stubJiraBuiltins(t, nil)
 	matcher, err := newCELMatcher(context.Background(), configDir)
 	require.NoError(t, err)
 
