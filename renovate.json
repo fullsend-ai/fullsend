@@ -143,6 +143,16 @@
       }
     },
     {
+      "description": "After a kubernetes/release bump, refresh RELEASE_NOTES_SHA256 in gather-release-notes.sh, checked against the digest GitHub records for the asset. Human-reviewed: the binary parses contributor-controlled PR bodies inside the release path.",
+      "matchPackageNames": ["kubernetes/release"],
+      "automerge": false,
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-release-notes-checksum.sh"],
+        "fileFilters": ["scripts/gather-release-notes.sh"],
+        "executionMode": "branch"
+      }
+    },
+    {
       "description": "After an fd bump, refresh FD_SHA256_{AMD64,ARM64} in the sandbox Containerfile. fd ships no checksum file, so the download is checked against the digest GitHub records for each release asset (#9121)",
       "matchPackageNames": ["sharkdp/fd"],
       "postUpgradeTasks": {
@@ -517,6 +527,17 @@
       "depNameTemplate": "sigstore/gitsign",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the pinned Kubernetes release-notes tool in gather-release-notes.sh. RELEASE_NOTES_SHA256 is refreshed in the same PR by postUpgradeTasks (scripts/renovate/update-release-notes-checksum.sh), checked against the digest GitHub records for the asset.",
+      "managerFilePatterns": ["/^scripts/gather-release-notes\\.sh$/"],
+      "matchStrings": [
+        "releases/download/v(?<currentValue>[^/]+)/release-notes-amd64-linux"
+      ],
+      "depNameTemplate": "kubernetes/release",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ]
 }

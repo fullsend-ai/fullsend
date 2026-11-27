@@ -1,0 +1,126 @@
+name: Release Note Check
+
+on:
+  pull_request:
+    # `labeled` and `unlabeled` are included so the recovery path for
+    # fork PRs works and label removal cannot strand a stale pass: adding
+    # release-note-action-required re-runs this check (which then accepts
+    # the already-present label without a write), and removing it re-runs
+    # validation, which re-adds the label (same-repo) or fails the check.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-note-check:
+    # The check already ran on the PR head; merge-group commits carry no
+    # pull_request event payload to re-check, so pass (skip) there. This
+    # keeps the check safe to mark required without stalling the queue.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      # Consumed by the sync-action-required-label job below; empty when
+      # the note is not action-required (or the bootstrap skip ran).
+      action-required: ${{ steps.check.outputs.action-required }}
+    steps:
+      # Check out the PR's base ref, not the PR head: the validator must
+      # come from a trusted revision so a PR cannot neuter its own check
+      # by editing scripts/check-release-note.sh. The PR body, title and
+      # commit subjects come from the API below, not from the checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+
+      # Fetch the PR body, title and commit subjects from the API rather
+      # than the event payload so every trigger type (including `edited`)
+      # sees the current state. Fork PRs work too: the PR object lives in
+      # this repository.
+      - name: Check release-note block
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Bootstrap: the validator ships in this repository. When the
+          # PR's base predates the script (e.g. this PR itself), skip
+          # rather than fail; the check becomes enforcing once the script
+          # has landed on main.
+          if [[ ! -f scripts/check-release-note.sh ]]; then
+            echo "::warning::scripts/check-release-note.sh not present at the PR base; skipping release-note check."
+            exit 0
+          fi
+          PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          PR_BODY=$(jq -r '.body // ""' <<<"${PR_JSON}")
+          PR_TITLE=$(jq -r '.title // ""' <<<"${PR_JSON}")
+          # Per-item jq transform with --paginate is safe; no cross-page
+          # aggregation happens here (see docs/contributing/shell-scripting.md).
+          COMMIT_SUBJECTS=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[] | .commit.message | split("\n")[0]')
+          PR_BODY="${PR_BODY}" PR_TITLE="${PR_TITLE}" COMMIT_SUBJECTS="${COMMIT_SUBJECTS}" \
+            bash scripts/check-release-note.sh
+          # The script appends action-required=1 to GITHUB_OUTPUT when the
+          # accepted note starts with "action required".
+
+  # The release-notes gatherer lists a note under "Urgent Upgrade
+  # Notes" only when the PR carries this label (it also strips the
+  # "action required:" prefix from the note text), so keep the label in
+  # sync with the check result. This is the only job with
+  # pull-requests: write; the validation job above stays read-only.
+  sync-action-required-label:
+    if: github.event_name == 'pull_request'
+    needs: release-note-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Sync action-required label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gh cannot infer the repository without a checkout (it ignores
+          # GITHUB_REPOSITORY), so tell it explicitly.
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ACTION_REQUIRED: ${{ needs.release-note-check.outputs.action-required }}
+        run: |
+          set -euo pipefail
+          # Fork PRs run with a read-only token and cannot create or add
+          # labels. For an action-required note that must not be silent:
+          # without the label the gatherer publishes the note as an
+          # ordinary bullet and strips the "action required:" prefix,
+          # losing the Urgent Upgrade Notes entry. Fail instead, so a
+          # maintainer must add the label before merge; the `labeled`
+          # trigger then re-runs this check, which accepts the label
+          # without a write.
+          if [[ "${ACTION_REQUIRED:-}" == "1" ]]; then
+            # Already labeled (e.g. a maintainer added the label on a fork
+            # PR): accept it without a write — the fork's read-only token
+            # cannot mutate labels even when the label is present.
+            if gh pr view "${PR_NUMBER}" --json labels \
+                --jq '.labels[].name' | grep -qx release-note-action-required; then
+              exit 0
+            fi
+            gh label create release-note-action-required --color b60205 \
+              --description "Release-note block starts with 'action required'" --force \
+              || echo "::warning::could not create label (it may already exist)"
+            if ! gh pr edit "${PR_NUMBER}" --add-label release-note-action-required; then
+              echo "::error::This PR needs the release-note-action-required label (its release-note block starts with 'action required'), but the label could not be added — the token cannot write (a fork PR) or the API call failed. A maintainer must add it before merge."
+              exit 1
+            fi
+          else
+            # Fails if the label is absent; that is the common case.
+            gh pr edit "${PR_NUMBER}" --remove-label release-note-action-required || true
+          fi

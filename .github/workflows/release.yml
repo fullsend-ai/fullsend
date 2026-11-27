@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
+  # Dry-run of the release-notes gather step only: measures the
+  # GITHUB_TOKEN rate-limit cost and runtime over a real tag range
+  # before a final release relies on it. Nothing is built or published.
+  workflow_dispatch:
+    inputs:
+      start-tag:
+        description: "Previous tag (gather PRs merged after this tag)"
+        required: true
+      end-tag:
+        description: "Tag to gather notes up to"
+        required: true
 
 permissions:
   contents: write
@@ -11,8 +22,12 @@ permissions:
 
 jobs:
   release:
-    needs: [validate-agents, resolve-agents, recheck-tag]
+    if: github.event_name == 'push'
+    needs: [validate-agents, resolve-agents, recheck-tag, gather-release-notes]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
     # Historically ~2 minutes. Bounded so a hung publish cannot hold the
     # tag-agents sync (and the default 6h limit) open.
     timeout-minutes: 20
@@ -51,6 +66,16 @@ jobs:
           fi
           echo "current=${TAG} previous=${PREV:-<goreleaser default>}"
 
+      # Release notes come from `release-note` blocks in PR bodies (see
+      # COMMITS.md, "Release notes"), gathered by the
+      # gather-release-notes job below and passed here as an artifact, so
+      # the untrusted-PR-body parsing never runs inside this signing job.
+      - name: Download release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}
+
       # GoReleaser signs the release here. Installed CLIs only accept a
       # signature made by this workflow file, for the tag, on a
       # GitHub-hosted runner (internal/selfupdate/verify.go). Renaming this
@@ -60,7 +85,10 @@ jobs:
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: "~> v2"
-          args: release --clean
+          # --release-notes replaces the changelog with the markdown
+          # gathered from PR bodies above. The path is outside the
+          # checkout so the git tree stays clean.
+          args: release --clean --release-notes ${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -85,6 +113,7 @@ jobs:
           fi
 
   validate-agents:
+    if: github.event_name == 'push'
     needs: resolve-agents
     # Permission contract of the called workflow. GitHub validates this at
     # parse time, before any job runs or `if:` is evaluated — a called
@@ -114,6 +143,7 @@ jobs:
       EVAL_GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
 
   resolve-agents:
+    if: github.event_name == 'push'
     # Resolve agents main once at release start. Since agents#1010 the gate
     # itself reports the SHA it validated (validate-agents' agents_sha
     # output), and tag-agents prefers that; this job's resolution is the
@@ -180,6 +210,7 @@ jobs:
         run: bash scripts/check-agents-gate-pin.sh
 
   recheck-tag:
+    if: github.event_name == 'push'
     # Second half of the tag-move guard. validate-agents clones fullsend by
     # tag name — the called workflow only accepts `main` or a `v*` ref and
     # uses `git clone --branch`, so it cannot be pinned to a SHA from this
@@ -209,6 +240,7 @@ jobs:
         run: bash scripts/verify-release-tag.sh
 
   tag-agents:
+    if: github.event_name == 'push'
     # Sync the version tag to fullsend-ai/agents. Runs for all tags
     # including pre-releases — agents' own release.yml handles
     # pre-release semantics. Only runs after agents functional tests
@@ -269,12 +301,14 @@ jobs:
     # published the binary and Slack reported only the missing agents tag.
     # Now the whole release stops here, so it needs its own signal;
     # otherwise a blocked release is silent on Slack.
-    needs: [validate-agents, resolve-agents, recheck-tag]
+    needs: [validate-agents, resolve-agents, recheck-tag, gather-release-notes]
     if: >-
-      always()
+      github.event_name == 'push'
+      && always()
       && (needs.validate-agents.result == 'failure'
           || needs.resolve-agents.result == 'failure'
-          || needs.recheck-tag.result == 'failure')
+          || needs.recheck-tag.result == 'failure'
+          || needs.gather-release-notes.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -299,7 +333,8 @@ jobs:
     # passed, and their failure is reported by notify-release-blocked.
     needs: [release, tag-agents]
     if: >-
-      always()
+      github.event_name == 'push'
+      && always()
       && needs.release.result == 'success'
       && needs.tag-agents.result == 'failure'
     runs-on: ubuntu-24.04
@@ -318,3 +353,111 @@ jobs:
           PAYLOAD=$(jq -n --arg tag "${GITHUB_REF_NAME}" --arg url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             '{text: ":warning: Agents tag sync failed for `\($tag)`. The fullsend release shipped but the agents tag was not created. <\($url)|View run>"}')
           curl -fsS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$SLACK_WEBHOOK"
+
+  # Gathers the release notes from PR bodies in a read-only job, so the
+  # pinned release-notes binary (which parses contributor-controlled PR
+  # bodies) never runs inside the signing job. The rendered markdown is
+  # passed to the release job as an artifact.
+  gather-release-notes:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    # Generous on purpose: on a rate-limit error the release-notes tool
+    # waits for the reset window (up to an hour), matching the dry-run
+    # job's budget.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes from PR bodies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Previous tag: for a final release, the last final release, so
+          # the notes span the whole release. For an rc, the tag
+          # immediately before this one (usually the previous rc), so an
+          # rc only lists what changed since that tag — matching
+          # GoReleaser's default previous-tag resolution for rc tags.
+          TAGS=$(git tag --merged "${TAG}^{commit}" --sort=-v:refname --list 'v[0-9]*.[0-9]*.[0-9]*')
+          case "${TAG}" in
+            *-*) PREV=$(printf '%s\n' "$TAGS" | grep -vxF -e "$TAG" | head -n1 || true) ;;
+            *)   PREV=$(printf '%s\n' "$TAGS" | grep -v -e '-' | grep -vxF -e "$TAG" | head -n1 || true) ;;
+          esac
+          if [[ -z "${PREV}" ]]; then
+            # Static message: interpolating TAG here would need workflow-command
+            # escaping (%0A/%0D) to stay injection-safe.
+            echo "::error::Could not find a previous release tag before the current tag"
+            exit 1
+          fi
+          # The gather logic (pinned release-notes install, JSON gather,
+          # rendering) lives in the shared script so the workflow_dispatch
+          # dry-run job measures the exact same path. Output goes outside
+          # the checkout: GoReleaser refuses a dirty git tree.
+          bash scripts/gather-release-notes.sh "${PREV}" "${TAG}" "${RUNNER_TEMP}"
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+
+  gather-dry-run:
+    # Measures the release-notes gather step with the workflow's own
+    # GITHUB_TOKEN (the smoke test in #9704 used a personal token, whose
+    # budget differs). Records the core rate limit before and after plus
+    # the runtime, so the release job's timeout-minutes can be set from
+    # data instead of guesswork. Nothing is built or published.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    # Generous on purpose: on a rate-limit error the release-notes tool
+    # waits for the reset window (up to an hour). The point of the dry
+    # run is to observe that behaviour, not to cut it off at the release
+    # job's 20 minutes.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Record rate limit before
+        env:
+          # GITHUB_TOKEN (not GH_TOKEN): the release-notes tool only reads
+          # GITHUB_TOKEN; gh accepts it too.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api rate_limit --jq '.resources.core | "core before \(.remaining)/\(.limit) (reset \(.reset))"'
+
+      - name: Gather release notes (dry run)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          START_TAG: ${{ inputs.start-tag }}
+          END_TAG: ${{ inputs.end-tag }}
+        run: |
+          set -euo pipefail
+          SECONDS=0
+          bash scripts/gather-release-notes.sh "${START_TAG}" "${END_TAG}" "${RUNNER_TEMP}"
+          echo "gather runtime: ${SECONDS}s"
+          echo "gathered notes:"
+          # The notes derive from contributor-controlled PR bodies. Wrap
+          # the output in a stop-commands token so nothing in it can be
+          # interpreted as a workflow command (::error::, ::add-mask::,
+          # ::stop-commands::). The token is runner-generated and not
+          # present in the output.
+          STOP_TOKEN="stop-commands-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          echo "::stop-commands::${STOP_TOKEN}"
+          cat "${RUNNER_TEMP}/release-notes.md"
+          echo "::${STOP_TOKEN}::"
+
+      - name: Record rate limit after
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api rate_limit --jq '.resources.core | "core after \(.remaining)/\(.limit) (reset \(.reset))"'

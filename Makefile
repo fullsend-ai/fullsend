@@ -187,6 +187,9 @@ define run-timed
 endef
 
 script-test:
+	$(call run-timed,bash scripts/check-release-note-test.sh)
+	$(call run-timed,bash scripts/render-release-notes-test.sh)
+	$(call run-timed,bash scripts/gather-release-notes-test.sh)
 	$(call run-timed,bash scripts/check-live-test-relevance-test.sh)
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
 	$(call run-timed,bash scripts/vouch-sweep-test.sh)

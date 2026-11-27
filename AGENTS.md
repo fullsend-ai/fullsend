@@ -41,8 +41,13 @@ full documentation site.
   binary to avoid stale state. See
   [Go Code § Running the fullsend CLI](docs/contributing/go-code.md#running-the-fullsend-cli).
 - Follow [COMMITS.md](COMMITS.md) when writing or reviewing commit messages
-  and PR titles. Commit prefixes feed release notes; breaking changes require
-  the `!` marker in both commit subjects and PR titles; a missing `!` is an
+  and PR titles. Every PR must carry a `release-note` block in its body (the
+  Release Note Check workflow validates it); release notes come from those
+  blocks, not commit prefixes.
+  Breaking changes require the `!` marker in both commit subjects and PR
+  titles, and an `action required` release-note block (CI labels such PRs
+  `release-note-action-required` so the note lands under Urgent Upgrade
+  Notes); a missing `!` is an
   important-severity review finding; forbidden combinations (e.g.
   `fix(ci)`/`fix(e2e)`) are enforced as errors.
 - Human and human-driven agent commits require DCO sign-off (`git commit -s`);
