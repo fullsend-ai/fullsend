@@ -108,7 +108,10 @@ type TokensEvent struct {
 
 func (TokensEvent) agentEvent() {}
 
-// ResultEvent is emitted once at stream end with final metrics.
+// ResultEvent carries a run's metrics. It is emitted once at stream end,
+// except on claude, which emits one per result in the stream: each holds the
+// totals so far, so the last one is final (its token counts are totals only
+// when the result carries modelUsage).
 type ResultEvent struct {
 	NumTurns                 int
 	TotalCostUSD             float64

@@ -162,8 +162,11 @@ type contentItem struct {
 	Input    json.RawMessage `json:"input"`
 }
 
-// resultEvent represents the final NDJSON event from Claude Code's stream-json
-// output, containing execution metrics.
+// resultEvent represents a result NDJSON event from Claude Code's stream-json
+// output, containing execution metrics. A session writes one per segment: one
+// for the prompt, and one more each time a background task's completion
+// resumes it after its final answer. NumTurns and Usage cover that segment
+// only; TotalCostUSD and ModelUsage are running totals for the session.
 type resultEvent struct {
 	Type         string  `json:"type"`
 	Subtype      string  `json:"subtype"`
@@ -267,6 +270,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 		cumulativeCacheWrite int
 		seenResult           bool
 		totalReasoning       int // accumulated thinking tokens across all messages (for ResultEvent)
+		totalTurns           int // num_turns summed across result events (for ResultEvent)
 	)
 
 	// Emit a final cumulative TokensEvent when the stream ends without
@@ -506,6 +510,11 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				continue
 			}
 			seenResult = true
+			// num_turns counts one segment's turns (see resultEvent), so
+			// each ResultEvent carries the stream's turns so far, like the
+			// running totals beside it.
+			totalTurns += re.NumTurns
+			re.NumTurns = totalTurns
 			onEvent(newClaudeResultEvent(re, totalReasoning))
 
 		case "assistant":
@@ -688,10 +697,12 @@ func recordClaudeMetrics(metrics *RunMetrics, evt AgentEvent) {
 		metrics.CacheCreationInputTokens = e.CacheWrite
 	case ResultEvent:
 		// Authoritative totals from the result event overwrite the
-		// incremental snapshot. They are session running totals, so a
-		// later result (steered or retried run) replaces an earlier one —
-		// PerModelUsage included, which is assigned rather than merged so
-		// nothing is counted twice.
+		// incremental snapshot. They are session running totals (NumTurns
+		// is made one by parseClaudeStream; the token counts are when the
+		// result carries modelUsage), so a later result (a session
+		// resumed by a background task, or a steered or retried run)
+		// replaces an earlier one — PerModelUsage included, which is
+		// assigned rather than merged so nothing is counted twice.
 		metrics.NumTurns = e.NumTurns
 		metrics.TotalCostUSD = e.TotalCostUSD
 		metrics.InputTokens = e.InputTokens
