@@ -126,3 +126,4 @@ accepted as a caller without explicit listing.
 |-------|-----|
 | Simplified mint authorization policy | [0078](0078-simplified-mint-authorization-policy.md) |
 | Public mint mode (basename gate exception superseded above) | [0059](0059-public-mint-mode-with-wildcard-allowlists.md) |
+| Test-only `owner/prefix*` host patterns for behaviour-test preview mints | [0084](0084-lease-uniquely-named-repos-for-dev-behaviour-tests.md) |
