@@ -17,7 +17,7 @@ import (
 var (
 	piEnvLoad       = envDataLoad(sandbox.SandboxWorkspace+"/.env", piBinaryVar, piNodeVar, piHookPythonEnv, piHookPathEnv, piChildBinEnv, piChildNodeEnv)
 	codexEnvLoad    = envDataLoad(sandbox.SandboxWorkspace+"/.env", codexBinaryVar, codexNodeVar, codexPathVar)
-	openCodeEnvLoad = envDataLoad(sandbox.SandboxWorkspace+"/.env", openCodeEnvDataDrop...)
+	openCodeEnvLoad = envDataLoad(sandbox.SandboxWorkspace+"/.env", openCodeLaunchEnvDataDrop...)
 )
 
 // envDataFixture is a temporary workspace with a .env, an .env.d directory

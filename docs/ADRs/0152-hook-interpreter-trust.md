@@ -99,6 +99,11 @@ A safe hook setup follows these rules:
    implement the ADR 0090 hook wiring yet (unbound-force#515); until
    it does, it installs no sandbox tool hooks and these rules do not
    apply to it.
+
+   *2026-11-26 annotation:* [PR #8852](https://github.com/fullsend-ai/fullsend/pull/8852)
+   implements OpenCode's sandbox hook adapter. The interpreter and PATH trust
+   rules above also apply to those hooks; see the
+   [OpenCode runtime](../runtimes/opencode.md).
 7. **No untrusted fallback.** Never fall back to an untrusted
    interpreter, even if it is the only one meeting the version floor;
    stop with an actionable error.

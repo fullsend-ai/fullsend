@@ -206,14 +206,18 @@ comments are synced to Jira where `<details>` does not render as collapsible.
 ### `runtime`
 
 Default agent runtime for all agents in this repository. Valid values:
-`claude`, `pi`, `codex`, `opencode`. `opencode` is opt-in and limited to
-read-only agents (`triage`, `prioritize`) until the security-hook adapter
-lands ([#7824](https://github.com/fullsend-ai/fullsend/issues/7824)).
+`claude`, `pi`, `codex`, `opencode`. `opencode` is opt-in, supports read-only and
+write-capable agents on version 1.19.1, and requires `security.enabled: true` for every role.
 Per-agent overrides in the `agents:` list take
 precedence. Per-run overrides via `--runtime` flag or `FULLSEND_RUNTIME` env
 var take precedence over both. See
 [Choose a Runtime](../guides/getting-started/choosing-a-runtime.md) for
 runtime comparison.
+
+If an OpenCode harness still sets `security.enabled: false` as a workaround,
+remove that setting or set it to `true`. See
+[OpenCode troubleshooting](../runtimes/opencode.md#troubleshooting) for the
+validation error and other migration checks.
 
 ### `roles`
 

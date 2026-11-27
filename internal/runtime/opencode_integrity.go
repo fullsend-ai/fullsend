@@ -25,6 +25,8 @@ type openCodeTrustedEnv struct {
 	// AgentModel is the agent definition's frontmatter model. A harness or
 	// CLI model wins over it (EffectiveModel), as on Claude Code and Codex.
 	AgentModel string
+	// Hooks is runner-owned policy and script digests, captured at Bootstrap.
+	Hooks *openCodeHookConfig
 }
 
 // openCodeRunnerEnv holds values Bootstrap reads before the first agent
@@ -91,6 +93,18 @@ func validateOpenCodeTrustedEnv(env openCodeTrustedEnv) error {
 	var config map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(env.ConfigContent), &config); err != nil {
 		return fmt.Errorf("reading the trusted OpenCode environment: OPENCODE_CONFIG_CONTENT is invalid JSON: %w", err)
+	}
+	if raw, ok := config["plugin"]; ok {
+		var plugins []json.RawMessage
+		if err := json.Unmarshal(raw, &plugins); err != nil || len(plugins) > 0 {
+			return fmt.Errorf("reading the trusted OpenCode environment: additional native plugins are not supported with sandbox hooks")
+		}
+	}
+	if raw, ok := config["mcp"]; ok {
+		var servers map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &servers); err != nil || len(servers) > 0 {
+			return fmt.Errorf("reading the trusted OpenCode environment: MCP servers are not supported with sandbox hooks")
+		}
 	}
 	permission, ok := config["permission"]
 	if !ok {

@@ -4,20 +4,22 @@
 or per agent. It runs in the same sandbox, with the same credentials and egress policy as Claude
 Code and pi. Choosing between runtimes is in [Agent runtimes](../runtimes.md).
 
-> **Planned:** sandbox tool hooks and write-capable agents
-> ([#7824](https://github.com/fullsend-ai/fullsend/issues/7824)). Until they land, OpenCode is
-> experimental:
->
-> - Use it only for read-only agents (`triage`, `prioritize`) on a disposable repo. fullsend does
->   not enforce this, so do not select it for `code` or `fix`.
-> - The harness must set `security.enabled: false`. That also turns off the content scans of the
->   agent, skills and repo context, and the secret redaction of outputs and transcripts.
+OpenCode 1.19.1 supports the shared sandbox security hooks through a native plugin, including
+write-capable agents. **Security must remain enabled for every role**; `fullsend run` rejects
+`security.enabled: false`. OpenCode v2 uses different tool and plugin APIs and is outside this
+implementation's scope.
+
+Bootstrap uploads the Go-embedded adapter and selected shared Python scripts to
+`/sandbox/opencode-config`, following pi's deployment pattern. The image supplies
+the pinned OpenCode binary and SDK dependencies. Use a sandbox image that includes
+OpenCode 1.19.1 and the matching SDK. Hook changes travel with the
+runner and do not require baking those scripts into the image.
 
 ## Run it locally
 
 Complete [Running agents locally](../guides/user/running-agents-locally.md) first. The CLI,
-OpenShell, credentials and the agents clone are the same. The fleet sandbox image includes the
-pinned OpenCode (1.19.1).
+OpenShell, credentials and the agents clone are the same. Use a fleet sandbox image that includes
+the pinned OpenCode (1.19.1).
 
 **1. Write the tool policy.** OpenCode reads its global config, including the tool-permission
 policy, from `OPENCODE_CONFIG_CONTENT`. A run fails before it starts when the variable is empty or
@@ -31,12 +33,12 @@ OPENCODE_CONFIG_CONTENT='{"provider":{"google-vertex-anthropic":{"id":"google-ve
 Allow every tool the agent needs. OpenCode runs without a TTY here, so it rejects any tool call
 the policy does not allow. The agent's own `tools:` list can narrow this policy but never widen it.
 
-**2. Set up the harness.** In the agent's harness (`harness/triage.yaml`), turn security off and
+**2. Set up the harness.** In the agent's harness (`harness/triage.yaml`), keep security enabled and
 add the variable to the existing `env.sandbox` block:
 
 ```yaml
 security:
-  enabled: false
+  enabled: true
 env:
   sandbox:
     # ...existing entries...
@@ -67,7 +69,6 @@ runtime: selected "opencode" from --runtime flag
   • Bootstrapping sandbox
 Skill "github": uploaded to sandbox
 Skill "issue-labels": uploaded to sandbox
-Agent Bash allowlist (gh, curl, jq) is recorded but not enforced on opencode — ...
 → Iteration 1 of 2
 → Agent: claude-sonnet-4-6@default
   ⚙ bash: gh issue view 1 --repo <owner>/<repo> --json number,title,body,...
@@ -109,21 +110,76 @@ example above.
 
 | | |
 |---|---|
-| Roles | Read-only agents (`triage`, `prioritize`) |
+| Roles | Read-only and write-capable agents; security enabled for all roles |
 | Credentials | Same Vertex WIF credentials as Claude Code and pi |
 | Instructions | Reads `AGENTS.md`; no `CLAUDE.md` bridge |
 | Effort | `--effort` maps to OpenCode's `--variant` |
 | Artifacts | `output.jsonl`, `transcripts/<agent>-output.jsonl`, `metrics.json`, and `opencode-debug.log` with `--debug='*'` |
-| Not supported | Fallback chains, `plugins:`, sandbox tool hooks (#7824) |
+| Sandbox hooks | Shared PreToolUse/PostToolUse scripts via the native plugin, including nested Task sessions |
+| Not supported | Fallback chains, harness `plugins:`, OpenCode v2 |
 
 ## Behaviour differences worth knowing
 
-- **Bash allowlists are not enforced.** `Bash(gh:*)` in the agent's `tools:` becomes plain `bash`,
-  with a warning. To restrict commands, give `bash` a pattern map in the policy
-  (`"bash": {"*": "deny", "gh *": "allow"}`). An agent that declares Bash gets that same map.
+- **Bash allowlists are enforced.** `Bash(gh,jq)` permits only those program names in each
+  simple command. Entries accept only letters, digits, `.`, `_` and `-`.
+  Bootstrap rejects paths, arguments and Claude-style patterns such as `Bash(gh pr:*)`
+  or `Bash(gh *)` with an error. Use plain `Bash` for unrestricted commands, subject
+  to the trusted permission policy.
+  Native patterns deny other commands where compatible with the trusted policy;
+  the plugin independently enforces the allowlist and rejects ambiguous shell syntax, environment
+  assignments, command substitutions, shell wrappers and control flow, `&&`
+  chains, redirections, and backgrounding.
+  Bash builtins and reserved words are rejected at bootstrap and in the
+  restricted grammar, except for the vetted builtins `cd`, `echo`, `false`,
+  `printf`, `pwd`, and `true`. This includes variable-setting and shell-state
+  builtins and completion callbacks: `compgen -C` executes its quoted command,
+  while `complete -C` registers a command for later completion.
+  `printf -v` and variable-writing `%n` conversions are rejected,
+  including attached, quoted, and length-modified forms. Give `printf` a literal
+  format, including after `--`, before expanded data arguments so an expansion
+  cannot become a variable-assignment option or conversion.
+  `test` is also rejected because its array-variable predicates can evaluate
+  commands inside a quoted argument.
+  Trusted Bash pattern maps use the same restricted shell grammar, even without
+  a program-name allowlist. The adapter checks each command separately and
+  removes argument quotes before matching, including inside Task children with
+  broader native permissions. Parameter expansion in arguments is allowed with
+  a program-name allowlist and flat trusted permission, but rejected with trusted
+  argument patterns because its value is not known during matching. Trusted
+  argument patterns also reject unquoted pathname expansion (`*`, `?`, and
+  `[...]`) and tilde expansion (`~`) for the same reason. Quote these
+  characters to pass them literally.
+  Program-name allowlists restrict executable names, not every capability of an
+  allowed program.
+  Unlike pi's advisory default, OpenCode enforces the declared list without an
+  opt-in switch. Agent instructions must use the commands they declare; see
+  [agents#1821](https://github.com/fullsend-ai/agents/issues/1821) for the scribe
+  compatibility follow-up.
+- **Native editing tools share capabilities.** GPT-family models use
+  `apply_patch` in place of native write/edit tools. Agents declaring `Write`,
+  `Edit`, or `MultiEdit` can use it, subject to the trusted edit policy and write
+  path checks. A `MultiEdit` declaration also permits the native `edit` tool.
+- **Directory listing stays distinct from file reading.** OpenCode uses `read` for both.
+  An agent declaring only `LS` can list directories, including directory symlinks, but cannot
+  read regular files or file symlinks through that tool.
 - **The agent is reset before every iteration.** The runner removes agent, tool and config overrides
-  the previous iteration could have written, re-uploads the agent, and checks that OpenCode loads it.
-  `skills/` in the config directory stays agent-writable until #7824.
+  from writable config locations, re-uploads the agent definition, and checks that OpenCode loads it.
+  Adapter/script digests are checked before agent verification and before and after `.env` is read as data.
+  Each iteration also requires the loaded plugin to return a runner-held activation challenge; a
+  missing signal detects an unhooked iteration after it exits; it does not prevent that iteration's
+  side effects. Verification still runs when transcript or exit-status
+  persistence fails; missing activation takes precedence as exit 99.
+  Preflight activation prevention remains follow-up hardening alongside #9022.
+  Each intercepted tool call rechecks the script directory. Native
+  write/edit/patch tools cannot write outside the workspace or into `.env`,
+  `.env.d`, `.fullsend`, `.security`, `bin` or `runner-state`, including via symlinks.
+  Write and trusted path-permission checks inspect both OpenCode's normalized
+  destination and the physical symlink destination when a path contains `..`.
+- **Hook configuration is not a same-user secret boundary.** The activation challenge and hook
+  settings are cleared from ordinary tool-process environments, but same-UID processes can inspect
+  the OpenCode process through `/proc`. This residual is documented with the adapter's writable
+  config-directory verification-to-load risk; it does not make the configuration a confidential
+  channel.
 - **Repo config is ignored.** OpenCode does not load the target repo's `.opencode/` config or skills.
 - **`.env` is read as data.** As on the other runtimes, the launch parses `.env` with a pinned
   `python3` and runs none of it as shell, so the image needs `python3` and a regular-file `readlink`
@@ -140,13 +196,73 @@ example above.
   must sit in such a directory too, and the launch starts the script with it.
   In the fullsend sandbox image `opencode` is a binary.
 
+The adapter is `plugins/fullsend-hooks.ts`, with selected scripts under `hooks/`,
+inside `/sandbox/opencode-config`. Hooks use the bootstrap-captured interpreter,
+isolated Python mode and trusted PATH. Default plugins are disabled and nonempty
+`OPENCODE_CONFIG_CONTENT.plugin` or `OPENCODE_CONFIG_CONTENT.mcp` configuration is
+rejected; use the harness provider/environment credential route. Shell-startup injection
+variables are cleared for tool subprocesses.
+At launch, the runner drops every `OPENCODE_*` assignment from agent-writable
+environment files and clears inherited variables with that prefix. It then
+restores its own config directory, isolation settings, and the trusted policy
+captured at bootstrap. There are no exceptions for agent-supplied names.
+Initial trusted `OPENCODE_CONFIG_CONTENT` configuration still follows steps 1
+and 2 above. Experimental modes, including background subagents, are disabled;
+ordinary foreground Tasks still follow the configured permissions.
+Disabling OpenCode default plugins is a compatibility constraint: harnesses
+must use the configured provider/environment credential route rather than
+relying on a default plugin to provide authentication or provider behavior.
+OpenCode Bash tool calls use a fixed trusted system PATH with
+`/sandbox/workspace/bin` appended; `.env.d` PATH additions do not apply.
+
+Retry feedback is uploaded to `/sandbox/workspace/runner-state/opencode-prompt.txt`.
+The runner checks its digest before launch, then OpenCode reads it through stdin.
+This preserves the feedback text without adding it to OpenShell's 32 KiB command
+argument. A missing or changed prompt stops the launch with exit 96 and an error
+naming the prompt file. Like the other input checks, this detects changes but
+retains a same-user race between
+verification and reading the file.
+
+**Deployment decision:** this adapter uses pi's existing bootstrap-and-hash-check model.
+The config tree remains writable by the sandbox user. Checks detect modifications but cannot
+prevent a deliberate change between verification and loading. Image-owned or separately
+privileged storage is separate hardening work, not a guarantee provided by this adapter.
+The OpenShell filesystem and egress policies remain the primary boundary for Bash and other
+writable state; native path checks and command scanning supplement those controls.
+
+Harness skills under `/sandbox/opencode-config/skills/` remain writable and
+persist across iterations, as they do in pi. They are uploaded at bootstrap but
+are not restored or digest-checked before each run. The adapter's integrity
+checks cover its plugin and selected hook scripts, not skill contents.
+
+Native exceptions skip the after hook, so `experimental.chat.messages.transform` scans failed-tool
+history before model requests, including Task sessions. Credentials are redacted; canary hits,
+scanner failures or invalid replies stop the next request. Nonempty replies must
+be JSON objects with recognized fields and correctly typed decisions, metadata,
+and rewrite fields; empty stdout means unchanged output. Raw session/transcript
+storage is not covered by this model-boundary check (see #7320). Denials identify
+the blocking script and include a bounded, credential-redacted reason when the
+verified shared sanitizer is available. Reasons containing the canary, missing
+sanitizer files, and sanitization failures produce only the script name; raw hook
+stderr is never reflected.
+The image keeps the pinned plugin SDK under the root-owned, sandbox-user-unwritable
+`/usr/local/share/opencode-sdk`. Bootstrap and each iteration restore global and
+custom-config SDK bookkeeping from that installation. Restoration replaces the
+copied read-only manifests before copying, so retries work without making the
+image-owned SDK writable or downloading it again.
+
 ## Troubleshooting
 
 | You see | Cause and fix |
 |---|---|
 | `OPENCODE_CONFIG_CONTENT is empty` | The env file or the harness `env.sandbox` entry is missing (steps 1 and 2) |
 | `OPENCODE_CONFIG_CONTENT ... invalid JSON` or `... permission policy` | The JSON is invalid, or its `permission` block is missing or invalid (step 1) |
-| `hooks adapter not yet available` | The harness still has `security.enabled: true` (step 2) |
+| `OpenCode requires security.enabled: true` | Remove the old security-disabled workaround or set it to `true` |
+| `opencode hook adapter requires version 1.19.1` | Use the pinned sandbox image; v2 needs a separate adapter migration |
+| Hook adapter/scripts missing or modified (exit 97) | A security file changed after bootstrap. Recreate the sandbox; do not disable security |
+| Retry prompt missing or modified (exit 96) | The prompt file changed before launch. Recreate the sandbox or rerun from the runner so it uploads the expected prompt |
+| Hook activation missing (exit 99) | The plugin did not return the iteration's activation challenge. Inspect plugin initialization errors and recreate the sandbox with the pinned image. This check runs after execution and cannot prevent side effects; pre-execution prevention is tracked in [#9207](https://github.com/fullsend-ai/fullsend/issues/9207) |
+| `OpenCode plugin SDK missing` | Use an image with the pinned plugin SDK installed under `/usr/local/share/opencode-sdk` |
 | `ProviderModelNotFoundError` | The id is not in OpenCode's built-in catalog. Use an id from the table above |
 | Vertex `404 NOT_FOUND` for the model | Your project does not serve it. Name one it serves |
 | `Falling back to default agent` | OpenCode could not load the agent, and the iteration fails. Rerun with `--debug='*'` and read `opencode-debug.log` |

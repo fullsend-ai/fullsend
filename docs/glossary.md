@@ -138,9 +138,9 @@ This is the part that reasons and acts; the rest of the architecture supports,
 constrains or coordinates it. Claude Code is the default runtime.
 [pi](https://github.com/earendil-works/pi) and
 [Codex](https://github.com/openai/codex) are opt-in runtimes (`runtime: pi`,
-`runtime: codex`). [OpenCode](https://opencode.ai) is an experimental opt-in
-runtime (`runtime: opencode`). Use it only for read-only agents until the
-security-hook adapter lands; fullsend does not enforce that limit. Other
+`runtime: codex`). [OpenCode](https://opencode.ai) is an opt-in runtime with
+shared sandbox hooks on version 1.19.1 (`runtime: opencode`; security must
+remain enabled). Other
 projects call this layer a [harness](#harness); see that entry for the naming
 difference.
 See [runtimes.md](runtimes.md), [architecture.md](architecture.md) and

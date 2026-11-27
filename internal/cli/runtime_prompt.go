@@ -34,7 +34,7 @@ func promptRuntime(printer *ui.Printer, in io.Reader, interactive bool) (string,
 	printer.StepInfo("  [pi]       pi — experimental (enablement phase); any provider pi supports, no sub-agent tool yet")
 	printer.StepInfo("  [codex]    Codex — experimental; OpenAI models, or gateway/<model> through an inference gateway;")
 	printer.StepInfo("             review has skipped one of its sub-agents without saying so (#9073, #9657)")
-	printer.StepInfo("  [opencode] OpenCode — experimental; read-only agents only until the security-hook adapter lands (unbound-force#515)")
+	printer.StepInfo("  [opencode] OpenCode 1.x — shared sandbox hooks; security must remain enabled")
 	printer.StepInfo("  Keep the default unless you are taking part in a runtime pilot. Change later with `runtime:`")
 	printer.StepInfo("  in .fullsend/config.yaml or `fullsend github setup --runtime`; see docs/runtimes.md.")
 	printer.Blank()
