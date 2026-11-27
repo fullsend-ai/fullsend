@@ -1017,7 +1017,9 @@ tracker:
 `updated` time falls within the 24-hour backfill window, and keeps a trailing
 `ORDER BY` at the end, so the example above runs as
 `(project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done)) AND updated >= "-24h" ORDER BY updated ASC`.
-The parentheses in `poll.query` must be balanced.
+The parentheses in `poll.query` must be balanced. When `poll.query` is
+omitted, the poller uses the default filter above. Unless `poll.enabled` is
+`true`, the poller skips the cycle without contacting Jira.
 
 Leave `ORDER BY` out of `poll.query` unless you need a particular order:
 without one the poller sorts oldest change first (`ORDER BY updated ASC`),
@@ -1027,9 +1029,7 @@ changed within the window than the search reads (see
 [Poll coordination](#poll-coordination)); under newest change first the
 oldest requests are the ones left out, and they can then leave the window
 unserved. A query that sorts newest change first (`ORDER BY updated DESC`)
-logs a WARNING every cycle that recommends oldest change first. When `poll.query` is
-omitted, the poller uses the default filter above. Unless `poll.enabled` is
-`true`, the poller skips the cycle without contacting Jira.
+logs a WARNING every cycle that recommends oldest change first.
 
 The `--jira-url`, `--jira-project`, and `--jql` flags were removed and are
 rejected, and `JIRA_BASE_URL` is not read. Because the query is always
