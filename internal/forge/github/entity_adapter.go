@@ -41,8 +41,9 @@ const entityLimitCursor = "fullsend:result-cap"
 // read at different revisions.
 //
 // The adapter never applies a narrowing filter, so every page it returns is
-// unfiltered. It reads labels, assignees, reactions, label applications, an
-// issue's comments, and a pull request's changed files, commits, reviews,
+// unfiltered. It reads labels, assignees, reactions, label applications,
+// comments (with a pull request's review-thread comments), an issue's threads
+// (always none), and a pull request's changed files, commits, reviews,
 // reviewers, and current approvals. Other collections are reported
 // unsupported, which can never read as empty. Text the content-safety filter
 // must process first (title, body, and comment and review text and commands)
@@ -61,6 +62,8 @@ type EntityAdapter struct {
 	// the same entity.
 	sourceID string
 	kind     normentity.Kind
+	// revision is the source revision of the base read.
+	revision string
 	// seen counts the members returned in each collection's current read
 	// sequence, to detect a provider result cap on the last page.
 	seen map[entityacquire.Need]int
@@ -118,6 +121,7 @@ const entityBaseQuery = `query($owner: String!, $name: String!, $number: Int!, $
 				updatedAt
 				stateReason @include(if: $workItem)
 				closedAt @include(if: $lifecycle)
+				issueClosedEvents: timelineItems` + entityClosedEventSelection + `
 				author @include(if: $author) { ...entityActor }
 			}
 			... on PullRequest {
@@ -129,6 +133,7 @@ const entityBaseQuery = `query($owner: String!, $name: String!, $number: Int!, $
 				updatedAt
 				headRefOid
 				closedAt @include(if: $lifecycle)
+				pullRequestClosedEvents: timelineItems` + entityClosedEventSelection + `
 				mergedAt @include(if: $lifecycle)
 				mergedBy @include(if: $lifecycle) { ...entityActor }
 				author @include(if: $author) { ...entityActor }
@@ -143,6 +148,23 @@ const entityBaseQuery = `query($owner: String!, $name: String!, $number: Int!, $
 	}
 }
 ` + entityActorFragment
+
+// entityClosedEventSelection selects an entity's most recent ClosedEvent. The
+// response names are aliased per fragment, as state is: the issue and pull
+// request timeline connections are different GraphQL types.
+const entityClosedEventSelection = `(itemTypes: [CLOSED_EVENT], last: 1) @include(if: $lifecycle) {
+					nodes { __typename ... on ClosedEvent { createdAt actor { ...entityActor } } }
+				}`
+
+// gqlClosedEvents is the timeline connection selected with
+// entityClosedEventSelection.
+type gqlClosedEvents struct {
+	Nodes []struct {
+		Typename  string          `json:"__typename"`
+		CreatedAt string          `json:"createdAt"`
+		Actor     *gqlEntityActor `json:"actor"`
+	} `json:"nodes"`
+}
 
 type gqlEntityBase struct {
 	Typename string `json:"__typename"`
@@ -173,6 +195,12 @@ type gqlEntityBase struct {
 	HeadRepository *struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"headRepository"`
+	// IssueClosedEvents and PullRequestClosedEvents are the per-fragment
+	// aliases of the most recent ClosedEvent. ClosedEvents is the one
+	// matching the entity's kind, set by ReadBase.
+	IssueClosedEvents       *gqlClosedEvents `json:"issueClosedEvents"`
+	PullRequestClosedEvents *gqlClosedEvents `json:"pullRequestClosedEvents"`
+	ClosedEvents            *gqlClosedEvents `json:"-"`
 }
 
 // ReadBase reads the entity's identity and the requested fact groups.
@@ -236,8 +264,9 @@ func (a *EntityAdapter) ReadBase(ctx context.Context, facts []entityacquire.Need
 		URL:      g.URL,
 	}
 	rawState := g.IssueState
+	g.ClosedEvents = g.IssueClosedEvents
 	if kind == normentity.KindChangeProposal {
-		rawState = g.PullRequestState
+		rawState, g.ClosedEvents = g.PullRequestState, g.PullRequestClosedEvents
 	}
 	g.State = rawState
 	state := entityState(kind, rawState)
@@ -273,7 +302,8 @@ func (a *EntityAdapter) ReadBase(ctx context.Context, facts []entityacquire.Need
 		}
 	}
 	a.sourceID, a.kind = g.ID, kind
-	return &entityacquire.Base{Entity: e, Revision: entityRevision(kind, g.UpdatedAt, g.HeadRefOid)}, nil
+	a.revision = entityRevision(kind, g.UpdatedAt, g.HeadRefOid)
+	return &entityacquire.Base{Entity: e, Revision: a.revision}, nil
 }
 
 // entityCollection describes how one collection is read.
@@ -294,13 +324,15 @@ type entityCollection struct {
 	// revision, so only a read that fits in one page (one GraphQL response)
 	// is consistent. A longer read reports a limit after its first page.
 	singlePage bool
-	// extra selects a second connection, read in the same response. Its
-	// members are merged with the page's, so the read reports a limit,
-	// without members, unless both connections fit in one page.
+	// extra selects a second connection, read in the same response. Unless
+	// extraWitnesses is set, its members are merged with the page's, so the
+	// read reports a limit, without members, unless both connections (and
+	// any comments connection nested in the second one) fit in one page.
 	extra string
-	// only, when set, is the one entity kind the adapter reads the
-	// collection for. For other kinds the read is unsupported.
-	only normentity.Kind
+	// extraWitnesses: the second connection's members are independent of
+	// the page's, so a read that does not fit in one page keeps every member
+	// it read as a witness, then reports a limit.
+	extraWitnesses bool
 }
 
 // entityActorSelection selects an Actor with the fields entityActor maps.
@@ -346,13 +378,11 @@ var entityCollections = map[entityacquire.Need]entityCollection{
 		}`,
 		extra: "latestReviews(first: $first) { totalCount pageInfo { hasNextPage } nodes { state submittedAt author " + entityActorSelection + " } }",
 	},
-	// Comments are an issue's comments, which are unthreaded. A pull
-	// request's comments also include review-thread comments, which this
-	// connection does not return, so they are not read. Comment edits are not
-	// shown to advance updatedAt, so the read must fit in one page.
+	// Comments are an issue's comments, which are unthreaded. Comment edits
+	// are not shown to advance updatedAt, so the read must fit in one page.
 	entityacquire.NeedComments: {
-		field: "comments", counted: true, singlePage: true, only: normentity.KindWorkItem,
-		nodes: "id url createdAt lastEditedAt author " + entityActorSelection + " editor " + entityActorSelection,
+		field: "comments", counted: true, singlePage: true,
+		nodes: entityCommentNodes,
 	},
 	// Reviews are a pull request's submitted reviews: a pending review is not
 	// an action. Review submissions are not shown to advance updatedAt, so the
@@ -362,6 +392,35 @@ var entityCollections = map[entityacquire.Need]entityCollection{
 		counted: true, singlePage: true,
 		nodes: "id state submittedAt lastEditedAt author " + entityActorSelection + " editor " + entityActorSelection,
 	},
+}
+
+// entityCommentNodes selects a comment's action members.
+const entityCommentNodes = "id url createdAt lastEditedAt author " + entityActorSelection + " editor " + entityActorSelection
+
+// changeProposalCollections replaces entries of entityCollections for a pull
+// request.
+var changeProposalCollections = map[entityacquire.Need]entityCollection{
+	// A pull request's comments are its unthreaded conversation comments and
+	// the comments of its review threads, read in the same response. A
+	// review-thread comment's state tells a pending review's draft, which is
+	// not yet an action, from a submitted one. Comment edits are not shown to
+	// advance updatedAt, so every connection must fit in one page.
+	entityacquire.NeedComments: {
+		field: "comments", counted: true, singlePage: true, extraWitnesses: true,
+		nodes: entityCommentNodes,
+		extra: "reviewThreads(first: $first) { totalCount pageInfo { hasNextPage } nodes { id comments(first: $first) { totalCount pageInfo { hasNextPage } nodes { state " + entityCommentNodes + " } } } }",
+	},
+}
+
+// entityCollectionFor returns how need is read for an entity of kind.
+func entityCollectionFor(need entityacquire.Need, kind normentity.Kind) (entityCollection, bool) {
+	if kind == normentity.KindChangeProposal {
+		if coll, ok := changeProposalCollections[need]; ok {
+			return coll, true
+		}
+	}
+	coll, ok := entityCollections[need]
+	return coll, ok
 }
 
 // gqlEntityConn is one page of a collection connection.
@@ -410,6 +469,8 @@ type gqlEntityNode struct {
 	URL               string            `json:"url"`
 	LastEditedAt      *string           `json:"lastEditedAt"`
 	Editor            *gqlEntityActor   `json:"editor"`
+	// Comments is a review thread's comments connection.
+	Comments *gqlEntityConn `json:"comments"`
 }
 
 // ReadPage reads one page of one collection.
@@ -420,8 +481,19 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 	if req.Kind != a.kind {
 		return nil, fmt.Errorf("github entity page read: kind %s does not match entity kind %s", req.Kind, a.kind)
 	}
-	coll, ok := entityCollections[req.Need]
-	if !ok || !req.Need.AppliesTo(a.kind) || (coll.only != "" && coll.only != a.kind) {
+	if !req.Need.AppliesTo(a.kind) {
+		return nil, fmt.Errorf("%w: github %s %s", entityacquire.ErrUnsupported, a.kind, req.Need)
+	}
+	if req.Need == entityacquire.NeedThreads && a.kind == normentity.KindWorkItem {
+		// Issue comments are unthreaded, so an issue has no threads at any
+		// revision (normalized-entity v1). No provider read is needed.
+		return &entityacquire.Page{
+			Members:  &normentity.Entity{Threads: normentity.List[normentity.Thread]{Known: []normentity.Thread{}}},
+			Revision: a.revision,
+		}, nil
+	}
+	coll, ok := entityCollectionFor(req.Need, a.kind)
+	if !ok {
 		return nil, fmt.Errorf("%w: github %s %s", entityacquire.ErrUnsupported, a.kind, req.Need)
 	}
 	if req.Cursor == entityLimitCursor {
@@ -505,17 +577,25 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 	if g.Conn == nil {
 		return nil, fmt.Errorf("github entity %s read: no %s connection", req.Need, coll.field)
 	}
+	spanErr := fmt.Errorf("%w: github %s span more than one page, and changes to them do not advance the source revision", entityacquire.ErrLimit, req.Need)
 	var extraNodes []gqlEntityNode
+	extraPartial := false
 	if coll.extra != "" {
 		if g.Extra == nil {
 			return nil, fmt.Errorf("github entity %s read: no second connection", req.Need)
 		}
-		if !g.Conn.fitsOnePage() || !g.Extra.fitsOnePage() {
+		fits := g.Conn.fitsOnePage() && g.Extra.fitsOnePage()
+		for _, n := range g.Extra.Nodes {
+			if n.Comments != nil && !n.Comments.fitsOnePage() {
+				fits = false
+			}
+		}
+		if !fits && !coll.extraWitnesses {
 			// A member's standing depends on both connections, so no member
 			// of a partial read is a sound witness.
-			return nil, fmt.Errorf("%w: github %s span more than one page, and changes to them do not advance the source revision", entityacquire.ErrLimit, req.Need)
+			return nil, spanErr
 		}
-		extraNodes = g.Extra.Nodes
+		extraNodes, extraPartial = g.Extra.Nodes, !fits
 	}
 	page := &entityacquire.Page{Revision: entityRevision(a.kind, g.UpdatedAt, g.HeadRefOid)}
 	more, next := g.Conn.PageInfo.HasNextPage, g.Conn.PageInfo.EndCursor
@@ -552,10 +632,10 @@ func (a *EntityAdapter) ReadPage(ctx context.Context, req entityacquire.PageRequ
 			page.Next = entityLimitCursor
 		}
 	}
-	if coll.singlePage && page.Next != "" && page.Next != entityLimitCursor {
+	if (coll.singlePage && page.Next != "" && page.Next != entityLimitCursor) || (extraPartial && page.Next != entityLimitCursor) {
 		// Keep this page's members as witnesses; the rest of the read could
 		// not be shown consistent with them.
-		a.capped[req.Need] = fmt.Errorf("%w: github %s span more than one page, and changes to them do not advance the source revision", entityacquire.ErrLimit, req.Need)
+		a.capped[req.Need] = spanErr
 		page.Next = entityLimitCursor
 	}
 	return page, nil
@@ -636,7 +716,7 @@ func (a *EntityAdapter) entityMembers(need entityacquire.Need, nodes, extra []gq
 		}
 		frag.Reviewers.Known = reviewers
 	case entityacquire.NeedComments:
-		comments, err := comments(nodes)
+		comments, err := comments(nodes, extra)
 		if err != nil {
 			return nil, err
 		}
@@ -702,20 +782,45 @@ func compareActions(x, y normentity.Action) int {
 	return strings.Compare(x.ID, y.ID)
 }
 
-// comments maps an issue's comments, which are unthreaded, sorted by
-// creation time, then ID.
-func comments(nodes []gqlEntityNode) ([]normentity.Comment, error) {
+// comments maps unthreaded comments and the comments of review threads,
+// sorted by creation time, then ID. A pending review's draft comment is not
+// yet an action, so it is left out.
+func comments(nodes, threads []gqlEntityNode) ([]normentity.Comment, error) {
 	out := make([]normentity.Comment, 0, len(nodes))
-	for _, n := range nodes {
+	add := func(n gqlEntityNode, threadID normentity.Field[string]) error {
 		ta, err := textAction(n, n.CreatedAt)
 		if err != nil {
-			return nil, fmt.Errorf("comment: %w", err)
+			return fmt.Errorf("comment: %w", err)
 		}
-		c := normentity.Comment{TextAction: ta, ThreadID: normentity.Null[string](), URL: normentity.Unknown[string](normentity.ReasonFailed)}
+		c := normentity.Comment{TextAction: ta, ThreadID: threadID, URL: normentity.Unknown[string](normentity.ReasonFailed)}
 		if n.URL != "" {
 			c.URL = normentity.Known(n.URL)
 		}
 		out = append(out, c)
+		return nil
+	}
+	for _, n := range nodes {
+		if err := add(n, normentity.Null[string]()); err != nil {
+			return nil, err
+		}
+	}
+	for _, t := range threads {
+		if t.ID == "" || t.Comments == nil {
+			return nil, errors.New("review thread without an ID or comments")
+		}
+		for _, n := range t.Comments.Nodes {
+			switch n.State {
+			case "SUBMITTED":
+			case "PENDING":
+				continue
+			default:
+				// An unknown state may be a draft or a submitted comment.
+				return nil, fmt.Errorf("review-thread comment %q has unexpected state %q", n.ID, n.State)
+			}
+			if err := add(n, normentity.Known(t.ID)); err != nil {
+				return nil, err
+			}
+		}
 	}
 	slices.SortStableFunc(out, func(x, y normentity.Comment) int { return compareActions(x.Action, y.Action) })
 	return out, nil
@@ -1114,8 +1219,7 @@ func entityLifecycle(kind normentity.Kind, state normentity.Field[normentity.Sta
 		if g.ClosedAt != nil {
 			l.ClosedAt = entityTimestamp(*g.ClosedAt)
 		}
-		// The closing actor needs a timeline read.
-		l.ClosedBy = normentity.Unknown[normentity.Actor](normentity.ReasonUnsupported)
+		l.ClosedBy = entityCloser(l.ClosedAt, g.ClosedEvents)
 	}
 	if kind != normentity.KindChangeProposal {
 		return l
@@ -1134,6 +1238,24 @@ func entityLifecycle(kind normentity.Kind, state normentity.Field[normentity.Sta
 		l.MergedBy = entityActor(g.MergedBy)
 	}
 	return l
+}
+
+// entityCloser maps the actor of the entity's current close: the actor of
+// its most recent ClosedEvent, read in the same response, when that event
+// occurred at the entity's close time. Otherwise the event cannot be tied to
+// the current close (there may be none, or the close time is unresolved), so
+// the actor stays unknown rather than being inferred.
+func entityCloser(closedAt normentity.Field[normentity.Timestamp], events *gqlClosedEvents) normentity.Field[normentity.Actor] {
+	unresolved := normentity.Unknown[normentity.Actor](normentity.ReasonFailed)
+	at, ok := closedAt.Value()
+	if !ok || events == nil || len(events.Nodes) != 1 || events.Nodes[0].Typename != "ClosedEvent" {
+		return unresolved
+	}
+	ev := events.Nodes[0]
+	if t, ok := entityTimestamp(ev.CreatedAt).Value(); !ok || t != at {
+		return unresolved
+	}
+	return entityActor(ev.Actor)
 }
 
 func entityWorkItem(g *gqlEntityBase) normentity.Field[normentity.WorkItem] {
