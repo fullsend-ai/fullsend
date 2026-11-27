@@ -275,10 +275,21 @@ or later. For a ref on an older schema, install fails that repository with an
 error that names the entry, and `repos status` reports a block that is already
 in the installed file as `incompatible`.
 
+Entity-source configuration needs a ref that declares schema version 4. A
+managed configuration or installed file that declares `entity_sources`, an
+entity connection (a `connections` entry of kind `github`, `gitlab`, `forgejo`
+or `jira`, or a reserved provider name) or an agent entry's `entities:`
+bindings fails that repository with an error that names the setting when the
+ref declares schema version 3 or earlier. Upgrade `fullsend_ref` to a release
+that reads entity-source configuration, or remove the setting. `repos status`
+reports such a setting that is already in the installed file as
+`incompatible`.
+
 The pinned ref is looked up only when the managed configuration or the
-installed file declares `tracker`, `create_issues` or a `harness:` block on an
-agent entry, the only settings that known schemas read differently. Looking it
-up needs the upstream GitHub client.
+installed file declares `tracker`, `create_issues`, a `harness:` block on an
+agent entry, `entity_sources`, an entity connection or an agent entry's
+`entities:` bindings, the only settings that known schemas read differently.
+Looking it up needs the upstream GitHub client.
 When the ref or its schema cannot be determined (the ref does not resolve, no
 upstream client is available, or the ref declares a schema version this CLI
 does not know), install leaves `.fullsend/config.yaml` unchanged and fails that

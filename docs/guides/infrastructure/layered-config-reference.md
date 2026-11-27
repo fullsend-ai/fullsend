@@ -158,6 +158,7 @@ the overlay → base → code defaults chain.
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `connections` | `map[string]SecretConnection` | Per-name merge; a layer replaces a whole entry ([details](../../reference/config-reference.md#connections)) | `nil` (none) |
 | `secrets` | `map[string]SecretSource` | Per-name merge; a layer replaces a whole entry, including `vault_secrets` ([details](../../reference/config-reference.md#connections)) | `nil` (native sources) |
+| `entity_sources` | `map[string]EntitySource` | Per-name merge; a layer replaces a whole entry | `nil` (none) |
 | `artifacts.content` | `string` (nested) | Scalar override | `"all"` |
 | `artifacts.by_source` | `map[string]string` (nested) | Per-key merge | `nil` (no per-source levels) |
 | `progress.verbosity` | `string` (nested) | Scalar override | `"full"` |
@@ -219,6 +220,14 @@ agents:
 
 Precedence at run time: flag > env var > the agent's entry > repo-wide
 `runtime:` / harness default.
+
+An entry's `entities:` field (`AgentEntry.Entities`, an `EntityBindings` map
+from slot name to a list of entity source names) composes by slot name. An
+overlay that lists a slot replaces that slot's inherited list, including with
+an explicitly empty list. Slots the overlay does not list inherit from the
+parent, and an overlay entry with no `entities:` keeps the parent's bindings.
+The names refer to `native`, a reserved provider name, or an effective
+`entity_sources` entry.
 
 ### Scalar override fields
 

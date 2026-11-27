@@ -18,6 +18,27 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
 
+func TestLoadJiraPollSettings_ExplicitSourceKeepsURLValidation(t *testing.T) {
+	dir := writeJiraPollConfig(t, `tracker:
+  jira:
+    base_url: http://127.0.0.1:8080
+    project: PROJ
+    poll:
+      enabled: true
+entity_sources:
+  legacy_tracker:
+    projects: [PROJ]
+    query: ''
+agents:
+  - name: triage
+    entities:
+      source: [legacy_tracker]
+`)
+	_, err := loadJiraPollSettings(dir, "", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be an https URL")
+}
+
 func writeJiraPollConfig(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -47,11 +68,12 @@ func TestLoadJiraPollSettings_ReadsConfig(t *testing.T) {
 	got, err := loadJiraPollSettings(dir, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, jiraPollSettings{
-		baseURL: "https://example.atlassian.net",
-		apiURL:  "https://gateway.example.com",
-		project: "PROJ",
-		query:   `labels = "fullsend" ORDER BY updated DESC`,
-		enabled: true,
+		baseURL:  "https://example.atlassian.net",
+		apiURL:   "https://gateway.example.com",
+		projects: []string{"PROJ"},
+		query:    `labels = "fullsend" ORDER BY updated DESC`,
+		enabled:  true,
+		sources:  []string{config.LegacyTrackerName},
 	}, got)
 
 	// The poller gets the project as a one-item set and the query before
@@ -69,7 +91,7 @@ func TestLoadJiraPollSettings_Defaults(t *testing.T) {
 	assert.Equal(t, config.DefaultJiraAPIURL, got.apiURL)
 	assert.Equal(t, config.DefaultJiraPollQuery, got.query)
 	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done) ORDER BY updated DESC`,
-		config.ScopeJQLToProjects([]string{got.project}, got.query))
+		config.ScopeJQLToProjects(got.projects, got.query))
 	assert.False(t, got.enabled, "an omitted poll mapping leaves polling disabled")
 }
 
@@ -79,7 +101,7 @@ func TestLoadJiraPollSettings_QueryWithoutOrderBy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `labels = a OR labels = b`, got.query)
 	assert.Equal(t, `project = "PROJ" AND (labels = a OR labels = b)`,
-		config.ScopeJQLToProjects([]string{got.project}, got.query),
+		config.ScopeJQLToProjects(got.projects, got.query),
 		"an OR query stays inside the project scope")
 	assert.False(t, got.enabled)
 }
@@ -296,8 +318,129 @@ func TestLoadJiraPollSettings_InvalidRunLabelDoesNotBlockPolling(t *testing.T) {
 	settings, err := loadJiraPollSettings(dir, "", "", "")
 	require.NoError(t, err)
 	require.True(t, settings.enabled)
-	require.Equal(t, "PROJ", settings.project)
+	require.Equal(t, []string{"PROJ"}, settings.projects)
 	tracking, err := loadJiraTrackingSettings(dir, nil)
 	require.NoError(t, err)
 	require.Equal(t, "my label", tracking.RunLabel)
+}
+
+func TestLoadJiraPollSettings_EntitySourceProjects(t *testing.T) {
+	// An explicit source on the connection translated from tracker.jira keeps
+	// the existing credential lookup, so it may poll.
+	dir := writeJiraPollConfig(t, `tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    api_url: https://gateway.example.com
+    project: PROJ
+    poll:
+      enabled: true
+entity_sources:
+  legacy_tracker:
+    projects: [PROJ1, PROJ2]
+    query: 'statusCategory != Done'
+agents:
+  - name: triage
+    entities:
+      source: [legacy_tracker]
+`)
+	got, err := loadJiraPollSettings(dir, "", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, jiraPollSettings{
+		baseURL:  "https://example.atlassian.net",
+		apiURL:   "https://gateway.example.com",
+		projects: []string{"PROJ1", "PROJ2"},
+		query:    "statusCategory != Done",
+		enabled:  true,
+		sources:  []string{"legacy_tracker"},
+	}, got, "the entity source's projects list is the poller's whole set")
+	opts := jiraPollOptions(jiraPollArgs{jira: got}, &celMatcher{}, noJiraEnv)
+	assert.Equal(t, []string{"PROJ1", "PROJ2"}, opts.JiraProjects)
+	assert.Equal(t, `project in ("PROJ1", "PROJ2") AND (statusCategory != Done)`,
+		config.ScopeJQLToProjects(opts.JiraProjects, opts.JQL))
+}
+
+func TestLoadJiraPollSettings_EntitySourceErrors(t *testing.T) {
+	twoConnections := `connections:
+  ja:
+    kind: jira
+    base_url: https://example.atlassian.net
+  jb:
+    kind: jira
+    base_url: https://other.example.com
+entity_sources:
+  sa:
+    connection: ja
+    projects: [A]
+    query: ''
+  sb:
+    connection: jb
+    projects: [B]
+    query: ''
+agents:
+  - name: triage
+    entities:
+      source: [sa, sb]
+`
+	explicitConnection := `connections:
+  ja:
+    kind: jira
+    base_url: https://example.atlassian.net
+entity_sources:
+  sa:
+    connection: ja
+    projects: [A]
+    query: ''
+agents:
+  - name: triage
+    entities:
+      source: [sa]
+`
+	differingBindings := enabledJiraPollConfig + `entity_sources:
+  legacy_tracker:
+    projects: [PROJ, OTHER]
+    query: ''
+agents:
+  - name: triage
+    entities:
+      source: [legacy_tracker]
+  - name: code
+    entities:
+      source: []
+`
+	for name, tc := range map[string]struct{ body, wantErr string }{
+		"unknown binding":     {"agents:\n  - name: triage\n    entities:\n      source: [missing]\n", "invalid entity-source configuration"},
+		"two connections":     {twoConnections, "one Jira connection per cycle"},
+		"explicit connection": {explicitConnection, "no separately provisioned credential binding"},
+		"differing bindings":  {differingBindings, "does not yet apply per-agent source bindings"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadJiraPollSettings(writeJiraPollConfig(t, tc.body), "", "", "")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestLoadJiraPollSettings_ShadowDiagnostics(t *testing.T) {
+	dir := writeJiraPollConfig(t, enabledJiraPollConfig+`entity_sources:
+  legacy_tracker:
+    projects: [PROJ, OTHER]
+    query: ''
+agents:
+  - name: triage
+    entities:
+      source: [legacy_tracker]
+`)
+	var diags []string
+	got, err := loadJiraPollSettings(dir, "", "", "", func(s string) { diags = append(diags, s) })
+	require.NoError(t, err)
+	assert.Equal(t, []string{"PROJ", "OTHER"}, got.projects)
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0], "entity_sources.legacy_tracker replaces")
+
+	cmd := &cobra.Command{}
+	var stderr strings.Builder
+	cmd.SetErr(&stderr)
+	stderrDiag(cmd)("hello")
+	assert.Equal(t, "WARNING: hello\n", stderr.String())
 }

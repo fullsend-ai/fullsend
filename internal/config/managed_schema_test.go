@@ -208,3 +208,34 @@ func TestCheckManagedConfigSchemaCompat(t *testing.T) {
 	require.ErrorContains(t, CheckManagedConfigSchemaCompat(block, ManagedConfigSchemaTrackerMapping), `harness: block on the agents entry "review"`)
 	require.Error(t, CheckManagedConfigSchemaCompat(block, ManagedConfigSchemaLegacy))
 }
+
+// A schema before entity-source configuration fails on any entity key and
+// still renders a harness: block for the agent-harness schema.
+func TestRenderManagedConfigSchemaEntitySources(t *testing.T) {
+	for in, key := range map[string]string{
+		"entity_sources:\n  s:\n    connection: j\n    projects: [A]\n    query: ''\n":      "entity_sources",
+		"connections:\n  j:\n    kind: jira\n    base_url: https://example.atlassian.net\n": "connections.j",
+		"connections:\n  github:\n    base_url: https://github.example.com\n":               "connections.github",
+		"agents:\n  - name: code\n    entities:\n      source: [native]\n":                  `agents entry "code" entities`,
+	} {
+		for _, v := range []int{ManagedConfigSchemaAgentHarness, ManagedConfigSchemaTrackerMapping, ManagedConfigSchemaLegacy} {
+			_, err := RenderManagedConfigSchema([]byte(in), v)
+			require.ErrorContains(t, err, key+" cannot be expressed", "schema %d", v)
+			require.ErrorContains(t, CheckManagedConfigSchemaCompat([]byte(in), v), key, "schema %d", v)
+		}
+		out, err := RenderManagedConfigSchema([]byte(in), ManagedConfigSchemaVersion)
+		require.NoError(t, err)
+		assert.Equal(t, in, string(out))
+		require.NoError(t, CheckManagedConfigSchemaCompat([]byte(in), ManagedConfigSchemaVersion))
+		assert.True(t, ManagedConfigSchemaDependent([]byte(in)))
+	}
+	vault := []byte("connections:\n  v:\n    kind: vault\n    vault_address: https://vault.example.com\n")
+	out, err := RenderManagedConfigSchema(vault, ManagedConfigSchemaAgentHarness)
+	require.NoError(t, err)
+	assert.Equal(t, vault, out, "a secret-service connection is readable by older schemas")
+	block := []byte("agents:\n  - name: review\n    harness: { timeout_minutes: 30 }\n")
+	out, err = RenderManagedConfigSchema(block, ManagedConfigSchemaAgentHarness)
+	require.NoError(t, err)
+	assert.Equal(t, block, out)
+	require.NoError(t, CheckManagedConfigSchemaCompat(block, ManagedConfigSchemaAgentHarness))
+}

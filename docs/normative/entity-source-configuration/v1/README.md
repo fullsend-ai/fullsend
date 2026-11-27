@@ -6,8 +6,12 @@ It applies to effective per-repository configuration, including managed
 `repos.yaml` layers. MUST, SHOULD, and MAY express requirements for conforming
 implementations.
 
-**Target contract, not implemented:** existing configuration continues to use
-`tracker`. This document is not the complete discovery/query wire protocol,
+**Implementation status:** the configuration model, its validation, the
+legacy `tracker` translation, and the Jira poller's use of the resolved
+model are implemented in `internal/config` (`ResolveEntityConfig`). Other
+consumers, harness `entity_kinds`/`entity_filters` fields, and
+entity-driven execution are not implemented yet. Existing configuration
+continues to use `tracker`. This document is not the complete discovery/query wire protocol,
 normalized-entity specification, or authorization contract. Those contracts,
 provider conformance, and context support are prerequisites for entity-driven
 execution, as required by ADR 0079.

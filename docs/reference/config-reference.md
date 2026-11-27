@@ -151,6 +151,19 @@ secrets:                             # Source selection for eligible runner secr
       - kv/data/fullsend/repositories/{{repo.host}}/{{repo.full_name}}/jira
       - kv/data/fullsend/organizations/{{repo.host}}/{{org}}/shared/jira
 
+# ── Entity sources (ADR 0079) ────────────────────────────────
+# connections also holds entity provider connections:
+#   jira1: {kind: jira, base_url: https://example.atlassian.net}
+entity_sources:                      # Named entity scopes on entity connections
+  jira_work:
+    connection: jira1                # Defaults to the connection named like the source
+    projects: [PROJ1, PROJ2]         # Jira: required, nonempty
+    query: 'statusCategory != Done'  # Required; '' adds no filter (GitHub, Jira)
+    discovery: true                  # Default true
+# agents[].entities binds harness slots to source lists, for example
+#   - name: triage
+#     entities: {source: [native, jira_work]}
+
 # ── Run artifacts ────────────────────────────────────────────
 artifacts:
   content: all                       # Every run: all (default) | metadata | none
@@ -450,8 +463,13 @@ execution platform. Provider-default connections (`github`, `gitlab`, `forgejo`)
 can override its instance, including GitHub.com to GitHub Enterprise. Reserved
 provider source names select queries and repository scopes and can be explicitly
 bound; defining a source named `native` is forbidden.
-These fields and the translation are not implemented yet; the current supported
-configuration remains the `tracker` mapping documented below.
+The configuration model is implemented: see [`connections`](#connections),
+[`entity_sources`](#entity_sources), and `agents[].entities` (under
+`entity_sources`). Fullsend translates the effective
+`tracker` setting in memory into the same canonical model (see
+[Legacy `tracker` translation](#legacy-tracker-translation)), so `tracker`
+keeps working. The Jira poller reads the canonical model; other `tracker`
+consumers still read `tracker` directly until they are ported.
 
 The issue tracker, as a single provider-discriminated mapping. `tracker` holds
 at most one provider block — `github`, `gitlab`, or `jira` — and the block that
@@ -584,8 +602,22 @@ expires. Other unknown keys under
 rejected too.
 
 `fullsend poll --input-driver jira-poll` reads the Jira site, API gateway,
-project, and query only from the effective `tracker.jira` config, so it
-requires `base_url` and `project`. The removed `--jira-url`,
+project set, and query only from the effective entity-source configuration.
+A `tracker.jira` block with `base_url` and `project` becomes a one-project
+scope, and its `poll.enabled` decides whether the poller runs. Alternatively,
+the poller polls each Jira [entity source](#entity_sources) with `discovery`
+enabled that an enabled agent binds in its `entities.source` list, and passes
+the source's whole `projects` list to the search. Sources bound only to other
+slots are not polled. The selected sources must share one Jira connection
+and one query, and their projects are combined. Sources with different
+connections or queries fail as unsupported. The poller reuses the job's Jira
+credentials only for the connection translated from `tracker.jira`, so a
+selected source on an explicit Jira connection is refused. Configure the
+source on the `legacy_tracker` connection instead. Because the poller
+applies one merged scope and does not yet apply each agent's own
+`entities.source` binding, every enabled agent must bind the same
+`entities.source` list when explicit sources are selected. Agents whose lists
+differ, or that have no `entities.source` list, fail as unsupported. The removed `--jira-url`,
 `--jira-project`, and `--jql` flags are rejected, and environment variables
 such as `JIRA_BASE_URL` are not read. The poller authenticates with the
 shared Jira client: `FULLSEND_JIRA_TOKEN` is required and
@@ -1142,12 +1174,18 @@ Model configuration, currently containing only `aliases`.
 ### `connections`
 
 Named connections to secret services that runner secrets can select
-([ADR 0155](../ADRs/0155-configure-vault-backed-runner-secrets.md)). Each key
-is an arbitrary alias of letters, digits, `_`, `.`, and `-`. `native` is a
-reserved built-in name and cannot be declared.
+([ADR 0155](../ADRs/0155-configure-vault-backed-runner-secrets.md)), and to
+entity providers that [`entity_sources`](#entity_sources) use
+([ADR 0079](../ADRs/0079-bind-entity-execution-through-named-sources.md)).
+Each key is an arbitrary alias of letters, digits, `_`, `.`, and `-`. `native`
+is a reserved built-in name and cannot be declared.
 
-- **`kind`** — Required. The only supported value is `vault`. A missing or
-  unknown kind is a validation error.
+- **`kind`** — Required. One of `vault`, `github`, `gitlab`, or `jira`. A
+  missing or unknown kind is a validation error. The reserved
+  provider-default names `github`, `gitlab`, and `forgejo` imply their kind,
+  and an explicit `kind` must match. `forgejo` is reserved, but its entity
+  adapter is not enabled. A secret cannot select an entity connection, and an
+  entity source cannot use a `vault` connection.
 - **`vault_address`** — Required for `kind: vault`. The Vault API base URL. It
   must use `https` and must not contain user information, a query, or a
   fragment.
@@ -1164,6 +1202,86 @@ The defaults do not grant access. The Vault role must bind the expected issuer
 and the trusted repository and workflow identity, and its policy must limit the
 short-lived token to the required paths. There is no static `VAULT_TOKEN` or
 AppRole fallback.
+
+Entity connections (`github`, `gitlab`, `jira`) accept these fields instead
+of the `vault_*` fields:
+
+- **`base_url`** — The provider instance URL, or the Jira site URL. It must
+  use `https` and must not contain credentials, a query, or a fragment.
+  Required for `kind: jira`. The configuration origin's provider-default
+  connection uses the clone host when `base_url` is omitted.
+- **`api_url`** — Jira only. The Jira API gateway. Defaults to
+  `https://api.atlassian.com`.
+- **`allowed_targets`** — The connection's work-item creation policy:
+  `orgs` and `repos` for GitHub, `groups` and `repos` for GitLab, or
+  `projects` for Jira. If you omit it, the connection grants no extra
+  destinations.
+
+### `entity_sources`
+
+Named entity scopes on entity connections, as defined by the
+[entity-source configuration contract](../normative/entity-source-configuration/v1/).
+Entries merge by name across layers, and a more-specific layer replaces the
+whole entry. `native` cannot be defined. An entry must not declare `kind`,
+because each consuming harness slot supplies the kind. Unknown fields are
+rejected.
+
+- **`connection`** — A `connections` entry with an entity kind. If you omit
+  it, the source uses the connection with the source's own name. The reserved
+  sources `github`, `gitlab`, and `forgejo` can use only their same-named
+  connection.
+- **`projects`** — Jira only. A required, nonempty list of distinct project
+  keys.
+- **`repositories`** — Forge sources only. Canonical repository paths. You
+  can omit it only when the source resolves to the configuration origin's
+  provider-default connection, in which case the scope is the clone's
+  repository.
+- **`query`** — Required. GitHub accepts the contract's issue/PR search subset
+  (for example `is:open -label:blocked`), and `''` adds no filter. GitLab
+  accepts `open`, `closed`, or `all`. Jira accepts JQL with balanced
+  parentheses, which is always scoped to the source's projects.
+- **`discovery`** — Defaults to `true`. It permits polling only when an agent
+  binds the source in its primary `source` slot.
+
+An unbound reserved entry for a provider other than the configuration
+origin's is an inert preset. Unsupported providers or kinds are reported as
+errors and are never treated as empty discovery.
+
+#### `agents[].entities`
+
+Binds an agent's harness entity slots to lists of scope names: an
+`entity_sources` entry, a reserved provider name, or `native`, which resolves
+to the configuration origin's provider source. Every value must be a list,
+even for one name. Bindings compose by slot name across layers: an explicit
+list replaces that slot's inherited list, and omitted slots inherit. After
+composition, a missing `source` becomes `[native]` and a missing `target`
+copies the effective source list. Additional slots need an explicit,
+nonempty list. Every name must support the slot's kind, so a Jira source used
+with a change-proposal target needs an explicit `target: [native]`. Only the
+`source` slot schedules work.
+
+#### Legacy `tracker` translation
+
+The effective `tracker` block, after its whole-block layering, is translated
+in memory. Nothing is rewritten on disk:
+
+- Every provider block becomes a `legacy_tracker` connection that carries the
+  block's `allowed_targets`. A Jira block also carries its `base_url` and
+  `api_url`, and its primary `project` stays an implicit creation grant.
+- A complete `tracker.jira` block also becomes a `legacy_tracker` source with
+  `projects: [<project>]`, the poll query (or its default), and
+  `discovery` set from `poll.enabled`. A provider-only block creates no
+  source, and an incomplete Jira block keeps its existing use-time error.
+- Explicit `connections.legacy_tracker` or `entity_sources.legacy_tracker`
+  entries replace the translated ones, and the poller prints a warning to
+  stderr that names the shadowed setting.
+- Translation adds no agent bindings and does not change event-only
+  behavior.
+
+**Compatibility.** `entity_sources`, entity connection kinds, and
+`agents[].entities` need a Fullsend release that reads managed configuration
+schema 4. `fullsend repos` refuses to render them for a repository whose
+`fullsend_ref` reads an older schema.
 
 ### `secrets`
 

@@ -32,15 +32,26 @@ func VaultEligibleSecretNames() []string {
 }
 
 // SecretConnection is one entry of the top-level connections mapping: a
-// named connection to a secret service. Kind is required; the vault_*
-// fields are valid only with kind: vault.
+// named connection to a secret service (ADR 0155) or to an entity provider
+// (entity-source configuration v1); both share the registry. Kind is
+// required, except on the reserved provider-default names github, gitlab
+// and forgejo, where it is implied and an explicit kind must agree. The
+// vault_* fields are valid only with kind: vault; base_url, api_url (Jira
+// only) and allowed_targets only with an entity kind.
 type SecretConnection struct {
-	Kind           string `yaml:"kind"`
+	Kind           string `yaml:"kind,omitempty"`
 	VaultAddress   string `yaml:"vault_address,omitempty"`
 	VaultNamespace string `yaml:"vault_namespace,omitempty"`
 	VaultAuthPath  string `yaml:"vault_auth_path,omitempty"`
 	VaultRole      string `yaml:"vault_role,omitempty"`
 	VaultAudience  string `yaml:"vault_audience,omitempty"`
+
+	// BaseURL is the provider instance (forge) or Jira site URL.
+	BaseURL string `yaml:"base_url,omitempty"`
+	// APIURL is the Jira API gateway URL; empty means DefaultJiraAPIURL.
+	APIURL string `yaml:"api_url,omitempty"`
+	// AllowedTargets is the connection's work-item creation policy.
+	AllowedTargets *ConnectionAllowedTargets `yaml:"allowed_targets,omitempty"`
 }
 
 // SecretSource is one entry of the top-level secrets mapping: the
@@ -164,6 +175,9 @@ func validateSecretSources(conns map[string]SecretConnection, secrets map[string
 			}
 			kind = conn.Kind
 		}
+		if conn, ok := conns[s.Connection]; ok && (isEntityConnectionKind(conn.Kind) || (conn.Kind == "" && isReservedProvider(s.Connection))) {
+			return fmt.Errorf("secrets.%s: connection %q is an entity provider connection, not a secret service", name, s.Connection)
+		}
 		if kind != SecretConnectionKindVault {
 			if len(s.VaultSecrets) > 0 {
 				return fmt.Errorf("secrets.%s: vault_secrets is valid only when the selected connection has kind: vault", name)
@@ -190,12 +204,24 @@ func validateSecretConnection(name string, c SecretConnection) error {
 	if !connectionNameRe.MatchString(name) {
 		return fmt.Errorf("connections: invalid connection name %q", name)
 	}
-	switch c.Kind {
-	case "":
+	kind := c.Kind
+	if isReservedProvider(name) {
+		if kind != "" && kind != name {
+			return fmt.Errorf("connections.%s: a reserved provider-default connection has kind %s; got kind %q", name, name, kind)
+		}
+		kind = name
+	}
+	switch {
+	case kind == "":
 		return fmt.Errorf("connections.%s: kind is required", name)
-	case SecretConnectionKindVault:
+	case kind == SecretConnectionKindVault:
+	case isEntityConnectionKind(kind):
+		return validateEntityConnection(name, kind, c)
 	default:
-		return fmt.Errorf("connections.%s: unknown kind %q: must be %s", name, c.Kind, SecretConnectionKindVault)
+		return fmt.Errorf("connections.%s: unknown kind %q: must be one of %s, %s, %s, %s", name, c.Kind, SecretConnectionKindVault, ConnectionKindGitHub, ConnectionKindGitLab, ConnectionKindJira)
+	}
+	if c.BaseURL != "" || c.APIURL != "" || c.AllowedTargets != nil {
+		return fmt.Errorf("connections.%s: base_url, api_url and allowed_targets are valid only with an entity connection kind (github, gitlab, or jira)", name)
 	}
 	if c.VaultAddress == "" {
 		return fmt.Errorf("connections.%s: vault_address is required for kind: vault", name)

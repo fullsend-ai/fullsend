@@ -7,4 +7,6 @@
 # groups_from and accounts_from (#9132) did not increment it, although older
 # releases reject them: install and status refuse them for an older ref with
 # checkJiraAuthorizationEnvSupport (internal/repos/jira_poll.go).
-3
+# 4 adds entity-source configuration v1 (#9884): entity_sources, entity
+# connection kinds, and agents[].entities bindings.
+4

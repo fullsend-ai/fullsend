@@ -63,6 +63,7 @@ type ConfigReader interface {
 type PerRepoConfigReader interface {
 	ConfigReader
 	SecretSourcesReader
+	EntitySourcesReader
 	ConfigRoles() []string
 	ConfigRuntime() string
 	ConfigForge() string
@@ -272,6 +273,11 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 					merged.inheritedHarness = append(slices.Clone(merged.inheritedHarness), merged.Harness)
 				}
 				merged.Harness = oi.entry.Harness
+			}
+			// entities: compose by slot name; an explicit list replaces
+			// that slot's inherited list.
+			if oi.entry.Entities != nil {
+				merged.Entities = composeEntityBindings(merged.Entities, oi.entry.Entities)
 			}
 		}
 		result = append(result, merged)

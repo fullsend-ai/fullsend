@@ -450,6 +450,7 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	out.TraceContextBlock = cloneTraceContext(src.TraceContextBlock)
 	out.Connections = cloneSecretConnections(src.Connections)
 	out.Secrets = cloneSecretSources(src.Secrets)
+	out.EntitySources = cloneEntitySources(src.EntitySources)
 	return out
 }
 
@@ -460,6 +461,7 @@ func cloneSecretConnections(in map[string]SecretConnection) map[string]SecretCon
 	}
 	out := make(map[string]SecretConnection, len(in))
 	for k, v := range in {
+		v.AllowedTargets = v.AllowedTargets.clone()
 		out[k] = v
 	}
 	return out
@@ -600,7 +602,7 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		if out.Connections == nil {
 			out.Connections = make(map[string]SecretConnection, len(child.Connections))
 		}
-		for k, v := range child.Connections {
+		for k, v := range cloneSecretConnections(child.Connections) {
 			out.Connections[k] = v
 		}
 	}
@@ -610,6 +612,15 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		}
 		for k, v := range cloneSecretSources(child.Secrets) {
 			out.Secrets[k] = v
+		}
+	}
+	// Entity sources merge by name like connections.
+	if len(child.EntitySources) > 0 {
+		if out.EntitySources == nil {
+			out.EntitySources = make(map[string]EntitySource, len(child.EntitySources))
+		}
+		for k, v := range cloneEntitySources(child.EntitySources) {
+			out.EntitySources[k] = v
 		}
 	}
 }
@@ -680,6 +691,7 @@ func cloneAgentEntries(in []AgentEntry) []AgentEntry {
 			out[i].Subagents = m
 		}
 		out[i].Harness = a.Harness.clone()
+		out[i].Entities = a.Entities.clone()
 		out[i].inheritedHarness = cloneAgentHarnesses(a.inheritedHarness)
 	}
 	return out

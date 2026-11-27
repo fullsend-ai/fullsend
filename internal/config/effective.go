@@ -85,6 +85,12 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 	if secrets := r.ConfigSecrets(); len(secrets) > 0 {
 		out["secrets"] = secrets
 	}
+	// Entity sources decide what the Jira poller and entity bindings select;
+	// the view shows the explicit entries (sources translated from tracker
+	// remain visible under tracker).
+	if sources := r.ConfigEntitySources(); len(sources) > 0 {
+		out["entity_sources"] = sources
+	}
 	if tc := r.TraceContext(); tc != nil {
 		out["trace_context"] = tc
 	}
