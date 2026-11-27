@@ -67,7 +67,7 @@ func useFakeGitHubGraphQL(t *testing.T, entityNodeID string, comments map[string
 		var req struct {
 			Variables map[string]any `json:"variables"`
 		}
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		w.Header().Set("Content-Type", "application/json")
 		if _, ok := req.Variables["number"]; ok {
 			typ := "Issue"

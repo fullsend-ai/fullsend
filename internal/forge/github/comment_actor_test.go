@@ -38,7 +38,7 @@ func graphqlServer(t *testing.T, status int, body string) (*LiveClient, *graphql
 		rec.header = r.Header.Clone()
 		rec.mu.Unlock()
 		var req map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))

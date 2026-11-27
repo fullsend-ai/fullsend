@@ -87,7 +87,7 @@ func TestBotRoleCmd_PrintsRegisteredRole(t *testing.T) {
 		assert.Equal(t, http.MethodPost, r.Method, "the comment must travel in a request body, never a query string")
 		assert.Equal(t, "Bearer helper-bearer-token", r.Header.Get("Authorization"))
 		var body map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Equal(t, testEntityID, body["entity"], "the request must carry the entity the script named")
 		assert.Equal(t, testCommentID, body["comment"], "the request must carry the comment the script asked about")
 		assert.NotContains(t, body, "login", "the question is the comment's, not a login's")
