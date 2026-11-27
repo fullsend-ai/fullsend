@@ -206,7 +206,7 @@ See [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md).
 
 **`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). An unsuccessful iteration may be retried; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
-**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory. The probe runs in a minimal allowlisted environment: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables declared under `env.runner`/`runner_env` — nothing else is inherited from the process environment. Credential names (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GITLAB_TOKEN`, the minted role tokens `PUSH_TOKEN` and `REVIEW_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_FETCH_TOKEN`, `FULLSEND_GITLAB_*` role tokens, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the OIDC/trigger/runner-secret names) are excluded even when declared under `env.runner`. Plain `${VAR}` references are validated and expanded before the command runs: a plain reference to a name outside the allowlisted environment fails the run before any shell executes, naming the variable (never its value) and pointing to the allowlist and the `env.runner` declaration channel. Non-plain brace forms such as `${VAR:-default}` are not validated and silently expand to empty rather than failing the run. On failure or timeout, diagnostics carry only redacted command text and output. When the command contains no `${...}` reference, bare `$VAR` references are left to the shell, where every non-allowlisted name is unset; once a brace reference is present, bare references are also resolved against the preflight environment before the shell runs, and a bare reference to a name outside it expands to empty, matching the shell's unset semantics.
+**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory. The probe runs in a minimal allowlisted environment: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables declared under `env.runner`/`runner_env` — nothing else is inherited from the process environment. Credential names (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GITLAB_TOKEN`, the minted role tokens `PUSH_TOKEN` and `REVIEW_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_FETCH_TOKEN`, `FULLSEND_GITLAB_*` role tokens, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the OIDC/trigger/runner-secret names) are excluded even when declared under `env.runner`. The runner-owned bot-role helper names `FULLSEND_BOT_ROLE_URL`, `FULLSEND_BOT_ROLE_TOKEN` and `FULLSEND_ENTITY_ID` are excluded the same way even though they are not all credentials: a harness-declared value for them must not reach a preflight command (see [Bring your own agent](../guides/user/bring-your-own-agent.md#resolving-a-comments-bot-role)). Plain `${VAR}` references are validated and expanded before the command runs: a plain reference to a name outside the allowlisted environment fails the run before any shell executes, naming the variable (never its value) and pointing to the allowlist and the `env.runner` declaration channel. Non-plain brace forms such as `${VAR:-default}` are not validated and silently expand to empty rather than failing the run. On failure or timeout, diagnostics carry only redacted command text and output. When the command contains no `${...}` reference, bare `$VAR` references are left to the shell, where every non-allowlisted name is unset; once a brace reference is present, bare references are also resolved against the preflight environment before the shell runs, and a bare reference to a name outside it expands to empty, matching the shell's unset semantics.
 
 **`env.runner`** — Variables passed to host-side scripts (`pre_script`, `post_script`,
 and `validation_loop.script`), layered over the `fullsend run`
@@ -218,10 +218,22 @@ process environment.) These names are **not** inherited from that environment:
   `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`;
 - the reserved names `JIRA_TOKEN` and `JIRA_USER_EMAIL`;
 - the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_*_HEADERS`
-  (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`).
+  (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`);
+- the runner-owned bot-role helper names `FULLSEND_BOT_ROLE_URL`,
+  `FULLSEND_BOT_ROLE_TOKEN` and `FULLSEND_ENTITY_ID`, which only `fullsend run`
+  itself sets, when it starts the helper for a `pre_script`/`post_script` (see
+  [Bring your own agent](../guides/user/bring-your-own-agent.md#resolving-a-comments-bot-role)):
+  an inherited value — an outer run's helper, or a workflow-level environment
+  variable — must not answer lookups for a run whose own helper did not start.
 
-A script receives one only when the harness declares it under `env.runner`, for example
-`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`. A script that reads the `JIRA_*` names gets them
+A script receives the Jira secrets, the reserved Jira names and the OTLP headers only when the
+harness declares them under `env.runner`, for example
+`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`. The bot-role helper names are the exception: an
+`env.runner` entry with a literal value for one is dropped, and `fullsend run` injects the names
+itself when it starts the helper, so declaring one delivers nothing. A `${...}` reference to
+`FULLSEND_BOT_ROLE_URL` or `FULLSEND_BOT_ROLE_TOKEN` also fails run validation (and
+`fullsend lint`) instead of resolving, because the pair is denied at every harness expansion
+site. A script that reads the `JIRA_*` names gets them
 mapped from the Jira repository secrets: `JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`,
 `JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"`. `fullsend run` itself still reads these names for its
 own Jira client and trace export. Earlier releases passed them to every script. See
@@ -241,6 +253,18 @@ Outside `env.runner`, the Jira repository secrets expand as follows:
 - **Provider credential values:** `${FULLSEND_JIRA_TOKEN}` expands, because credential values
   reach only the provider proxy and never the sandbox. `FULLSEND_JIRA_EMAIL`,
   `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` expand empty.
+
+The runner-owned bot-role helper names `FULLSEND_BOT_ROLE_URL` and
+`FULLSEND_BOT_ROLE_TOKEN` expand empty at the same sandbox-bound sites
+(`env.sandbox` values, expanded `host_files` content, `FULLSEND_OUTPUT_FILE`),
+in provider values, and in `env.runner` and `runner_env` values: a nested
+`fullsend run` started by a pre- or post-script inherits the outer run's
+helper variables in its process environment, and the alias path — a different
+`env.sandbox` key, staged host-file content, or an `env.runner`/`runner_env`
+entry referencing them — must not carry the outer run's helper credential to
+the inner agent. At the `env.runner` and `runner_env` sites the reference
+fails run validation (and `fullsend lint`) instead of resolving to an empty
+string, the same fail-closed refusal the OIDC credential names get.
 
 For a Jira-sourced run, `fullsend run` sets three connection variables before env expansion,
 replacing any inherited value:
@@ -610,6 +634,9 @@ sandbox environment, case-insensitively:
   `FULLSEND_WEBHOOK_SECRET`, the trace-context signing key
   `FULLSEND_TRACE_SIGNING_KEY`, `FULLSEND_INFERENCE_GATEWAY_API_KEY`,
   `FULLSEND_OPENAI_API_KEY`, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, the
+  bot-role helper's loopback address and bearer token
+  (`FULLSEND_BOT_ROLE_URL`, `FULLSEND_BOT_ROLE_TOKEN`, which go to host-side
+  scripts, never the sandbox), the
   runner-secret bundle and its staging path (`FULLSEND_GITHUB_RUNNER_SECRETS`,
   `FULLSEND_GITHUB_RUNNER_SECRETS_FILE`), the GitLab CI ID token a Vault
   connection authenticates with (`FULLSEND_VAULT_ID_TOKEN`), and the GitHub Actions OpenID Connect

@@ -256,6 +256,12 @@ type FakeClient struct {
 	// App client IDs for GetAppClientID
 	AppClientIDs map[string]string // key: app slug → client ID
 
+	// IssueOrPullRequestNodeIDs maps "owner/repo/number" → node for
+	// GetIssueOrPullRequestNodeID.
+	IssueOrPullRequestNodeIDs map[string]IssueOrPullRequestNode
+	// CommentActors maps a comment node ID → its actor for GetCommentActor.
+	CommentActors map[string]CommentActor
+
 	// CollaboratorPermissions maps "owner/repo/username" → role_name for GetCollaboratorPermission.
 	CollaboratorPermissions map[string]string
 	// CollaboratorPermissionDetails maps "owner/repo/username" → raw API fields
@@ -2430,6 +2436,39 @@ func (f *FakeClient) GetAppClientID(_ context.Context, slug string) (string, err
 		}
 	}
 	return "", fmt.Errorf("%w: app %s", ErrNotFound, slug)
+}
+
+func (f *FakeClient) GetIssueOrPullRequestNodeID(_ context.Context, owner, repo string, number int) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetIssueOrPullRequestNodeID"); e != nil {
+		return "", "", e
+	}
+
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	if f.IssueOrPullRequestNodeIDs != nil {
+		if n, ok := f.IssueOrPullRequestNodeIDs[key]; ok {
+			return n.Typename, n.NodeID, nil
+		}
+	}
+	return "", "", fmt.Errorf("%w: %s", ErrNotFound, key)
+}
+
+func (f *FakeClient) GetCommentActor(_ context.Context, commentID string) (CommentActor, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetCommentActor"); e != nil {
+		return CommentActor{}, e
+	}
+
+	// CommentActor holds no slices, maps or pointers, so the value is a
+	// copy of the stored entry.
+	if a, ok := f.CommentActors[commentID]; ok {
+		return a, nil
+	}
+	return CommentActor{}, fmt.Errorf("%w: comment %s", ErrNotFound, commentID)
 }
 
 func (f *FakeClient) GetCollaboratorPermission(_ context.Context, owner, repo, username string) (string, error) {

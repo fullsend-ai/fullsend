@@ -2586,6 +2586,65 @@ func TestSandboxDeniedKeys_VaultEligibleStandaloneSecrets(t *testing.T) {
 	}
 }
 
+// TestSandboxDeniedKeys_BotRoleHelperVars verifies that the bot-role helper's
+// runner-owned address and credential cannot be aliased into sandbox-bound
+// sites by ${VAR} expansion (#9602). The literal env.sandbox names are
+// reserved, so the leak path is a nested fullsend run: a pre- or post-script
+// that starts one inherits the outer run's helper variables in its process
+// environment, and the nested harness could otherwise expand them into a
+// different env.sandbox key or staged host-file content — or copy the outer
+// token into its own env.runner or runner_env entry under a different name.
+func TestSandboxDeniedKeys_BotRoleHelperVars(t *testing.T) {
+	t.Setenv("FULLSEND_BOT_ROLE_URL", "http://127.0.0.1:1/bot-role")
+	t.Setenv("FULLSEND_BOT_ROLE_TOKEN", "outer-run-helper-token")
+
+	for _, key := range []string{"FULLSEND_BOT_ROLE_URL", "FULLSEND_BOT_ROLE_TOKEN"} {
+		value := os.Getenv(key)
+		assert.True(t, sandboxDeniedKeys[key], key)
+		assert.True(t, isBotRoleHelperEnvKey(key), key)
+
+		// A nested run's env.sandbox cannot alias the inherited value
+		// under another key.
+		assert.Equal(t, "x--y", expandSandboxEnvValue("x-${"+key+"}-y", harnessEnvExpand))
+		assert.NotContains(t, expandSandboxEnvValue("${"+key+"}", harnessEnvExpand), value)
+		// Expanded host_files content refuses it too.
+		assert.NotContains(t, shellSafeExpandEnv("export V=\"${"+key+"}\""), value)
+		// FULLSEND_OUTPUT_FILE, the runner entry exported verbatim into
+		// the sandbox, cannot carry it either.
+		got := expandRunnerEntry("FULLSEND_OUTPUT_FILE", "out-${"+key+"}.json", harnessEnvExpand)
+		assert.Equal(t, "out-.json", got)
+		assert.NotContains(t, got, value)
+		// env.runner and runner_env entries cannot copy it under a
+		// different name: the reference expands empty and fails
+		// runner_env validation.
+		assert.True(t, harnessExpansionDenied(key), "env.runner must refuse %s", key)
+		assert.Empty(t, harnessEnvExpand(key), "env.runner must refuse %s", key)
+		_, ok := harnessEnvLookup(key)
+		assert.False(t, ok, "runner_env validation must refuse %s", key)
+		assert.Empty(t, expandRunnerEntry("LEAKED", "${"+key+"}", harnessEnvExpand))
+		// A reference under a different runner_env or env.runner key
+		// fails validation outright (the lookup returns false, so
+		// ValidateRunnerEnvWith reports the name as unset), while a
+		// literal value still validates: the entry is dropped from the
+		// script environment later, not rejected here.
+		refEnv := &harness.Harness{RunnerEnv: map[string]string{"LEAKED": "${" + key + "}"}}
+		err := refEnv.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), key)
+		refRunner := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"LEAKED": "${" + key + "}"}}, RunnerEnv: map[string]string{key: "outer-value"}}
+		err = refRunner.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), key)
+		literal := &harness.Harness{RunnerEnv: map[string]string{key: "outer-value"}}
+		require.NoError(t, literal.ValidateRunnerEnvWith(harnessEnvLookup))
+	}
+
+	// Unrelated variables keep expanding at the same sites.
+	t.Setenv("OTHER_VAR", "kept")
+	assert.Equal(t, "kept", expandSandboxEnvValue("${OTHER_VAR}", harnessEnvExpand))
+	assert.Equal(t, "kept", expandRunnerEntry("LEAKED", "${OTHER_VAR}", harnessEnvExpand))
+}
+
 // TestExpandRunnerEntry_OutputFileRefusesJiraSecrets verifies that
 // FULLSEND_OUTPUT_FILE, the runner entry exported verbatim into the sandbox,
 // cannot carry the Jira repository secrets from runner_env or env.runner,

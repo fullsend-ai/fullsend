@@ -934,6 +934,99 @@ untrusted input:
 - **Limit string lengths** in the JSON schema (`maxLength`) to prevent
   resource exhaustion when posting to external APIs.
 
+#### Resolving a comment's bot role
+
+Pre- and post-scripts often need to know whether a comment was written by a
+registered Fullsend bot — for example, to trust an earlier triage or review
+analysis only when a registered triage or review bot wrote it. Do not
+recognise bots by their GitHub App name or login spelling: anyone who can
+register an App with a matching slug passes that check, and on GitLab and
+Jira one account can post for several roles. Ask for the
+[ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)
+bot role of the comment instead:
+
+```bash
+# $comment_id is the comment's GraphQL node ID, e.g. "IC_kwDO…"
+if ! ROLE=$(fullsend bot-role --entity "$FULLSEND_ENTITY_ID" --comment "$comment_id"); then
+  # The lookup could not be completed (forge or mint unreachable, the
+  # comment is not on this run's entity, no trusted lookup on this forge,
+  # or the command ran outside a fullsend run). Fail closed: treat the
+  # comment's author as unknown.
+  echo "::error::Bot-role lookup failed; failing closed."
+  exit 1
+fi
+
+case "$ROLE" in
+  triage)  # written by a registered bot with the triage role — trust it
+    ;;
+  review)  # written by a registered bot with the review role
+    ;;
+  no_match)
+    # The lookup completed: the comment's actor is not a registered bot.
+    ;;
+  *)
+    # A registered bot with another role.
+    ;;
+esac
+```
+
+`fullsend run` exports `FULLSEND_BOT_ROLE_URL` and `FULLSEND_BOT_ROLE_TOKEN`
+to the pre- and post-scripts of a run that can answer a lookup (one with a
+mint URL and the Actions OIDC environment), and `FULLSEND_ENTITY_ID` on
+GitHub runs whose issue or pull request it resolved; `fullsend bot-role`
+reads the first two and needs nothing else, so scripts never handle a
+credential themselves. A run with no mint URL or no Actions OIDC
+environment exports none of the three. A run that has both but no
+resolvable GitHub entity — a Jira-tracked GitHub run, or a GitHub run
+whose issue or pull request did not resolve — exports the URL and token
+without `FULLSEND_ENTITY_ID`, and every lookup fails, so its scripts
+still fail closed at the first ask. The semantics:
+
+- `--entity` is the canonical ID of the entity the run handles, as the
+  [normalized entity spec](../../normative/normalized-entity/v1/README.md#scope-and-identity)
+  defines it (`fullsend:entity:v1:<system>:<host>:<kind>:<source_id>`);
+  pass `$FULLSEND_ENTITY_ID`. `--comment` is the comment's action ID: on
+  GitHub, the GraphQL node ID (the `node_id` field of a REST comment, or
+  `id` in GraphQL) of an issue or pull-request conversation comment or a
+  pull-request review-thread comment. Review bodies are not comments and
+  are refused.
+- The answer is for the comment's current-revision actor: its last editor
+  when it was edited, its author otherwise. A bot's comment that a person
+  edited answers `no_match`, so an edit cannot borrow a bot's trust.
+- On success the command prints the registered canonical role (`triage`,
+  `review`, …) or `no_match` to stdout and exits 0.
+- A lookup that cannot be completed fails with a non-zero exit and empty
+  stdout — never `no_match` — so a failed lookup stays distinguishable from
+  a no-match and the caller can fail closed, as above. A comment on another
+  entity, or an `--entity` other than the run's, is refused the same way.
+- The lookup is bound to the run's target repository (`$REPO_FULL_NAME`)
+  and the entity it handles; the command accepts no repository flag. The
+  mint also checks that target against the job's OIDC repository claim, so
+  the lookup only completes when `REPO_FULL_NAME` is the repository the
+  workflow itself runs in.
+- The Actions OIDC credentials the lookup authenticates with stay
+  runner-side (`fullsend run` withholds `ACTIONS_ID_TOKEN_*` from child
+  scripts) and the mint's answer carries role names only.
+- The lookup is GitHub-only today: it reads the comment through GitHub
+  GraphQL and resolves a bot actor through the mint with the job's Actions
+  OIDC token. On GitLab, on Jira-tracked runs, on a run with no mint URL or
+  no Actions OIDC environment, and on a run whose issue or pull request
+  could not be resolved, `FULLSEND_ENTITY_ID` is not exported and every
+  lookup fails, until signature verification or an equivalent trusted
+  lookup exists there.
+
+Host-side pre- and post-scripts can use this to replace their App-name
+lists — the trusted-bot checks in a triage or review pre-script and in
+`scripts/lib/review-ops.lib.sh` — with `bot_role == "triage"` /
+`bot_role == "review"` comparisons on the output of `fullsend bot-role`.
+The command is not available inside the agent sandbox (the helper listens
+on the runner's loopback): an agent-side step, such as a triage step or a
+prior-risk lookup, gets the answer from the pre-script, which can resolve
+each comment's role and stage it for the sandbox. The helper's loopback
+listener also serves an unauthenticated `/healthz` liveness probe — the
+only endpoint the bearer token does not guard, so an operator can check
+that a run's helper is up; every other path requires the token.
+
 ### Dispatch inputs
 
 When an event triggers an agent, the dispatch workflow exports these

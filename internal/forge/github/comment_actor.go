@@ -1,0 +1,224 @@
+package github
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
+)
+
+// maxCommentActorResponseBytes bounds a GraphQL response the comment-actor
+// queries read.
+const maxCommentActorResponseBytes = 1 << 20
+
+// GetIssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
+// "PullRequest") and node ID of issue or pull request number in owner/repo.
+// The node ID is in GitHub's new global-ID format (nextGlobalIDHeader),
+// which GitHub documents for github.com — on GitHub Enterprise Server the
+// ID format follows the server — so on github.com long-lived issues and
+// pull requests report the same ID from this lookup as newly created ones.
+// REST and webhook node_id payloads still return
+// the legacy format on older objects, and which canonical format every
+// producer can emit is not settled (see the normalized-entity spec,
+// docs/normative/normalized-entity/v1/README.md).
+func (c *LiveClient) GetIssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (string, string, error) {
+	var data struct {
+		Repository *struct {
+			IssueOrPullRequest *struct {
+				Typename string `json:"__typename"`
+				ID       string `json:"id"`
+			} `json:"issueOrPullRequest"`
+		} `json:"repository"`
+	}
+	const q = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){__typename ... on Issue{id} ... on PullRequest{id}}}}`
+	if err := c.graphqlQuery(ctx, q, map[string]any{"owner": owner, "name": repo, "number": number}, &data, withHeader(nextGlobalIDHeader, "1")); err != nil {
+		return "", "", err
+	}
+	if data.Repository == nil || data.Repository.IssueOrPullRequest == nil {
+		return "", "", fmt.Errorf("%w: %s/%s#%d", forge.ErrNotFound, owner, repo, number)
+	}
+	n := data.Repository.IssueOrPullRequest
+	if (n.Typename != "Issue" && n.Typename != "PullRequest") || n.ID == "" {
+		return "", "", fmt.Errorf("%s/%s#%d: unexpected node %q", owner, repo, number, n.Typename)
+	}
+	return n.Typename, n.ID, nil
+}
+
+// graphqlActor is a GraphQL Actor: its type and login.
+type graphqlActor struct {
+	Typename string `json:"__typename"`
+	Login    string `json:"login"`
+}
+
+// nextGlobalIDHeader asks GitHub's GraphQL API on github.com to return
+// node IDs in the new global-ID format on every node, new or old, so the
+// entity IDs this package produces are in that format for long-lived and
+// newly created entities alike on github.com. GitHub documents the header
+// for github.com only, and on GitHub Enterprise Server the ID format
+// follows the server. REST and webhook node_id payloads still return the
+// legacy format on older objects, so a producer reading IDs from those
+// emits the legacy format, and which canonical format every producer can
+// emit is not settled (see the normalized-entity spec,
+// docs/normative/normalized-entity/v1/README.md). node() accepts either
+// input format, so a caller holding a legacy-format comment node ID still
+// resolves.
+const nextGlobalIDHeader = "X-Github-Next-Global-ID"
+
+// GetCommentActor reads a comment's current-revision actor and the issue
+// or pull request it is on (ADR 0133, ADR 0141), matching the Get* naming
+// of the other lookups so it does not share its identifier with its
+// return type. For an edited comment the actor is the editor of the
+// edit-history entry the lastEditedAt field names: GitHub does not
+// document whether the top-level editor field is the first or the last
+// editor, and it does not document the order of the userContentEdits
+// connection either, so the first ten entries of the edit history are
+// read (the helper lookup is the hot path a pre-script waits on, so the
+// page is deliberately small) and the entry whose editedAt equals
+// lastEditedAt is the current revision, whichever end of the page it sits
+// at. A page that does not contain it, whose entry has no editor, whose
+// timestamp matches more than one entry, or that is truncated — the
+// comment has more edits than the ten-entry bound, which the connection's
+// pageInfo reports — is an error: the lookup fails closed rather than
+// guessing, so an edit omitted from the window can never leave an
+// in-page match accepted as the current revision. The bound can be grown
+// or paginated if a comment with that many edits shows up in practice.
+// An unedited comment's actor is its author.
+// It accepts the comments the normalized entity lists: issue and
+// pull-request conversation comments (IssueComment) and pull-request
+// review-thread comments (PullRequestReviewComment). Any other node, and
+// an edited comment whose current revision cannot be attributed, is an
+// error.
+func (c *LiveClient) GetCommentActor(ctx context.Context, commentID string) (forge.CommentActor, error) {
+	var data struct {
+		Node *struct {
+			Typename         string        `json:"__typename"`
+			Author           *graphqlActor `json:"author"`
+			LastEditedAt     *string       `json:"lastEditedAt"`
+			UserContentEdits *struct {
+				Nodes []struct {
+					Editor   *graphqlActor `json:"editor"`
+					EditedAt string        `json:"editedAt"`
+				} `json:"nodes"`
+				PageInfo struct {
+					HasNextPage bool `json:"hasNextPage"`
+				} `json:"pageInfo"`
+			} `json:"userContentEdits"`
+			Issue *struct {
+				ID string `json:"id"`
+			} `json:"issue"`
+			PullRequest *struct {
+				ID string `json:"id"`
+			} `json:"pullRequest"`
+		} `json:"node"`
+	}
+	const q = `query($id:ID!){node(id:$id){__typename ` +
+		`... on IssueComment{author{__typename login} lastEditedAt userContentEdits(first:10){nodes{editor{__typename login} editedAt} pageInfo{hasNextPage}} issue{id} pullRequest{id}} ` +
+		`... on PullRequestReviewComment{author{__typename login} lastEditedAt userContentEdits(first:10){nodes{editor{__typename login} editedAt} pageInfo{hasNextPage}} pullRequest{id}}}}`
+	if err := c.graphqlQuery(ctx, q, map[string]any{"id": commentID}, &data, withHeader(nextGlobalIDHeader, "1")); err != nil {
+		return forge.CommentActor{}, err
+	}
+	n := data.Node
+	if n == nil {
+		return forge.CommentActor{}, fmt.Errorf("%w: comment %q", forge.ErrNotFound, commentID)
+	}
+	if n.Typename != "IssueComment" && n.Typename != "PullRequestReviewComment" {
+		return forge.CommentActor{}, fmt.Errorf("node %q is a %s, not an issue, pull-request or review-thread comment", commentID, n.Typename)
+	}
+	var out forge.CommentActor
+	switch {
+	case n.PullRequest != nil && n.PullRequest.ID != "":
+		out.OnPullRequest, out.EntityNodeID = true, n.PullRequest.ID
+	case n.Issue != nil && n.Issue.ID != "":
+		out.EntityNodeID = n.Issue.ID
+	default:
+		return forge.CommentActor{}, fmt.Errorf("comment %q has no issue or pull request", commentID)
+	}
+	actor := n.Author
+	if n.LastEditedAt != nil {
+		// The current-revision actor is the editor of the edit whose
+		// editedAt equals lastEditedAt. GitHub does not document the
+		// order of the userContentEdits connection, so the revision is
+		// identified by its timestamp, not by its position in the page:
+		// whichever end the matching entry sits at, it is the one
+		// lastEditedAt names. A page that does not contain the last
+		// revision, whose entry has no editor, or whose timestamp
+		// matches more than one entry (DateTime values carry no
+		// sub-second precision, so two edits in one second are
+		// ambiguous), fails closed. A truncated page fails closed the
+		// same way even when it holds a match: the entries past the
+		// ten-entry bound are unknown, so an omitted edit sharing
+		// lastEditedAt's second could make the in-page match ambiguous.
+		if n.UserContentEdits != nil && n.UserContentEdits.PageInfo.HasNextPage {
+			return forge.CommentActor{}, fmt.Errorf("comment %q's edit history is truncated past its first ten entries", commentID)
+		}
+		var editor *graphqlActor
+		matches := 0
+		if n.UserContentEdits != nil {
+			for _, e := range n.UserContentEdits.Nodes {
+				if e.EditedAt == *n.LastEditedAt {
+					matches++
+					editor = e.Editor
+				}
+			}
+		}
+		if matches > 1 || editor == nil {
+			return forge.CommentActor{}, fmt.Errorf("comment %q's current edit is not in its edit history", commentID)
+		}
+		actor = editor
+	}
+	if actor != nil {
+		out.ActorType, out.ActorLogin = actor.Typename, actor.Login
+	}
+	return out, nil
+}
+
+// graphqlQuery runs one GraphQL query against the client's GraphQL endpoint
+// and decodes its data into out. A transport error, a non-200 status or a
+// GraphQL error fails; a NOT_FOUND GraphQL error in any position is
+// returned wrapped in forge.ErrNotFound, the sentinel the
+// forge.GitHubExtensions doc comments promise for a missing node. Extra
+// headers (e.g. nextGlobalIDHeader) are set on the request.
+func (c *LiveClient) graphqlQuery(ctx context.Context, query string, variables map[string]any, out any, headers ...requestHeader) error {
+	resp, err := c.do(ctx, http.MethodPost, c.graphqlEndpoint(), map[string]any{"query": query, "variables": variables}, headers...)
+	if err != nil {
+		return fmt.Errorf("graphql query: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCommentActorResponseBytes))
+	if err != nil {
+		return fmt.Errorf("read graphql response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return &APIError{StatusCode: resp.StatusCode, Message: "graphql query failed"}
+	}
+	var envelope struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return fmt.Errorf("decode graphql response: %w", err)
+	}
+	if len(envelope.Errors) > 0 {
+		// A NOT_FOUND in any position — not only the first error — maps
+		// to the sentinel, so a response carrying additional errors, or
+		// null data with NOT_FOUND in a secondary position, still reads
+		// as "absent" rather than "failed" to callers that distinguish.
+		for _, e := range envelope.Errors {
+			if e.Type == "NOT_FOUND" {
+				return fmt.Errorf("%w: %s", forge.ErrNotFound, e.Message)
+			}
+		}
+		return fmt.Errorf("graphql query: %s", envelope.Errors[0].Message)
+	}
+	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
+		return errors.New("graphql query: empty data")
+	}
+	return json.Unmarshal(envelope.Data, out)
+}
