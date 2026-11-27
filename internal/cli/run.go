@@ -1042,6 +1042,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Forgejo runs use the job's own run token (FORGEJO_TOKEN) and
 		// never mint, so no mint_url or GitHub OIDC exchange applies.
 		mintCleanup = func() {}
+		// Keep the run token out of every sandbox-bound ${VAR} expansion
+		// for this run; only the bound FORGEJO_TOKEN credential carries it.
+		forgejoSandboxTokenRefused.Store(true)
+		defer forgejoSandboxTokenRefused.Store(false)
 		if tokenErr := requireForgejoRunToken(os.Getenv); tokenErr != nil {
 			printer.StepFail("No Forgejo token for a Forgejo run")
 			return tokenErr
@@ -1305,7 +1309,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// so validation must resolve them there whether or not the host variable
 	// is set (the action unsets FULLSEND_JIRA_TOKEN on non-Jira runs).
 	sandboxLookup := func(key string) (string, bool) {
-		if sandboxDeniedKeys[key] {
+		if sandboxDeniedKeys[key] || sandboxRunTokenRefused(key) {
 			return "", true
 		}
 		return lookup(key)
@@ -3897,7 +3901,7 @@ var providerCredentialJiraKeys = map[string]bool{
 // with expander, refusing sandboxDeniedKeys (they expand empty).
 func expandSandboxEnvValue(v string, expander func(string) string) string {
 	return os.Expand(v, func(key string) string {
-		if sandboxDeniedKeys[key] {
+		if sandboxDeniedKeys[key] || sandboxRunTokenRefused(key) {
 			return ""
 		}
 		return expander(key)
@@ -4557,7 +4561,7 @@ func safeExpandEnv(s string) string {
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
-		if harnessExpansionDenied(key) || sandboxDeniedKeys[key] {
+		if harnessExpansionDenied(key) || sandboxDeniedKeys[key] || sandboxRunTokenRefused(key) {
 			return ""
 		}
 		return escapeForDoubleQuotes(os.Getenv(key))

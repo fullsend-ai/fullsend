@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"gopkg.in/yaml.v3"
 
@@ -193,6 +194,27 @@ var errForgejoTokenUnderOtherKey = errors.New("provider references the run token
 // run token on a Forgejo job: FORGEJO_TOKEN, and GITHUB_TOKEN, which the
 // runner sets to the same value.
 var forgejoRunTokenEnvs = []string{forgejoTokenEnv, "GITHUB_TOKEN"}
+
+// forgejoSandboxTokenRefused is set for the duration of a Forgejo run. While
+// set, sandbox-bound ${VAR} expansion (env.sandbox, validation_loop.schema,
+// FULLSEND_OUTPUT_FILE, expanded host_files content) refuses the run token
+// variables, so the token reaches the sandbox only as the FORGEJO_TOKEN
+// provider credential that is bound to the Forgejo instance.
+var forgejoSandboxTokenRefused atomic.Bool
+
+// sandboxRunTokenRefused reports whether key names the Forgejo run token
+// and the current run is a Forgejo run.
+func sandboxRunTokenRefused(key string) bool {
+	if !forgejoSandboxTokenRefused.Load() {
+		return false
+	}
+	for _, name := range forgejoRunTokenEnvs {
+		if key == name {
+			return true
+		}
+	}
+	return false
+}
 
 // referencesForgejoToken reports whether value references the run token
 // through ${FORGEJO_TOKEN} or ${GITHUB_TOKEN} (or the unbraced forms).

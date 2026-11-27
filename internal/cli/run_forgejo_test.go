@@ -539,3 +539,28 @@ func TestRequireForgejoTokenProfileLoaded(t *testing.T) {
 	}, loaded)
 	require.ErrorIs(t, err, errForgejoTokenProfileNotLoaded)
 }
+
+// TestSandboxRunTokenRefused checks that, during a Forgejo run, no
+// sandbox-bound ${VAR} expansion site (env.sandbox, validation_loop.schema,
+// expanded host_files content) resolves FORGEJO_TOKEN or its GITHUB_TOKEN
+// alias, while a run that is not a Forgejo run still resolves them.
+func TestSandboxRunTokenRefused(t *testing.T) {
+	t.Setenv(forgejoTokenEnv, testForgejoRunToken)
+	t.Setenv("GITHUB_TOKEN", testForgejoRunToken)
+	expander := func(key string) string { return os.Getenv(key) }
+
+	forgejoSandboxTokenRefused.Store(true)
+	t.Cleanup(func() { forgejoSandboxTokenRefused.Store(false) })
+
+	for _, ref := range []string{"${FORGEJO_TOKEN}", "${GITHUB_TOKEN}", "$FORGEJO_TOKEN", "$GITHUB_TOKEN"} {
+		assert.Empty(t, expandSandboxEnvValue(ref, expander), "env.sandbox %s", ref)
+		assert.Empty(t, expandRunnerEntry("FULLSEND_OUTPUT_FILE", ref, expander), "FULLSEND_OUTPUT_FILE %s", ref)
+		assert.Empty(t, shellSafeExpandEnv(ref), "host file content %s", ref)
+	}
+	t.Setenv("UNRELATED_VALUE", "keep")
+	assert.Equal(t, "keep", expandSandboxEnvValue("${UNRELATED_VALUE}", expander))
+
+	forgejoSandboxTokenRefused.Store(false)
+	assert.Equal(t, testForgejoRunToken, expandSandboxEnvValue("${GITHUB_TOKEN}", expander))
+	assert.Equal(t, testForgejoRunToken, shellSafeExpandEnv("${FORGEJO_TOKEN}"))
+}
