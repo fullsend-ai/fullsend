@@ -120,7 +120,7 @@ func TestGenerateGitLabForgeProfile(t *testing.T) {
 			// The stock GitLab agents call the API with curl, so curl
 			// must be allowed, and access must stay scoped to exactly
 			// the configured forge host and port (#8683).
-			var spec gitlabForgeProfileSpec
+			var spec forgeProfileSpec
 			require.NoError(t, yaml.Unmarshal(data, &spec))
 			assert.ElementsMatch(t,
 				[]string{"**/curl", "**/git", "**/glab", "**/node", "**/pre-commit"},

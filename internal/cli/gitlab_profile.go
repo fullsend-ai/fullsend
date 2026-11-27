@@ -19,8 +19,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// gitlabForgeEndpoint is the YAML shape of a single provider endpoint.
-type gitlabForgeEndpoint struct {
+// forgeProfileEndpoint is the YAML shape of a single provider endpoint.
+// It is shared by the GitLab and Forgejo generated forge profiles.
+type forgeProfileEndpoint struct {
 	Host        string `yaml:"host"`
 	Port        int    `yaml:"port"`
 	Protocol    string `yaml:"protocol"`
@@ -28,14 +29,14 @@ type gitlabForgeEndpoint struct {
 	Enforcement string `yaml:"enforcement"`
 }
 
-// gitlabForgeProfileSpec is the YAML shape of a provider profile.
-type gitlabForgeProfileSpec struct {
-	ID          string                `yaml:"id"`
-	DisplayName string                `yaml:"display_name"`
-	Description string                `yaml:"description"`
-	Category    string                `yaml:"category"`
-	Endpoints   []gitlabForgeEndpoint `yaml:"endpoints"`
-	Binaries    []string              `yaml:"binaries"`
+// forgeProfileSpec is the YAML shape of a provider profile.
+type forgeProfileSpec struct {
+	ID          string                 `yaml:"id"`
+	DisplayName string                 `yaml:"display_name"`
+	Description string                 `yaml:"description"`
+	Category    string                 `yaml:"category"`
+	Endpoints   []forgeProfileEndpoint `yaml:"endpoints"`
+	Binaries    []string               `yaml:"binaries"`
 }
 
 // generateGitLabForgeProfile creates a temporary provider profile YAML
@@ -52,12 +53,12 @@ func generateGitLabForgeProfile() (string, func(), error) {
 		return "", nil, fmt.Errorf("GitLab port %q is not a valid integer", port)
 	}
 
-	profile := gitlabForgeProfileSpec{
+	profile := forgeProfileSpec{
 		ID:          "fullsend-gitlab-forge",
 		DisplayName: "Fullsend GitLab (auto)",
 		Description: "GitLab API and Git operations for fullsend agents (auto-generated from forge host)",
 		Category:    "source_control",
-		Endpoints: []gitlabForgeEndpoint{
+		Endpoints: []forgeProfileEndpoint{
 			{Host: host, Port: portNum, Protocol: "rest", Access: "read-write", Enforcement: "enforce"},
 		},
 		// curl is required because the stock GitLab agents call the REST
@@ -527,6 +528,14 @@ func credentialIssuesKey(name string, envVars []string, key string) bool {
 // (checkProfileKeys): those forms could hide the credential from the
 // lenient scan, so they are refused before it runs.
 func checkGitLabCredentialBinding(data []byte, host string, port int) error {
+	return checkCredentialBinding(data, gitlabTokenEnvVar, errNoGitLabForgeHost, host, port)
+}
+
+// checkCredentialBinding is checkGitLabCredentialBinding for any credential
+// key: unless a profile that issues key has at most one endpoint, for host
+// and port exactly, with no ports list, it returns an error, and noHost
+// when the profile issues key and host is "".
+func checkCredentialBinding(data []byte, key string, noHost error, host string, port int) error {
 	doc, err := parseSingleProfileDocument(data)
 	if err != nil || doc == nil || len(doc.Content) == 0 {
 		return err
@@ -534,7 +543,7 @@ func checkGitLabCredentialBinding(data []byte, host string, port int) error {
 	root := resolveYAMLAlias(doc.Content[0])
 	if root.Kind != yaml.MappingNode {
 		// OpenShell cannot read a profile whose root is not a mapping, so
-		// it binds nothing. A profile that issues GITLAB_TOKEN with no
+		// it binds nothing. A profile that issues key with no
 		// endpoints is a mapping and is checked below: with no forge host
 		// it still stops the run.
 		return nil
@@ -542,27 +551,27 @@ func checkGitLabCredentialBinding(data []byte, host string, port int) error {
 	if err := checkProfileKeys(root); err != nil {
 		return err
 	}
-	if !profileIssuesCredential(root, gitlabTokenEnvVar) {
+	if !profileIssuesCredential(root, key) {
 		return nil
 	}
 	if host == "" {
-		return errNoGitLabForgeHost
+		return noHost
 	}
 	var p boundProfile
 	if err := doc.Decode(&p); err != nil {
-		return fmt.Errorf("reading a profile that issues %s: %w", gitlabTokenEnvVar, err)
+		return fmt.Errorf("reading a profile that issues %s: %w", key, err)
 	}
 	want := net.JoinHostPort(host, strconv.Itoa(port))
 	if len(p.Endpoints) > 1 {
-		return fmt.Errorf("profile issues %s on %d endpoints; want only %s", gitlabTokenEnvVar, len(p.Endpoints), want)
+		return fmt.Errorf("profile issues %s on %d endpoints; want only %s", key, len(p.Endpoints), want)
 	}
 	for _, ep := range p.Endpoints {
 		pn := resolveYAMLAlias(&ep.Port)
 		if !strings.EqualFold(ep.Host, host) || pn.Kind != yaml.ScalarNode || pn.ShortTag() != "!!int" || pn.Value != strconv.Itoa(port) {
-			return fmt.Errorf("profile issues %s on %s; want only %s", gitlabTokenEnvVar, net.JoinHostPort(ep.Host, pn.Value), want)
+			return fmt.Errorf("profile issues %s on %s; want only %s", key, net.JoinHostPort(ep.Host, pn.Value), want)
 		}
 		if ports := resolveYAMLAlias(&ep.Ports); ports.Kind != 0 && (ports.Kind != yaml.SequenceNode || len(ports.Content) > 0) {
-			return fmt.Errorf("profile issues %s on extra ports of %s; want only %s", gitlabTokenEnvVar, ep.Host, want)
+			return fmt.Errorf("profile issues %s on extra ports of %s; want only %s", key, ep.Host, want)
 		}
 	}
 	return nil

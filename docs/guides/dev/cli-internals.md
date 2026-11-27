@@ -118,7 +118,7 @@ fullsend
 │   └── remove       <name>                   # Unregister agent from config
 ├── lint             [agent-name]              # Lint config.yaml and harness definitions
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
-│   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+│   ├── --forge <platform>                   #   Forge platform (github, gitlab, forgejo); auto-detected from CI env
 │   ├── --strict                             #   Exit non-zero on warning-level diagnostics
 │   ├── --offline                            #   Reject network fetches
 │   └── --format <text|json>                 #   Output format (default: text)
@@ -133,7 +133,7 @@ fullsend
 ├── prepare          <agent-name>              # Pre-pull a private image and run a sandbox preflight
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
-│   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+│   ├── --forge <platform>                   #   Forge platform (github, gitlab, forgejo); auto-detected from CI env
 │   ├── --event-file <path>                  #   Normalized event JSON for overlay resolution
 │   ├── --json                               #   Print the result as JSON on stdout
 │   └── --offline                            #   Reject network fetches
@@ -142,7 +142,7 @@ fullsend
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
-│   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+│   ├── --forge <platform>                   #   Forge platform (github, gitlab, forgejo); auto-detected from CI env
 │   ├── --no-post-script                     #   Skip post-script execution
 │   ├── --debug [filter]                     #   Enable agent runtime debug logging
 │   ├── --offline                            #   Reject network fetches
@@ -262,7 +262,7 @@ fullsend
     ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
     ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: layered mint_url from --fullsend-dir, then $FULLSEND_MINT_URL)
     ├── --role <string>                      #   Agent role for minting (required to mint a token)
-    ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+    ├── --forge <platform>                   #   Forge platform (github, gitlab, forgejo); auto-detected from CI env
     ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection, layered mint_url resolution, and tracker routing)
     ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
     ├── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure

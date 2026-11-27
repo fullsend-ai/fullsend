@@ -75,7 +75,7 @@ Because config-registered agents take precedence over built-in agents on name co
 
 To re-pin the `base:` URL to a new upstream commit (and recompute the integrity hash), run `fullsend agent update code`. That writes the new SHA into the local harness file and leaves `config.yaml` unchanged.
 
-Test it locally first (add `--forge github` or `--forge gitlab` only if this
+Test it locally first (add `--forge github`, `--forge gitlab`, or `--forge forgejo` only if this
 repo's `.fullsend/config.yaml` does not already set `forge:`):
 ```bash
 fullsend run code --target-repo ./my-repo --env-file .env.local

@@ -21,7 +21,7 @@ For initial setup, see
 version: "1"                         # Schema version (required)
 
 # ── Platform ─────────────────────────────────────────────────
-forge: github                        # Hosting platform: github, gitlab (auto-detected if omitted)
+forge: github                        # Hosting platform: github, gitlab, forgejo (auto-detected if omitted)
 
 # ── Operations ───────────────────────────────────────────────
 kill_switch: false                   # Emergency stop — disables all agent dispatch when true
@@ -184,9 +184,10 @@ Schema version string. Must be `"1"`. Present in every config file.
 
 ### `forge`
 
-Hosting platform for the repository (`github` or `gitlab`). When omitted,
-fullsend auto-detects the forge from CI environment variables. Most
-installations do not need to set this explicitly.
+Hosting platform for the repository (`github`, `gitlab` or `forgejo`). When
+omitted, fullsend auto-detects the forge from CI environment variables. Most
+installations do not need to set this explicitly. For what `forgejo` changes
+in `fullsend run`, see [Forgejo runs](../cli/run.md#forgejo-runs).
 
 ### `kill_switch`
 

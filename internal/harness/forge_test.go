@@ -468,6 +468,41 @@ func TestResolveForge_ValidPlatformNotConfigured(t *testing.T) {
 	assert.Contains(t, err.Error(), "not configured")
 }
 
+func TestResolveForge_ForgejoNotConfiguredHintsGitHubPin(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Forge: map[string]*ForgeConfig{
+			"github": {PreScript: "scripts/gh.sh"},
+		},
+	}
+	err := h.ResolveForge("forgejo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not configured")
+	assert.Contains(t, err.Error(), "--forge github")
+
+	// Without a github entry the pin would not help, so no hint is given.
+	h = &Harness{
+		Agent: "agents/test.md",
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {PreScript: "scripts/gl.sh"},
+		},
+	}
+	err = h.ResolveForge("forgejo")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "--forge github")
+
+	// Other platforms get no pin hint.
+	h = &Harness{
+		Agent: "agents/test.md",
+		Forge: map[string]*ForgeConfig{
+			"github": {PreScript: "scripts/gh.sh"},
+		},
+	}
+	err = h.ResolveForge("gitlab")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "--forge github")
+}
+
 func TestResolveForge_ForgeConsumed(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
@@ -494,7 +529,20 @@ func TestValidate_ForgeUnrecognizedKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unrecognized key")
 	assert.Contains(t, err.Error(), "gihub")
-	assert.Contains(t, err.Error(), "valid: github, gitlab, jira")
+	assert.Contains(t, err.Error(), "valid: forgejo, github, gitlab, jira")
+}
+
+func TestValidForgePlatform_Forgejo(t *testing.T) {
+	assert.True(t, ValidForgePlatform("forgejo"))
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"forgejo": {PreScript: "scripts/forgejo.sh"},
+		},
+	}
+	require.NoError(t, h.ResolveForge("forgejo"))
+	assert.Equal(t, "scripts/forgejo.sh", h.PreScript)
 }
 
 func TestValidateForge_JiraBlock(t *testing.T) {

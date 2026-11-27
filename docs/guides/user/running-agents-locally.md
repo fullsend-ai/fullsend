@@ -408,7 +408,7 @@ you can tune resolution limits:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
+| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`, `forgejo`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `FORGEJO_ACTIONS`/`GITEA_ACTIONS`, `GITHUB_ACTIONS`, `GITLAB_CI`. A Forgejo run needs `FORGEJO_TOKEN` and `FULLSEND_FORGEJO_URL`; see [Forgejo runs](../../cli/run.md#forgejo-runs) |
 | `--max-depth` | 10 | Maximum dependency depth for transitive resolution (0 disables) |
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
 | `--offline` | false | Reject network fetches; only use cached remote resources. A Jira-sourced run, or a run that mints a Jira token, stops, because resolving the Jira API gateway address needs a network lookup |
@@ -476,7 +476,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
 | `--mint-url` | Mint service URL for on-demand status comment tokens (default: layered `mint_url` from `--fullsend-dir`, then `$FULLSEND_MINT_URL`) |
-| `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
+| `--forge` | Forge platform (`github`, `gitlab` or `forgejo`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `FORGEJO_ACTIONS`/`GITEA_ACTIONS`, `GITHUB_ACTIONS`, `GITLAB_CI` |
 
 Example:
 

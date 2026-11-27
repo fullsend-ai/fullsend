@@ -12,6 +12,7 @@ import (
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 )
@@ -141,11 +142,14 @@ finalized, this is a no-op.`,
 				owner, repoName := parts[0], parts[1]
 
 				var err error
-				forgePlatform, err = detectForgePlatform(forgeFlag, nil)
+				forgePlatform, err = detectForgePlatform(forgeFlag, orgCfg)
 				if err != nil {
 					return err
 				}
 
+				if forgePlatform == repos.ForgeForgejo {
+					return errForgejoStatusUnsupported
+				}
 				if forgePlatform == "gitlab" {
 					var gitlabErr error
 					statusForgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
