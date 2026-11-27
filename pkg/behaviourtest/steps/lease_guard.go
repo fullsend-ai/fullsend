@@ -5,19 +5,63 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 // errLeaseLost is returned by verifyLease when the repository under the
 // scenario's leased slot name is no longer this scenario's lease, so a
 // name-based mutation could land on another holder's resources.
+// verifyLease returns it marked as an infrastructure failure
+// (behaviourfail.Mark): the slot was taken away by the environment —
+// reclaimed or taken over mid-run, after the guard failed closed before
+// any write — and the suite's single retry re-runs the scenario on a
+// fresh slot. errors.Is still matches the sentinel through the mark.
+// The provisioning-time lease races the install path raises stay
+// unmarked (scenario) by design.
 var errLeaseLost = errors.New("leased slot is no longer this scenario's; refusing to mutate by name")
+
+// leaseLostInfraReason is the reason verifyLease marks a lost lease
+// with, so the suite's single infrastructure retry re-runs the scenario
+// on a fresh slot.
+const leaseLostInfraReason = "lease: slot lost while the scenario held it"
+
+// LeaseOwnership returns the check a scenario uses to confirm the slot
+// (org, name) is still this scenario's lease, or nil when the driver
+// leases by repo name alone (no shared slot to lose). A driver that
+// leases across orgs but cannot verify yields a check that always
+// fails, so callers fail closed rather than mutating by name.
+//
+// It is installed when the scenario acquires its leased repository
+// (givenEnrolledTestRepository), so step-time mutations through
+// mutationCtx are guarded while the scenario runs, and re-installed by
+// the suite's After hook for cleanup; both use this one implementation.
+func LeaseOwnership(driver install.Driver, org, name string) func(context.Context) (bool, error) {
+	if org == "" {
+		return nil
+	}
+	if lv, ok := driver.(install.LeaseVerifier); ok {
+		return func(ctx context.Context) (bool, error) {
+			return lv.StillOwnsLease(ctx, org, name)
+		}
+	}
+	if _, ok := driver.(install.LeaseDriver); ok {
+		return func(context.Context) (bool, error) {
+			return false, fmt.Errorf("%T cannot verify lease ownership of %s/%s", driver, org, name)
+		}
+	}
+	return nil
+}
 
 // verifyLease fails closed unless the scenario still owns its leased
 // slot. It returns nil when ownership is not tracked (World.LeaseOwned
-// is nil), errLeaseLost when the slot was taken over, and a wrapped
-// error when ownership could not be verified. It changes no state.
+// is nil), errLeaseLost when the slot was taken over (marked as an
+// infrastructure failure, so the suite's single retry re-runs the
+// scenario on a fresh slot), and a wrapped error when ownership could
+// not be verified (unmarked: its class follows the verification error's
+// own cause). It changes no state.
 func verifyLease(w *world.World) error {
 	if w.LeaseOwned == nil {
 		return nil
@@ -27,7 +71,7 @@ func verifyLease(w *world.World) error {
 		return fmt.Errorf("cannot verify the leased slot is still this scenario's; refusing to mutate by name: %w", err)
 	}
 	if !owns {
-		return errLeaseLost
+		return behaviourfail.Mark(errLeaseLost, leaseLostInfraReason)
 	}
 	return nil
 }
@@ -37,9 +81,13 @@ func verifyLease(w *world.World) error {
 // forge client re-verifies it after every retry wait (a rate-limit wait
 // can outlast the lease), immediately before the mutating request of a
 // multi-step commit (after its preparatory reads, on the first attempt
-// too) and does not replay a request after an ambiguous failure, so a
-// retry never lands on a replacement holder's resources. Without
-// ownership tracking it is a plain background context.
+// too) and does not replay a request that is not safe to replay
+// (anything other than GET/HEAD) after an ambiguous failure, so a
+// replayed write never lands on a replacement holder's resources — the
+// risk is the target, not the method: a resend could land on a
+// name-based target that was replaced in the meantime; reads keep their
+// retries, each resend re-verified by the guard. Without ownership
+// tracking it is a plain background context.
 func mutationCtx(w *world.World) context.Context {
 	ctx := context.Background()
 	if w.LeaseOwned == nil {
