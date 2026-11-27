@@ -32,8 +32,9 @@ its place in the test pyramid
 
 Since then, agent definitions moved to
 [fullsend-ai/agents](https://github.com/fullsend-ai/agents), which grew its
-own functional-test suite for every agent: `release: true` smoke cases
-(the release tier) and the full case set (the full tier). The `eval/triage`
+own functional-test suite for every agent except prioritize and scribe:
+`release: true` smoke cases (the release tier) and the full case set (the
+full tier). The `eval/triage`
 suite here duplicated cases that agents already holds, ran up to three times
 per change, and failed mostly on infrastructure rather than on regressions
 ([#8035](https://github.com/fullsend-ai/fullsend/issues/8035)).
@@ -53,8 +54,8 @@ nightly in the agents repo against fullsend `main`
 - A change to `internal/scaffold/` or `fullsend run` no longer gets a
   functional-test run on its PR; the agents nightly catches a regression it
   causes within a day.
-- Releases still exercise every agent end to end, through one release-tier
-  case per agent.
+- Releases still exercise every agent with an eval suite end to end, through
+  one release-tier case per agent.
 - Adding or changing a functional-test case is an agents-repo PR; `make test`
   here no longer lints eval cases.
 - The `EVAL_GH_TOKEN` and `E2E_GCP_*` secrets stay in this repo, for the

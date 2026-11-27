@@ -22,7 +22,7 @@ the broader testing problem, see
 | Run | Where | Tier | Cases |
 |-----|-------|------|-------|
 | Release gate | `release.yml` here, calling the agents `functional-tests.yml` | release | Each agent's `release: true` case (for triage, case 001) |
-| Nightly | agents `functional-tests-nightly.yml`, against fullsend `main` | full | Every case for every agent |
+| Nightly | agents `functional-tests-nightly.yml`, against fullsend `main` | full | Every case for every agent with an eval suite |
 | Agents changes | agents PRs and merge queue | release on PRs, full in the merge queue | Per the agents workflow |
 
 A fullsend PR does not run functional tests. Before ADR 0139, this repo ran
