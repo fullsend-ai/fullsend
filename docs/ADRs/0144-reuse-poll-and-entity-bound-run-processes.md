@@ -46,6 +46,10 @@ Fullsend invocation provenance; model-bound actor checks remain fresh.
 entity-source discovery-query strategy and requires a current local query
 match, as well as true CEL, before an entity-driven sandbox cycle.
 
+Partially superseded by
+[ADR 0119](0119-signal-github-actions-events-to-a-running-cycle.md) for the
+GitHub Actions run-record change signal.
+
 ## Context
 
 [ADR 0098](0098-entity-first-harness-evaluation.md) makes the current entity,
