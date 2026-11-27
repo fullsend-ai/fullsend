@@ -491,7 +491,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&keepSandbox, "keep-sandbox", false, "skip sandbox and download directory deletion after the run (useful for post-failure inspection)")
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable agent runtime debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
-	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
+	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab", "forgejo"); auto-detected from CI env vars when omitted`)
 	cmd.Flags().StringVar(&eventFile, "event-file", "", "path to a normalized event JSON file for CEL overlay resolution (ADR 0088)")
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
 	cmd.Flags().IntVar(&rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
@@ -631,10 +631,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		orgAllowlist = orgCfg.AllowedResources()
 	}
 
+	// A Forgejo run never reads a GitHub token: its job's GITHUB_TOKEN is
+	// the Forgejo run token, which must not be sent to GitHub.
+	resolveRunGitHubToken := runGitHubTokenResolver(forgePlatform)
 	composeGitToken := rFlags.gitToken
 	if composeGitToken == "" {
 		var tokenErr error
-		composeGitToken, tokenErr = resolveToken()
+		composeGitToken, tokenErr = resolveRunGitHubToken()
 		if tokenErr != nil {
 			printer.StepWarn("Git token not available; private repo skill fetches may fail")
 		}
@@ -826,7 +829,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			resolveGitToken := rFlags.gitToken
 			if resolveGitToken == "" {
 				var tokenErr error
-				resolveGitToken, tokenErr = resolveToken()
+				resolveGitToken, tokenErr = resolveRunGitHubToken()
 				if tokenErr != nil {
 					printer.StepWarn("Git token not available; private repo skill fetches may fail")
 				}
@@ -1025,12 +1028,41 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	runtimeLevel := h.PrivilegeLevelForStage(harness.PrivilegeStageRuntime)
 	var minted bool
 	var mintCleanup func()
-	if forgePlatform == "gitlab" {
+	// The Forgejo instance a Forgejo run's sandbox may reach; FORGEJO_TOKEN
+	// is bound to it alone.
+	var forgejoHost string
+	var forgejoPort int
+	switch forgePlatform {
+	case "gitlab":
 		mintCleanup = func() {}
 		if roleErr := applyGitLabAgentCredentials(agentName, h.Role, os.Getenv, setFlagEnv, printer); roleErr != nil {
 			return roleErr
 		}
-	} else {
+	case repos.ForgeForgejo:
+		// Forgejo runs use the job's own run token (FORGEJO_TOKEN) and
+		// never mint, so no mint_url or GitHub OIDC exchange applies.
+		mintCleanup = func() {}
+		// Keep the run token out of every sandbox-bound ${VAR} expansion
+		// for this run; only the bound FORGEJO_TOKEN credential carries it.
+		forgejoSandboxTokenRefused.Store(true)
+		defer forgejoSandboxTokenRefused.Store(false)
+		if tokenErr := requireForgejoRunToken(os.Getenv); tokenErr != nil {
+			printer.StepFail("No Forgejo token for a Forgejo run")
+			return tokenErr
+		}
+		// Register before any script or provider runs so an echoed token
+		// is redacted from feedback, logs and telemetry.
+		if regErr := registerForgejoRunToken(os.Getenv); regErr != nil {
+			printer.StepFail("Forgejo token cannot be redacted")
+			return regErr
+		}
+		var hostErr error
+		if forgejoHost, forgejoPort, hostErr = resolveForgejoRunInstance(os.Getenv); hostErr != nil {
+			printer.StepFail("No usable Forgejo instance for the sandbox to reach")
+			return hostErr
+		}
+		printer.StepInfo(fmt.Sprintf("Forgejo run: using %s for %s; no token is minted", forgejoTokenEnv, forgejoEgressEntry(forgejoHost, forgejoPort)))
+	default:
 		var mintErr error
 		minted, mintCleanup, mintErr = mintAgentTokenAtLevel(ctx, h.Role, mintURL, forgePlatform, runtimeLevel, printer)
 		if mintErr != nil {
@@ -1277,7 +1309,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// so validation must resolve them there whether or not the host variable
 	// is set (the action unsets FULLSEND_JIRA_TOKEN on non-Jira runs).
 	sandboxLookup := func(key string) (string, bool) {
-		if sandboxDeniedKeys[key] {
+		if sandboxDeniedKeys[key] || sandboxRunTokenRefused(key) {
 			return "", true
 		}
 		return lookup(key)
@@ -1684,6 +1716,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		defer cleanupBound()
 		result.Profiles = boundProfiles
+	} else if forgePlatform == repos.ForgeForgejo {
+		// The Forgejo counterpart: a generated profile for the configured
+		// instance, and FORGEJO_TOKEN bound to that instance alone. A
+		// profile that would issue the run token anywhere else stops the
+		// run rather than being rewritten.
+		profilePath, cleanupProfile, err := generateForgejoForgeProfile(forgejoHost, forgejoPort)
+		if err != nil {
+			printer.StepFail("Failed to generate the Forgejo forge profile")
+			return err
+		}
+		defer cleanupProfile()
+		result.Profiles = append([]resolve.ResolvedProfile{{
+			ID:        forgejoForgeProfileID,
+			LocalPath: profilePath,
+		}}, result.Profiles...)
+		if err := checkForgejoCredentialBinding(result.Profiles, forgejoHost, forgejoPort); err != nil {
+			printer.StepFail("A provider profile issues FORGEJO_TOKEN outside the Forgejo instance")
+			return fmt.Errorf("binding FORGEJO_TOKEN to the Forgejo instance: %w", err)
+		}
 	} else if ghHost, ghPort := githubForgeHostPort(os.Getenv); ghHost != "" {
 		// The same for a GitHub server other than github.com: the stock
 		// GitHub profiles' GH_TOKEN placeholder resolves only at
@@ -1823,6 +1874,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// in CI, but a local per-repo checkout carries only a .gitkeep.
 		providerDefs := appendEmbeddedProviderDefs(localDefs, result.Providers, h.Providers, printer)
 		allDefs, selectedResolved, shadowedResolved := mergeProviderDefs(providerDefs, result.Providers)
+		if forgePlatform == repos.ForgeForgejo {
+			if err := rejectForgejoTokenUnderOtherKey(allDefs); err != nil {
+				printer.StepFail("A provider references FORGEJO_TOKEN outside a FORGEJO_TOKEN credential")
+				return err
+			}
+			if err := requireForgejoTokenProfileLoaded(allDefs, result.Profiles); err != nil {
+				printer.StepFail("A provider receives FORGEJO_TOKEN with a profile this run does not load")
+				return err
+			}
+		}
 		if err := validateRunnerSecretProviders(allDefs, runnerSecrets); err != nil {
 			printer.StepFail("Runner secret validation failed")
 			return err
@@ -2580,7 +2641,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var fetchEnvVal fetchServiceEnv
 	startFetch := shouldStartFetchService(h)
 	if startFetch {
-		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.treeFetcher, rFlags.gitToken, h, resolveToken, fetchsvc.ServiceConfig{
+		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.treeFetcher, rFlags.gitToken, h, resolveRunGitHubToken, fetchsvc.ServiceConfig{
 			Harness:       h,
 			FetchPolicy:   fetch.DefaultPolicy,
 			WorkspaceRoot: absFullsendDir,
@@ -2609,10 +2670,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// generateGitLabForgeProfile() for the L7 proxy profile; both
 	// calls are deterministic env-var reads.
 	var forgeEgressEntry string
-	if forgePlatform == "gitlab" {
+	switch forgePlatform {
+	case "gitlab":
 		if host, port := gl.ResolveForgeHostPort(); host != "" {
 			forgeEgressEntry = host + ":" + port
 		}
+	case repos.ForgeForgejo:
+		forgeEgressEntry = forgejoEgressEntry(forgejoHost, forgejoPort)
 	}
 	// agentSubagents is threaded into BootstrapInput so the pi runtime can
 	// resolve each persona's model (#7031); openAIProviderAttached tells it
@@ -3837,7 +3901,7 @@ var providerCredentialJiraKeys = map[string]bool{
 // with expander, refusing sandboxDeniedKeys (they expand empty).
 func expandSandboxEnvValue(v string, expander func(string) string) string {
 	return os.Expand(v, func(key string) string {
-		if sandboxDeniedKeys[key] {
+		if sandboxDeniedKeys[key] || sandboxRunTokenRefused(key) {
 			return ""
 		}
 		return expander(key)
@@ -4497,7 +4561,7 @@ func safeExpandEnv(s string) string {
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
-		if harnessExpansionDenied(key) || sandboxDeniedKeys[key] {
+		if harnessExpansionDenied(key) || sandboxDeniedKeys[key] || sandboxRunTokenRefused(key) {
 			return ""
 		}
 		return escapeForDoubleQuotes(os.Getenv(key))
@@ -7221,6 +7285,10 @@ func sandboxArch() string {
 // runtime falls back to the local playlist position rather than erroring
 // out).
 func resolvePlaybackForgeClient(forgePlatform string, fallbackForgeClient forge.Client, printer *ui.Printer) forge.Client {
+	if forgePlatform == repos.ForgeForgejo {
+		printer.StepWarn("dummy-playback: " + errForgejoPlaybackUnsupported.Error())
+		return nil
+	}
 	if forgePlatform != "gitlab" {
 		client, err := newAuthenticatedGitHubClient("", "")
 		if err != nil {
@@ -7241,7 +7309,10 @@ func resolvePlaybackForgeClient(forgePlatform string, fallbackForgeClient forge.
 // or CI environment variables. Precedence (per ADR 0088):
 //  1. explicit --forge flag
 //  2. config.forge (from config.yaml)
-//  3. CI environment variables (GITHUB_ACTIONS > GITLAB_CI)
+//  3. CI environment variables (FORGEJO_ACTIONS/GITEA_ACTIONS >
+//     GITHUB_ACTIONS > GITLAB_CI). Forgejo runners also set
+//     GITHUB_ACTIONS=true, so they are checked first: a Forgejo job must
+//     not take the GitHub mint path.
 //
 // Returns an error if the flag value is not a recognized forge key.
 func detectForgePlatform(flag string, cfg config.ConfigReader) (string, error) {
@@ -7260,6 +7331,9 @@ func detectForgePlatform(flag string, cfg config.ConfigReader) (string, error) {
 				return forge, nil
 			}
 		}
+	}
+	if isForgejoActionsRunner() {
+		return repos.ForgeForgejo, nil
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		return "github", nil
@@ -7287,6 +7361,8 @@ func titleCase(s string) string {
 // The forgePlatform parameter selects the forge-specific code path:
 //   - "gitlab": uses GITLAB_TOKEN directly, reads CI_COMMIT_SHA and
 //     CI_PIPELINE_ID, constructs a GitLab client
+//   - "forgejo": returns errForgejoStatusUnsupported; the Forgejo adapter
+//     does not implement the operations the notifier needs yet
 //   - default (including "github" and ""): uses mint URL, reads
 //     GITHUB_SHA and GITHUB_RUN_ID, constructs a GitHub client
 //
@@ -7322,8 +7398,11 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 	}
 	owner, repo := parts[0], parts[1]
 
-	if forgePlatform == "gitlab" {
+	switch forgePlatform {
+	case "gitlab":
 		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
+	case repos.ForgeForgejo:
+		return nil, errForgejoStatusUnsupported
 	}
 	return setupStatusNotifierGitHub(notifyCfg, fsCfg, owner, repo, role, sOpts, printer)
 }
@@ -7730,7 +7809,7 @@ var roleTokenVars = map[string][]tokenVar{
 // the function, instead of at the call site, also means a test can pass
 // an already-cancelled ctx directly and still observe the remint run.
 func remintAgentTokenForPostScript(ctx context.Context, h *harness.Harness, mintURL, forgePlatform, currentLevel string, printer *ui.Printer) (func(), error) {
-	if forgePlatform == "gitlab" || mintURL == "" {
+	if forgeUsesDirectToken(forgePlatform) || mintURL == "" {
 		return func() {}, nil
 	}
 	remintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), remintForPostScriptTimeout)
@@ -7796,10 +7875,11 @@ func syncRunnerEnvTokens(h *harness.Harness) {
 // maybeRemintAgentTokenForStage remints at stage's privilege level when it
 // differs from currentLevel (the token already in the process environment).
 // The returned cleanup restores the previous token and syncs RunnerEnv.
-// No-op when levels match, mintURL is empty, or the forge is GitLab.
+// No-op when levels match, mintURL is empty, or the forge is GitLab or
+// Forgejo (forgeUsesDirectToken).
 func maybeRemintAgentTokenForStage(ctx context.Context, h *harness.Harness, mintURL, forgePlatform, stage, currentLevel string, printer *ui.Printer) (func(), error) {
 	noop := func() {}
-	if h == nil || mintURL == "" || forgePlatform == "gitlab" {
+	if h == nil || mintURL == "" || forgeUsesDirectToken(forgePlatform) {
 		return noop, nil
 	}
 	level := h.PrivilegeLevelForStage(stage)

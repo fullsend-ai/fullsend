@@ -39,7 +39,7 @@ root of `--fullsend-dir`. A run that finds it only in a sibling
 | `--no-post-script` | Skip post-script execution |
 | `--keep-sandbox` | Skip sandbox deletion after the run |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
-| `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
+| `--forge` | Forge platform to use (`github`, `gitlab`, `forgejo`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `FORGEJO_ACTIONS`/`GITEA_ACTIONS`, `GITHUB_ACTIONS`, `GITLAB_CI`. Forgejo runners also set `GITHUB_ACTIONS`, so they are detected first. See [Forgejo runs](#forgejo-runs) |
 | `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run, or a run that mints a Jira token, stops, because resolving the Jira API gateway address needs a network lookup |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
 
@@ -641,6 +641,33 @@ By default a built-in agent that `config.yaml` does not register with a `source:
 Once any of the first three variables is set, built-in agents resolve only from this source. If the configuration is incomplete or invalid, or the file cannot be read, the run fails with an error. It never falls back to GitHub. The harness, its relative companion files (agent prompt, policy, scripts) and its skill and plugin directories are all read at the pinned commit. Forgejo's git data API addresses them by object ID, so a branch named like the commit cannot stand in for it, and every file is checked against its git object ID. Symlinks and submodules are refused, and directories are bounded like git sparse checkout. The token is sent only to the configured instance, and the client does not follow redirects.
 
 Source checks still apply. Files are recorded under Forgejo raw URLs: `<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/commit/<sha>/<path>`. These URLs must be admitted by `allowed_remote_resources`. The Forgejo host is not one of the default prefixes, so add `<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/` to `config.yaml`. Content is cached by SHA-256 and recorded in the fetch audit log. In offline mode, the pinned URLs resolve from the cache. `fullsend lint`, `fullsend dispatch --route` and the eval measurement manifest lookup use the same source.
+
+## Forgejo runs
+
+On `--forge forgejo` (or in a Forgejo Actions job, where the runner sets `FORGEJO_ACTIONS` or `GITEA_ACTIONS`), `fullsend run` uses the job's own Forgejo token and the configured Forgejo instance. It does not mint a token or read a GitHub token:
+
+| Variable | Meaning |
+|----------|---------|
+| `FORGEJO_TOKEN` | Required. The job's automatic run token. Pass it to `fullsend run` as `FORGEJO_TOKEN`. A provider whose credential references `${FORGEJO_TOKEN}` hands it to the sandbox as an OpenShell placeholder, like `GITLAB_TOKEN` on GitLab. |
+| `FULLSEND_FORGEJO_URL` | Required. Base URL of the Forgejo instance, the same variable that [agent definitions from a Forgejo instance](#agent-definitions-from-a-forgejo-instance) read. Must use `https`; plain `http` is accepted only for a loopback host. |
+
+Before `forgejo` existed, a Forgejo runner was detected as `github` because it sets `GITHUB_ACTIONS`. To keep that behavior, pin it with `--forge github` or `forge: github` in `config.yaml`.
+
+On a Forgejo run:
+
+- **No mint and no GitHub token.** `mint_url`, `--mint-url` and `FULLSEND_MINT_URL` are ignored, and the pre-script and post-script are not reminted. Remote resource fetches use no GitHub token unless `--git-token` is given. In a Forgejo job, `GITHUB_TOKEN` holds the Forgejo token, so it is not sent to GitHub.
+- **Sandbox access.** The instance's host and port are added to the sandbox egress allowlist. A provider profile, `fullsend-forgejo-forge`, is generated for that host and port. It carries no credential.
+- **Token binding.** Every imported provider profile that issues `FORGEJO_TOKEN` must name only the instance's host and port, as one endpoint. Unlike GitLab profiles, these profiles are not narrowed: a profile that names another host stops the run.
+- **Operations Forgejo does not support yet.** Status comments are turned off with the warning `Status notifications disabled: status comments are not supported on the forgejo forge yet`. `fullsend reconcile-status --forge forgejo` exits with the same error. `reconcile-status` resolves its forge like `fullsend run`: `--forge`, then `forge:` in the `config.yaml` under `--fullsend-dir`, then the CI environment variables, so a `forge: forgejo` setting in `config.yaml` also makes it exit with that error. The `dummy-playback` runtime keeps its place in the playlist locally instead of in a tracking comment.
+
+The run stops before any sandbox is created when:
+
+- `FORGEJO_TOKEN` is unset or blank: `FORGEJO_TOKEN is not set: ...`;
+- `FULLSEND_FORGEJO_URL` is unset: `FULLSEND_FORGEJO_URL is not set: ...`;
+- the URL is not https (except for a loopback host), includes credentials, a query or a fragment, or its host is not a concrete hostname or IP address;
+- an imported provider profile issues `FORGEJO_TOKEN` on another host or port: `binding FORGEJO_TOKEN to the Forgejo instance: ...`.
+
+A harness with a `forge:` block must declare a `forgejo:` entry to run on Forgejo. Otherwise the run stops with `forge platform "forgejo" not configured`.
 
 ## GitHub Packages credentials
 

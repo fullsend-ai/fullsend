@@ -41,8 +41,9 @@ type OverlayEntry struct {
 }
 
 var validForgeKeys = map[string]bool{
-	"github": true,
-	"gitlab": true,
+	"forgejo": true,
+	"github":  true,
+	"gitlab":  true,
 	// "jira" is a temporary addition to unblock the triage-agent PoC for
 	// JIRA issues. The code agent remains blocked on a longer-term forge
 	// abstraction design (see https://github.com/fullsend-ai/fullsend/pull/6237).
@@ -371,7 +372,13 @@ func (h *Harness) forgeConfigFor(platform string) (*ForgeConfig, error) {
 	}
 	fc, ok := h.Forge[platform]
 	if !ok {
-		return nil, fmt.Errorf("forge platform %q not configured (available: %s)", platform, forgeKeyList(h.Forge))
+		hint := ""
+		if _, hasGitHub := h.Forge["github"]; platform == "forgejo" && hasGitHub {
+			// Forgejo and Gitea runners also set GITHUB_ACTIONS, so a job that
+			// used to resolve to github now resolves to forgejo.
+			hint = "; to keep using the github configuration on this runner, pin it with --forge github or forge: github"
+		}
+		return nil, fmt.Errorf("forge platform %q not configured (available: %s)%s", platform, forgeKeyList(h.Forge), hint)
 	}
 	return fc, nil
 }

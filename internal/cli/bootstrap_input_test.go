@@ -130,6 +130,24 @@ func TestNewHarnessBootstrap_WithForgeEgressEntry(t *testing.T) {
 	assert.Equal(t, "gitlab.company.com:443", hooksBoot.SandboxHookConfig().ForgeEgressEntry())
 }
 
+// The Forgejo instance host:port, as run.go renders it, reaches the sandbox
+// hook environment that merges it into the egress allowlist.
+func TestNewHarnessBootstrap_WithForgejoEgressEntry(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Security: &harness.SecurityConfig{
+			SandboxHooks: &harness.SandboxHooks{},
+		},
+	}
+	entry := forgejoEgressEntry("forgejo.example.test", 3443)
+	boot, err := newHarnessBootstrap(h, harness.SkillSources(h.Skills), "sandbox-1", "test", entry, nil, nil, "", "/sandbox/workspace/repo", false)
+	require.NoError(t, err)
+
+	hooksBoot, ok := boot.(agentruntime.SandboxHooksBootstrap)
+	require.True(t, ok)
+	assert.Equal(t, "forgejo.example.test:3443", hooksBoot.SandboxHookConfig().ForgeEgressEntry())
+}
+
 // TestNewHarnessBootstrap_CarriesPlugins covers the mapping the runtimes
 // dispatch on: every entry is passed through with the format its directory
 // is in, so each runtime can load its own and name the rest.

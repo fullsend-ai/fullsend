@@ -28,7 +28,7 @@ that registered agent is resolved, composed, and linted; see
 | Flag | Description |
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`; when omitted and `.fullsend` does not exist in the current directory, the command stops and names the flag) |
-| `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in `config.yaml`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
+| `--forge` | Forge platform to use (`github`, `gitlab`, `forgejo`). When omitted, resolved from `forge:` in `config.yaml`, then `FORGEJO_ACTIONS`/`GITEA_ACTIONS`, `GITHUB_ACTIONS`, `GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources |
 | `--strict` | Exit non-zero on warning-level diagnostics (deprecations), not just error-level ones |
 | `--format` | Output format: `text` (default) or `json` |

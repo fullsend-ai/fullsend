@@ -32,7 +32,7 @@ fullsend prepare <agent-name> [flags]
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`) |
 | `--env-file` | Load environment variables from a dotenv file (repeatable), as with `fullsend run` |
-| `--forge` | Forge platform (`github`, `gitlab`). When omitted, resolved as `fullsend run` resolves it |
+| `--forge` | Forge platform (`github`, `gitlab`, `forgejo`). When omitted, resolved as `fullsend run` resolves it |
 | `--event-file` | Normalized event JSON file for overlay resolution. When omitted, the dispatch payload is read, as with `fullsend run` |
 | `--json` | Print the result as JSON on stdout. Progress goes to stderr |
 | `--offline` | Reject network fetches; only use cached remote resources |
