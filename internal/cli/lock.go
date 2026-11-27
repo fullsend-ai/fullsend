@@ -552,22 +552,24 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 		return err
 	}
 	if orgCfg != nil {
+		// Fail before touching lock.yaml: continuing with only the local
+		// harness names would make the prune step below treat every
+		// config-registered agent as removed and delete its lock entry.
 		registered, regErr := harness.RegisteredAgents(orgCfg)
 		if regErr != nil {
-			printer.StepWarn("Could not discover config-registered agents: " + regErr.Error())
-		} else {
-			localSet := make(map[string]bool, len(agentNames))
-			for _, n := range agentNames {
-				localSet[n] = true
-			}
-			for _, ra := range registered {
-				if !localSet[ra.Name] {
-					localSet[ra.Name] = true
-					agentNames = append(agentNames, ra.Name)
-				}
-			}
-			sort.Strings(agentNames)
+			return fmt.Errorf("discovering config-registered agents: %w", regErr)
 		}
+		localSet := make(map[string]bool, len(agentNames))
+		for _, n := range agentNames {
+			localSet[n] = true
+		}
+		for _, ra := range registered {
+			if !localSet[ra.Name] {
+				localSet[ra.Name] = true
+				agentNames = append(agentNames, ra.Name)
+			}
+		}
+		sort.Strings(agentNames)
 	}
 
 	if len(agentNames) == 0 {
