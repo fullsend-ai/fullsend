@@ -66,7 +66,7 @@ type Options struct {
 	JiraProject             string           // Jira project key for default JQL
 	JQL                     string           // Custom JQL override
 	OutputPath              string           // Path to write dispatch records JSON
-	N                       int              // Max issues to process per cycle (default: 5)
+	MaxDispatchesPerCycle   int              // Dispatch records at which a cycle stops reading issues (default: 100, ADR 0085)
 	FirstPollBackfillWindow time.Duration    // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
 	CycleTimeLimit          time.Duration    // Reading budget per cycle, from its start through the last issue read (default: 5m, ADR 0085)
 	IssueTimeLimit          time.Duration    // Reading budget per issue (default: 2m, ADR 0085)

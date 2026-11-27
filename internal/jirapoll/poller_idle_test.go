@@ -15,7 +15,7 @@ import (
 )
 
 // Tests for ADR 0160: the poller skips candidates with nothing new since
-// their lastCheck before the random pick, and a look advances lastCheck to
+// their lastCheck before processing, and a look advances lastCheck to
 // at least the issue's updated value.
 
 // idleTestIssue is a search row for key with the given created and updated
@@ -82,7 +82,7 @@ func dispatchedKeys(p *Poller) []string {
 	return keys
 }
 
-// An idle candidate is dropped before the pick and costs no property write,
+// An idle candidate is dropped before processing and costs no property write,
 // no listing and no lastCheck write; the cycle line carries the active count.
 func TestRunSkipsIdleCandidates(t *testing.T) {
 	logs := captureLog(t)
@@ -119,7 +119,7 @@ func TestRunSkipsIdleCandidates(t *testing.T) {
 				key, mc.listCommentsCalls[key], mc.listChangelogCalls[key], mc.propertySetCalls[key], mc.propertyDeleteCalls[key])
 		}
 	}
-	if want := "poll complete: 10 candidates, 3 active, 3 selected, 3 dispatches"; !strings.Contains(logs.String(), want) {
+	if want := "poll complete: 10 candidates, 3 active, 3 served, 3 dispatches"; !strings.Contains(logs.String(), want) {
 		t.Errorf("log lacks %q:\n%s", want, logs.String())
 	}
 }
@@ -205,7 +205,7 @@ func TestRunLogsOneClampLinePerCycle(t *testing.T) {
 			}
 		}
 		if c := strings.Count(logs.String(), "lastCheck for PROJ-3 is in the future"); c != 1 {
-			t.Errorf("per-issue future WARNING for the picked PROJ-3 logged %d times, want 1", c)
+			t.Errorf("per-issue future WARNING for the processed PROJ-3 logged %d times, want 1", c)
 		}
 	})
 
@@ -358,9 +358,9 @@ func TestRunGarbageLastCheckTreatedAsUnset(t *testing.T) {
 	}
 }
 
-// A cycle whose every selected issue fails ends in an error. Here the one
+// A cycle whose every active issue fails ends in an error. Here the one
 // active issue's lastCheck cannot be read.
-func TestRunAllSelectedIssuesFailedFailsCycle(t *testing.T) {
+func TestRunAllActiveIssuesFailedFailsCycle(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
 	mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Hour))}
@@ -368,7 +368,7 @@ func TestRunAllSelectedIssuesFailedFailsCycle(t *testing.T) {
 
 	p := idleTestPoller(mc, t)
 	err := p.Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "all 1 selected issues failed to process") {
+	if err == nil || !strings.Contains(err.Error(), "all 1 active issues failed to process") {
 		t.Fatalf("Run() error = %v, want the all-failed guard", err)
 	}
 	if len(p.dispatches) != 0 {
@@ -659,8 +659,7 @@ func (c slowClient) SetEntityProperty(ctx context.Context, issueKey, propKey str
 }
 
 // timeLimitPoller returns a poller over two issues, PROJ-1 then PROJ-2, each
-// with a fresh triage comment. With two active issues and N = 5 the pick
-// keeps the search order.
+// with a fresh triage comment. The poller reads them in that order.
 func timeLimitPoller(t *testing.T, mc *mockClient, slow map[string]bool, cycle, issue time.Duration) *Poller {
 	now := time.Now().Truncate(time.Second)
 	if len(mc.searchResult) == 0 {
@@ -764,7 +763,7 @@ func TestRunTimeLimitOutcomes(t *testing.T) {
 		if err := p.Run(context.Background()); err != nil {
 			t.Fatalf("Run() error: %v", err)
 		}
-		for _, want := range []string{"cycle time limit cut off reading PROJ-1", "1 selected issue(s) not read"} {
+		for _, want := range []string{"cycle time limit cut off reading PROJ-1", "1 active issue(s) not read"} {
 			if !strings.Contains(logs.String(), want) {
 				t.Errorf("log lacks %q:\n%s", want, logs)
 			}
@@ -781,7 +780,7 @@ func TestRunTimeLimitOutcomes(t *testing.T) {
 		mc := newMockClient()
 		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true, "PROJ-2": true}, 450*time.Millisecond, 300*time.Millisecond)
 		err := p.Run(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "all 1 issues read before the 450ms cycle time limit failed or timed out; the other 1 selected issues wait") {
+		if err == nil || !strings.Contains(err.Error(), "all 1 issues read before the 450ms cycle time limit failed or timed out; the other 1 active issues wait") {
 			t.Fatalf("Run() error = %v, want the failure of a cycle blocked by a slow issue", err)
 		}
 	})
@@ -790,7 +789,7 @@ func TestRunTimeLimitOutcomes(t *testing.T) {
 		mc := newMockClient()
 		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true, "PROJ-2": true}, time.Hour, 20*time.Millisecond)
 		err := p.Run(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "all 2 selected issues failed to process") {
+		if err == nil || !strings.Contains(err.Error(), "all 2 active issues failed to process") {
 			t.Fatalf("Run() error = %v, want the all-failed guard", err)
 		}
 	})
@@ -800,7 +799,7 @@ func TestRunTimeLimitOutcomes(t *testing.T) {
 		want := "cycle time limit was reached during the search; no issue was read this cycle"
 		if late {
 			name = "the search returns after the cycle limit: normal exit"
-			want = "2 selected issue(s) not read"
+			want = "2 active issue(s) not read"
 		}
 		t.Run(name, func(t *testing.T) {
 			logs := captureLog(t)
@@ -831,7 +830,7 @@ func TestRunTimeLimitOutcomes(t *testing.T) {
 }
 
 // The search returns each candidate's lastCheck, so an idle candidate costs
-// no property read (ADR 0085, Decision item 2); a picked issue's lastCheck
+// no property read (ADR 0085, Decision item 2); a processed issue's lastCheck
 // is still read from the issue before processing.
 func TestRunTakesLastCheckFromSearch(t *testing.T) {
 	now := time.Now().Truncate(time.Second)

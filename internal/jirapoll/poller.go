@@ -20,7 +20,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/jql"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
-	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // EventMatcher evaluates a normalized event against harness CEL triggers
@@ -76,8 +75,8 @@ type Poller struct {
 
 // New creates a Jira Poller with the given options.
 func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
-	if opts.N == 0 {
-		opts.N = 5
+	if opts.MaxDispatchesPerCycle == 0 {
+		opts.MaxDispatchesPerCycle = 100
 	}
 	if opts.FirstPollBackfillWindow == 0 {
 		opts.FirstPollBackfillWindow = 24 * time.Hour
@@ -149,12 +148,9 @@ func (p *Poller) Run(ctx context.Context) error {
 	}
 
 	// Step 2: Drop the issues with nothing new since their lastCheck
-	// (ADR 0160), so an already-handled issue does not take a slot from a
-	// fresh request.
+	// (ADR 0160), so an already-handled issue costs the cycle nothing more
+	// than its search row.
 	active := p.filterActive(candidates)
-
-	// Step 3: Randomly select min(N, len(active)) candidates.
-	selected := selectRandom(active, p.opts.N)
 
 	// The project role roster (GET /project/{key}/role, which Jira Cloud
 	// serves only with the Administer Projects permission) is not loaded
@@ -165,25 +161,40 @@ func (p *Poller) Run(ctx context.Context) error {
 	// cycle (see ensureRoleStructure), leaving checkpoints untouched so
 	// the next cron run retries.
 
-	// Step 4: Process each selected issue. Checkpoint advances are not
+	// Step 3: Process the active issues in the search's order, oldest
+	// change first by default, until the cycle holds MaxDispatchesPerCycle
+	// records, the next issue's records do not fit, or a time limit ends
+	// the reading (ADR 0085, Decision item 3). Checkpoint advances are not
 	// committed to Jira here — detectChanges/routing only compute the
 	// candidate checkpoint per issue; processIssue returns it (zero if
 	// there's nothing to advance) together with the issue's records, this
-	// loop adds the two to the cycle as one unit, and Step 6 below commits
-	// the checkpoint only after Step 5's dispatch-file write has durably
+	// loop adds the two to the cycle as one unit, and Step 5 below commits
+	// the checkpoint only after Step 4's dispatch-file write has durably
 	// succeeded. Committing here instead would mean a local write failure
 	// permanently loses every event this cycle found: the checkpoint would
 	// already be past them in Jira with no record of them ever written
-	// anywhere. An issue that times out, or that the cycle limit cuts off,
-	// contributes neither records nor a checkpoint, so its requests stay
-	// eligible next cycle.
+	// anywhere. An issue that times out, that the cycle limit cuts off, or
+	// that does not fit contributes neither records nor a checkpoint, so
+	// its requests stay eligible next cycle.
+	sized := p.opts.TargetForge != TargetForgeGitLab
+	limits := fmt.Sprintf("%d records", p.opts.MaxDispatchesPerCycle)
+	if sized {
+		limits += fmt.Sprintf(" and %d KB of GitHub job output", maxMatrixOutputBytes/1024)
+	}
 	var pending []pendingCheckpoint
-	var failed, tried int
-	for _, issue := range selected {
+	var failed int
+	batchSize := matrixEnvelopeSize
+	for i, issue := range active {
 		if readCtx.Err() != nil {
+			if ctx.Err() == nil {
+				log.Printf("WARNING: the %s cycle time limit was reached with %d active issue(s) not read; they wait for the next cycle", p.opts.CycleTimeLimit, len(active)-i)
+			}
 			break
 		}
-		tried++
+		if len(p.dispatches) >= p.opts.MaxDispatchesPerCycle {
+			log.Printf("the cycle holds %d dispatch records, at its limit of %d; %d active issue(s) wait for the next cycle", len(p.dispatches), p.opts.MaxDispatchesPerCycle, len(active)-i)
+			break
+		}
 		issueCtx, cancelIssue := context.WithTimeout(readCtx, p.opts.IssueTimeLimit)
 		pc, err := p.processIssue(issueCtx, issue)
 		issueTimedOut := errors.Is(issueCtx.Err(), context.DeadlineExceeded)
@@ -207,7 +218,27 @@ func (p *Poller) Run(ctx context.Context) error {
 			}
 			continue
 		}
+
+		// All of an issue's records go out in the same cycle. An issue
+		// that does not fit in the room left waits for the next cycle,
+		// and so do the issues behind it: the cycle does not skip ahead
+		// to a smaller one. An issue is always taken when the cycle holds
+		// no records yet, so a cycle can exceed the record limit by that
+		// one issue; capIssueRecords keeps it within GitHub's limits.
+		held := len(p.dispatches)
+		newSize := batchSize
+		if sized {
+			newSize = addedOutputSize(batchSize, held, pc.records)
+		}
+		if held > 0 && (held+len(pc.records) > p.opts.MaxDispatchesPerCycle || newSize > maxMatrixOutputBytes) {
+			log.Printf("the cycle holds %d dispatch records and the %d of %s do not fit in the room left (limit: %s); it and the %d active issue(s) behind it wait for the next cycle", held, len(pc.records), issue.Key, limits, len(active)-i-1)
+			break
+		}
+		batchSize = newSize
 		p.dispatches = append(p.dispatches, pc.records...)
+		p.eventsSeen += pc.eventsSeen
+		p.eventsInvalid += pc.eventsInvalid
+		p.eventsMatchErrors += pc.eventsMatchErrors
 		pending = append(pending, pc)
 	}
 	// The caller's context ended, not a time limit of this cycle: stop
@@ -215,22 +246,19 @@ func (p *Poller) Run(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("poll cycle interrupted: %w", err)
 	}
-	if left := len(selected) - tried; left > 0 {
-		log.Printf("WARNING: the %s cycle time limit was reached with %d selected issue(s) not read; they wait for the next cycle", p.opts.CycleTimeLimit, left)
-	}
 	// A cycle in which every issue it read failed or timed out ends in an
 	// error, so a poller blocked by failing or slow issues shows as a failed
 	// run. Reaching the cycle time limit is not a failure by itself: what
 	// was finished is dispatched and committed below, and the rest waits
 	// (ADR 0085, Decision item 3).
 	if failed > 0 && len(pending) == 0 {
-		if failed == len(selected) {
-			return fmt.Errorf("all %d selected issues failed to process", failed)
+		if failed == len(active) {
+			return fmt.Errorf("all %d active issues failed to process", failed)
 		}
-		return fmt.Errorf("all %d issues read before the %s cycle time limit failed or timed out; the other %d selected issues wait for the next cycle", failed, p.opts.CycleTimeLimit, len(selected)-failed)
+		return fmt.Errorf("all %d issues read before the %s cycle time limit failed or timed out; the other %d active issues wait for the next cycle", failed, p.opts.CycleTimeLimit, len(active)-failed)
 	}
 
-	// Step 5: Write dispatch records.
+	// Step 4: Write dispatch records.
 	if p.opts.OutputPath != "" {
 		if err := p.writeDispatches(p.opts.OutputPath); err != nil {
 			return fmt.Errorf("write dispatches: %w", err)
@@ -244,7 +272,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	// real output driver replaces the shell-based dispatch step (tracked
 	// follow-up), a failure in that downstream step will silently drop the
 	// event instead of being retried. Local persistence of dispatches.json
-	// itself is durable before Step 6 below commits any checkpoint.
+	// itself is durable before Step 5 below commits any checkpoint.
 	//
 	// With an output driver (Options.Dispatcher, used for GitLab targets)
 	// the records are scheduled here instead, and an issue's checkpoint is
@@ -317,7 +345,7 @@ func (p *Poller) Run(ctx context.Context) error {
 		return fmt.Errorf("all %d events this cycle were dropped before dispatch (%d failed normalized-event validation, %d failed matching); no checkpoint was advanced, so they are retried next cycle", dropped, p.eventsInvalid, p.eventsMatchErrors)
 	}
 
-	// Step 6: Commit checkpoints now that the dispatch file is durably
+	// Step 5: Commit checkpoints now that the dispatch file is durably
 	// written (or there was nothing to write). All advances are attempted;
 	// any failure then fails the cycle so the operator sees it — the
 	// dispatches are already persisted, so an uncommitted checkpoint means
@@ -335,8 +363,8 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("poll complete: %d candidates, %d active, %d selected, %d dispatches",
-		len(candidates), len(active), len(selected), len(p.dispatches))
+	log.Printf("poll complete: %d candidates, %d active, %d served, %d dispatches",
+		len(candidates), len(active), len(pending), len(p.dispatches))
 	if dispatchErrors > 0 {
 		return fmt.Errorf("failed to dispatch records for %d issue(s); their lastCheck was not advanced, so they are retried next cycle: %w", dispatchErrors, firstDispatchErr)
 	}
@@ -356,6 +384,13 @@ type pendingCheckpoint struct {
 	t              time.Time
 	records        []DispatchRecord
 	dispatchFailed bool // set when Options.Dispatcher failed one of records
+
+	// Event counts of this look. Run adds them to the cycle's counts only
+	// when it takes the issue, so an issue left for the next cycle does not
+	// count toward this cycle's all-dropped guard.
+	eventsSeen        int // events converted
+	eventsInvalid     int // events skipped because they failed validation
+	eventsMatchErrors int // events dropped because matcher.Match errored
 }
 
 // maxRolePriority is the highest value jira.RolePriority can return
@@ -588,17 +623,6 @@ func (r clampReport) log() {
 	log.Print(prefix + strings.Join(parts, "; "))
 }
 
-// selectRandom randomly selects min(n, len(items)) items.
-func selectRandom(items []jira.Issue, n int) []jira.Issue {
-	if len(items) <= n {
-		return items
-	}
-	randutil.Shuffle(len(items), func(i, j int) {
-		items[i], items[j] = items[j], items[i]
-	})
-	return items[:n]
-}
-
 // processIssue confirms write access, detects changes, converts and
 // matches. It returns the issue's dispatch records with the checkpoint value
 // the caller should advance lastCheck to once the dispatch file has been
@@ -704,14 +728,14 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (pendingChe
 	var records []issueRecord
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
-		p.eventsSeen++
+		pc.eventsSeen++
 		// fullsend run cannot use an invalid embedded event, so an event
 		// that fails validation is skipped here rather than dispatched.
 		// An issue served without a labels array never reaches this skip:
 		// toNormalizedEvent maps nil labels to an empty list.
 		if err := ne.Validate(); err != nil {
 			log.Printf("WARNING: skipping event %s for issue %s: %v (Jira issue id %q)", event.Key(), event.IssueKey, err, event.IssueID)
-			p.eventsInvalid++
+			pc.eventsInvalid++
 			continue
 		}
 
@@ -737,7 +761,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue) (pendingChe
 				// guard above instead of advancing behind a
 				// green Run.
 				log.Printf("WARNING: matching event %s: %v", event.Key(), matchErr)
-				p.eventsMatchErrors++
+				pc.eventsMatchErrors++
 				continue
 			}
 			for _, record := range matched {

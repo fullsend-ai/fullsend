@@ -49,12 +49,18 @@ func recordOutputSize(record DispatchRecord) int {
 // matrixOutputSize returns the size GitHub counts for the poll job's matrix
 // output when it holds records.
 func matrixOutputSize(records []DispatchRecord) int {
-	size := matrixEnvelopeSize
-	for i, record := range records {
-		if i > 0 {
+	return addedOutputSize(matrixEnvelopeSize, 0, records)
+}
+
+// addedOutputSize returns the size of a matrix output that measures size and
+// holds held records, after records are added to it.
+func addedOutputSize(size, held int, records []DispatchRecord) int {
+	for _, record := range records {
+		if held > 0 {
 			size += 2 // the comma between two records
 		}
 		size += recordOutputSize(record)
+		held++
 	}
 	return size
 }

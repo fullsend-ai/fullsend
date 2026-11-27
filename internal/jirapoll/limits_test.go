@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -212,5 +213,191 @@ func TestProcessIssueWithinLimitsKeepsOrder(t *testing.T) {
 	}
 	if strings.Contains(logs, "dispatch records this cycle") {
 		t.Errorf("logged a limit that was not reached:\n%s", logs)
+	}
+}
+
+// cycleMatcher produces what each comment asks for with a body of the form
+// "/fs-triage records=N pad=M": N records, each padded with M characters.
+// A body of "/fs-triage fail" fails the match.
+type cycleMatcher struct{}
+
+func (cycleMatcher) Match(_ context.Context, event *normevent.Event) ([]DispatchRecord, error) {
+	if event.Transition.Comment == nil {
+		return nil, nil
+	}
+	body := event.Transition.Comment.Body
+	if body == "/fs-triage fail" {
+		return nil, fmt.Errorf("no route")
+	}
+	var n, pad int
+	if _, err := fmt.Sscanf(body, "/fs-triage records=%d pad=%d", &n, &pad); err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(map[string]string{"pad": strings.Repeat("x", pad)})
+	if err != nil {
+		return nil, err
+	}
+	records := make([]DispatchRecord, n)
+	for i := range records {
+		records[i] = DispatchRecord{Agent: fmt.Sprintf("agent-%d", i), StatusNumber: fmt.Sprintf("%d", event.Entity.ID), EventPayload: payload}
+	}
+	return records, nil
+}
+
+// cycleTestClient returns a client whose search lists one issue per entry of
+// bodies, PROJ-1 first, each with those comments.
+func cycleTestClient(bodies ...[]string) *mockClient {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{"dev-account": "Developers"}
+	for i, issueBodies := range bodies {
+		key := fmt.Sprintf("PROJ-%d", i+1)
+		mc.searchResult = append(mc.searchResult, idleTestIssue(i+1, now.Add(-48*time.Hour), now.Add(-time.Minute)))
+		for j, body := range issueBodies {
+			mc.comments[key] = append(mc.comments[key], jira.Comment{
+				ID:      fmt.Sprintf("%d%02d", i+1, j),
+				Body:    body,
+				Created: now.Add(-time.Minute).Format(jiraTimeLayout),
+				Author:  jira.User{AccountID: "dev-account", AccountType: "atlassian"},
+			})
+		}
+	}
+	return mc
+}
+
+// runCycleWithLimit runs one cycle on mc with the given record limit and
+// returns the issue ID of each dispatched record and the cycle's log.
+func runCycleWithLimit(t *testing.T, mc *mockClient, targetForge string, limit int) ([]string, string) {
+	t.Helper()
+	logs := captureLog(t)
+	p := newTestPoller(mc, cycleMatcher{}, Options{
+		TargetRepo:            "acme/platform",
+		TargetForge:           targetForge,
+		GitLabURL:             "https://gitlab.example.com",
+		JiraBaseURL:           "https://acme.atlassian.net",
+		JiraProject:           "PROJ",
+		OutputPath:            filepath.Join(t.TempDir(), "dispatches.json"),
+		MaxDispatchesPerCycle: limit,
+	})
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	return dispatchedKeys(p), logs.String()
+}
+
+const oneRecord = "/fs-triage records=1 pad=0"
+
+// The active issues are served in the search's order, with no random pick
+// and no limit of five issues (ADR 0085, Decision item 3).
+func TestRunServesActiveIssuesInSearchOrder(t *testing.T) {
+	bodies := make([][]string, 8)
+	for i := range bodies {
+		bodies[i] = []string{oneRecord}
+	}
+	served, logs := runCycleWithLimit(t, cycleTestClient(bodies...), TargetForgeGitHub, 0)
+
+	if got, want := strings.Join(served, ","), "10001,10002,10003,10004,10005,10006,10007,10008"; got != want {
+		t.Errorf("served %s, want all eight in search order: %s", got, want)
+	}
+	if want := "poll complete: 8 candidates, 8 active, 8 served, 8 dispatches"; !strings.Contains(logs, want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+}
+
+// A cycle stops reading issues once it holds max_dispatches_per_cycle
+// records; the issues behind wait, unread, for the next cycle.
+func TestRunStopsAtTheRecordLimit(t *testing.T) {
+	mc := cycleTestClient([]string{oneRecord}, []string{oneRecord}, []string{oneRecord}, []string{oneRecord}, []string{oneRecord})
+
+	served, logs := runCycleWithLimit(t, mc, TargetForgeGitHub, 3)
+	if got := strings.Join(served, ","); got != "10001,10002,10003" {
+		t.Errorf("cycle 1 served %s, want the first three", got)
+	}
+	if want := "the cycle holds 3 dispatch records, at its limit of 3; 2 active issue(s) wait for the next cycle"; !strings.Contains(logs, want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+	if mc.listCommentsCalls["PROJ-4"]+mc.listCommentsCalls["PROJ-5"]+mc.propertySetCalls["PROJ-4"]+mc.propertySetCalls["PROJ-5"] != 0 {
+		t.Error("cycle 1 read or wrote an issue behind the limit")
+	}
+
+	served, _ = runCycleWithLimit(t, mc, TargetForgeGitHub, 3)
+	if got := strings.Join(served, ","); got != "10004,10005" {
+		t.Errorf("cycle 2 served %s, want the two that waited", got)
+	}
+}
+
+// All of an issue's records go out in the same cycle. An issue that does
+// not fit in the room left waits, and the cycle does not skip ahead to a
+// smaller issue behind it. Its events are not counted in the cycle it sat
+// out.
+func TestRunIssueThatDoesNotFitWaits(t *testing.T) {
+	mc := cycleTestClient(
+		[]string{"/fs-triage records=2 pad=0"},
+		[]string{"/fs-triage records=2 pad=0", "/fs-triage fail"},
+		[]string{oneRecord},
+	)
+
+	served, logs := runCycleWithLimit(t, mc, TargetForgeGitHub, 3)
+	if got := strings.Join(served, ","); got != "10001,10001" {
+		t.Errorf("cycle 1 served %s, want only PROJ-1's two records", got)
+	}
+	if want := "the cycle holds 2 dispatch records and the 2 of PROJ-2 do not fit in the room left (limit: 3 records and 768 KB of GitHub job output); it and the 1 active issue(s) behind it wait for the next cycle"; !strings.Contains(logs, want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+	if !storedLastCheckAt(t, mc, "PROJ-2").IsZero() {
+		t.Error("cycle 1 advanced the lastCheck of the issue that did not fit")
+	}
+	if mc.listCommentsCalls["PROJ-3"] != 0 {
+		t.Error("cycle 1 skipped ahead to PROJ-3")
+	}
+	if strings.Contains(logs, "because matching them failed") {
+		t.Errorf("cycle 1 counted the events of an issue it did not take:\n%s", logs)
+	}
+
+	served, logs = runCycleWithLimit(t, mc, TargetForgeGitHub, 3)
+	if got := strings.Join(served, ","); got != "10002,10002,10003" {
+		t.Errorf("cycle 2 served %s, want PROJ-2's two records and then PROJ-3", got)
+	}
+	if want := "dropped 1 of 3 events this cycle because matching them failed"; !strings.Contains(logs, want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+}
+
+// An issue with more records than the limit is taken when the cycle holds
+// none, so it is dispatched alone and does not hold back the issues behind
+// it.
+func TestRunIssueOverTheLimitGoesAlone(t *testing.T) {
+	mc := cycleTestClient(
+		[]string{oneRecord},
+		[]string{"/fs-triage records=3 pad=0"},
+		[]string{oneRecord},
+	)
+
+	for cycle, want := range []string{"10001", "10002,10002,10002", "10003"} {
+		served, _ := runCycleWithLimit(t, mc, TargetForgeGitHub, 2)
+		if got := strings.Join(served, ","); got != want {
+			t.Errorf("cycle %d served %s, want %s", cycle+1, got, want)
+		}
+	}
+}
+
+// On the GitHub target a cycle also stops before the issue whose records
+// would take the matrix output past 768 KB. GitLab has no batch output, so
+// the size limit does not apply there.
+func TestRunStopsBeforeTheSizeLimit(t *testing.T) {
+	// Five issues with one record of about 200 KB each.
+	big := []string{"/fs-triage records=1 pad=100000"}
+
+	served, logs := runCycleWithLimit(t, cycleTestClient(big, big, big, big, big), TargetForgeGitHub, 0)
+	if got := strings.Join(served, ","); got != "10001,10002,10003" {
+		t.Errorf("GitHub served %s, want the three issues that fit in 768 KB", got)
+	}
+	if want := "the 1 of PROJ-4 do not fit in the room left"; !strings.Contains(logs, want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+
+	served, _ = runCycleWithLimit(t, cycleTestClient(big, big, big, big, big), TargetForgeGitLab, 0)
+	if got := strings.Join(served, ","); got != "10001,10002,10003,10004,10005" {
+		t.Errorf("GitLab served %s, want all five", got)
 	}
 }

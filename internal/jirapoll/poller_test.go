@@ -315,8 +315,8 @@ func TestNew(t *testing.T) {
 		JiraBaseURL: "https://acme.atlassian.net",
 		JiraProject: "PROJ",
 	})
-	if p.opts.N != 5 {
-		t.Errorf("N = %d, want default 5", p.opts.N)
+	if p.opts.MaxDispatchesPerCycle != 100 {
+		t.Errorf("MaxDispatchesPerCycle = %d, want default 100", p.opts.MaxDispatchesPerCycle)
 	}
 	if p.opts.CycleTimeLimit != 5*time.Minute || p.opts.IssueTimeLimit != 2*time.Minute {
 		t.Errorf("time limits = %v per cycle, %v per issue; want the ADR 0085 defaults 5m and 2m", p.opts.CycleTimeLimit, p.opts.IssueTimeLimit)
@@ -1583,7 +1583,7 @@ func TestRunWriteAccessCheck(t *testing.T) {
 		mc := newMC()
 		p := poller(writeDeniedClient{mc, map[string]bool{"PROJ-1": true, "PROJ-2": true}})
 		err := p.Run(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "all 2 selected issues failed to process") {
+		if err == nil || !strings.Contains(err.Error(), "all 2 active issues failed to process") {
 			t.Fatalf("Run() error = %v, want the all-failed guard", err)
 		}
 		if len(p.dispatches) != 0 {
@@ -1844,23 +1844,6 @@ func TestRunMultipleEvents(t *testing.T) {
 
 	if len(dispatches) < 2 {
 		t.Errorf("expected at least 2 dispatches (comment + label), got %d: %+v", len(dispatches), dispatches)
-	}
-}
-
-func TestSelectRandom(t *testing.T) {
-	issues := make([]jira.Issue, 10)
-	for i := range issues {
-		issues[i] = jira.Issue{Key: "PROJ-" + string(rune('0'+i))}
-	}
-
-	selected := selectRandom(issues, 3)
-	if len(selected) != 3 {
-		t.Errorf("selected %d, want 3", len(selected))
-	}
-
-	all := selectRandom(make([]jira.Issue, 2), 5)
-	if len(all) != 2 {
-		t.Errorf("selected %d, want 2", len(all))
 	}
 }
 

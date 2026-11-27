@@ -82,6 +82,7 @@ tracker:                             # Issue tracker. At most one provider block
   #   poll:
   #     enabled: true                # Managed poll workflow switch (see the tracker.jira section)
   #     query: 'labels = "fullsend"'  # JQL; always scoped to project
+  #     max_dispatches_per_cycle: 100 # Dispatch records at which a poll cycle stops reading issues (1-250)
 
 # ── Authorization ────────────────────────────────────────────
 authorization:                       # Extra sources of permission for triggering agents
@@ -475,6 +476,7 @@ tracker:
     poll:
       enabled: true
       query: 'labels = "fullsend" AND statusCategory != Done'
+      max_dispatches_per_cycle: 100
 ```
 
 - **`tracker.jira.base_url`** — The Jira site URL. It must be an `https` URL
@@ -542,6 +544,17 @@ tracker:
   WARNING every cycle: when more issues changed within the window than the
   search reads, newest change first leaves the oldest requests out. See
   [Custom JQL](../guides/user/jira-integration.md#custom-jql).
+- **`tracker.jira.poll.max_dispatches_per_cycle`** — The number of dispatch
+  records at which a poll cycle stops reading issues. A whole number from 1
+  to 250; it defaults to 100. The poller serves issues in the query's order
+  and takes all of an issue's records or none, so an issue that does not fit
+  in the room left waits for the next cycle, and an issue with more records
+  than the limit is dispatched alone. The limit sets how fast a backlog
+  drains: a request that waits longer than the 24-hour backfill window is
+  lost. 250 is GitHub's limit of 256 jobs in a matrix less a small margin.
+  New in fullsend v0.58.0: an older CLI or reusable workflow rejects a
+  config that sets it, and stops polling, so set it after the upgrade. See
+  [Poll coordination](../guides/user/jira-integration.md#poll-coordination).
 
 `base_url` and `project` are required once `base_url`, `api_url`, `project`,
 a nonempty `run_label`, or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets

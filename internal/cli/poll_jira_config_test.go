@@ -43,6 +43,7 @@ func TestLoadJiraPollSettings_ReadsConfig(t *testing.T) {
     poll:
       enabled: true
       query: 'labels = "fullsend" ORDER BY updated DESC'
+      max_dispatches_per_cycle: 40
 `)
 	got, err := loadJiraPollSettings(dir, "", "", "")
 	require.NoError(t, err)
@@ -52,6 +53,8 @@ func TestLoadJiraPollSettings_ReadsConfig(t *testing.T) {
 		project: "PROJ",
 		jql:     `project = "PROJ" AND (labels = "fullsend") ORDER BY updated DESC`,
 		enabled: true,
+
+		maxDispatches: 40,
 	}, got)
 }
 
@@ -62,6 +65,7 @@ func TestLoadJiraPollSettings_Defaults(t *testing.T) {
 	assert.Equal(t, config.DefaultJiraAPIURL, got.apiURL)
 	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done)`, got.jql)
 	assert.False(t, got.enabled, "an omitted poll mapping leaves polling disabled")
+	assert.Equal(t, 100, got.maxDispatches)
 }
 
 func TestLoadJiraPollSettings_QueryWithoutOrderBy(t *testing.T) {

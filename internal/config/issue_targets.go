@@ -104,6 +104,15 @@ const DefaultJiraAPIURL = "https://api.atlassian.com"
 // poller serves the oldest change first (ADR 0085, Decision item 2).
 const DefaultJiraPollQuery = "statusCategory != Done"
 
+// Bounds and default of tracker.jira.poll.max_dispatches_per_cycle (ADR 0085,
+// Decision items 3 and 4). The maximum is GitHub's 256-job matrix limit less
+// a small margin.
+const (
+	DefaultJiraPollMaxDispatchesPerCycle = 100
+	MinJiraPollMaxDispatchesPerCycle     = 1
+	MaxJiraPollMaxDispatchesPerCycle     = 250
+)
+
 // JiraTrackingConfig holds Jira issue-tracking settings: the Jira site and
 // project this repository is connected to, the cross-project issue
 // destinations, and the poller settings. Credentials (the Jira token and
@@ -133,6 +142,10 @@ type JiraPollConfig struct {
 	// Query is the JQL the poller runs, before project scoping; empty
 	// means DefaultJiraPollQuery.
 	Query string `yaml:"query,omitempty"`
+	// MaxDispatchesPerCycle is the number of dispatch records at which a
+	// poll cycle stops reading issues; nil means
+	// DefaultJiraPollMaxDispatchesPerCycle.
+	MaxDispatchesPerCycle *int `yaml:"max_dispatches_per_cycle,omitempty"`
 }
 
 // jiraTrackingKeys, jiraPollKeys, and jiraAllowedTargetsKeys are the keys
@@ -140,7 +153,7 @@ type JiraPollConfig struct {
 // tracker.jira.allowed_targets.
 var (
 	jiraTrackingKeys       = map[string]bool{"base_url": true, "api_url": true, "run_label": true, "project": true, "allowed_targets": true, "poll": true}
-	jiraPollKeys           = map[string]bool{"enabled": true, "query": true}
+	jiraPollKeys           = map[string]bool{"enabled": true, "query": true, "max_dispatches_per_cycle": true}
 	jiraAllowedTargetsKeys = map[string]bool{"projects": true}
 )
 
@@ -184,6 +197,13 @@ func (j *JiraTrackingConfig) UnmarshalYAML(n *yaml.Node) error {
 				}
 			}
 		}
+		// yaml.v3 decodes 2.5 into an int field as 2, so a value that is not
+		// a whole number is rejected here instead of being rounded down.
+		if poll := mappingNode(r, "poll"); poll != nil && poll.Kind == yaml.MappingNode {
+			if limit := mappingNode(poll, "max_dispatches_per_cycle"); limit != nil && limit.ShortTag() != "!!int" && limit.ShortTag() != "!!null" {
+				return managedFieldError(limit, "tracker.jira.poll.max_dispatches_per_cycle must be a whole number")
+			}
+		}
 	}
 	return n.Decode((*jiraTrackingPlain)(j))
 }
@@ -208,6 +228,15 @@ func (j *JiraTrackingConfig) PollQuery() string {
 		return DefaultJiraPollQuery
 	}
 	return j.Poll.Query
+}
+
+// PollMaxDispatchesPerCycle returns poll.max_dispatches_per_cycle, or
+// DefaultJiraPollMaxDispatchesPerCycle when it is unset.
+func (j *JiraTrackingConfig) PollMaxDispatchesPerCycle() int {
+	if j == nil || j.Poll == nil || j.Poll.MaxDispatchesPerCycle == nil {
+		return DefaultJiraPollMaxDispatchesPerCycle
+	}
+	return *j.Poll.MaxDispatchesPerCycle
 }
 
 // PollJQL returns the poller's JQL: the configured (or default) query
@@ -403,6 +432,10 @@ func cloneTracking(src *TrackingConfig) *TrackingConfig {
 				enabled := *p.Enabled
 				poll.Enabled = &enabled
 			}
+			if p.MaxDispatchesPerCycle != nil {
+				limit := *p.MaxDispatchesPerCycle
+				poll.MaxDispatchesPerCycle = &limit
+			}
 			out.Jira.Poll = poll
 		}
 	}
@@ -513,6 +546,9 @@ func (j *JiraTrackingConfig) ValidateConnection() error {
 	}
 	if j.Poll != nil && !jqlParensBalanced(j.Poll.Query) {
 		return fmt.Errorf("tracker.jira: poll.query has unbalanced parentheses: the query is wrapped in parentheses to scope it to the project")
+	}
+	if limit := j.PollMaxDispatchesPerCycle(); limit < MinJiraPollMaxDispatchesPerCycle || limit > MaxJiraPollMaxDispatchesPerCycle {
+		return fmt.Errorf("tracker.jira: poll.max_dispatches_per_cycle must be a whole number from %d to %d (got %d)", MinJiraPollMaxDispatchesPerCycle, MaxJiraPollMaxDispatchesPerCycle, limit)
 	}
 	return nil
 }

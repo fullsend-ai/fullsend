@@ -344,6 +344,9 @@ type jiraPollSettings struct {
 	project string // tracker.jira.project
 	jql     string // tracker.jira.poll.query (or the default) scoped to project
 	enabled bool   // tracker.jira.poll.enabled is true
+	// maxDispatches is tracker.jira.poll.max_dispatches_per_cycle, or its
+	// default.
+	maxDispatches int
 }
 
 // loadJiraPollSettings reads the Jira site, API gateway, project, and poll
@@ -386,6 +389,8 @@ func loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jql string) (jiraPo
 		project: jiraCfg.Project,
 		jql:     jiraCfg.PollJQL(),
 		enabled: jiraCfg.PollEnabled(),
+
+		maxDispatches: jiraCfg.PollMaxDispatchesPerCycle(),
 	}, nil
 }
 
@@ -574,6 +579,8 @@ func jiraPollOptions(args jiraPollArgs, matcher *celMatcher) jirapoll.Options {
 		JiraProject: args.jira.project,
 		JQL:         args.jira.jql,
 		OutputPath:  args.outputPath,
+
+		MaxDispatchesPerCycle: args.jira.maxDispatches,
 
 		Authorization: jiraPollAuthorization(matcher.jiraAuth),
 	}
