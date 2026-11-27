@@ -140,12 +140,19 @@ each target repository's **`.fullsend/`** directory
   within the sandbox? (The environment-variable dimension is now a
   published, generated contract —
   [ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md),
-  [contract](normative/sandbox-env/v1/README.md); tools, runtimes,
-  and workspace setup remain open.)
+  [contract](normative/sandbox-env/v1/README.md). Image composition for
+  project-selected images and a separate tools image is decided in
+  [ADR 0173](ADRs/0173-compose-multiple-images-into-agent-sandboxes.md);
+  Fullsend supplies a non-root identity and writable workspace at runtime, while
+  the exact tools and runtimes remain open.)
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
 
 **Decided:**
 
+- Image composition and sandbox-image contract: harnesses can pair a
+  project-selected sandbox image with a separately mounted tools image, while
+  Fullsend supplies a non-root identity and writable workspace at runtime
+  ([ADR 0173](ADRs/0173-compose-multiple-images-into-agent-sandboxes.md)).
 - Provider-backed policy composition: network access is granted through provider profiles declared in harness files. Policy files define only non-composable sandbox restrictions (filesystem, landlock, process). A single `base.yaml` replaces per-agent policy files in the scaffold. Inline `network_policies` continue to work but providers are the recommended approach ([ADR 0065](ADRs/0065-provider-backed-policy-composition.md)).
 
 ## Agent Harness
@@ -1384,7 +1391,8 @@ GitHub event ──► SHIM WORKFLOW (.github/workflows/fullsend.yaml in the rep
 | Harness store | YAML files in `.fullsend/harness/` (e.g. `code.yaml`, `triage.yaml`) | |
 | Sandbox | OpenShell with per-agent L7 network policies (endpoint + binary restrictions) | |
 | Agent runtime | Claude Code (`claude --agent --dangerously-skip-permissions`); pi (`pi --print --mode json`) and Codex (`codex exec --json`) as opt-in runtimes | [runtimes.md](runtimes.md) |
-| Sandbox image | `ghcr.io/fullsend-ai/fullsend-code:latest` (pre-built with tools, runtimes, security scanners) | |
+| Sandbox image | Harness-selected image, paired with the Fullsend system image at `/opt/fullsend` | [ADR 0173](ADRs/0173-compose-multiple-images-into-agent-sandboxes.md) |
+| System image | `ghcr.io/fullsend-ai/fullsend-code:latest`, mounted at `/opt/fullsend` | [ADR 0173](ADRs/0173-compose-multiple-images-into-agent-sandboxes.md) |
 | Credential isolation | Read-only GitHub App token inside sandbox; write token only in post-script | [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) |
 | Validation | Host-side schema validation script with retry loop | [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) |
 | Post-script | `post-code.sh` (in `fullsend-ai/agents`): protected-path check, gitleaks scan, pre-commit, push, PR creation | |

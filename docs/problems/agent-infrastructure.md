@@ -164,7 +164,11 @@ implementation and operational acceptance remain open.
   URL decided in
   [ADR 0156](../ADRs/0156-separate-jira-api-url-from-site-url.md). Other
   agent resource access remains open.
-- Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
+- Do we need a dedicated “agent runner” image or environment with a known,
+  auditable tool set? Supplying a separate tools image alongside the project
+  image is decided in
+  [ADR 0173](../ADRs/0173-compose-multiple-images-into-agent-sandboxes.md);
+  its contents and auditability remain open.
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).
 - How do CI wiring and recurring discovery support entity-bound resident runs
   without introducing a separate agent coordinator? The design direction is

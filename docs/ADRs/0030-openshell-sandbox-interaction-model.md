@@ -18,6 +18,11 @@ Date: 2026-05-06
 
 Accepted
 
+Partially superseded. The sandbox-image requirements here are superseded
+entirely by [ADR 0173](0173-compose-multiple-images-into-agent-sandboxes.md).
+The remaining interaction, credential-delivery, and lifecycle decisions in this
+ADR remain in effect.
+
 ## Context
 
 The `fullsend run` command provisions and interacts with
@@ -63,6 +68,9 @@ agent definitions, skills, host files, security hooks.
 dependencies into the image. Static content only — changes require a new image
 build. Custom images must include a `sandbox` user (uid/gid 1000660000), a
 writable workdir, and `iproute2` for network namespace setup.
+
+> **Superseded:** These sandbox-image requirements are replaced by the
+> [Sandbox Image Contract Changes in ADR 0173](0173-compose-multiple-images-into-agent-sandboxes.md#sandbox-image-contract-changes).
 
 **C. OpenShell `--upload` flag.** Upload files at sandbox creation time. Single
 path argument — less control over destinations and timing than SCP.
@@ -142,7 +150,12 @@ directly (credential delivery tier 4).
 **Files and binaries: SCP + images (Options A + B).** Agent definitions, skills,
 host files, and security hooks are SCP'd during bootstrap. Tool binaries and
 runtimes are baked into the container image. OpenShell's `--upload` (Option C)
-is not used — fullsend needs per-file destination control and content expansion.
+is not used — fullsend needs per-file destination control and content
+expansion.
+
+> **Note (2026-11):** this part of the decision was revised in [ADR
+> 0173](0173-compose-multiple-images-into-agent-sandboxes.md) which now
+> distinguishes between a **sandbox image** and a **system image**.
 
 **Commands: SSH (Option A).** `SSHStreamReader` enables real-time parsing of the
 agent's `stream-json` output. All SSH traffic tunnels through the gateway's
