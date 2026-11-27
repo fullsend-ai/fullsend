@@ -835,7 +835,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			"the publisher-qualified wire id the vendored extension registers, so xai-vertex/xai/grok-4.6 resolves and an invented Grok id does not")
 		hooksExt := cfg + "/fullsend-hooks.js"
 		editExt := cfg + "/fullsend-edit-repair.js"
-		require.Len(t, m.Agent.ExtensionDigests, 3,
+		require.Len(t, m.Agent.ExtensionDigests, 4,
 			"both child -e entries Bootstrap wrote into the config dir are digest-covered, so the extension can re-check them before every dispatch")
 		require.NotEmpty(t, m.Agent.ExtensionDigests[hooksExt])
 		assert.Contains(t, piHooksGuard(hooksExt, cfg+"/fullsend-manifest.json"), m.Agent.ExtensionDigests[hooksExt],
@@ -875,7 +875,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Equal(t, []string{"read", "grep"}, m.Agent.Tools, "children get the built-ins only")
 		assert.Equal(t, "explicit", m.Agent.ToolMode)
 		assert.Equal(t, []string{piVertexExtensionPath}, m.Agent.Extensions, "no hook adapter without security")
-		require.Len(t, m.Agent.ExtensionDigests, 1, "the child loadout guard is always checked")
+		require.Len(t, m.Agent.ExtensionDigests, 2, "the child loadout guard is always checked")
 		assert.NotEmpty(t, m.Agent.ExtensionDigests[cfg+"/fullsend-agent.js"])
 		assert.Equal(t, piMCPResourceTools, m.Agent.MCPResourceTools)
 		assert.Empty(t, m.Agent.EditRepairExtension, "the tools: list names no edit")
@@ -891,7 +891,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Equal(t, []string{"read", "edit"}, m.Agent.Tools, "children keep edit, minus the sub-agent tools")
 		assert.Equal(t, cfg+"/fullsend-edit-repair.js", m.Agent.EditRepairExtension, "a declared list naming Edit carries the extension")
 		assert.NotContains(t, m.Agent.Extensions, cfg+"/fullsend-edit-repair.js", "never in the shared list: a child without edit must not load it")
-		require.Len(t, m.Agent.ExtensionDigests, 2, "repair and child loadout guard are checked")
+		require.Len(t, m.Agent.ExtensionDigests, 3, "repair and child loadout guard are checked")
 		require.NotEmpty(t, m.Agent.ExtensionDigests[cfg+"/fullsend-edit-repair.js"])
 		assert.Equal(t, piEditRepairExtensionJS, storedUpload(t, store, cfg+"/fullsend-edit-repair.js"))
 	})

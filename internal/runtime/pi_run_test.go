@@ -102,7 +102,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 
 	// The guard runs before the agent-writable .env is sourced; the
 	// runner-owned locations are re-pinned right after it.
-	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && `+piEnvLoad+` && `+piLoaderEnvUnset()+` && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_PI_HOOK_PYTHON="$FULLSEND_ENV_PYTHON" && export FULLSEND_PI_HOOK_PATH="$FULLSEND_TRUSTED_PATH" && export FULLSEND_PI_CHILD_BIN="$FULLSEND_PI_BIN" FULLSEND_PI_CHILD_NODE="$FULLSEND_PI_NODE" && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && `+cliLaunch(piBinaryVar, piNodeVar)+` --print --mode json`), cmd)
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piToolSelectionGuard("/sandbox/pi-config/fullsend-tools.js")+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && `+piEnvLoad), cmd)
 	// Gemini on Vertex needs GOOGLE_CLOUD_LOCATION; the fleet exports the
 	// region as CLOUD_ML_REGION, so it is mirrored after .env is sourced.
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`)
@@ -855,8 +855,8 @@ func TestBuildPiRunCommand_EmptyToolRestriction(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	m := &piManifest{Tools: []string{}}
 	cmd := buildPiRunCommand(piTestParams(), m, nil, "")
-	assert.Contains(t, cmd, "--no-builtin-tools")
-	assert.NotContains(t, cmd, "--tools ")
+	assert.Contains(t, cmd, "--tools ''")
+	assert.NotContains(t, cmd, "--no-builtin-tools")
 }
 
 func TestBuildPiRunCommand_QuotesRepoDirAndModel(t *testing.T) {

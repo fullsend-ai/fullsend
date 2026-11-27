@@ -82,6 +82,7 @@ type piAgentManifest struct {
 	// DeclaredExtensions are the vetted harness plugins inherited by children.
 	// The dispatcher rechecks their tree hashes before every child launch.
 	DeclaredExtensions []piManifestExtension `json:"declaredExtensions,omitempty"`
+	ToolSelector       string                `json:"toolSelector,omitempty"`
 	MCPResourceTools   []string              `json:"mcpResourceTools"`
 	// ExtensionDigests holds sha256 (hex) digests for runner-written child
 	// extensions: always fullsend-agent.js, plus hook/repair adapters when used.
@@ -154,7 +155,9 @@ type piManifest struct {
 	Model string `json:"model,omitempty"`
 	// Tools are pi tool names for --tools; nil means the settings.json
 	// defaultTools set (piDefaultTools).
-	Tools []string `json:"tools"`
+	Tools       []string `json:"tools"`
+	StrictTools bool     `json:"strictTools"`
+	NativeTools []string `json:"nativeTools,omitempty"`
 	// BashAllowlist is the Bash(a,b) first-token allowlist from the agent
 	// definition. Under Claude Code it is steering, not a security control
 	// (ADR 0027: the sandbox is the boundary and tool-level restrictions are
@@ -291,8 +294,12 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 	}
 
 	tools, unsupported := piToolsFor(def.Tools)
-	for _, u := range unsupported {
-		fmt.Fprintf(os.Stderr, "Agent tool %q has no pi equivalent and is dropped from the allowlist\n", u)
+	if len(unsupported) != 0 {
+		return fmt.Errorf("pi tool selections must be exact names (MCP selectors may use supported patterns): %q", unsupported)
+	}
+	// Children always have an explicit selection, even for a default-mode parent.
+	if err := uploadBytes(sandboxName, cfg+"/"+piToolSelectionExtensionFile, piToolSelectionExtensionJS); err != nil {
+		return fmt.Errorf("installing tool selector: %w", err)
 	}
 	// pi's skills are prompt-driven: the system prompt tells the model to
 	// `read` a skill's SKILL.md, and that section is only emitted when the
@@ -306,6 +313,8 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		Description:       def.Description,
 		Model:             def.Model,
 		Tools:             tools,
+		StrictTools:       def.Tools != nil,
+		NativeTools:       piNativeToolsFor(def.Tools),
 		BashAllowlist:     def.BashAllowlist,
 		BashAllowlistMode: piBashAllowlistMode(),
 		Extensions:        extensions,
@@ -358,12 +367,14 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		if err != nil {
 			return err
 		}
+		block.ToolSelector = cfg + "/" + piToolSelectionExtensionFile
 		block.DeclaredExtensions = extensions
 		block.MCPResourceTools = append([]string{}, piMCPResourceTools...)
 		if block.ExtensionDigests == nil {
 			block.ExtensionDigests = map[string]string{}
 		}
 		sum := sha256.Sum256(piAgentExtensionJS)
+		block.ExtensionDigests[block.ToolSelector] = piToolSelectionDigest()
 		block.ExtensionDigests[cfg+"/"+piAgentExtensionFile] = hex.EncodeToString(sum[:])
 		manifest.Agent = block
 	}

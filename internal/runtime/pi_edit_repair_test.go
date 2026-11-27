@@ -47,7 +47,7 @@ func TestBuildPiRunCommand_EditRepairGate(t *testing.T) {
 		"runner-owned before declared; a declared extension must not also register edit, since pi rejects two extensions that register the same tool name")
 
 	cmd = buildPiRunCommand(piTestParams(), &piManifest{AgentName: "code", Tools: []string{}}, nil, "")
-	assert.Contains(t, cmd, "--no-builtin-tools")
+	assert.Contains(t, cmd, "--tools ''")
 	assert.NotContains(t, cmd, piEditRepairExtensionFile, "under --no-builtin-tools the extension's edit would not be filtered")
 
 	cmd = buildPiRunCommand(piTestParams(), &piManifest{AgentName: "triage", Tools: []string{"bash", "read"}}, nil, "")
