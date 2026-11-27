@@ -737,6 +737,9 @@ type IssueComment struct {
 	// authored the comment. It is empty for other forges or ordinary users.
 	AppClientID string
 	CreatedAt   string
+	// IssueNumber is the issue or pull request number the comment belongs to.
+	// GitHub populates this from the comment's issue_url field.
+	IssueNumber int
 }
 
 // Reaction represents an emoji reaction on an issue, pull request,

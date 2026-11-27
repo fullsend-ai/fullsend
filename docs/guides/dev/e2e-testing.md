@@ -1038,8 +1038,13 @@ the "How to check" links in [LADDER.md](../../../LADDER.md).
    `behaviour-live` and `playback-live` check runs on the head sha, passes
    `live` to the suite, and the report job completes both checks from the
    `behaviour` and `playback` results.
-4. **Gate** — base checkout only; never checks out PR head
-   ([`scripts/check-e2e-authorization.sh`](../../../scripts/check-e2e-authorization.sh)).
+4. **Gate** — base checkout only; never checks out PR head. The hidden command
+   `fullsend ci check-e2e-authorization` runs the policy in
+   [`internal/e2eauth`](../../../internal/e2eauth/check.go). Fullsend CI still invokes
+   [`scripts/check-e2e-authorization.sh`](../../../scripts/check-e2e-authorization.sh)
+   until the gate action switches to the CLI
+   ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371) part 3). See
+   [Gate job mitigation](../../contributing/ci-workflows.md#gate-job-mitigation).
 5. **Behaviour / playback** — on a pull request only after
    `/ok-to-test <sha> live`; `contents: read` and `id-token: write` only;
    checkout the commit under test, authenticate to GCP via WIF, mint

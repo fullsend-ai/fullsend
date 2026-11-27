@@ -219,13 +219,24 @@ The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk 
 - **Live runs on any PR** — `/ok-to-test <sha> live` passes the same gate, with no new rules, and also runs the live `behaviour` and `playback` jobs on PR-head code: the authorized sha, in the `dev` environment, with the same steps as the merge queue. The gate writes `live=true` only when it authorizes the run (`reason=ok_to_test`) and the first line ends in a lowercase `live`; any other word after the sha is refused as `missing_sha`.
 - **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports the `forgejo-behaviour` check run on the authorized sha, plus the non-required `behaviour-live` and `playback-live` check runs when `live` is true. It never reports the required `behaviour` and `playback` checks on a PR. The `forgejo-behaviour` job runs on the PR-head checkout with `contents: read` only. The live jobs add only the `id-token: write` permission (for GCP WIF and the mint) and use the same secrets as in the merge queue.
 
+The Go package `internal/e2eauth` implements the same-repository author/label
+policy and `/ok-to-test` comment mode. Workflows can call the hidden command
+`fullsend ci check-e2e-authorization [PR_NUMBER] [OWNER/REPO]` and read
+`authorized` from the step outputs. Exit status 0 alone does not grant
+authorization.
+
+> **Planned:** Switch [the fullsend gate action](../../.github/actions/check-e2e-authorization/action.yml)
+> from `scripts/check-e2e-authorization.sh` to this command. The agents
+> repository pins a fullsend release to call the same check instead of keeping
+> its own bash copy ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371)).
+
 **Limitations of the gate:**
 
 - The gate authorizes *authors* and *commenters*, not *code*. A trusted account that is compromised bypasses the gate.
 - The gate does not inspect the PR diff — it trusts that the commenter reviewed the named commit before commenting `/ok-to-test <sha>`.
 - The suites run the sha the gate authorized, so a push after authorization does not reach a credentialed run. A push between the comment and the gate run moves the head away from the named sha, so the gate refuses it. The command takes only the full 40-character sha: the author controls the reviewed commit and could prepare another commit sharing a short prefix.
 
-**Validating gate changes:** A same-repository `pull_request` run takes `e2e.yml` and the gate action from the PR merge ref, so a gate-modifying PR exercises its own gate for same-repository authors. The `/ok-to-test` path runs on `issue_comment`, which takes its workflow and the gate from `main`; a PR that changes that path still runs `main`'s gate. Validate gate logic with unit tests pre-merge (e.g., `scripts/check-e2e-authorization-test.sh`) and include a post-merge validation checklist in the PR description.
+**Validating gate changes:** A same-repository `pull_request` run takes `e2e.yml` and the gate action from the PR merge ref, so a gate-modifying PR exercises its own gate for same-repository authors. The `/ok-to-test` path runs on `issue_comment`, which takes its workflow and the gate from `main`; a PR that changes that path still runs `main`'s gate. Validate gate logic with unit tests pre-merge (e.g., `scripts/check-e2e-authorization-test.sh` and `go test ./internal/e2eauth/ ./internal/cli/ -run 'TestCheck_|TestCheckIssueComment|TestParseOkToTest|TestResolveEventMode|TestCi|TestResolveCheckE2E|TestRunCheckE2E'`) and include a post-merge validation checklist in the PR description.
 
 ### Review checklist for secrets in behaviour/playback jobs
 
