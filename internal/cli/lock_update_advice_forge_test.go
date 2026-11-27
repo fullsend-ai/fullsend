@@ -1,0 +1,112 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/ui"
+)
+
+// runLockForge locks (or, with update, re-locks) the setup's "code" harness
+// for one forge platform.
+func (s *lockAdviceSetup) runLockForge(t *testing.T, forgeFlag string, update bool) error {
+	t.Helper()
+	return runLock(context.Background(), "code", s.dir, forgeFlag, update, resolveFlags{}, ui.New(os.Stdout))
+}
+
+// runAgentForge runs the setup's "code" harness to completion under a forge
+// platform.
+func (s *lockAdviceSetup) runAgentForge(t *testing.T, forgeFlag string) error {
+	t.Helper()
+	var out bytes.Buffer
+	return runAgent(context.Background(), "code", s.dir, "", t.TempDir(), "", nil, false, "", forgeFlag, "",
+		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+}
+
+// TestRunAgent_PinMismatchAdviceNamesForge checks that a pin-mismatch error
+// under a forge platform advises a re-lock command that names the platform
+// for a child harness with no forge: block — without --forge, lock composes
+// with platform "" and drops the forge-specific base files (#8988) — and
+// that the advised command, run as written, re-pins and the run composes.
+func TestRunAgent_PinMismatchAdviceNamesForge(t *testing.T) {
+	usePreScriptStub(t)
+	agentV1 := []byte("agent v1")
+	s := newLockAdviceSetup(t, agentV1)
+	require.NoError(t, s.runLockForge(t, "github", false))
+
+	// The file changes upstream and the pinned content leaves the cache, so
+	// composing online fetches content that does not match the pin.
+	s.files["/agents/triage.md"] = []byte("agent v2, changed upstream")
+	dropCachedContent(t, s.dir, fetch.ComputeSHA256(agentV1))
+
+	err := s.runAgentForge(t, "github")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fullsend lock code --update")
+	assert.Contains(t, err.Error(), "--fullsend-dir")
+	assert.Contains(t, err.Error(), "--forge github")
+
+	// The advised command, run as written, re-pins and the run composes.
+	require.NoError(t, s.runLockForge(t, "github", true))
+	require.NoError(t, s.runAgentForge(t, "github"))
+}
+
+// TestRunAgent_StaleLockAdviceNamesForge checks that the stale-lock warning
+// advises the plain lock command — no --update, which would set
+// BypassURLIndex and re-fetch every un-pinned relative base file from
+// upstream where a plain lock re-composes the stale entry from the URL
+// index's cached copies — while still naming the forge platform for a child
+// harness with no forge: block (without --forge, re-locking composes with
+// platform "" and drops the forge-specific base files, #8988), so all of
+// run's lock advice comes from the one lockUpdateHint helper. The warning
+// line ends with the advised command itself: a period after its last argument
+// would be copied with it and break the advice as written.
+func TestRunAgent_StaleLockAdviceNamesForge(t *testing.T) {
+	usePreScriptStub(t)
+	s := newLockAdviceSetup(t, []byte("agent v1"))
+	require.NoError(t, s.runLockForge(t, "github", false))
+
+	// The harness file changes (a comment), so the hash the lock records no
+	// longer matches and the entry is stale; the pinned content is unchanged,
+	// so the run itself still composes.
+	harnessBytes, err := os.ReadFile(s.harnessPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(s.harnessPath, append(harnessBytes, []byte("# touched upstream\n")...), 0o644))
+
+	var out bytes.Buffer
+	err = runAgent(context.Background(), "code", s.dir, "", t.TempDir(), "", nil, false, "", "github", "",
+		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Harness has changed since lock file was generated")
+	assert.Contains(t, out.String(), "fullsend lock code")
+	assert.Contains(t, out.String(), "--fullsend-dir")
+	assert.Contains(t, out.String(), "--forge github")
+
+	// No argument ends the sentence: copying the warning line verbatim must
+	// yield a command that runs.
+	var warnLine string
+	for _, l := range strings.Split(out.String(), "\n") {
+		if strings.Contains(l, "Harness has changed since lock file was generated") {
+			warnLine = strings.TrimSpace(l)
+		}
+	}
+	assert.True(t, strings.HasSuffix(warnLine, "--forge github"),
+		"stale-lock warning must end with the advised command, got %q", warnLine)
+	assert.NotContains(t, warnLine, "--update",
+		"stale-lock warning must not advise --update, got %q", warnLine)
+
+	// The advised command, run as written (a plain lock — no --update),
+	// re-locks the stale entry and clears the warning.
+	require.NoError(t, s.runLockForge(t, "github", false))
+	var out2 bytes.Buffer
+	err = runAgent(context.Background(), "code", s.dir, "", t.TempDir(), "", nil, false, "", "github", "",
+		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out2), false, runOverrideFlags{})
+	require.NoError(t, err)
+	assert.NotContains(t, out2.String(), "Harness has changed since lock file was generated")
+}

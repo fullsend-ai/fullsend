@@ -269,7 +269,7 @@ allowed_remote_resources:
 	require.NoError(t, err)
 	require.NoError(t, h2.ResolveRelativeTo(dir))
 
-	lockResult, err := resolveFromLock(h2, entry, dir, nil, printer)
+	lockResult, err := resolveFromLock(h2, entry, "fullsend lock --update", dir, nil, false, printer)
 	require.NoError(t, err)
 
 	// Verify the round-trip: agent resolved as file, skill resolved as directory.
@@ -609,7 +609,7 @@ func TestResolveFromLock_Success(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -636,7 +636,7 @@ func TestResolveFromLock_MissingCache(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, t.TempDir(), nil, printer)
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", t.TempDir(), nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in cache")
 }
@@ -665,7 +665,7 @@ func TestResolveFromLock_SkillSlots(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 
@@ -693,7 +693,7 @@ func TestResolveFromLock_TransitiveDeps(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -727,7 +727,7 @@ func TestResolveFromLock_DiamondDependency(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -764,7 +764,7 @@ func TestResolveFromLock_OverrideSlots(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -805,7 +805,7 @@ func TestResolveFromLock_OverrideSlotsPreservesExisting(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 
@@ -844,7 +844,7 @@ func TestResolveFromLock_OverrideURLRecordedUnderOtherField(t *testing.T) {
 		}},
 		AllowedRemoteResources: []string{"https://example.com/"},
 	}
-	_, err := resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, ui.New(io.Discard))
 	require.NoError(t, err)
 
 	for key, want := range map[string][]byte{"sub-agents/x.md": agentContent, "sub-agents/y.md": forgeX} {
@@ -883,7 +883,7 @@ func TestResolveFromLock_OverrideURLMissingFromLock(t *testing.T) {
 	h := newHarness()
 	// An independent copy: no slice, map or pointer is shared with h.
 	want := newHarness()
-	_, err := resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `skills[0]: override "sub-agents/x.md" URL `+missing+" has no entry in the lock file (it may come from an overlay that did not match at lock time); resolving without the lock")
 	assert.Equal(t, want, h, "the harness is unchanged")
@@ -909,7 +909,7 @@ func TestResolveFromLock_OverrideDoesNotCorruptSource(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, nil, printer)
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 
 	assert.Equal(t, "skills/pr-review", h.Skills[0].Source)
@@ -1042,7 +1042,7 @@ allowed_remote_resources:
 				})
 				require.NoError(t, err, e.name)
 				require.NoError(t, h.ResolveRelativeTo(dir), e.name)
-				_, err = resolveFromLock(h, e.entry, dir, nil, printer)
+				_, err = resolveFromLock(h, e.entry, "fullsend lock --update", dir, nil, false, printer)
 				require.NoError(t, err, e.name)
 
 				require.Len(t, h.Skills, 1, e.name)
@@ -1097,7 +1097,7 @@ func TestResolveFromLock_DirectoryType(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -1142,7 +1142,7 @@ func TestResolveFromLock_DirectoryTypeScript(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -1185,7 +1185,7 @@ func TestResolveFromLock_EmptyTypeDefaultsToFile(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	assert.Equal(t, "file", lockResult.Deps[0].Type, "empty Type should default to file for backward compatibility")
@@ -1211,7 +1211,7 @@ func TestResolveFromLock_TransitivePolicySkipped(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -1244,7 +1244,7 @@ func TestResolveFromLock_NoPartialMutation(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, nil, printer)
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 
 	// Harness should be unchanged — no partial mutations.
@@ -1359,7 +1359,7 @@ func TestResolveFromLock_ErrorAfterMutationLeavesHarnessUnchanged(t *testing.T) 
 
 			entry := &lock.HarnessLock{Dependencies: append(slices.Clone(commonDeps), tt.failing)}
 			h := newHarness()
-			_, err = resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+			_, err = resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, ui.New(io.Discard))
 			require.ErrorContains(t, err, tt.wantErr)
 			assert.Equal(t, newHarness(), h, "harness must equal its input after a lock replay error")
 		})
@@ -1433,7 +1433,7 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 
 	// All three deps should be returned (base, agent, skill).
@@ -1497,7 +1497,7 @@ func TestResolveFromLock_AgentSourceNoOp(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 
 	// All three deps should be returned.
@@ -1536,7 +1536,7 @@ func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 
@@ -1881,7 +1881,7 @@ func TestResolveFromLock_ProfileReconstruction(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	require.Len(t, lockResult.Profiles, 1)
@@ -1942,7 +1942,7 @@ func TestResolveFromLock_ProfileSymlinkError(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, nil, printer)
+	_, err = resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "naming cached profile")
 }
@@ -1973,7 +1973,7 @@ func TestResolveFromLock_ProfileEmptyID(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, nil, printer)
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no id")
 }
@@ -2002,7 +2002,7 @@ func TestResolveFromLock_ProviderReconstruction(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Providers, 1)
 	assert.Equal(t, "my-provider", lockResult.Providers[0].Def.Name)
@@ -2034,7 +2034,7 @@ func TestResolveFromLock_ProviderMissingName(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, nil, printer)
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no name")
 }
@@ -2063,7 +2063,7 @@ func TestResolveFromLock_ProviderMissingType(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, nil, printer)
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no type")
 }
@@ -2092,7 +2092,7 @@ func TestResolveFromLock_ProviderLiteralCredentialWarning(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	assert.NotEmpty(t, lockResult.Deps[0].Warning)
@@ -2124,7 +2124,7 @@ func TestResolveFromLock_RejectsDisallowedURL(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, nil, printer)
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
 	assert.Contains(t, err.Error(), "example.com")
@@ -2157,7 +2157,7 @@ func TestResolveFromLock_OrgAllowlistFallback(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, []string{"https://example.com/"}, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, []string{"https://example.com/"}, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	assert.Equal(t, "agent", lockResult.Deps[0].Field)
@@ -2190,7 +2190,7 @@ func TestResolveFromLock_EmptyAllowlistDeniesURLs(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, nil, printer)
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
 }
@@ -2228,7 +2228,7 @@ func TestResolveFromLock_PluginMalformedFieldError(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, nil, printer)
+	_, err = resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot parse plugin index")
 }
@@ -2265,7 +2265,7 @@ func TestResolveFromLock_PluginOutOfRangeError(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, nil, printer)
+	_, err = resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "out of range")
 }
@@ -2307,7 +2307,7 @@ func TestResolveFromLock_PluginExecutablePermissions(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2354,7 +2354,7 @@ func TestResolveFromLock_PluginSlots(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2398,7 +2398,7 @@ func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2446,7 +2446,7 @@ func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2500,7 +2500,7 @@ func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 2)
 	assert.Equal(t, []harness.SkillEntry{{Source: "skills/pr-review"}, {Source: "skills/code-review"}}, h.Skills)
@@ -2556,7 +2556,7 @@ func TestResolveFromLock_ForgeScopedSkillNoMutation(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2606,7 +2606,7 @@ func TestResolveFromLock_OverlayScopedSkillNoMutation(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2647,7 +2647,7 @@ func TestResolveFromLock_OverlayScriptNoMutation(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2689,7 +2689,7 @@ func TestResolveFromLock_OverlayProviderParsed(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2733,7 +2733,7 @@ func TestResolveFromLock_OverlayProfileParsed(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
@@ -2779,7 +2779,7 @@ func TestResolveFromLock_SkillRepoRootURLRejected(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, nil, printer)
+	_, err = resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "skills[0]: URL must point to a directory inside the repo, not the repo root")
 }
@@ -2817,7 +2817,7 @@ func TestResolveFromLock_PluginInvalidBasenameRejected(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err = resolveFromLock(h, entry, root, nil, printer)
+	_, err = resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "contains invalid characters")
 }
@@ -2949,7 +2949,7 @@ func TestResolveFromLock_LocalPathsSurviveStrip(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, root, nil, printer)
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 
 	// Local-path profile must survive the strip.
@@ -2998,7 +2998,7 @@ func TestResolveFromLock_ProfileAndProviderReconstruction(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	lockResult, err := resolveFromLock(h, entry, root, nil, printer)
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, printer)
 	require.NoError(t, err)
 	require.Len(t, lockResult.Profiles, 1)
 	assert.Equal(t, "anthropic", lockResult.Profiles[0].ID)
@@ -3102,7 +3102,7 @@ func testURLBaseHostFileReplay(t *testing.T, hostFilesBlock, wantField string) {
 	hostFilesBefore := append([]harness.HostFile(nil), h.HostFiles...)
 	skillsBefore := append([]harness.SkillEntry(nil), h.Skills...)
 
-	_, err = resolveFromLock(h, entry, dir, orgAllowlist, printer)
+	_, err = resolveFromLock(h, entry, "fullsend lock --update", dir, orgAllowlist, false, printer)
 	require.NoError(t, err)
 
 	assert.Equal(t, skillsBefore, h.Skills, "host_files lock entries must not be appended as skills")
@@ -3129,7 +3129,7 @@ func TestResolveFromLock_UnknownFieldNotSkill(t *testing.T) {
 		AllowedRemoteResources: []string{"https://example.com/"},
 	}
 
-	lockResult, err := resolveFromLock(h, entry, root, nil, ui.New(os.Stdout))
+	lockResult, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, false, ui.New(os.Stdout))
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 	assert.Empty(t, h.Skills)
