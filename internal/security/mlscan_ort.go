@@ -23,6 +23,8 @@ var (
 
 func initMLScanner() {
 	os.Setenv("HF_HUB_OFFLINE", "1")
+	// Stop ORT starting its telemetry uploader; must precede environment init (#9777).
+	os.Setenv("ORT_DISABLE_TELEMETRY", "1")
 
 	modelPath := os.Getenv("MODEL_PATH")
 	if modelPath == "" {

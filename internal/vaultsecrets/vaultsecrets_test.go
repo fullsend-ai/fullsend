@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"go.opentelemetry.io/otel/propagation"
 )
 
 var testRepo = RepoContext{
@@ -354,5 +356,37 @@ func TestReadFieldLargeResponse(t *testing.T) {
 	}
 	if _, _, err := c.ReadField(context.Background(), "t", "kv/data/a", "F"); err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("ReadField error = %v", err)
+	}
+}
+
+func TestClientPropagatesTraceContext(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = append(got, r.Header.Get("traceparent"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c, err := NewClient(Connection{Address: srv.URL}, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No span context: no traceparent header.
+	if _, _, err := c.ReadField(context.Background(), "t", "kv/data/a", "F"); err != nil {
+		t.Fatal(err)
+	}
+
+	const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	ctx := propagation.TraceContext{}.Extract(context.Background(), propagation.MapCarrier{"traceparent": tp})
+	if _, _, err := c.ReadField(ctx, "t", "kv/data/a", "F"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 || got[0] != "" || got[1] != tp {
+		t.Fatalf("traceparent headers = %q, want [\"\" %q]", got, tp)
 	}
 }

@@ -648,19 +648,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// run, before resolveRunProgressVerbosity runs below; that function
 	// still fails closed on its own when it cannot read the file.
 	if eventFile != "" {
-		eventData, readErr := os.ReadFile(eventFile)
-		if readErr != nil {
-			return fmt.Errorf("reading event file %s: %w", eventFile, readErr)
+		ev, evMap, evErr := readRunEventFile(eventFile)
+		if evErr != nil {
+			return evErr
 		}
-		ev, parseErr := normevent.ParseJSON(eventData)
-		if parseErr != nil {
-			return fmt.Errorf("parsing event file %s: %w", eventFile, parseErr)
-		}
-		var mapErr error
-		eventMap, mapErr = ev.ToMap()
-		if mapErr != nil {
-			return fmt.Errorf("converting event to map: %w", mapErr)
-		}
+		eventMap = evMap
 
 		// Extract tracker provenance for status routing (ADR 0093).
 		// When the event originated from Jira, status notifications
@@ -721,115 +713,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 
-	composeOpts := harness.ComposeOpts{
-		WorkspaceRoot: absFullsendDir,
-		FetchPolicy:   policy,
-		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-		ForgePlatform: forgePlatform,
-		OrgAllowlist:  orgAllowlist,
-		TreeFetcher:   rFlags.treeFetcher,
-		GitToken:      composeGitToken,
-		GitHubURL:     forge.ConfiguredGitHubURL(),
-		Event:         eventMap,
-		Config:        harness.BuildConfigMap(orgCfg),
+	composeOpts := newRunComposeOpts(absFullsendDir, policy, forgePlatform, orgAllowlist, rFlags.treeFetcher, composeGitToken, eventMap, orgCfg)
+	composeOpts.RunnerSecretNames = runnerSecretNameSet(runnerSecrets)
 
-		RunnerSecretNames: runnerSecretNameSet(runnerSecrets),
-	}
-
-	// Resolve agent source: config agents take precedence, then agents repo
-	// fallback. Always create a GitHub client for the agents-repo fallback —
-	// fullsend-ai/agents is public, so unauthenticated requests work when no
-	// GitHub token is available (e.g., on GitLab pipelines). The client
-	// stays on api.github.com unless GITHUB_API_URL is the API of the
-	// GITHUB_SERVER_URL instance; then the fallback resolves and reads the
-	// agents repo there (agentsRepoHostURLPrefix). GITHUB_API_URL alone
-	// never receives the compose token or picks the fallback commit.
-	fallbackForgeClient := newConfiguredHostGitHubClient(composeGitToken)
-	// The configured host serves raw content from itself, so allow it in the
-	// fetch policy too; the default policy names only github.com hosts.
-	composeOpts.FetchPolicy = withAgentsRepoHostAllowed(composeOpts.FetchPolicy, fallbackForgeClient)
-	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
+	// Resolve the agent source and compose the harness. fullsend prepare
+	// composes through the same function, so the image it warms is the one
+	// this run creates its sandbox from.
+	composed, err := composeRunHarness(ctx, runHarnessInput{
+		agentName:      agentName,
+		fullsendDir:    fullsendDir,
+		absFullsendDir: absFullsendDir,
+		orgConfigPath:  orgConfigPath,
+		orgCfg:         orgCfg,
+		composeOpts:    composeOpts,
+	}, printer)
 	if err != nil {
 		return err
 	}
-
-	printer.StepStart("Loading harness: " + harnessPath)
-
-	// If the agent was fetched from a URL, forward the source URL so
-	// LoadWithBase can resolve relative resources even without a base:
-	// field (ADR-0045 resource resolution for config-registered agents).
-	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
-		composeOpts.SourceURL = fetchDeps[0].URL
-		useAgentsRepoHostFetch(&composeOpts, fallbackForgeClient)
-	}
-
-	// If the harness has a URL base and org config failed to load,
-	// load it strictly now so LoadWithBase gets a proper error path
-	// rather than an unhelpful "URL base requires allowed_remote_resources".
-	if orgCfg == nil {
-		if rawH, rawErr := harness.LoadRaw(harnessPath); rawErr == nil && rawH.Base != "" && harness.IsURL(rawH.Base) {
-			var err error
-			orgCfg, err = requireOrgConfig(orgConfigPath, printer)
-			if err != nil {
-				return err
-			}
-			composeOpts.OrgAllowlist = orgCfg.AllowedResources()
-		}
-	}
-
-	// The agent's agents: entry may carry harness: blocks, composed on the
-	// harness as child layers (ADR 0162).
-	if orgCfg != nil {
-		composeOpts.Blocks = config.HarnessBlocksFor(orgCfg.AgentEntries(), agentName)
-		composeOpts.Agent = agentName
-	}
-
-	// A current lock entry pins the relative files of a URL base, so pass
-	// its pins in before composition fetches them (#8979).
-	lockState, err := readRunLock(absFullsendDir, agentName, harnessPath, composeOpts.Blocks)
-	if err != nil {
-		return err
-	}
-	switch {
-	case lockState.loadErr != nil:
-		printer.StepWarn("Could not load lock file: " + lockState.loadErr.Error())
-	case lockState.stale:
-		printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(fullsendDir)))
-	case len(lockState.pins) > 0:
-		noun := "dependency"
-		if len(lockState.pins) > 1 {
-			noun = "dependencies"
-		}
-		printer.StepInfo(fmt.Sprintf("Pinning %d %s from lock file", len(lockState.pins), noun))
-	}
-	composeOpts.LockedPins = lockState.pins
-
-	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, composeOpts)
-	if err != nil {
-		printer.StepFail("Failed to load harness")
-		return fmt.Errorf("loading harness: %w", err)
-	}
-	// An entry written before these files were locked is still current but
-	// leaves them to the URL index (#8979).
-	if lockState.entry != nil && !lockState.stale {
-		if unpinned := unpinnedDeps(baseDeps, lockState.pins); len(unpinned) > 0 {
-			noun := "dependency"
-			if len(unpinned) > 1 {
-				noun = "dependencies"
-			}
-			// Without --forge, lock reads forge keys from the child only
-			// (#8988), so a child with no forge: block needs the platform
-			// named. A child with forge keys is locked for all of them.
-			forgeArg := ""
-			if composeOpts.ForgePlatform != "" {
-				if rawH, rawErr := harness.LoadRaw(harnessPath); rawErr == nil && len(rawH.Forge) == 0 {
-					forgeArg = " --forge " + composeOpts.ForgePlatform
-				}
-			}
-			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update%s %s%s' to pin them",
-				agentName, len(unpinned), noun, unpinned[0], forgeArg, agentName, fullsendDirArg(fullsendDir)))
-		}
-	}
+	h, harnessPath, fetchDeps, baseDeps, lockState := composed.h, composed.harnessPath, composed.fetchDeps, composed.baseDeps, composed.lockState
+	orgCfg, composeOpts = composed.orgCfg, composed.composeOpts
+	fallbackForgeClient := composed.fallbackForgeClient
 
 	// Emit the harness-resolved role as a step output so the finalize step
 	// in action.yml can pass it to reconcile-status --role instead of using
@@ -2366,9 +2269,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// After the pre-script, which may write a host file source.
 	warnDurableCredentialWriteProviders(h, providerProfiles, printer)
 
-	// 4a. Create sandbox. A private ghcr.io harness image is pulled first
-	// with the workflow token; the gateway's own pull is anonymous (#9019).
-	prePullGHCRImage(ctx, h.Image, printer)
+	// 4a. Create sandbox. A private harness image (ghcr.io on GitHub
+	// Actions, CI_REGISTRY on GitLab CI) is pulled first with the job's
+	// registry credential; the gateway's own pull is anonymous (#9019).
+	prePullSandboxImage(ctx, h.Image, printer)
 
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)
@@ -2783,7 +2687,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// (which may unshallow the checkout) and immediately before the only
 	// upload. Every later download and validation iteration is reconciled
 	// to it.
-	hostRepositorySnapshot, err := captureRepositorySnapshot(hostRepositoryDir)
+	hostRepositorySnapshot, err := sandbox.CaptureRepositorySnapshot(hostRepositoryDir, uploadExcludes...)
 	if err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("validating target repository before upload: %w", err)
@@ -3316,8 +3220,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		// 9d. Extract target repo back to host. SafeDownload removes dangerous
-		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
+		// 9d. Extract target repo back to host. SafeDownload sanitizes the
+		// downloaded tree: dangerous symlinks, Git hooks and per-worktree
+		// config, and ancestry overrides are removed, and the Git
+		// configuration is rebuilt from the trusted host snapshot.
 		//
 		// SafeDownload is a security boundary: it combines Download with
 		// sanitizeDownload, which strips dangerous symlinks. If either step
@@ -8253,8 +8159,8 @@ func validateRepoNames(repos []string) error {
 // and any fetch dependencies from URL-based agent resolution.
 func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg config.ConfigReader, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
 	if orgCfg == nil || len(orgCfg.AgentEntries()) == 0 {
-		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
-			return path, deps, nil
+		if path, deps, ok, err := agentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); err != nil || ok {
+			return path, deps, wrapAgentsRepoFallbackErr(agentName, err)
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: no config and agents-repo fallback unavailable", agentName)
 	}
@@ -8274,8 +8180,8 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 
 	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agentName)
 	if entry == nil {
-		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
-			return path, deps, nil
+		if path, deps, ok, err := agentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); err != nil || ok {
+			return path, deps, wrapAgentsRepoFallbackErr(agentName, err)
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: not in config and agents-repo fallback unavailable", agentName)
 	}
@@ -8283,8 +8189,8 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		// An override-only entry tunes a built-in agent (any setting
 		// HasSettings counts) but registers no harness: the built-in still
 		// comes from the agents repo, exactly as if the entry were absent.
-		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
-			return path, deps, nil
+		if path, deps, ok, err := agentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); err != nil || ok {
+			return path, deps, wrapAgentsRepoFallbackErr(agentName, err)
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: config entry has no source (it only tunes the built-in agent) and agents-repo fallback unavailable", agentName)
 	}
@@ -8305,6 +8211,15 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	}
 	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agentName))
 	return resolved.Path, nil, nil
+}
+
+// wrapAgentsRepoFallbackErr names agentName in an agentsRepoFallback error,
+// and returns nil for a nil error.
+func wrapAgentsRepoFallbackErr(agentName string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("resolving agent %q: %w", agentName, err)
 }
 
 func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.AgentEntry {
@@ -8358,6 +8273,13 @@ func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, for
 	normalizedName := strings.ToLower(agentName)
 	if !defaultAgentsRepoKnownAgents[normalizedName] {
 		return "", false
+	}
+	// A configured Forgejo source replaces fullsend-ai/agents on GitHub.
+	if src, err := forgejoAgentsSourceFn(); err != nil {
+		printer.StepWarn(fmt.Sprintf("Forgejo agent definitions: %v", err))
+		return "", false
+	} else if src != nil {
+		return forgejoMeasurementManifest(ctx, src, agentName, composeOpts, printer)
 	}
 	path, _, ok := fetchPinnedAgentsRepoFile(ctx, "eval/measurements/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "eval measurement manifest for "+agentName)
 	return path, ok
@@ -8554,6 +8476,9 @@ func readAgentsRepoFileAtRef(ctx context.Context, forgeClient forge.Client, relP
 // host through that host (see agentsRepoHostFileFetcher and
 // agentsRepoHostTreeFetcher). It leaves opts unchanged otherwise.
 func useAgentsRepoHostFetch(opts *harness.ComposeOpts, forgeClient forge.Client) {
+	if useConfiguredForgejoAgentsRepoFetch(opts) {
+		return
+	}
 	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
 	if hostPrefix != "" && strings.HasPrefix(opts.SourceURL, hostPrefix) {
 		opts.FetchFile = agentsRepoHostFileFetcher(forgeClient, hostPrefix, opts.FetchPolicy)
@@ -9180,45 +9105,6 @@ func forceRemoveAll(path string) error {
 		return nil
 	})
 	return os.RemoveAll(path)
-}
-
-// captureRepositorySnapshot validates and captures the trusted shallow state
-// after the pre-script and before the only upload, so every later download is
-// reconciled to it. A plain input returns a zero snapshot without Git
-// discovery, so a parent checkout is never captured. A materialized checkout
-// records IsCheckout so the downloaded root must remain a checkout.
-func captureRepositorySnapshot(repoDir string) (sandbox.RepositorySnapshot, error) {
-	plain, err := sandbox.ValidateRepositoryRoot(repoDir)
-	if err != nil {
-		return sandbox.RepositorySnapshot{}, fmt.Errorf("validating target repository: %w", err)
-	}
-	if plain {
-		return sandbox.RepositorySnapshot{}, nil
-	}
-	snapshot := sandbox.RepositorySnapshot{IsCheckout: true}
-
-	// Validation proved .git is a real directory that resolves as itself, so
-	// the boundary lives directly there. Resolving it with a Git query would
-	// honor inherited selectors such as GIT_DIR or GIT_COMMON_DIR and could
-	// capture another repository's boundary.
-	shallowPath := filepath.Join(repoDir, ".git", "shallow")
-
-	info, err := os.Stat(shallowPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return snapshot, nil
-	}
-	if err != nil {
-		return sandbox.RepositorySnapshot{}, fmt.Errorf("inspecting git shallow metadata: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return sandbox.RepositorySnapshot{}, fmt.Errorf("git shallow metadata %s is not a regular file", shallowPath)
-	}
-	data, err := os.ReadFile(shallowPath)
-	if err != nil {
-		return sandbox.RepositorySnapshot{}, fmt.Errorf("reading git shallow metadata %s: %w", shallowPath, err)
-	}
-	snapshot.Shallow = sandbox.ShallowState{Present: true, Data: data}
-	return snapshot, nil
 }
 
 // checkProviderProfileIntegrity validates that every provider references a

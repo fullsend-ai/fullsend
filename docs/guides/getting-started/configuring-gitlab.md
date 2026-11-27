@@ -29,8 +29,12 @@ GitHub repositories use a different command (`fullsend github setup`). See
   `projects.get` access on that project.
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI,
   or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
-* A GitLab personal or group access token with `api` scope and
-  Maintainer (or Owner) role on the target project. The CLI does **not**
+* A GitLab token for the installing user, who needs the Maintainer (or
+  Owner) role on the target project. Use a project-scoped fine-grained
+  personal access token with the permissions listed in
+  [Installer token permissions](#installer-token-permissions). Where
+  fine-grained tokens are not available, use a personal or group access
+  token with the legacy `api` scope. The CLI does **not**
   fall back to `glab auth token`. Set `GITLAB_TOKEN` in the environment
   before running setup, or pass `--gitlab-token` on each `fullsend repos`
   command.
@@ -42,6 +46,9 @@ GitHub repositories use a different command (`fullsend github setup`). See
   be `no_one_allowed` before typed pipeline-input dispatch can activate —
   install/converge refuse runnable template delivery on a weaker, unset,
   or unverifiable setting, even with automatic enforcement requested.
+  A project that cannot use `no_one_allowed` can opt in to a weaker
+  setting; see
+  [Opting in to a relaxed setting](#opting-in-to-a-relaxed-setting).
   Legacy variable-based installations are no longer supported; see
   [Typed-input dispatch migration](#typed-input-dispatch-migration). See
   [GitLab Role-Credential
@@ -54,6 +61,71 @@ GitHub repositories use a different command (`fullsend github setup`). See
   the push rule and stops before any write when the regex rejects a branch
   that does not exist yet. The check is skipped when the push rule cannot
   be read, for example on editions without push rules.
+
+### Installer token permissions
+
+`repos install` does more than push code and open a merge request. It also
+creates role service accounts and their tokens, a pipeline trigger token, a
+webhook, a deploy key, pipeline schedules, and CI/CD variables. It updates
+project membership and protected-branch rules too. The legacy `api` scope
+covers all of this, but it also grants much more.
+
+A GitLab
+[fine-grained personal access token](https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens/)
+lets you grant only the permissions install uses. Scope the token to the
+target project and select these permissions (see GitLab's
+[fine-grained REST API permission catalog](https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens_rest/)):
+
+| Group | Permission | Actions |
+|---|---|---|
+| Project | Project | Read |
+| Repository | Repository | Read |
+| Repository | Commit | Create, Read |
+| Repository | Branch | Create, Delete, Read |
+| Repository | Merge Request | Create, Read, Update |
+| Repository | Protected Branch | Read, Update |
+| Repository | Protected Tag | Read |
+| CI/CD | Job | Read |
+| CI/CD | Pipeline Schedule | Create, Delete, Read, Update |
+| CI/CD | Trigger | Create, Delete, Read |
+| CI/CD | Variable | Create, Delete, Read, Update |
+| Integrations | Webhook | Create, Delete, Read, Update |
+| System Access | Deploy Key | Create, Delete, Read |
+| System Access | Member | Create, Read, Update |
+| System Access | Service Account | Create, Delete, Read |
+| System Access | Service Account Personal Access Token | Create, Read, Revoke |
+| User | User | Read |
+| User | SSH Key | Read |
+
+This set was validated end to end on GitLab.com with an MR-based
+installation. That test covered `repos install --dry-run`, the real
+install, the post-merge rerun, `repos status` with no drift, and a
+dispatched agent run. Treat it as the minimum validated for that
+installation path, not a guaranteed minimum for every GitLab version, tier,
+or existing project state.
+
+Some optional permissions change what install can do:
+
+* **Resource Group: Read, Update.** Without them, install prints a warning
+  and skips resource-group lock healing. The rest of the install continues.
+* **Push Rule: Read.** Without it, install cannot read the push rule, so it
+  skips the branch-name preflight described in
+  [Prerequisites](#prerequisites).
+* **Project: Update.** The validated project already had
+  `ci_pipeline_variables_minimum_override_role` set to `no_one_allowed`.
+  Add this permission when you ask fullsend to change that setting, for
+  example with `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced`. See
+  [Typed-input dispatch migration](#typed-input-dispatch-migration).
+
+`repos uninstall` needs more permissions than install. It needs at least
+**Resource Access Token: Read** to list and revoke managed and legacy role
+project access tokens. The full uninstall set has not been validated. If a
+fine-grained token fails during uninstall, use a token with the legacy
+`api` scope.
+
+Install uses this token only while it runs. It is not a runtime
+credential: the role credentials that install creates have Developer
+access.
 
 ## Typed-input dispatch migration
 
@@ -171,6 +243,47 @@ and typed pins predating the secured contract are unsupported.
 > polling](#off-system-polling) for pickup on repos where schedule
 > creation already failed and a converge re-run to fix something else
 > isn't an option.
+
+### Opting in to a relaxed setting
+
+Some teams start pipelines with pipeline variables every day, so they cannot
+set **No one allowed**. For such a project, set
+`allow_insecure_pipeline_variables` on its manifest entry:
+
+```bash
+fullsend repos set 'gitlab.repos["group/project"].allow_insecure_pipeline_variables' true
+```
+
+Every `fullsend repos install` and `fullsend repos status` then accepts the
+weaker setting. `fullsend repos install` prints a warning for each opted-in
+project on every run.
+
+Understand what the opt-in exposes before you set it. The setting controls the
+minimum member role that can add variables to a pipeline it starts. Members at
+that role or above who can run a pipeline on the default branch can inject
+malicious variable values. Two sensitive ones are `CI_API_V4_URL`, to redirect
+API calls to a server they control, and a file-type `BASH_ENV`, to run their
+own script inside fullsend jobs. With either, they can exfiltrate the job
+token and the fullsend service account tokens (the Poller, trigger, and role
+tokens) and act as the fullsend bots on that project. Have the project's
+security owner accept the risk.
+
+The opt-in:
+
+* applies only to a concrete `owner/repo` entry under `gitlab`. A glob entry or
+  a GitHub entry is rejected.
+* lets install deliver runnable jobs, activate typed dispatch, run the managed
+  poll schedules (including the Jira poll), and provision the
+  [webhook fast path](#webhook-fast-path) and the trigger account.
+* still requires managed schedules to carry no pipeline variables.
+* does not accept an instance that does not report the setting at all.
+
+To remove the opt-in:
+
+1. Set **No one allowed** in the project.
+2. Run
+   `fullsend repos set --unset 'gitlab.repos["group/project"].allow_insecure_pipeline_variables'`.
+3. Run `fullsend repos install`.
 
 ## Installing Fullsend
 
@@ -355,7 +468,8 @@ Install defers the fast path, and keeps polling, until all of these hold:
 * The dispatcher and its scripts are on the default branch. On a
   merge-request install, re-run `repos install` after the scaffold merges.
 * The default branch is protected. It must stay protected.
-* `ci_pipeline_variables_minimum_override_role` is `no_one_allowed`.
+* `ci_pipeline_variables_minimum_override_role` is `no_one_allowed`, or the
+  project [opted in to a relaxed setting](#opting-in-to-a-relaxed-setting).
 * The committed wrapper, root, and agent/poll templates carry the typed
   pipeline-input contract.
 * No project, group, or instance-level CI/CD variable redefines a predefined
@@ -992,8 +1106,10 @@ Install defers, creates nothing, and reports the reason (polling stays in
 place) when the default branch is covered only by a wildcard protected-branch
 rule (fullsend does not edit wildcard rules), when project service accounts are
 unavailable, when `ci_pipeline_variables_minimum_override_role` is not
-`no_one_allowed` (no trigger credential is published while pipeline variable
-overrides are allowed, and a rotation defers before it starts), or when the
+`no_one_allowed` and the project has not
+[opted in to a relaxed setting](#opting-in-to-a-relaxed-setting) (no trigger
+credential is published while pipeline variable overrides are allowed, and a
+rotation defers before it starts), or when the
 protected default branch is not the one the ledger recorded. Install fails instead, before the account is raised, when the account
 owns an SSH key, a pipeline schedule, or a trigger token that fullsend did not
 create, or when any pipeline trigger token or schedule has no reported owner
@@ -1068,7 +1184,9 @@ reason and resource IDs.
   must carry no pipeline variables (legacy schedules still set
   `FULLSEND_POLL_MODE`), and the live
   `ci_pipeline_variables_minimum_override_role` must be exactly
-  `no_one_allowed`. A weaker, unreadable, or unsupported setting defers, even
+  `no_one_allowed`, unless the project
+  [opted in to a relaxed setting](#opting-in-to-a-relaxed-setting). Otherwise
+  a weaker, unreadable, or unsupported setting defers, even
   when a trigger token is already published. CI job-token repository push
   (**Settings > CI/CD > Job token permissions**, reported as
   `ci_push_repository_for_job_token_allowed`) must be disabled, because the

@@ -14,6 +14,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -239,6 +240,12 @@ func artifactRunSource(absFullsendDir, eventFile string) (source, how string, er
 // it dispatches report one of those names, never one listed here.
 // workflow_dispatch, repository_dispatch, schedule and workflow_call stay
 // unknown.
+//
+// workflow_run is native only when the completed run it follows is the
+// fork pull request stub (scaffold.ForkPRStubPath) started by a
+// pull_request event: that is how the shim receives fork pull requests.
+// A workflow_run from any other workflow, including a custom caller's,
+// stays unknown.
 var nativeGitHubEvents = map[string]bool{
 	"issues":                      true,
 	"issue_comment":               true,
@@ -246,6 +253,7 @@ var nativeGitHubEvents = map[string]bool{
 	"pull_request_target":         true,
 	"pull_request_review":         true,
 	"pull_request_review_comment": true,
+	"workflow_run":                true,
 }
 
 // nativeGitHubEvent reports whether the run is a stage job of a native
@@ -289,6 +297,14 @@ func nativeGitHubEvent(absFullsendDir string) (string, bool) {
 			return "", false
 		}
 	}
+	if name == "workflow_run" {
+		run, _ := ev["workflow_run"].(map[string]any)
+		event, _ := run["event"].(string)
+		path, _ := run["path"].(string)
+		if event != "pull_request" || path != scaffold.ForkPRStubPath {
+			return "", false
+		}
+	}
 	return name, true
 }
 
@@ -325,15 +341,11 @@ func rawDispatchSourceClaim(payload []byte) string {
 	return normalizeSource(extractMapString(norm, "source", "system"))
 }
 
-// sourceForgejo is the Forgejo forge's source name. normevent has no
-// constant for it yet; no Forgejo adapter emits events today.
-const sourceForgejo = "forgejo"
-
 // isForgeOrInternalSource reports whether a run source is a forge or
 // fullsend itself, as opposed to an external tracker such as Jira.
 func isForgeOrInternalSource(source string) bool {
 	switch normevent.SourceSystem(source) {
-	case normevent.SystemGitHub, normevent.SystemGitLab, normevent.SystemManual, normevent.SystemSchedule, sourceForgejo:
+	case normevent.SystemGitHub, normevent.SystemGitLab, normevent.SystemManual, normevent.SystemSchedule, normevent.SystemForgejo:
 		return true
 	}
 	return false

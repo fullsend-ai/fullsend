@@ -192,6 +192,7 @@ type SourceSystem string
 const (
 	SystemGitHub   SourceSystem = "github"
 	SystemGitLab   SourceSystem = "gitlab"
+	SystemForgejo  SourceSystem = "forgejo"
 	SystemJira     SourceSystem = "jira"
 	SystemManual   SourceSystem = "manual"
 	SystemSchedule SourceSystem = "schedule"

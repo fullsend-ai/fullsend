@@ -114,7 +114,7 @@ func TestSetManifestValue_AllScopesPreserveContent(t *testing.T) {
 	assert.Equal(t, "claude", m.GitHub.Repos[0].Config.ExplicitRuntime())
 	assert.Equal(t, "v1.0.0", m.GitHub.Repos[0].FullsendRef)
 	assert.Equal(t, "acme-set", m.GitHub.Repos[1].AppSet)
-	assert.Equal(t, InferenceAuthOpenAIAPIKey, m.GitHub.Repos[2].Inference.Auth)
+	assert.Equal(t, InferenceAuthOpenAIAPIKey, string(m.GitHub.Repos[2].Inference.Auth))
 	roles, ok := m.GitLab.Repos[0].Config.ExplicitRoles()
 	assert.True(t, ok)
 	assert.Equal(t, []string{"triage", "coder"}, roles)
@@ -326,7 +326,7 @@ func TestSetManifestValue_CreatesManifestAndParents(t *testing.T) {
 	empty := writeSetManifest(t, "")
 	_, err = SetManifestValue(empty, "defaults.inference.auth", "vertex-wif")
 	require.NoError(t, err)
-	assert.Equal(t, InferenceAuthVertexWIF, loadSetManifest(t, empty).Defaults.Inference.Auth)
+	assert.Equal(t, InferenceAuthVertexWIF, string(loadSetManifest(t, empty).Defaults.Inference.Auth))
 
 	// A null parent value is replaced by a mapping.
 	nullParent := writeSetManifest(t, "version: 1\ndefaults:\n  config:\n")
@@ -341,7 +341,7 @@ func TestSetManifestValue_CreatesManifestAndParents(t *testing.T) {
 	_, err = SetManifestValue(flow, "defaults.signoff", "true")
 	require.NoError(t, err)
 	m := loadSetManifest(t, flow)
-	assert.Equal(t, InferenceAuthOpenAIAPIKey, m.Defaults.Inference.Auth)
+	assert.Equal(t, InferenceAuthOpenAIAPIKey, string(m.Defaults.Inference.Auth))
 	require.NotNil(t, m.Defaults.Signoff)
 	assert.True(t, *m.Defaults.Signoff)
 }
@@ -513,7 +513,7 @@ func TestSetManifestValue_MigratedSetDefaultKeys(t *testing.T) {
 	assert.Equal(t, "https://example.com/preset.yaml", m.Defaults.ConfigBase.Source)
 	assert.Equal(t, hash, m.Defaults.ConfigBase.SHA256)
 	assert.Equal(t, MintModePrivate, m.GitHub.MintMode)
-	assert.Equal(t, InferenceAuthOpenAIWIF, m.GitHub.Inference.Auth)
+	assert.Equal(t, InferenceAuthOpenAIWIF, string(m.GitHub.Inference.Auth))
 	assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
 
 	for _, bad := range []struct{ path, value string }{

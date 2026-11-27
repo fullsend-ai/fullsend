@@ -13,6 +13,9 @@ import (
 // Remote scaffold template paths within the fullsend-ai/fullsend repo.
 const scaffoldGitHubShimPath = "internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml"
 
+// scaffoldGitHubForkPRStubPath is the fork pull request stub template.
+const scaffoldGitHubForkPRStubPath = "internal/scaffold/fullsend-repo/" + scaffold.ForkPRStubTemplate
+
 // scaffoldGitLabPaths lists the GitLab scaffold files fetched from a pinned
 // ref. The pipeline wrapper must come first: the webhook dispatcher files
 // (#7771) are fetched only when it references them, so refs that predate
@@ -84,6 +87,20 @@ func fetchRemoteGitHubScaffold(ctx context.Context, client forge.Client,
 		Content: scaffold.PrependManagedHeader(".github/workflows/fullsend.yaml", rendered),
 		Mode:    "100644",
 	}}
+
+	// The fork pull request stub ships with the shim that triggers on it;
+	// a release from before the stub has neither, so it is skipped.
+	stubRaw, err := client.GetFileContentAtRef(ctx, shimOwner, shimRepo, scaffoldGitHubForkPRStubPath, manifestRef)
+	switch {
+	case err == nil:
+		stub, renderErr := scaffold.RenderForkPRStub(stubRaw, opts)
+		if renderErr != nil {
+			return nil, fmt.Errorf("rendering remote fork pull request stub: %w", renderErr)
+		}
+		files = append(files, stub)
+	case !forge.IsNotFound(err):
+		return nil, fmt.Errorf("fetching fork pull request stub template at %s: %w", manifestRef, err)
+	}
 
 	for _, path := range scaffold.PerRepoThinCallerPaths() {
 		remotePath := "internal/scaffold/fullsend-repo/" + path

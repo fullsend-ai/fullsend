@@ -72,8 +72,8 @@ github:
 	assert.True(t, fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"], "the entry selection decides which credentials are written")
 	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)
-	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, reloaded.GitHub.Repos[0].Inference.Auth)
-	assert.Equal(t, repos.InferenceAuthVertexWIF, reloaded.Defaults.Inference.Auth, "defaults must not change")
+	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, string(reloaded.GitHub.Repos[0].Inference.Auth))
+	assert.Equal(t, repos.InferenceAuthVertexWIF, string(reloaded.Defaults.Inference.Auth), "defaults must not change")
 }
 
 const globInferenceAuthManifestYAML = `version: 1
@@ -146,7 +146,7 @@ func TestRunReposInstall_GlobSelectorFiltersDeclaredRepos(t *testing.T) {
 	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)
 	assert.Equal(t, "acme/*", reloaded.GitHub.Repos[0].Name)
-	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, reloaded.GitHub.Repos[0].Inference.Auth, "the glob entry is unchanged")
+	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, string(reloaded.GitHub.Repos[0].Inference.Auth), "the glob entry is unchanged")
 	assert.Empty(t, reloaded.GitHub.Repos[0].AppSet)
 	assert.Empty(t, reloaded.GitHub.Repos[0].FullsendRef)
 }

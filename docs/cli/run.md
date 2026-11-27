@@ -33,7 +33,7 @@ root of `--fullsend-dir`. A run that finds it only in a sibling
 | `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi, codex, and opencode — codex takes OpenAI ids and `gateway/<model>` only); also `FULLSEND_MODEL` |
 | `--effort` | Override the harness effort level for this run (`low`…`max`); also `FULLSEND_EFFORT` |
 | `--output-dir` | Base directory for run output (default: `/tmp/fullsend`) |
-| `--target-repo` | Path to the target repository |
+| `--target-repo` | Path to the target repository; see the layout and setting restrictions below |
 | `--fullsend-binary` | Path to a Linux fullsend binary to copy into the sandbox |
 | `--env-file` | Load environment variables from a dotenv file (repeatable) |
 | `--no-post-script` | Skip post-script execution |
@@ -44,11 +44,41 @@ root of `--fullsend-dir`. A run that finds it only in a sibling
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
 
 `--target-repo` accepts a plain directory or a valid checkout with a real root
-`.git` directory. `.git` files (linked worktrees and submodules), symlinked
-`.git` entries, and bare repositories are unsupported. Fullsend validates the
-target after the pre-script and before upload, and sanitizes and validates the
-returned tree before publication; a plain directory may come back as a plain
-directory or a valid checkout, while a checkout must come back as a checkout.
+`.git` directory. A root `.git` file (for example a linked worktree), a
+symlinked `.git` entry, a bare repository, and a checkout with registered
+worktrees are unsupported; normal submodules inside the checkout are supported
+through their in-tree gitfiles. A plain directory that already contains a
+nested Git checkout is rejected. So is a checkout containing a nested `.git`
+directory of its own (a vendored clone or an unabsorbed embedded repository),
+and any Git-shaped subdirectory — one holding `HEAD` plus `objects` and
+`refs`, such as a committed `testdata/x.git` fixture: absorb the clone as a
+registered submodule, or keep the fixture outside the downloaded target
+tree — a Git-shaped directory the target carries at upload is rejected
+before the run, and a bare-shaped directory the sandbox creates is rejected
+at download; a fixture extracted in the sandbox must be removed before the
+repository is returned. Destinations naming the `ext` transport helper are
+rejected, and so is a shallow submodule initialization inside the sandbox: a
+module store that returns a shallow boundary the host never captured fails
+the download. Fullsend validates the target after the
+pre-script and before upload, and sanitizes and validates the returned tree
+before publication; a plain directory may come back as a plain directory or a
+valid checkout, while a checkout must come back as a checkout. Fullsend
+discards downloaded Git configuration and restores selected settings from the
+host checkout, including identity, remote destinations, submodule activation,
+sparse-checkout settings, and the `http.<url>.sslCAInfo` and `.sslCAPath`
+certificate authority paths CI runners write for private-CA instances.
+Settings outside the restored list, including `filter.lfs.*` and
+`core.sshCommand`, are discarded; an LFS checkout therefore comes back with
+its filters unset. Partial clones are rejected in both their forms, as is a
+relative local submodule destination in the target checkout that does not
+resolve on the host (a relative destination in a module store's own config
+is rejected regardless); re-apply dropped settings such as LFS filters in a
+post-script if a workflow needs them. To migrate a rejected layout, replace a
+linked-worktree
+target with a fresh normal checkout of the same commit — commit or stash its
+local changes first, since `git worktree remove` deletes a worktree rather
+than converting it — use absolute submodule URLs, and replace a bare or
+nested-checkout target with a normal `.git` checkout or a plain directory.
 Reftable ref storage requires Git 2.53 or newer on the host running Fullsend.
 Fullsend rejects a downloaded `.git/packed-refs` larger than 32 MiB and a
 downloaded `.git/shallow` larger than 4 MiB.
@@ -597,6 +627,21 @@ When `GITHUB_SERVER_URL` names a GitHub server other than github.com, such as Gi
 
 The server URL follows the rule the GitHub API client uses: `https`, no userinfo, path, query or fragment. A URL that breaks this rule leaves the run on github.com. GHE.com (`*.ghe.com`) is not bound: `gh` calls `api.<host>` there and reads `GH_TOKEN`.
 
+## Agent definitions from a Forgejo instance
+
+By default a built-in agent that `config.yaml` does not register with a `source:` (triage, code, review, …) is fetched from `fullsend-ai/agents` on GitHub. A Forgejo installation can instead host these agent definitions in a repository on its own Forgejo instance. Set these environment variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `FULLSEND_FORGEJO_URL` | Base URL of the Forgejo instance. It may include a path prefix. Must use `https`; plain `http` is accepted only for a loopback host such as the local development stack. |
+| `FULLSEND_FORGEJO_AGENTS_REPO` | `owner/repo` of the agent-definition repository on that instance. Default: `fullsend-ai/agents`. |
+| `FULLSEND_FORGEJO_AGENTS_REF` | Full commit SHA (40 or 64 lowercase hex characters) the definitions are pinned to. Branches, tags and abbreviated SHAs are rejected. |
+| `FORGEJO_TOKEN` | Optional API token for the instance. Without it, the repository is read anonymously, which is enough for a public repository. |
+
+Once any of the first three variables is set, built-in agents resolve only from this source. If the configuration is incomplete or invalid, or the file cannot be read, the run fails with an error. It never falls back to GitHub. The harness, its relative companion files (agent prompt, policy, scripts) and its skill and plugin directories are all read at the pinned commit. Forgejo's git data API addresses them by object ID, so a branch named like the commit cannot stand in for it, and every file is checked against its git object ID. Symlinks and submodules are refused, and directories are bounded like git sparse checkout. The token is sent only to the configured instance, and the client does not follow redirects.
+
+Source checks still apply. Files are recorded under Forgejo raw URLs: `<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/commit/<sha>/<path>`. These URLs must be admitted by `allowed_remote_resources`. The Forgejo host is not one of the default prefixes, so add `<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/` to `config.yaml`. Content is cached by SHA-256 and recorded in the fetch audit log. In offline mode, the pinned URLs resolve from the cache. `fullsend lint`, `fullsend dispatch --route` and the eval measurement manifest lookup use the same source.
+
 ## GitHub Packages credentials
 
 On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's workflow token) to
@@ -615,8 +660,10 @@ temporary directory, removed after the pull), so the image can be a private pack
 shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
 harnesses; on other agents a private image is denied and sandbox creation fails. The package must also
 allow Actions access from the repository. If the pull fails, the runner logs a warning and the
-OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
-on other registries the runner adds no credentials. See
+OpenShell gateway attempts its own unauthenticated pull, so public images keep working. On GitLab CI
+the runner pulls an image on the instance's container registry (`CI_REGISTRY`) the same way, with the
+job's `CI_REGISTRY_USER` and `CI_REGISTRY_PASSWORD`. For images on other registries the runner adds
+no credentials. See
 [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
 
 Every mint sets `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and

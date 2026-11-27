@@ -5,9 +5,16 @@
 # memberships, app installations) and fails with a clear message when one
 # is missing; run setup-manual.sh first to complete them.
 #
-# Usage: e2e/org-pool/setup-org.sh NN|ORG
+# Usage: e2e/org-pool/setup-org.sh [--dry-run] NN|ORG
 #   NN  — org number, e.g. 01 (halfsend-01)
 #   ORG — full org name, e.g. halfsend (STAGE)
+#
+# --dry-run verifies everything read-only and prints "DRY-RUN: would ..."
+# for each missing item instead of creating or changing it, then reports
+# the org as NOT ready when any change was planned. The
+# e2e-org-pool.yml workflow can run it this way via a manual dispatch
+# (dry_run input); its regular runs on main execute without the flag and
+# correct drift. Pull requests run the stub-based tests instead.
 #
 # Idempotent: safe to run multiple times. Checks each prerequisite and
 # only acts on what's missing. Test actors receive organization-level
@@ -23,8 +30,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 # --- arg parsing ---
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+  shift
+fi
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 NN|ORG" >&2
+  echo "Usage: $0 [--dry-run] NN|ORG" >&2
   echo "  NN is the org number, e.g. 01, 02, 03 (halfsend-NN)" >&2
   echo "  ORG is a full org name, e.g. halfsend (STAGE)." >&2
   exit 1
@@ -61,25 +73,36 @@ echo "    OK: ${BOT_USER} is an owner"
 echo
 
 # --- 3. check test-repo exists ---
+# Fail closed: only the documented "repo missing" 404 counts as absent.
+# Any other lookup error (rate limit, auth) aborts, so a failed check is
+# never reported as "ready for e2e testing".
 echo "==> Checking if ${ORG}/test-repo exists..."
-if gh api "/repos/${ORG}/test-repo" --silent 2>/dev/null; then
+if test_repo_body=$(gh api "/repos/${ORG}/test-repo" --silent 2>&1); then
   echo "    OK: test-repo exists"
+elif echo "${test_repo_body}" | grep -q "HTTP 404"; then
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    dry_run_plan "would create test-repo"
+  else
+    echo "    Creating test-repo..."
+    gh api "/orgs/${ORG}/repos" \
+      -f name="test-repo" \
+      -f description="E2E test repo" \
+      -F private=false \
+      --silent
+    echo "    OK: created test-repo"
+  fi
 else
-  echo "    Creating test-repo..."
-  gh api "/orgs/${ORG}/repos" \
-    -f name="test-repo" \
-    -f description="E2E test repo" \
-    -F private=false \
-    --silent
-  echo "    OK: created test-repo"
+  echo "    ERROR: could not verify test-repo exists: ${test_repo_body}" >&2
+  exit 1
 fi
 echo
 
 # --- 3b. test actor org membership ---
 # The invitations are sent by setup-manual.sh; accepting them only needs
 # the actor's own PAT, so CI can do it. PATs come from the repository
-# secrets TEST_ACTOR_WRITE_PAT and TEST_ACTOR_TRIAGE_PAT. No workflow
-# runs this script yet; CI acceptance is planned, not current.
+# secrets TEST_ACTOR_WRITE_PAT and TEST_ACTOR_TRIAGE_PAT; the
+# e2e-org-pool.yml workflow runs this script with them on main (PR runs
+# never execute this script; they run the stub-based tests instead).
 echo "==> Checking test actor org membership..."
 
 for actor_info in "${TEST_WRITE_USER}:TEST_ACTOR_WRITE_PAT" "${TEST_TRIAGE_USER}:TEST_ACTOR_TRIAGE_PAT"; do
@@ -99,6 +122,11 @@ for actor_info in "${TEST_WRITE_USER}:TEST_ACTOR_WRITE_PAT" "${TEST_TRIAGE_USER}
     echo "    If setup-manual.sh was run more than 7 days ago, the invitation" >&2
     echo "    likely expired; re-run it to send a new one." >&2
     exit 1
+  fi
+
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    dry_run_plan "would accept ${actor}'s invitation using ${pat_var}"
+    continue
   fi
 
   if [[ -z "${!pat_var:-}" ]]; then
@@ -199,6 +227,15 @@ fi
 echo "    Verify with: fullsend admin foreign list --org ${ORG}"
 
 echo
+if [[ "${DRY_RUN}" == "1" && "${DRY_RUN_PLANNED}" -gt 0 ]]; then
+  # Fail closed like the rest of the script: a dry-run that only planned
+  # changes must not report the org as ready.
+  echo "==> DRY-RUN: ${DRY_RUN_PLANNED} change(s) planned; ${ORG} is NOT ready for e2e testing."
+  if [[ -n "${CI:-}" ]]; then
+    echo "::warning::${ORG} has ${DRY_RUN_PLANNED} planned change(s); run without --dry-run to apply them"
+  fi
+  exit 0
+fi
 echo "==> ${ORG} is ready for e2e testing."
 echo
 if [[ -z "${CI:-}" ]]; then

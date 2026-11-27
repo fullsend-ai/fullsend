@@ -137,7 +137,8 @@ type reposStatusConfig struct {
 	concurrency int
 
 	// Test overrides
-	testClient forge.Client
+	testClient  forge.Client
+	testForgejo *forgejoTestHooks
 }
 
 func newReposStatusCmd() *cobra.Command {
@@ -177,19 +178,44 @@ func runReposStatus(cmd *cobra.Command, opts *reposStatusConfig) error {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
-	var clients repos.ForgeClientFactory
-	if opts.testClient != nil {
-		clients = newSingleClientFactory(opts.testClient)
-	} else {
-		clients = newForgeClientFactory(getGitLabToken(cmd), m)
-	}
-
-	upstreamRef, upstreamTag := resolveUpstreamRef()
-	result, err := repos.Status(ctx, m, clients, opts.concurrency, opts.repoFilter, repos.DriftConfig{UpstreamRef: upstreamRef, UpstreamTag: upstreamTag})
+	// Forgejo selectors resolve before any credential lookup or forge
+	// call; an ambiguous or undeclared selector fails here.
+	sel, err := m.SplitForgejoSelectors(opts.repoFilter)
 	if err != nil {
 		return err
 	}
-	annotateGitLabRoleLifecycle(ctx, clients, result)
+
+	// ADR 0175: record the saved allow_insecure_pipeline_variables opt-ins
+	// for every GitLab check this command runs. repos.Status seeds only its
+	// own local copy, so without this the GitLab role-lifecycle annotation
+	// that runs after it would report a saved opt-in as drift.
+	ctx = repos.WithGitLabPipelineVarOptIns(ctx, m)
+
+	var forgejoResults []repos.ForgejoRepoResult
+	if len(sel.Targets) > 0 {
+		forgejoResults, err = newForgejoLifecycle(m, false, opts.testForgejo).Status(ctx, sel.Targets)
+		if err != nil {
+			return err
+		}
+	}
+
+	result := &repos.StatusResult{Repos: []repos.RepoStatus{}}
+	if sel.RunOthers {
+		var clients repos.ForgeClientFactory
+		if opts.testClient != nil {
+			clients = newSingleClientFactory(opts.testClient)
+		} else {
+			clients = newForgeClientFactory(getGitLabToken(cmd), m)
+		}
+
+		upstreamRef, upstreamTag := resolveUpstreamRef()
+		result, err = repos.Status(ctx, m, clients, opts.concurrency, othersFilter(opts.repoFilter, sel), repos.DriftConfig{UpstreamRef: upstreamRef, UpstreamTag: upstreamTag})
+		if err != nil {
+			return err
+		}
+		annotateGitLabRoleLifecycle(ctx, clients, result)
+	}
+	result.Forgejo = forgejoResults
 
 	return renderStatusResult(cmd, result, opts.jsonOutput)
 }
@@ -202,13 +228,23 @@ func renderStatusResult(cmd *cobra.Command, result *repos.StatusResult, jsonOutp
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(b))
 	} else {
-		printStatusTable(cmd, result)
+		if len(result.Repos) > 0 || len(result.Forgejo) == 0 {
+			printStatusTable(cmd, result)
+		}
+		printForgejoResults(cmd.OutOrStdout(), result.Forgejo)
 	}
 
+	var errs []error
 	if result.Summary.Drifted > 0 || result.Summary.NotInstalled > 0 || result.Summary.Errored > 0 {
+		errs = append(errs, fmt.Errorf("%d installed, %d drifted, %d not installed, %d errored",
+			result.Summary.Installed, result.Summary.Drifted, result.Summary.NotInstalled, result.Summary.Errored))
+	}
+	if err := forgejoStatusError(result.Forgejo); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
 		cmd.SilenceUsage = true
-		return fmt.Errorf("%d installed, %d drifted, %d not installed, %d errored",
-			result.Summary.Installed, result.Summary.Drifted, result.Summary.NotInstalled, result.Summary.Errored)
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -392,7 +428,7 @@ type reposInstallConfig struct {
 	inferenceProjectNumber string // derived from the GCP project; not a CLI flag
 
 	// openAIAPIKey is written as FULLSEND_OPENAI_API_KEY to selected
-	// repos whose inference.auth is openai-api-key. Command-line only:
+	// repos whose inference.auth includes openai-api-key. Command-line only:
 	// never persisted to the manifest and never logged.
 	openAIAPIKey string
 
@@ -440,6 +476,7 @@ type reposInstallConfig struct {
 	// Test overrides
 	testClient               forge.Client
 	testFactory              repos.ForgeClientFactory
+	testForgejo              *forgejoTestHooks
 	testGitLabTokenInventory repos.ProjectAccessTokenClient
 	testGitLabTriggerOwner   repos.GitLabTriggerOwner
 	testProjectNumberFn      func(ctx context.Context, projectID string) (string, error)
@@ -491,8 +528,9 @@ When no repos are specified, all manifest repos are converged. Credentials
 are required only for the forges of the selected repos.
 
 Every selected repo must resolve an inference authentication method
-(inference.auth: vertex-wif, openai-api-key or openai-wif) from its manifest
-entry, its forge section, or defaults; there is no implicit default.
+(inference.auth: vertex-wif, openai-api-key or openai-wif, or a list mixing
+them) from its manifest entry, its forge section, or defaults; there is no
+implicit default.
 
 Infrastructure values come from each repository's effective configuration
 (the managed config from repos.yaml layered over its config_base preset), so
@@ -511,8 +549,10 @@ without a WIF provider one is derived from the project number);
 openai-api-key writes FULLSEND_OPENAI_API_KEY (from --openai-api-key, GitHub
 and GitLab). Existing secrets are reused when no values are supplied;
 supplied values replace them. A repo missing its credentials with no values
-supplied fails before any write. After switching methods, the other
-method's Fullsend-managed secrets are removed once the new ones are written.
+supplied fails before any write. A mix of methods provisions and keeps the
+credentials of every selected method, each checked on its own. After
+switching methods, the secrets no selected method uses are removed once the
+new ones are written.
 
 openai-wif (OpenAI Workload Identity Federation, GitHub only) needs no
 secret. The repo must have a complete set of OpenAI WIF identifiers: the
@@ -594,7 +634,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().BoolVar(&opts.reactivateSchedules, "reactivate-schedules", false, "reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted)")
 	cmd.Flags().StringVar(&opts.inferenceProject, "vertex-project", "", "GCP project ID written as FULLSEND_GCP_PROJECT_ID for Vertex AI inference; must match config.inference.project when repos.yaml or the preset declares one; never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "vertex-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}) written as FULLSEND_GCP_WIF_PROVIDER instead of deriving per-repo providers; must match config.inference.wif_provider when declared; never written to repos.yaml")
-	cmd.Flags().StringVar(&opts.openAIAPIKey, "openai-api-key", "", "OpenAI API key written as FULLSEND_OPENAI_API_KEY to selected repos whose inference.auth is openai-api-key; command-line only, never written to repos.yaml and never logged")
+	cmd.Flags().StringVar(&opts.openAIAPIKey, "openai-api-key", "", "OpenAI API key written as FULLSEND_OPENAI_API_KEY to selected repos whose inference.auth includes openai-api-key; command-line only, never written to repos.yaml and never logged")
 	cmd.Flags().StringVar(&opts.jiraToken, "jira-token", "", "Jira API token written as FULLSEND_JIRA_TOKEN to selected repos whose tracker.jira.poll.enabled is true; required on the first Jira-enabled install unless client credentials are supplied, an omitted value keeps the existing secret; command-line only, never written to repos.yaml and never logged")
 	cmd.Flags().StringVar(&opts.jiraEmail, "jira-email", "", "Jira account email written as FULLSEND_JIRA_EMAIL to selected repos whose tracker.jira.poll.enabled is true (optional); an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.jiraClientID, "jira-client-id", "", "Atlassian service account OAuth 2.0 client ID written as FULLSEND_JIRA_CLIENT_ID to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
@@ -690,6 +730,42 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
+	// ADR 0175: record the saved allow_insecure_pipeline_variables opt-ins
+	// for every GitLab check this command runs, and warn about each one.
+	ctx = repos.WithGitLabPipelineVarOptIns(ctx, manifest)
+	for _, name := range repos.GitLabPipelineVarOptInRepos(manifest) {
+		printer.StepWarn(repos.GitLabPipelineVarOptInWarning(name))
+	}
+
+	// Forgejo selectors resolve first: an ambiguous, unknown-alias or
+	// undeclared selector fails before any credential lookup or write.
+	// The Forgejo lifecycle then resolves every selected instance's token
+	// before its first write and never contacts an unselected instance.
+	sel, err := manifest.SplitForgejoSelectors(opts.repoFilter)
+	if err != nil {
+		return err
+	}
+	installForgejo := func() error {
+		if len(sel.Targets) == 0 {
+			return nil
+		}
+		printer.StepStart(fmt.Sprintf("Installing %d Forgejo repos", len(sel.Targets)))
+		results, err := newForgejoLifecycle(manifest, opts.dryRun, opts.testForgejo).Install(ctx, sel.Targets)
+		printForgejoResults(os.Stdout, results)
+		if err != nil {
+			return fmt.Errorf("forgejo install: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Converged %d Forgejo repos", len(results)))
+		return nil
+	}
+	if !sel.RunOthers {
+		return installForgejo()
+	}
+	if len(opts.repoFilter) > 0 {
+		narrowed := *opts
+		narrowed.repoFilter = sel.Rest
+		opts = &narrowed
+	}
 
 	// Positional repositories only select entries already declared in
 	// repos.yaml (#8219): an undeclared selection fails here, before any
@@ -719,6 +795,19 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// that cannot be listed must not leave an explicit repository's interrupted
 	// bootstrap uncontained. Normal installation stages stay blocked.
 	selectionMatchErr := repos.RequireDeclaredSelections(ctx, manifest, clients, opts.repoFilter)
+
+	// The Forgejo lifecycle writes only once the whole selection, including
+	// every selector left for github/gitlab, has validated: an undeclared
+	// remaining selector must not leave Forgejo repositories installed.
+	//
+	// A Forgejo failure is held, like selectionMatchErr, until containment-only
+	// recovery has been attempted for every selected GitLab repository: an
+	// unrelated Forgejo failure (missing token, unreachable instance) must not
+	// leave an interrupted GitLab bootstrap's elevated access in place.
+	var forgejoErr error
+	if selectionMatchErr == nil {
+		forgejoErr = installForgejo()
+	}
 
 	// Containment-only recovery of an interrupted GitLab trigger-account
 	// bootstrap (#8437). It runs for every targeted GitLab repository as soon as
@@ -764,6 +853,13 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 	if selectionMatchErr != nil {
 		errs := []error{fmt.Errorf("matching repository selection: %w; repos install only selects repositories the manifest declares; nothing was changed. Declare a missing repository first, for example:\n  fullsend repos set 'github.repos[\"owner/repo\"]' '{}'", selectionMatchErr)}
+		for _, r := range containFailedRepos {
+			errs = append(errs, r.Error)
+		}
+		return errors.Join(errs...)
+	}
+	if forgejoErr != nil {
+		errs := []error{forgejoErr}
 		for _, r := range containFailedRepos {
 			errs = append(errs, r.Error)
 		}
@@ -1575,6 +1671,7 @@ type reposUninstallConfig struct {
 	testClient       forge.Client
 	testFactory      repos.ForgeClientFactory
 	testGitLabTokens repos.ProjectAccessTokenClient
+	testForgejo      *forgejoTestHooks
 }
 
 func newReposUninstallCmd() *cobra.Command {
@@ -1643,25 +1740,38 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
 
-	matched, matchErr := repos.MatchManifestRepos(manifest, repoArgs)
-	if matchErr != nil {
-		return matchErr
+	// Forgejo selectors resolve before any credential lookup or write.
+	sel, err := manifest.SplitForgejoSelectors(repoArgs)
+	if err != nil {
+		return err
 	}
-	if len(matched) == 0 {
-		printer.StepInfo("No manifest entries matched the given patterns")
-		return nil
-	}
-
+	// Resolve the whole selection, Forgejo and github/gitlab alike, before
+	// anything is torn down or the manifest is written, so a single
+	// confirmation covers every selected repository.
 	var concreteRepos []string
-	for _, r := range matched {
-		if strings.ContainsAny(r, "*?[") {
-			printer.StepInfo(fmt.Sprintf("[%s] Skipping glob manifest entry (use concrete repo names to uninstall)", r))
-			continue
+	if sel.RunOthers {
+		repoArgs = sel.Rest
+		matched, matchErr := repos.MatchManifestRepos(manifest, repoArgs)
+		if matchErr != nil {
+			return matchErr
 		}
-		concreteRepos = append(concreteRepos, r)
+		if len(matched) == 0 {
+			printer.StepInfo("No manifest entries matched the given patterns")
+		}
+		for _, r := range matched {
+			if strings.ContainsAny(r, "*?[") {
+				printer.StepInfo(fmt.Sprintf("[%s] Skipping glob manifest entry (use concrete repo names to uninstall)", r))
+				continue
+			}
+			concreteRepos = append(concreteRepos, r)
+		}
+		if len(matched) > 0 && len(concreteRepos) == 0 {
+			printer.StepInfo("All matched entries are glob patterns — no concrete repos to uninstall")
+		}
+	} else {
+		repoArgs = nil
 	}
-	if len(concreteRepos) == 0 {
-		printer.StepInfo("All matched entries are glob patterns — no concrete repos to uninstall")
+	if len(sel.Targets) == 0 && len(concreteRepos) == 0 {
 		return nil
 	}
 	// The manifest edit follows the teardown, so a read-only manifest is
@@ -1669,7 +1779,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if !opts.manifestOnly && !opts.uninstallOnly && repos.ManifestReadOnly(manifest, opts.manifest) {
 		return fmt.Errorf("manifest %s is read-only and the uninstall must remove %s from it; no changes were made. "+
 			"Run with --uninstall-only to tear down without editing the manifest, then remove each torn-down entry from its source",
-			opts.manifest, strings.Join(concreteRepos, ", "))
+			opts.manifest, strings.Join(append(forgejoSelectors(sel.Targets), concreteRepos...), ", "))
 	}
 
 	action := "uninstall and remove from manifest"
@@ -1679,9 +1789,21 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		action = "uninstall"
 	}
 	if !opts.yes && !opts.dryRun {
-		if err := confirmBulkAction(printer, action, repoArgs, manifest, os.Stdin); err != nil {
+		if err := confirmBulkAction(printer, action, repoArgs, manifest, os.Stdin, forgejoSelectors(sel.Targets)...); err != nil {
 			return err
 		}
+	}
+
+	if len(sel.Targets) > 0 {
+		lc := newForgejoLifecycle(manifest, opts.dryRun, opts.testForgejo)
+		if err := runForgejoUninstall(opts, printer, manifest, sel.Targets, func() ([]repos.ForgejoRepoResult, error) {
+			return lc.Uninstall(ctx, sel.Targets)
+		}); err != nil {
+			return err
+		}
+	}
+	if len(concreteRepos) == 0 {
+		return nil
 	}
 
 	var clients repos.ForgeClientFactory
@@ -1830,11 +1952,14 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 
 // confirmBulkAction prompts for confirmation when a destructive action targets
 // multiple repos — either through glob expansion or an explicit bulk list.
-func confirmBulkAction(printer *ui.Printer, action string, patterns []string, manifest *repos.Manifest, stdin *os.File) error {
+// extra names already-resolved repositories outside the github/gitlab
+// sections (Forgejo selectors), so one prompt covers the whole selection.
+func confirmBulkAction(printer *ui.Printer, action string, patterns []string, manifest *repos.Manifest, stdin *os.File, extra ...string) error {
 	matched, err := repos.MatchManifestRepos(manifest, patterns)
 	if err != nil {
 		return err
 	}
+	matched = append(matched, extra...)
 	if len(matched) <= 1 {
 		return nil
 	}

@@ -93,7 +93,7 @@ the proposed overlay on the proposed (declared) preset rather than the
 installed base; an absent base is an empty layer, so adding a preset is
 compared too. A pristine first install (no installation, no overlay and no
 base) has nothing to compare against and inherits the preset. See
-[Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration).
+[fullsend repos — Managed configuration](../../cli/repos.md#managed-configuration).
 
 ### Marshal behavior
 
@@ -459,7 +459,11 @@ composition). It uses special three-way semantics:
 
 When the overlay provides a non-empty list and a parent exists, the
 accessor-level value is the union of both lists (overlay entries first,
-then any parent entries not already present). Code defaults are provided
+then any parent entries not already present). A Forgejo agent-definition
+source (`FULLSEND_FORGEJO_URL`) is never added to the code defaults, so a
+repository that resolves built-in agents from it must list
+`<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/` explicitly (see
+[Agent definitions from a Forgejo instance](../../cli/run.md#agent-definitions-from-a-forgejo-instance)). Code defaults are provided
 solely by the terminal `perRepoDefaults` parent — intermediate parents
 may return whatever allowlist they want, including omitting the built-in
 prefixes. The union does **not** force-append code defaults after the
@@ -593,7 +597,7 @@ compiled-in defaults apply:
 | `keep_history` | `true` (history appended) |
 | `roles` | `["triage", "coder", "review", "fix", "retro", "prioritize"]` |
 | `agents` | `nil` (none configured) |
-| `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]`, plus `https://<host>/fullsend-ai/fullsend/raw/` and `https://<host>/fullsend-ai/agents/raw/` when `GITHUB_SERVER_URL` names a host other than `github.com` |
+| `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]`, plus `https://<host>/fullsend-ai/fullsend/raw/` and `https://<host>/fullsend-ai/agents/raw/` when `GITHUB_SERVER_URL` names a host other than `github.com`. A Forgejo agent source (`FULLSEND_FORGEJO_URL`) is never added; list `<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/` explicitly |
 | `forge` | `""` (GitHub) |
 | `mint_url` | `"https://mint.fullsend.sh"` (hosted public mint) |
 | `inference.provider` | `"vertex"` |

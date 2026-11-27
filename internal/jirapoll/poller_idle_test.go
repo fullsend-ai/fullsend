@@ -48,10 +48,10 @@ func addTriageComment(mc *mockClient, key, id string, t time.Time) {
 
 func idleTestPoller(mc *mockClient, t *testing.T) *Poller {
 	return newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:  "acme/platform",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+		TargetRepo:   "acme/platform",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		OutputPath:   filepath.Join(t.TempDir(), "dispatches.json"),
 	})
 }
 
@@ -422,11 +422,11 @@ func TestFilterLockedActivityDecision(t *testing.T) {
 func TestFilterLockedGitLabTargetReadsItsOwnKey(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	opts := Options{
-		TargetRepo:  "group/project",
-		TargetForge: TargetForgeGitLab,
-		GitLabURL:   "https://gitlab.example.com",
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
+		TargetRepo:   "group/project",
+		TargetForge:  TargetForgeGitLab,
+		GitLabURL:    "https://gitlab.example.com",
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
 	}
 	issue := idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Hour))
 

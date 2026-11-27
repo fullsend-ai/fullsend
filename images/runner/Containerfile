@@ -41,7 +41,7 @@
 # version tags and on changes to images/runner/. UBI images pull anonymously
 # from registry.access.redhat.com — no Red Hat subscription required.
 # registry.access.redhat.com/ubi10/go-toolset:latest
-FROM registry.access.redhat.com/ubi10/go-toolset@sha256:05f3da136a4dbe077f30606e2e53a4f5cab185989c98309823ea06a9a1c52a50 AS build
+FROM registry.access.redhat.com/ubi10/go-toolset@sha256:b9f867772f02ef0c8167b1ac327b615c9c6b06be16f5a42ea322597633d1d25e AS build
 
 USER 0
 WORKDIR /src
@@ -103,7 +103,7 @@ RUN CGO_ENABLED=1 CGO_LDFLAGS="-L/usr/lib" GOOS=linux GOARCH=${TARGETARCH} \
 # under rootless podman container root maps to the invoking host user, so
 # bind-mounted configs and repos keep sane ownership without UID mapping.
 # registry.access.redhat.com/ubi10/ubi:latest
-FROM registry.access.redhat.com/ubi10/ubi@sha256:73ea54bfbfb586075bd3d45df6483a7f68875233c8cc7cebcf9b2bb42306c308
+FROM registry.access.redhat.com/ubi10/ubi@sha256:87ceab8634a53a36c75a8ba7282f09f11c46ab3e8906db6c6d2b3cd2a7dc4f4e
 
 # NOTE: no SHELL directive — podman's default OCI image format ignores it,
 # so all RUN steps below stay POSIX-sh compatible for docker AND podman.
@@ -286,26 +286,32 @@ RUN pip install --no-cache-dir --break-system-packages \
 #
 # Must be >= 1.28: onnxruntime_go v1.32.0 requests ORT C API version 28, and
 # older runtimes refuse with "requested API version [28] is not available".
-# To update: bump ORT_VERSION and ORT_SHA256_{AMD64,ARM64} from:
-#   https://github.com/microsoft/onnxruntime/releases
-ARG ORT_VERSION=1.28.1
-ARG ORT_SHA256_AMD64=2529aef968d0ad0603365054bc46ebefa7f0fe3bc12f28c5f729c99ddffe2a81
-ARG ORT_SHA256_ARM64=53bab9a5c6ae198b7be75663b780c64caa388d30257fac458c71fbff0a82e98e
+#
+# Taken from Microsoft's official Microsoft.ML.OnnxRuntime NuGet package,
+# not the GitHub release tarballs: github.com/microsoft/onnxruntime answers
+# 404 (#9759). One .nupkg (a zip) carries both architectures under
+# runtimes/linux-{x64,arm64}/native/, so a single ORT_SHA256 covers it;
+# python3 (installed above) extracts the one library needed.
+# To update: bump ORT_VERSION and ORT_SHA256 (sha256 of the .nupkg) from:
+#   https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime
+ARG ORT_VERSION=1.32.0
+ARG ORT_SHA256=a9150bc2992cbbb6722070da9910e1ffa989a8bfc67bdd5bb8e745ca755641db
 RUN case "$TARGETARCH" in \
-      amd64) ORT_ARCH="x64";     ORT_SHA="$ORT_SHA256_AMD64" ;; \
-      arm64) ORT_ARCH="aarch64"; ORT_SHA="$ORT_SHA256_ARM64" ;; \
+      amd64) ORT_RID="linux-x64" ;; \
+      arm64) ORT_RID="linux-arm64" ;; \
       *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
     esac \
     && curl -fsSL --retry 3 --retry-delay 5 \
-      "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" \
-      -o /tmp/ort.tgz \
-    && echo "${ORT_SHA}  /tmp/ort.tgz" | sha256sum -c - \
-    && tar xzf /tmp/ort.tgz -C /tmp/ \
-    && cp "/tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/ \
+      "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${ORT_VERSION}/microsoft.ml.onnxruntime.${ORT_VERSION}.nupkg" \
+      -o /tmp/ort.nupkg \
+    && echo "${ORT_SHA256}  /tmp/ort.nupkg" | sha256sum -c - \
+    && python3 -c 'import shutil, sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); exec("with z.open(sys.argv[2]) as src, open(sys.argv[3], \"wb\") as dst: shutil.copyfileobj(src, dst)")' \
+      /tmp/ort.nupkg "runtimes/${ORT_RID}/native/libonnxruntime.so" "/usr/lib/libonnxruntime.so.${ORT_VERSION}" \
+    && chmod 0755 "/usr/lib/libonnxruntime.so.${ORT_VERSION}" \
     && ln -sf "/usr/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/libonnxruntime.so \
     && ln -sf "/usr/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/libonnxruntime.so.1 \
     && /sbin/ldconfig \
-    && rm -rf /tmp/ort.tgz "/tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}"
+    && rm -f /tmp/ort.nupkg
 
 # ---------------------------------------------------------------------------
 # ProtectAI DeBERTa-v3 ONNX model, loaded by the ORT-enabled binary from the
@@ -341,6 +347,8 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 # Allow target repos with a newer go.mod toolchain directive to auto-download
 # the required toolchain at runtime rather than failing with "GOTOOLCHAIN=local".
 ENV GOTOOLCHAIN=auto
+# Stop ONNX Runtime starting its telemetry uploader for anything that loads it (#9777).
+ENV ORT_DISABLE_TELEMETRY=1
 
 WORKDIR /work
 

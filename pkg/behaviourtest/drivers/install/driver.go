@@ -101,6 +101,12 @@ type RepoLease struct {
 	// workflow host of the mint group serving the lease's org. Nil when
 	// the driver does not configure the mint's workflow hosts.
 	MintWorkflowHostRepos []string
+
+	// FreshInstall is true when the allocation installed fullsend into a
+	// repository it had just created, so no event has reached the
+	// repository's workflows yet. The behaviour suite classifies a first
+	// event that starts no run there as infrastructure (#9779).
+	FreshInstall bool
 }
 
 // LeaseDriver is a Driver that leases slots across pool orgs. Callers
@@ -182,6 +188,18 @@ type Driver interface {
 type MintURLReporter interface {
 	// MintURL returns the suite's mint URL, or "" when none is known.
 	MintURL() string
+}
+
+// AgentSourceEnvReporter is an optional Driver interface reporting the
+// environment that points fullsend at the agent definitions the driver's
+// environment hosts, such as the agent-definition repository the
+// forgejo-dev stack seeds, so built-in agents resolve there instead of
+// from fullsend-ai/agents on GitHub. It is separate from Driver so
+// external Driver implementations keep compiling.
+type AgentSourceEnvReporter interface {
+	// AgentSourceEnv returns the environment variables to set for
+	// fullsend; empty when the driver hosts no agent definitions.
+	AgentSourceEnv() map[string]string
 }
 
 // CLIRunnerFunc is the signature for running a fullsend CLI command.

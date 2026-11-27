@@ -602,8 +602,8 @@ func TestCELRouteStepsGatedAndIsolated(t *testing.T) {
 		assert.True(t, step.ContinueOnError, "step %q must continue on error", step.Name)
 		switch step.ID {
 		case "cel-opt-in":
-			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' }}", step.If,
-				"CEL routing covers same-repo pull_request events and never a fork or Dependabot PR on pull_request (#9221)")
+			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action != '') }}", step.If,
+				"CEL routing covers same-repo pull_request events and never a fork or Dependabot PR on pull_request (#9221); a fork PR comes in as the shim's workflow_run once Determine stage rebuilt its event")
 		case "cel-config":
 			assert.Equal(t, "steps.cel-opt-in.outputs.opt_in == 'true'", step.If)
 		default:
@@ -651,7 +651,8 @@ func TestEvaluateCELRouteStep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			bin := filepath.Join(dir, "bin")
+			runnerTemp := filepath.Join(dir, "runner-temp")
+			bin := filepath.Join(runnerTemp, "fullsend")
 			require.NoError(t, os.MkdirAll(bin, 0o755))
 			stub := "#!/bin/sh\nprintf '%s\\n' '" + tc.cliOutput + "'\nexit " + map[bool]string{true: "1", false: "0"}[tc.cliExit != 0] + "\n"
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(stub), 0o755))
@@ -661,7 +662,8 @@ func TestEvaluateCELRouteStep(t *testing.T) {
 			cmd := exec.Command("bash", "-c", script)
 			cmd.Dir = dir
 			cmd.Env = []string{
-				"PATH=" + bin + ":" + os.Getenv("PATH"),
+				"PATH=" + os.Getenv("PATH"),
+				"RUNNER_TEMP=" + runnerTemp,
 				"GITHUB_OUTPUT=" + outPath,
 				"EVENT_ACTION=opened",
 				"ROUTE_AGENT=review",
@@ -679,6 +681,98 @@ func TestEvaluateCELRouteStep(t *testing.T) {
 			assert.Equal(t, tc.wantOutput, string(got))
 		})
 	}
+}
+
+func runReviewDedupWorkflowStep(t *testing.T, stepName, decision string, exitCode int, withBinary bool) routeStepRun {
+	t.Helper()
+	script := extractReusableDispatchStepScript(t, "route", stepName)
+	dir := t.TempDir()
+	runnerTemp := filepath.Join(dir, "runner-temp")
+	outputPath := filepath.Join(dir, "output")
+	summaryPath := filepath.Join(dir, "summary")
+	require.NoError(t, os.WriteFile(outputPath, nil, 0o644))
+	require.NoError(t, os.WriteFile(summaryPath, nil, 0o644))
+	if withBinary {
+		bin := filepath.Join(runnerTemp, "fullsend-review-dedup", "fullsend")
+		require.NoError(t, os.MkdirAll(filepath.Dir(bin), 0o755))
+		stub := "#!/bin/sh\nprintf '%s\\n' \"$DEDUP_DECISION\"\nexit \"${DEDUP_EXIT:-0}\"\n"
+		require.NoError(t, os.WriteFile(bin, []byte(stub), 0o755))
+	}
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"RUNNER_TEMP=" + runnerTemp,
+		"GITHUB_OUTPUT=" + outputPath,
+		"GITHUB_STEP_SUMMARY=" + summaryPath,
+		"DEDUP_DECISION=" + decision,
+		"DEDUP_EXIT=" + strconv.Itoa(exitCode),
+		"GH_TOKEN=test-token",
+		"REVIEW_TOKEN=test-token",
+		"SOURCE_REPO=owner/repo",
+		"PR_NUMBER=1",
+		"FULLSEND_APP_SET=fullsend-ai",
+		"REVIEW_APP_CLIENT_ID=client",
+	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s failed:\n%s", stepName, out)
+	contents, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	outputs := map[string]string{}
+	for _, line := range strings.Split(strings.TrimRight(string(contents), "\n"), "\n") {
+		if key, value, ok := strings.Cut(line, "="); ok {
+			outputs[key] = value
+		}
+	}
+	return routeStepRun{outputs: outputs, stdout: string(out)}
+}
+
+func TestReviewDedupWorkflowGlue(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "defaults_root: .fullsend/.defaults")
+	assert.Contains(t, string(content), "run: ln -s .fullsend/.defaults .defaults")
+
+	t.Run("check unchanged review diff", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			decision   string
+			exitCode   int
+			withBinary bool
+			want       map[string]string
+			wantLog    string
+		}{
+			{name: "skip", decision: "skip=true\nprior_url=https://example.test/review", withBinary: true, want: map[string]string{"skip": "true", "prior_url": "https://example.test/review"}},
+			{name: "full review", decision: "skip=false", withBinary: true, want: map[string]string{"skip": "false"}},
+			{name: "cli failure", decision: "skip=false", exitCode: 1, withBinary: true, want: map[string]string{"skip": "false"}, wantLog: "Review deduplication CLI failed"},
+			{name: "missing binary", want: map[string]string{"skip": "false"}, wantLog: "Review deduplication CLI unavailable"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				got := runReviewDedupWorkflowStep(t, "Check unchanged review diff", tc.decision, tc.exitCode, tc.withBinary)
+				assert.Equal(t, tc.want, got.outputs)
+				if tc.wantLog != "" {
+					assert.Contains(t, got.stdout, tc.wantLog)
+				}
+			})
+		}
+	})
+
+	t.Run("publish gate", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			decision string
+			want     string
+		}{
+			{name: "published", decision: "skipped=true", want: "true"},
+			{name: "not published", decision: "skipped=false", want: "false"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := runReviewDedupWorkflowStep(t, "Publish review skip note", tc.decision, 0, true)
+				assert.Equal(t, tc.want, got.outputs["skipped"])
+			})
+		}
+	})
 }
 
 // TestValidateAgentsConfigStep_AcceptsOverrideOnlySettings runs the route

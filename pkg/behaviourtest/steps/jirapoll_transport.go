@@ -328,12 +328,12 @@ func whenJiraGitLabPollerRuns(ctx context.Context, w *world.World) error {
 		// so it names the pretend Atlassian instance, not the mock
 		// server the client below talks to (same split
 		// jira_lifecycle_test.go uses).
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraProject: "PROJ",
-		N:           50, // process all candidates
-		TargetForge: jirapoll.TargetForgeGitLab,
-		GitLabURL:   "https://gitlab.example.com",
-		Dispatcher:  jiradispatch.GitLabDispatcher{Poller: glPoller},
+		JiraBaseURL:  "https://acme.atlassian.net",
+		JiraProjects: []string{"PROJ"},
+		N:            50, // process all candidates
+		TargetForge:  jirapoll.TargetForgeGitLab,
+		GitLabURL:    "https://gitlab.example.com",
+		Dispatcher:   jiradispatch.GitLabDispatcher{Poller: glPoller},
 	}
 	poller := jirapoll.New(jiraClient, matcher, opts)
 	if err := poller.Run(ctx); err != nil {

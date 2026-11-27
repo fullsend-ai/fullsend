@@ -13,6 +13,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/suite"
 )
 
@@ -83,6 +84,11 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		}
 	})
 
+	// A driver that hosts agent definitions (forgejo-dev) points the CLI
+	// processes started below at them, so built-in agents never resolve
+	// from GitHub.
+	applyAgentSourceEnv(t, driver)
+
 	// The driver supplies its own default concurrency and description,
 	// so the runner never reads a pool layout (a non-pool driver such as
 	// forgejo-dev has none).
@@ -97,6 +103,17 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 	t.Logf("%s, godog concurrency %d", bootstrap.Describe(), concurrency)
 
 	template := newTemplateWorld(t, behaviourSuiteName, ctx, cfg, binary, driver, opts)
+
+	// Job cleanup for the feature-scoped OpenBao servers of the Vault
+	// scenarios (ADR 0155): stops them and saves their logs and
+	// measurements under BEHAVIOUR_ARTIFACT_DIR. Registered after
+	// Finalize, so it runs first (t.Cleanup is LIFO); it does nothing when
+	// no Vault feature ran.
+	t.Cleanup(func() {
+		if err := steps.StopVaultServers(context.Background()); err != nil {
+			t.Logf("stopping Vault test servers: %v", err)
+		}
+	})
 
 	if outsiderPAT := os.Getenv("TEST_ACTOR_OUTSIDER_PAT"); outsiderPAT != "" {
 		outsiderClient := e2etest.NewLiveClient(outsiderPAT)

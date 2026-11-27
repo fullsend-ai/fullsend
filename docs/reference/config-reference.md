@@ -89,9 +89,9 @@ authorization:                       # Extra sources of permission for triggerin
   - provider: jira                   # Jira (jira-poll): who may trigger agents from Jira events
     write:                           # Fullsend role write
       groups: [example-team-developers]  # Jira group names (or group IDs)
-      accounts: ["5f7c012e0b2a4c001f3d9876"]  # Jira account IDs
+      accounts: ["712020:00000000-0000-0000-0000-000000000000"]  # Jira account IDs
     triage:                          # Fullsend role triage
-      groups: [example-team]
+      groups_from: FULLSEND_JIRA_TRIAGE_GROUPS  # Or read a list from an environment variable (GitLab: use a name without the FULLSEND_ prefix)
       accounts: []
     labels: jira_editors             # Label-added events: jira_editors (default), allowlist, project_roles
 
@@ -409,6 +409,11 @@ include the raw-content prefixes for the same two repositories on that host:
 `https://<host>/fullsend-ai/agents/raw/`. GitHub Actions sets this variable on
 every runner. No other path on that host is added.
 
+A Forgejo agent-definition source (`FULLSEND_FORGEJO_URL`) is never added to
+the defaults. To resolve built-in agents from it, list
+`<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/` here (see
+[Agent definitions from a Forgejo instance](../cli/run.md#agent-definitions-from-a-forgejo-instance)).
+
 In the layered config system, this field uses union-with-deny-all semantics:
 omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
@@ -433,6 +438,20 @@ The rendered effective config (`EffectiveYAML`) shows the accessor-level
 list, which may omit the ensured defaults.
 
 ### `tracker`
+
+The target replacement is specified in
+[ADR 0079](../ADRs/0079-bind-entity-execution-through-named-sources.md) and the
+[entity-source configuration contract](../normative/entity-source-configuration/v1/):
+named `connections`, `entity_sources`, and `agents[].entities` slot bindings,
+with connection-scoped creation policy, in-memory legacy translation, and
+deprecation warnings.
+The configuration clone selects the native entity provider independently of the
+execution platform. Provider-default connections (`github`, `gitlab`, `forgejo`)
+can override its instance, including GitHub.com to GitHub Enterprise. Reserved
+provider source names select queries and repository scopes and can be explicitly
+bound; defining a source named `native` is forbidden.
+These fields and the translation are not implemented yet; the current supported
+configuration remains the `tracker` mapping documented below.
 
 The issue tracker, as a single provider-discriminated mapping. `tracker` holds
 at most one provider block — `github`, `gitlab`, or `jira` — and the block that
@@ -711,6 +730,7 @@ GitLab authorization
 |---|---|
 | `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the fullsend `write` role |
 | `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the fullsend `triage` role |
+| `write.groups_from`, `write.accounts_from`, `triage.groups_from`, `triage.accounts_from` | The name of an environment variable that holds that list as comma-separated values, instead of the inline list |
 | `labels` | How a label-added event is authorized: `jira_editors` (default once the entry is present), `allowlist`, or `project_roles` |
 
 - **Slash commands and other non-label events:** when the entry sets a
@@ -737,14 +757,31 @@ GitLab authorization
   resolution calls the same API for an actor when a project role is granted
   to a group.
 
+- **Lists from the environment:** on a public repository, anyone can read
+  `config.yaml`, including the lists. `groups_from` and `accounts_from` name
+  an environment variable instead, such as a GitHub repository secret. The
+  poller reads it on every poll, splits it on commas and newlines, trims each
+  entry, and drops empty ones. It never prints the values. An unset or empty variable grants
+  no one, the list still counts as set, and the poller logs a warning that
+  names the variable. A role cannot set both `groups`
+  and `groups_from`, or both `accounts` and `accounts_from`. The variable
+  name must use letters, digits, and underscores, and must not start with a
+  digit. The managed GitHub poll workflow passes only
+  `FULLSEND_JIRA_WRITE_GROUPS`, `FULLSEND_JIRA_WRITE_ACCOUNTS`,
+  `FULLSEND_JIRA_TRIAGE_GROUPS`, and `FULLSEND_JIRA_TRIAGE_ACCOUNTS`. On
+  GitLab, use a name without the `FULLSEND_` prefix, such as
+  `JIRA_TRIAGE_GROUPS`
+  ([GitLab: CI/CD variables](../guides/user/jira-integration.md#gitlab-cicd-variables)). See
+  [Keeping the lists out of the repository](../guides/user/jira-integration.md#keeping-the-lists-out-of-the-repository).
+
 To keep today's behavior explicitly, use the two-line entry
 `- provider: jira` with `labels: project_roles` and no lists.
 
 The provider is opt-in. Without a `jira` entry, every Jira event, including
 label-added events, resolves through the project role lookup and takes the
 per-harness role threshold, which needs Administer Projects. Unknown keys in a `jira` entry, an
-unknown `labels` value, and empty group or account entries fail config
-loading. See
+unknown `labels` value, empty group or account entries, and an empty or
+invalid `*_from` variable name fail config loading. See
 [Jira integration](../guides/user/jira-integration.md#actor-role-resolution)
 for the permissions each setting needs.
 
@@ -1210,6 +1247,15 @@ Forgejo and local runs have no supported job OIDC integration, so an explicit
 Vault selection fails there. Secrets that omit
 `connection` or select `native` keep working on every forge.
 
+**Trace correlation.** Every Vault request (login, read, and token revocation)
+carries the run's inbound W3C trace context as `traceparent` and `tracestate`
+headers, taken from `TRACEPARENT` and `TRACESTATE`. Nothing is sent when no
+valid trace context is set. Vault resolution runs before the run's own tracer
+starts, because the OTLP headers it resolves configure that tracer. To match
+Vault requests to the run's trace, configure your Vault audit device to record
+these headers, for example with
+`vault write sys/config/auditing/request-headers/traceparent hmac=false`.
+
 **Consumers.** Resolved OTLP header values are handed to the same consumer as
 their native values: Fullsend's trace exporter. A resolved `JIRA_TOKEN` reaches
 only host-side scripts that declare it in a harness `env.runner` entry.
@@ -1266,7 +1312,7 @@ Under `metadata`:
 - **`content`** — The level for every run. Unset means `all`.
 - **`by_source`** — Levels for runs started from one source. Keys are the
   normalized event's `source.system`, the same value CEL triggers see as
-  `event.source.system`. Today's adapters emit `github`, `gitlab` and `jira`.
+  `event.source.system`. Today's adapters emit `github`, `gitlab`, `forgejo` and `jira`.
   `manual` and `schedule` are reserved source names that no adapter emits
   yet; an entry for them is accepted but matches no run. A later adapter's
   source name works as a key with no schema change: validation rejects

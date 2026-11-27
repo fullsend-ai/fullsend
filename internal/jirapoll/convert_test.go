@@ -28,9 +28,9 @@ func TestToNormalizedEvent_MatchesFixture(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"557058:abc123def456": "Developers",
-		},
+		}),
 	}
 
 	event := JiraEvent{
@@ -116,9 +116,9 @@ func TestToNormalizedEvent_CommentWithSlashCommand(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"user1": "Developers",
-		},
+		}),
 	}
 
 	event := JiraEvent{
@@ -185,9 +185,9 @@ func TestToNormalizedEvent_CommentWithoutSlashCommand(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"user1": "Developers",
-		},
+		}),
 	}
 
 	event := JiraEvent{
@@ -224,9 +224,9 @@ func TestToNormalizedEvent_LabelAdded(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"user1": "Developers",
-		},
+		}),
 	}
 
 	event := JiraEvent{
@@ -271,7 +271,7 @@ func TestToNormalizedEvent_BotActor(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{},
+		rosters: testRosters("PROJ", map[string]string{}),
 	}
 
 	event := JiraEvent{
@@ -484,9 +484,9 @@ func TestToNormalizedEvent_IsEntityAuthor(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"user1": "Developers",
-		},
+		}),
 	}
 
 	event := JiraEvent{
@@ -520,11 +520,11 @@ func TestToNormalizedEvent_IsEntityAssignee(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"reporter-r": "Developers",
 			"assignee-a": "Developers",
 			"other-b":    "Developers",
-		},
+		}),
 	}
 	comment := func(author string, assignee jira.User) JiraEvent {
 		return JiraEvent{
@@ -851,9 +851,9 @@ func TestToNormalizedEvent_JSONRoundTrip(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"557058:abc123def456": "Developers",
-		},
+		}),
 	}
 
 	event := JiraEvent{
@@ -929,9 +929,9 @@ func TestResolveRole_ExternalActor(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"known-user": "Developers",
-		},
+		}),
 	}
 
 	// Actor not in membership map should resolve to "external".
@@ -957,7 +957,7 @@ func TestResolveRole_EmptyActorID(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{},
+		rosters: testRosters("PROJ", map[string]string{}),
 	}
 
 	// Event with no actor ID should resolve to "external".
@@ -978,18 +978,18 @@ func TestResolveRole_EmptyActorID(t *testing.T) {
 }
 
 func TestResolveRole_CrossProjectFailsClosed(t *testing.T) {
-	// roleMembership was loaded for PROJ1 only. An actor who is a Developer
+	// The roster was loaded for PROJ1 only. An actor who is a Developer
 	// there must not inherit that role on an issue from a different project
-	// matched by a multi-project --jql (see PR #5778 review).
+	// (see PR #5778 review).
 	p := &Poller{
 		opts: Options{
-			TargetRepo:  "acme/platform",
-			JiraBaseURL: "https://acme.atlassian.net",
-			JiraProject: "PROJ1",
+			TargetRepo:   "acme/platform",
+			JiraBaseURL:  "https://acme.atlassian.net",
+			JiraProjects: []string{"PROJ1"},
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ1", map[string]string{
 			"dev-user": "Developers",
-		},
+		}),
 	}
 
 	event := JiraEvent{
@@ -1011,13 +1011,13 @@ func TestResolveRole_CrossProjectFailsClosed(t *testing.T) {
 func TestResolveRole_SameProjectSucceeds(t *testing.T) {
 	p := &Poller{
 		opts: Options{
-			TargetRepo:  "acme/platform",
-			JiraBaseURL: "https://acme.atlassian.net",
-			JiraProject: "PROJ1",
+			TargetRepo:   "acme/platform",
+			JiraBaseURL:  "https://acme.atlassian.net",
+			JiraProjects: []string{"PROJ1"},
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ1", map[string]string{
 			"dev-user": "Developers",
-		},
+		}),
 	}
 
 	event := JiraEvent{
@@ -1042,9 +1042,9 @@ func TestResolveRole_AdminActor(t *testing.T) {
 			TargetRepo:  "acme/platform",
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"admin-user": "Administrators",
-		},
+		}),
 	}
 
 	event := JiraEvent{
@@ -1080,9 +1080,9 @@ func TestToNormalizedEvent_CommandBodyCarriedWhole(t *testing.T) {
 			TargetForge: TargetForgeGitLab,
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"dev-user": "Developers",
-		},
+		}),
 	}
 
 	commandBody := "/fs-triage review the acceptance criteria\n" +
@@ -1147,9 +1147,9 @@ func TestToNormalizedEvent_GitHubTargetCommandBodyCapped(t *testing.T) {
 			TargetForge: TargetForgeGitHub,
 			JiraBaseURL: "https://acme.atlassian.net",
 		},
-		roleMembership: map[string]string{
+		rosters: testRosters("PROJ", map[string]string{
 			"dev-user": "Developers",
-		},
+		}),
 	}
 
 	commandBody := "/fs-triage review the acceptance criteria\n" +

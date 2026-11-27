@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -146,6 +148,11 @@ func TestNewOpenBao_Defaults(t *testing.T) {
 func TestOpenBaoRunnerPolicy_ReadOnlyPrefix(t *testing.T) {
 	assert.Equal(t, "path \"secret/data/fullsend-bt/*\" {\n  capabilities = [\"read\"]\n}\n", openBaoRunnerPolicy)
 }
+
+// openBaoStartCalls is the number of admin requests Start sends: JWT
+// auth, its config, the runner policy, the audit device and the two
+// audited headers.
+const openBaoStartCalls = 6
 
 // fakeBaoCall is one request the fake OpenBao API received.
 type fakeBaoCall struct {
@@ -298,7 +305,7 @@ func TestOpenBaoStart_ConfiguresServerAndTunnel(t *testing.T) {
 	assert.Contains(t, cmds[2], "podman stats --no-stream")
 
 	calls := f.recorded()
-	require.Len(t, calls, 3)
+	require.Len(t, calls, openBaoStartCalls)
 	for _, c := range calls {
 		assert.Equal(t, b.rootToken, c.Token)
 	}
@@ -310,6 +317,13 @@ func TestOpenBaoStart_ConfiguresServerAndTunnel(t *testing.T) {
 	assert.Equal(t, http.MethodPut, calls[2].Method)
 	assert.Equal(t, "/v1/sys/policies/acl/"+openBaoPolicy, calls[2].Path)
 	assert.Equal(t, openBaoRunnerPolicy, calls[2].Body["policy"])
+	assert.Equal(t, "/v1/sys/audit/stdout", calls[3].Path)
+	assert.Equal(t, "file", calls[3].Body["type"])
+	assert.Equal(t, map[string]any{"file_path": "stdout"}, calls[3].Body["options"])
+	assert.Equal(t, "/v1/sys/config/auditing/request-headers/traceparent", calls[4].Path)
+	assert.Equal(t, false, calls[4].Body["hmac"])
+	assert.Equal(t, "/v1/sys/config/auditing/request-headers/tracestate", calls[5].Path)
+	assert.Equal(t, false, calls[5].Body["hmac"])
 
 	require.NotEmpty(t, *logs)
 	last := (*logs)[len(*logs)-1]
@@ -343,7 +357,7 @@ func TestOpenBaoAllowRepoAndPutSecret(t *testing.T) {
 	_, err = b.PutSecret(ctx, "empty", nil)
 	require.ErrorContains(t, err, "no fields")
 
-	calls := f.recorded()[3:]
+	calls := f.recorded()[openBaoStartCalls:]
 	require.Len(t, calls, 4)
 	rolePath := "/v1/auth/jwt/role/" + vaultsecrets.DefaultRole
 	last := calls[2]
@@ -477,4 +491,93 @@ func TestOpenBaoMemoryUsage_Unknown(t *testing.T) {
 		return nil, errors.New("no stats")
 	}}
 	assert.Equal(t, "unknown", b.memoryUsage(context.Background()))
+}
+
+func TestOpenBaoStart_AuditFailureIsNotFatal(t *testing.T) {
+	f := newFakeBao(t)
+	f.failPath = "/v1/sys/audit/stdout"
+	p := &fakePodman{}
+	b, logs := newTestOpenBao(t, f, p)
+	require.NoError(t, b.Start(context.Background()))
+	t.Cleanup(func() { _ = b.Stop(context.Background()) })
+	joined := strings.Join(*logs, "\n")
+	assert.Contains(t, joined, "WARNING: no audit log")
+	assert.NotContains(t, joined, "echoed-secret", "response bodies are not logged")
+	for _, c := range f.recorded() {
+		assert.NotContains(t, c.Path, "/request-headers/", "headers are not audited without the device")
+	}
+
+	f2 := newFakeBao(t)
+	f2.failPath = "/v1/sys/config/auditing/request-headers/tracestate"
+	b2, logs2 := newTestOpenBao(t, f2, &fakePodman{})
+	require.NoError(t, b2.Start(context.Background()))
+	t.Cleanup(func() { _ = b2.Stop(context.Background()) })
+	assert.Contains(t, strings.Join(*logs2, "\n"), "will not record the tracestate header")
+}
+
+func TestOpenBaoStop_SavesLogAndMeasurements(t *testing.T) {
+	f := newFakeBao(t)
+	p := &fakePodman{}
+	b, logs := newTestOpenBao(t, f, p)
+	b.artifactDir = t.TempDir()
+	require.NoError(t, b.Start(context.Background()))
+	token := b.rootToken
+	b.run = func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "logs" {
+			_, _ = p.run(ctx, env, name, args...)
+			return []byte(`{"type":"request","request":{"headers":{"traceparent":["00-abc-def-01"]}},"token":"` + token + `"}` + "\n"), nil
+		}
+		return p.run(ctx, env, name, args...)
+	}
+	require.NoError(t, b.Stop(context.Background()))
+
+	dir := filepath.Join(b.artifactDir, openBaoArtifactSubdir, b.containerName)
+	logData, err := os.ReadFile(filepath.Join(dir, "openbao.log"))
+	require.NoError(t, err)
+	assert.Contains(t, string(logData), "00-abc-def-01")
+	assert.NotContains(t, string(logData), token, "the root token is masked")
+
+	var m openBaoMeasurements
+	raw, err := os.ReadFile(filepath.Join(dir, "measurements.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &m))
+	assert.Equal(t, b.containerName, m.Container)
+	assert.Equal(t, openBaoImage, m.Image)
+	assert.Equal(t, "12.5MB / 7.7GB", m.MemoryAtStart)
+	assert.Equal(t, "12.5MB / 7.7GB", m.MemoryAtStop)
+	assert.GreaterOrEqual(t, m.StartupSeconds, 0.0)
+
+	cmds := p.joined()
+	logsIdx, rmIdx := -1, -1
+	for i, c := range cmds {
+		switch c {
+		case "podman logs " + b.containerName:
+			logsIdx = i
+		case "podman rm -f " + b.containerName:
+			rmIdx = i
+		}
+	}
+	require.NotEqual(t, -1, logsIdx)
+	assert.Less(t, logsIdx, rmIdx, "the log is read before the container is removed")
+	assert.Contains(t, strings.Join(*logs, "\n"), "saved the "+b.containerName+" log and measurements")
+}
+
+func TestOpenBaoStop_LogReadFailureKeepsContainer(t *testing.T) {
+	p := &fakePodman{failOn: "logs bt-openbao-x", failOut: "storage busy"}
+	b := &openBao{run: p.run, containerName: "bt-openbao-x", containerUp: true, artifactDir: t.TempDir(), logf: t.Logf}
+	require.ErrorContains(t, b.Stop(context.Background()), "reading bt-openbao-x log")
+	assert.True(t, b.containerUp, "the container is kept so its log can be read on retry")
+	require.NoError(t, b.Stop(context.Background()))
+	assert.False(t, b.containerUp)
+
+	leaky := &fakePodman{failOn: "logs bt-openbao-z", failOut: "startup: root token tok-secret-123"}
+	lb := &openBao{run: leaky.run, containerName: "bt-openbao-z", containerUp: true, rootToken: "tok-secret-123", artifactDir: t.TempDir(), logf: t.Logf}
+	err := lb.Stop(context.Background())
+	require.ErrorContains(t, err, "reading bt-openbao-z log")
+	assert.NotContains(t, err.Error(), "tok-secret-123", "the log output, which can hold the root token, is not in the error")
+
+	gone := &openBao{run: func(context.Context, []string, string, ...string) ([]byte, error) {
+		return []byte("Error: no such container bt-openbao-y"), errors.New("exit status 1")
+	}, containerName: "bt-openbao-y", containerUp: true, artifactDir: t.TempDir(), logf: t.Logf}
+	require.NoError(t, gone.Stop(context.Background()))
 }

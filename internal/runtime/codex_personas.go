@@ -169,7 +169,7 @@ func resolveCodexChildModels(roles []codexRole, skipped map[string]string, subag
 
 	// The child effort. Codex resets a child to the run-level child model's
 	// catalog default unless agents.default_subagent_reasoning_effort is set
-	// (child_config.rs, rust-v0.166.0), so the run's effort is written there
+	// (child_config.rs, rust-v0.170.0), so the run's effort is written there
 	// when the run has one. Either way codex checks the effort against the
 	// run-level child model and against a persona's own model at spawn and
 	// refuses the spawn when the model lacks it: each is checked here.
@@ -443,7 +443,7 @@ func codexParentCollabVersion(catalog codexCatalog, parentModel, agentModel stri
 // no agents.max_depth under V2 and gives a child of a V2 parent the
 // multi-agent tools only when the child's own model selects V2
 // (collab_tools_enabled, codex-rs/core/src/tools/spec_plan.rs,
-// rust-v0.166.0). With every model the runner binds off V2, a child it
+// rust-v0.170.0). With every model the runner binds off V2, a child it
 // starts holds no spawn_agent. A spawn the guard did not screen can still
 // name a model (the schema hides the argument; the handler accepts it) or
 // use a rewritten role file, so for such a spawn depth one still rests on

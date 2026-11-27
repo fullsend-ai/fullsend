@@ -189,6 +189,14 @@ When all five components are present, any code the PR author controls can read a
 
 **ADR-0009 and the shim distinction:** ADR-0009 documents why `pull_request_target` was safe for the shim workflow — the shim never checks out PR code, so components 2–3 are absent. The shim has since moved to `pull_request` for same-repo PRs ([ADR 0164](../ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md)); `reusable-dispatch.yml` still accepts `pull_request_target` from shims that have not upgraded. This safety reasoning does **not** transfer to jobs that check out and execute PR-head code (e.g., the behaviour and playback jobs in `e2e.yml`).
 
+**`workflow_run` and the fork PR stub:** `workflow_run` has the same component 1 as `pull_request_target`: the triggered workflow runs from the default branch with secrets, after a run that a fork controls. The shim's `workflow_run` trigger on the `fullsend-fork-pr.yaml` stub stays safe only while components 2 and 3 stay absent:
+
+- never download the triggering run's artifacts or read its logs or run name, and never check out its head SHA;
+- treat the run's `head_repository`, `head_branch`, `head_sha`, `path` and `created_at` as lookup metadata a fork can influence, not as provenance; look the PR up through the API and re-check its head repository id and head SHA;
+- authorize the actor the API reports (PR author, closer) before any token mint. Labels do not route a fork PR: the fork's stub copy can run on any label event, so no trusted record ties a label to the head it was added on.
+
+A `branches:` filter (github/gh-aw's CTR-021 check) does not help here: for a fork PR the run's `head_branch` is a name the fork chose.
+
 ### Credential blast radius
 
 Not all credentials carry the same risk on exfiltration:
@@ -202,13 +210,14 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-Pull requests run the behaviour and playback scenarios on a GitHub emulator ([`behaviour-github-emulator.yml`](../../.github/workflows/behaviour-github-emulator.yml)) with no secrets, no environment and no cloud OIDC, so fork pull requests run them on `pull_request` with no authorization step. `e2e.yml` runs the `behaviour` and `playback` suites, with secrets, only in the merge queue and on push to `main`; on a pull request those jobs skip, which their required checks accept.
+Pull requests run the behaviour and playback scenarios on a GitHub emulator ([`behaviour-github-emulator.yml`](../../.github/workflows/behaviour-github-emulator.yml)) with no secrets, no environment and no cloud OIDC, so fork pull requests run them on `pull_request` with no authorization step. `e2e.yml` runs the `behaviour` and `playback` suites, with secrets, in the merge queue and on push to `main`; on a pull request those jobs skip, which their required checks accept, unless a maintainer comments `/ok-to-test <sha> live` (below).
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the `forgejo-behaviour` job, the only `e2e.yml` suite that runs on pull requests, checks out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`):
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the `forgejo-behaviour` job, or the live `behaviour` and `playback` jobs after `/ok-to-test <sha> live`, checks out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`):
 
 - **Same-repository PRs** — the gate authorizes authors with write access (collaborator permission API) and trusted bots. Fork `pull_request` runs get no secrets, so `forgejo-behaviour` skips them.
 - **Fork PRs** — require a user with write access (Write role or above) to review the PR diff and comment `/ok-to-test <sha>`, naming the reviewed commit, including when the fork author has write access. The gate reads the comment from the API, checks the commenter's permission, and authorizes the PR head only when it is the named sha. Another head is refused (`stale_ok_to_test`), and a comment with no sha is refused (`missing_sha`). The gate uses no timing. The `ok-to-test` label no longer starts e2e.
-- **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports only the `forgejo-behaviour` check run on the authorized sha. The `forgejo-behaviour` job runs on the PR-head checkout with `contents: read` only.
+- **Live runs on any PR** — `/ok-to-test <sha> live` passes the same gate, with no new rules, and also runs the live `behaviour` and `playback` jobs on PR-head code: the authorized sha, in the `dev` environment, with the same steps as the merge queue. The gate writes `live=true` only when it authorizes the run (`reason=ok_to_test`) and the first line ends in a lowercase `live`; any other word after the sha is refused as `missing_sha`.
+- **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports the `forgejo-behaviour` check run on the authorized sha, plus the non-required `behaviour-live` and `playback-live` check runs when `live` is true. It never reports the required `behaviour` and `playback` checks on a PR. The `forgejo-behaviour` job runs on the PR-head checkout with `contents: read` only. The live jobs add only the `id-token: write` permission (for GCP WIF and the mint) and use the same secrets as in the merge queue.
 
 **Limitations of the gate:**
 

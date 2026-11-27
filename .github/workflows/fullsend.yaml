@@ -11,18 +11,30 @@
 # copy and forwards the repository secrets, so the dispatch job runs only for
 # same-repo PRs, whose authors already have write access. Fork PRs are skipped
 # here and again in reusable-dispatch.yml (a fork cannot edit the upstream
-# copy; a vendored copy runs from the PR); a maintainer comments /fs-review
-# to review one. In private repositories keep "Send secrets to workflows
-# from pull requests" and "Send write tokens to workflows from pull
-# requests" (Settings > Actions > General) turned off.
+# copy; a vendored copy runs from the PR). In private repositories keep
+# "Send secrets to workflows from pull requests" and "Send write tokens to
+# workflows from pull requests" (Settings > Actions > General) turned off.
 # reusable-dispatch.yml checks out the base side for pull request events.
+#
+# Fork PRs: fullsend-fork-pr.yaml runs on fork PR events with no permissions
+# and no secrets. When its run completes, workflow_run starts this workflow
+# from the default branch, with secrets. The fork controls the copy of the
+# stub that ran, so this workflow trusts only what GitHub records about that
+# run: the dispatch job runs for a successful pull_request run of the stub's
+# file from a fork, and reusable-dispatch.yml looks the PR up by head SHA
+# through the API, skips a run whose SHA is no longer the PR head, and
+# authorizes the PR author (review) or closer (retro). Labels do not start
+# a fork PR review. It never downloads the stub run's artifacts or checks
+# out PR code. A maintainer can still comment /fs-review on any PR.
 #
 # Routing: this shim forwards the raw event context to reusable-dispatch.yml,
 # which determines the stage and runs the agent inline (ADR 62).
 # Adding a new stage requires only a job in reusable-dispatch.yml — zero changes to this repo.
 #
 # Concurrency: per-role cancel-in-progress groups live in reusable-dispatch.yml
-# stage jobs with -agent- suffix. Roles operate independently (#2452).
+# stage jobs with -agent- suffix. Roles operate independently (#2452). A fork
+# PR's workflow_run joins the same per-PR groups, so a newer push supersedes
+# a review still in progress.
 name: fullsend
 
 on:
@@ -34,6 +46,9 @@ on:
     types: [opened, synchronize, ready_for_review, closed, labeled, unlabeled]
   pull_request_review:
     types: [submitted]
+  workflow_run:
+    workflows: [fullsend-fork-pr]
+    types: [completed]
 
 permissions: {}
 
@@ -46,6 +61,11 @@ jobs:
        || github.event.pull_request.head.repo.id == github.repository_id)
       && (github.event_name != 'issue_comment'
        || startsWith(github.event.comment.body, '/fs-'))
+      && (github.event_name != 'workflow_run'
+       || (github.event.workflow_run.event == 'pull_request'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.path == '.github/workflows/fullsend-fork-pr.yaml'
+        && github.event.workflow_run.head_repository.id != github.repository_id))
     permissions:
       actions: write
       id-token: write

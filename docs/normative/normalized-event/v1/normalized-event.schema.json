@@ -593,8 +593,8 @@
       "properties": {
         "system": {
           "type": "string",
-          "enum": ["github", "gitlab", "jira", "manual", "schedule"],
-          "description": "Event provenance. v1 adapters emit github (webhooks), gitlab (cron-poll input per ADR 0067; shipped native-webhook input per ADR 0125, with live validation partial), jira (poll input), manual, or schedule."
+          "enum": ["github", "gitlab", "forgejo", "jira", "manual", "schedule"],
+          "description": "Event provenance. v1 adapters emit github (webhooks), gitlab (cron-poll input per ADR 0067; shipped native-webhook input per ADR 0125, with live validation partial), forgejo (Forgejo Actions event input), jira (poll input), manual, or schedule."
         },
         "raw_type": {
           "type": "string",

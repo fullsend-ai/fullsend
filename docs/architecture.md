@@ -55,7 +55,8 @@ sole supported installation model
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
 - Installation model: the CLI installs per repository only (`fullsend github setup <owner/repo>`, `fullsend admin install <owner/repo>` (deprecated), `fullsend repos install`); per-org CLI installation was removed ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)). The concrete layers of the ordered layer stack (vendor-binary, secrets, inference, and the per-org workflows layer) were removed along with per-org mode; `internal/layers` keeps only the `Layer` interface and shared helpers, and the CLI no longer orchestrates a layer stack ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
 - Dispatch: each repository's `.github/workflows/fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` via `workflow_call`; that workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function or Cloudflare Worker) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager (GCF mint), Worker secrets (CF mint), or the local filesystem (standalone mint), not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
-- Shim workflow security: the shim's PR events run on `pull_request`, so the shim runs from the PR's own copy and forwards the repository's secrets. Its dispatch job therefore runs only for same-repo PRs (head repository id equals the base repository id), whose authors already have write access; fork and Dependabot PRs get no automatic run and are reviewed when someone authorized for `/fs-review` (triage access or higher, or an OWNERS approver or reviewer) comments it. `reusable-dispatch.yml` refuses those PRs again (a fork cannot edit the upstream copy; a vendored copy runs from the PR, so vendored installs rely on GitHub not sending secrets to fork PR runs), takes the base side for every checkout (base SHA, or the default branch where a checkout used the event default), runs no PR code, and still accepts `pull_request_target` from shims that have not upgraded, with a warning. The mint accepts only OIDC tokens whose `job_workflow_ref` names an allowed workflow host repository ([ADR 0164](ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md), superseding the `pull_request_target` shim of [ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
+- Shim workflow security: the shim's PR events run on `pull_request`, so the shim runs from the PR's own copy and forwards the repository's secrets. Its dispatch job therefore runs only for same-repo PRs (head repository id equals the base repository id), whose authors already have write access; Dependabot PRs get no automatic run, and someone authorized for `/fs-review` (triage access or higher, or an OWNERS approver or reviewer) comments it. `reusable-dispatch.yml` refuses fork and Dependabot PRs on `pull_request` again (a fork cannot edit the upstream copy; a vendored copy runs from the PR, so vendored installs rely on GitHub not sending secrets to fork PR runs), takes the base side for every checkout (base SHA, or the default branch where a checkout used the event default), runs no PR code, and still accepts `pull_request_target` from shims that have not upgraded, with a warning. The mint accepts only OIDC tokens whose `job_workflow_ref` names an allowed workflow host repository ([ADR 0164](ADRs/0164-run-the-shim-on-pull-request-for-same-repo-prs.md), superseding the `pull_request_target` shim of [ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
+- Fork PRs (GitHub): a fork PR's events run the managed `fullsend-fork-pr.yaml` workflow, which has no permissions and does nothing. Its completed run starts the shim through `workflow_run` from the default branch, with the repository's secrets. The fields of that run (head repository, branch, SHA, path, creation time) are only used to look the PR up through the API; the dispatch re-checks the PR's head repository id and head SHA, then authorizes the PR author (triage access or higher) for review or the closer (write access) for retro. The `ready-for-review` label does not start a fork PR review; for other fork PRs a maintainer comments `/fs-review`. It never reads the fork run's output or runs PR code.
 - Installer scaffold: per-repo installs deploy content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants. The per-org dispatch, repo-maintenance, and enrollment-reconciliation scaffolds were removed with the rest of per-org mode ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
 - Reusable workflows: each repository's `fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` (`fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml`), which runs every agent stage as an inline job; the only standalone stage workflow is `reusable-prioritize.yml`, called by the explicit prioritize thin caller. The per-org thin stage callers and `reusable-{code,fix,review,retro,triage}.yml` were removed with per-org mode (the per-org architecture described in the linked ADRs is historical and deprecated). Infrastructure patches ship once upstream and propagate to all repositories without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)). **Vendoring** (`vendor: true` in `repos.yaml` for `repos install`, `--vendor` for `github setup`; [ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)) commits workflows and agent content at install time; layered installs (default) fetch upstream at runtime.
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from the (now removed per-org) `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
@@ -94,7 +95,11 @@ sole supported installation model
   role who can run a default-branch pipeline can read the Poller and role
   credentials ([ADR
   0175](ADRs/0175-allow-insecure-gitlab-pipeline-variable-restriction-opt-in.md),
-  amending ADR 0131; CLI shape tracked in #9597). Managed schedules carry no
+  amending ADR 0131). The opt-in is `allow_insecure_pipeline_variables` on a
+  concrete GitLab manifest entry, and it also lets the webhook fast path and
+  trigger account provision ([Opting in to a relaxed
+  setting](guides/getting-started/configuring-gitlab.md#opting-in-to-a-relaxed-setting)).
+  Managed schedules carry no
   pipeline variables; job rules select poll mode from the schedule description,
   and typed activation only reads managed schedules and fails while any still
   sets a pipeline variable (including an obsolete `FULLSEND_POLL_MODE` override,
@@ -478,9 +483,20 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 
 **Decided:**
 
+- Shared GitHub reads: optional ghproxy routing through the usual layered
+  configuration will let agents and processes reuse HTTP responses, backed
+  by a mint cache of tokens whose granted permissions are exclusively
+  read-only. Cache keys use the effective permission set within an exact host,
+  target organization, repository scope, and mint trust domain; equivalent
+  roles may share a token
+  after independent authorization, with the actual issuer recorded separately
+  from the requesting role. Write tokens stay unshared
+  ([ADR 0071](ADRs/0071-share-github-api-cache-with-read-only-mint-tokens.md)).
+  Decided, not yet implemented.
+
 - Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for operations providers cannot handle — long-running operations, sandbox capability gaps, credentials in request bodies, response transformation, and multi-step atomic operations (see [ADR 0046](ADRs/0046-host-side-api-server-design.md)), (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)). OpenAI inference on the pi runtime is the first tier-2 use: the runner exchanges the job's GitHub OIDC token for a short-lived OpenAI access token and hands it to a run-scoped OpenShell provider, so no OpenAI credential enters the sandbox ([ADR 0092](ADRs/0092-openai-wif-credential-delivery.md)); the codex runtime reuses that provider and follows its refreshes by re-reading a runner-seeded token file through codex's `auth.command`, since its process environment cannot carry a placeholder that survives a refresh ([ADR 0099](ADRs/0099-codex-agent-runtime.md)).
 - Inference gateway route: a committed `inference.gateway` block in `.fullsend/config.yaml` names an LLM gateway (`url` and `audience`) that trusts the forge's OIDC issuer directly. The route is runtime-neutral: the credential is re-seeded through a route-aware seeder (the OpenAI seeder generalised, with independent handoffs when a run uses both routes), and each runtime keeps the gateway URL runner-owned. pi, codex and Claude Code use it, and on each the `gateway/` model prefix opts a model in: pi through the pi-inference-gateway extension, codex through a runner-owned `fullsend-gateway` provider in its digest-guarded `config.toml`, on the Responses API only, and Claude Code through a runner-owned `ANTHROPIC_BASE_URL`, cleared and re-exported after `.env`, with its credential from an `apiKeyHelper` that re-reads the re-seeded token file. The runner seeds the job's OIDC token, fetched with the gateway's audience, into a run-scoped OpenShell provider as an endpoint-bound placeholder and re-seeds it before `exp`, scheduled from each token's own `exp` and `iat`. The gateway holds the upstream provider key, so the forge stores no reusable provider key. The route is selected per model by provider prefix, with no precedence order against WIF or the static key: `openai/` and other providers keep their routes, one run can mix them, and a gateway that fails never falls back. The runner owns the route only when a complete block applies; without one, the plugin-carried setup for local runs is unchanged. On pi the route is a separate `gateway` provider served by pi-inference-gateway, with a runner-rendered, digest-guarded model list taken from inline `models` or a validated `models_file` ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)). The block's `auth` field selects the credential: `oidc` (the default, as above) or `api-key`, a supported mode for gateways that cannot trust forge OIDC. In `api-key` mode the runner reads a gateway key from `FULLSEND_INFERENCE_GATEWAY_API_KEY` and puts it behind the same placeholder, egress profile and guards, with no re-seed loop. The block then applies on local runs too. There is no fallback between modes, and because the mode relies on a long-lived secret, setup and status warn about it ([ADR 0138](ADRs/0138-inference-gateway-api-key-credential-mode.md)). An opt-in setting on the block, `messages_auth_header: x-api-key`, sends the gateway credential as `x-api-key` instead of `Authorization: Bearer` for Messages-dialect models (pi `anthropic-messages` models and Claude Code), for gateways that read the key where Anthropic documents it for that API. It is valid only with `auth: api-key`; an `oidc` block that sets it is a config error. The default stays `authorization`, the other dialects and codex keep Bearer, and an `x-api-key` gateway must replace the caller's key with its own on the upstream hop ([ADR 0142](ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md); implementation in [#8370](https://github.com/fullsend-ai/fullsend/issues/8370)).
-- GitHub Packages for sandboxed installs: the job's Actions workflow token is preserved as `GH_WORKFLOW_TOKEN`, refused at every harness `${}` site and in child environments and read by provider credential expansion, and a repo-level provider binds it to `npm.pkg.github.com` (read-only, enforced) and the tarball CDN (which serves pre-signed URLs); forge identity stays the minted App token, which cannot read public packages owned by another org ([ADR 0114](ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md)). On GitHub Actions the runner also reads the token itself to pull a private `ghcr.io` sandbox image before sandbox creation ([#9019](https://github.com/fullsend-ai/fullsend/issues/9019)).
+- GitHub Packages for sandboxed installs: the job's Actions workflow token is preserved as `GH_WORKFLOW_TOKEN`, refused at every harness `${}` site and in child environments and read by provider credential expansion, and a repo-level provider binds it to `npm.pkg.github.com` (read-only, enforced) and the tarball CDN (which serves pre-signed URLs); forge identity stays the minted App token, which cannot read public packages owned by another org ([ADR 0114](ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md)). On GitHub Actions the runner also reads the token itself to pull a private `ghcr.io` sandbox image before sandbox creation ([#9019](https://github.com/fullsend-ai/fullsend/issues/9019)); on GitLab CI it pulls an image on the instance's container registry with the job's `CI_REGISTRY_USER` and `CI_REGISTRY_PASSWORD`, and `fullsend prepare` uses the same pull before parallel runs, and its preflight sandbox makes the gateway pull the image.
 - Host-side API server design: Credential delivery tier 3 servers follow a uniform process contract (`--port`, `--token`, `--bind-address`, `/healthz`, `/tools.json`, `SIGTERM`). Network access is controlled via composable provider profiles — atomic capability profiles composed per-harness. Per-run UUID bearer tokens are delivered through OpenShell provider placeholders. File transfer uses `openshell sandbox upload/download` ([ADR 0046](ADRs/0046-host-side-api-server-design.md)).
 - Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{role}-app-pem` — one secret per role, shared across orgs on a mint. `ROLE_APP_IDS` uses the same shared-per-role model (`coder` → app ID). Caller authorization is per-repo enrollment (`PER_REPO_WIF_REPOS`); org isolation is enforced via WIF conditions and installation verification ([ADR 0007](ADRs/0007-per-role-github-apps.md), [ADR 0033](ADRs/0033-per-repo-installation-mode.md)). Public multi-tenant mint (`PER_REPO_WIF_REPOS=*`) with workflow provenance limited to the shared host allowlist (upstream plus `WORKFLOW_HOST_REPOS`) is defined in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); upstream-only provenance limits which workflows can call the mint, complementing [ADR 0029](ADRs/0029-central-token-mint-secretless-fullsend.md) multi-tenant blast-radius concerns.
 - Cross-org mint authorization: workflows may request tokens for a different org via optional `target_org` when the target org installs the role App and sets `FULLSEND_FOREIGN_<role>_REPOS` ([ADR 0060](ADRs/0060-cross-org-mint-authorization-via-org-variables.md)). Repo-level `FULLSEND_FOREIGN_<role>_REPOS` variables enable per-repo foreign grants (scoped to the specific target repo) and intra-org cross-repo access for per-repo callers, with disjoint authorization boundaries from org-level grants — repo-level for repo-scoped requests, org-level for installation-wide requests ([ADR 0083](ADRs/0083-repo-level-foreign-allow-list.md)).
@@ -547,12 +563,20 @@ The existing design principle is that [the repo is the coordinator](problems/age
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
-  scope is per-repo mode only.
-- Jira poll candidate selection spends per-cycle slots only on candidates
-  whose Jira `updated` is newer than their per-repository checkpoint, picks
-  at random among them, and reads the per-cycle caps (N, default 5, and M,
-  default 50) from `tracker.jira.poll` within fixed bounds
-  ([ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
+  scope is per-repo mode only. In the target state the `jira-poll` driver no
+  longer uses those locks (see the next item).
+- Jira poll candidate selection (target state): one poller per repository
+  reads every issue that changed within the backfill window
+  (`tracker.jira.poll.backfill_window_hours`, default 24), oldest change
+  first unless the configured query sets its own order, skips issues whose
+  Jira `updated` is not newer than their
+  per-repository checkpoint, and dispatches up to
+  `tracker.jira.poll.max_dispatches_per_cycle` records per cycle (default 100,
+  at most 250) within a five-minute cycle limit, with no row limit on the
+  candidate pool, no random pick, and no per-issue lock
+  ([ADR 0085](ADRs/0085-serve-every-changed-jira-issue.md), partially
+  superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md) and
+  [ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
 - Jira poll actor authorization does not require the poller to administer the
   Jira project once a repository adds a `jira` provider under
   `authorization:`. With no `jira` entry, every Jira event resolves through the
@@ -602,6 +626,42 @@ The existing design principle is that [the repo is the coordinator](problems/age
   or explicit receipts to decide whether work has already been handled
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md), partially
   superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
+- Entity binding and CI integration (target state): harness `entity_kinds` maps
+  named slots to kinds, with source defaulting to work item and target to the
+  source kind. Repository `agents[].entities` maps those slots to lists of
+  scopes. Source defaults to `[native]`; omitted target copies the effective
+  source list, while additional slots require explicit bindings.
+  The configuration clone selects the native provider independently of the
+  runtime or CI platform. Its host and repository path supply defaults;
+  provider-default connections (`github`, `gitlab`, `forgejo`) can override the
+  instance, including GitHub.com to GitHub Enterprise. Reserved source names
+  default to those connections and can override queries and repository scopes.
+  The matching provider source and `native` resolve identically. Other provider names
+  require explicit external connections and scopes when bound. A source named
+  `native` is forbidden. Only source schedules work.
+  Harness `entity_filters` narrows each slot's source queries
+  by provider; primary selections combine for discovery and are checked before
+  full CEL admission. Other slot filters apply to explicit searches only.
+  GitHub source queries and harness filters share a bounded subset of native
+  UI metadata filters and Boolean combinations; unsupported syntax is rejected.
+  GitHub prefers GraphQL discovery with selective projections derived from
+  compiled CEL dependencies, progressively acquiring further decision and actor
+  evidence under ADR 0147.
+  The same resolved plan drives event
+  dispatch, broad polling, and bound-run checks, with CI providing trusted
+  invocation and execution rather than separate agent-routing decisions.
+  Installation verifies recurring discovery coverage for the effective plan
+  before resident eventless cycles can run. The target
+  [entity discovery contract](normative/entity-discovery/v1/) defines poll-pass
+  outcomes, coverage evidence, in-memory retry, and older-candidate backfill.
+  Target and additional slots make
+  typed scopes available to the run without implicit joins or broadcast writes.
+  Creation policy stays on connections independently of discovery; standalone
+  commands without context require explicit scope selection. Deprecated
+  `tracker` mappings translate in memory with warnings and preserved legacy
+  command defaults
+  ([ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md),
+  [configuration contract](normative/entity-source-configuration/v1/)).
 - GitLab dispatch uses a native webhook fast-path for low-latency candidates and the cron-poller as the authoritative reconciliation backstop ([ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)). Native `merge_request_event` dispatch stays removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)). No external webhook bridge (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) for the poller, credentials, and in-job gate).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
   dispatch as resolved entities with `entity.kind: conversation`; when a
@@ -707,14 +767,30 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md),
   [Authorization Contract v2](normative/authorization/v2/)).
 
-- Entity-source discovery (target state): `fullsend poll` combines admissible
-  harness queries into one logical candidate search per source scope and routes
-  possible matches locally. A bound `run` rechecks source-query membership
-  before event-backed or eventless sandbox cycles
-  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)).
+- Entity-source discovery (target state): `fullsend poll` combines source
+  queries into one logical candidate search per source scope. Source membership
+  follows native provider semantics, with exact checks over already-fetched
+  data or batched provider checks; Jira accepts native JQL, GitHub accepts a
+  bounded subset of UI metadata filters and Boolean combinations, and GitLab
+  starts with open/closed/all state selections. A bound `run` rechecks current
+  membership before event-backed or eventless sandbox cycles. Provider-native
+  selection can reflect changes excluded from the actor-filtered CEL view; it
+  grants no authority and does not admit content to the model
+  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md), partially
+  superseded by [ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md)).
   Implementation and the normative query protocol are tracked in
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
+
+- Decided, not yet implemented: a saga journal stores versioned JSON in the
+  control repository, initially on GitLab, independently of the source forge
+  and tracker. Workflow-supplied trusted host adapters claim work and reconcile
+  it on subsequent invocations. They retain separate dispatch, execution and
+  publication receipts for each target.
+  Conditional updates and ownership generations support cross-host recovery;
+  CI finalization provides only a best-effort checkpoint. Domain adapters
+  retain operation, completion and compensation semantics
+  ([ADR 0165](ADRs/0165-recover-work-through-repository-owned-operation-journals.md)).
 
 **Open questions:**
 
@@ -724,18 +800,30 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
   for selective acquisition and its authorization rules, and
   [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
-  for query combination and local routing. The normative discovery protocol,
-  including query syntax, adapter mappings, and discovery coverage evidence,
-  remains open.
+  for query combination and local routing. Named source bindings and provider
+  query configuration are decided in
+  [ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md) and the
+  [Entity-source configuration v1 contract](normative/entity-source-configuration/v1/README.md).
+  Provider-adapter mappings, pagination and consistency proofs, and coverage
+  evidence needed to establish complete discovery remain open for the discovery
+  protocol.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
-  lock refresh; ADR 0098 does not resolve this question.)
+  lock refresh, which ADR 0085 removes for the `jira-poll` driver in favor of
+  one poller per repository; ADR 0165 chooses an operation journal for
+  recoverable effects, while adapter implementation and external-system
+  guarantees remain open.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - How should explicit cancellation, retry, and reassignment interact with the
   automatic event-coalescing policy in
   [ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)?
-- Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
+- Does the coordinator need state (a queue, a lock, a claim system), or can it
+  be stateless and event-driven? (ADR 0165 requires durable claims for workflows
+  that opt in. Adapter implementation and packaging remain open in
+  [#9253](https://github.com/fullsend-ai/fullsend/issues/9253) and the
+  tracker-first integration in
+  [#9260](https://github.com/fullsend-ai/fullsend/issues/9260).)
 - When should a conversation or thread be linked to a work item (e.g. Discussion
   → issue) so a conversation-native agent can hand off to `/fs-code` without
   violating entity-context separation ([ADR 0076](ADRs/0076-slash-command-entity-context-separation.md),
@@ -847,7 +935,7 @@ the inheritance model: fullsend defaults, then repo baseline (`config.base.yaml`
 **Decided:**
 
 - Config-level agent registration: an `agents` list in the per-repo config declares agent harness sources as pinned URLs or local paths, replacing compiled-in agent discovery ([ADR 0058](ADRs/0058-agent-registration.md)).
-- Runtime resolution: `fullsend run <name>` resolves agents in two tiers: (1) entries from the config's `agents` list (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config. The agents-repo fallback is a transitional mechanism for the agent extraction; it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5). On a GitHub host other than github.com (`GITHUB_SERVER_URL`, with `GITHUB_API_URL` set to that instance's API), the fallback resolves the ref and reads the harness through that host's API, recording it under `https://<host>/fullsend-ai/agents/raw/<sha>/…`, which must be covered by `allowed_remote_resources`; that host is also added to the run's fetch policy, which otherwise admits only `github.com` and `raw.githubusercontent.com`. The relative companion files that harness references (agent, policy, scripts) are read the same way, pinned to the same commit and subject to the same allowlist. Directory resources (a relative skill or plugin directory, or the helper files next to a script) are read the same way: the directory is listed and its files are read through that host's API at the same commit, with the same token and allowlist check, instead of by git sparse checkout from `raw.githubusercontent.com`, and are bounded by the same file-count and size limits. The offline cache lookup does not yet resolve on such a host: it still uses the `raw.githubusercontent.com` prefix.
+- Runtime resolution: `fullsend run <name>` resolves agents in two tiers: (1) entries from the config's `agents` list (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config. The agents-repo fallback is a transitional mechanism for the agent extraction; it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5). On a GitHub host other than github.com (`GITHUB_SERVER_URL`, with `GITHUB_API_URL` set to that instance's API), the fallback resolves the ref and reads the harness through that host's API, recording it under `https://<host>/fullsend-ai/agents/raw/<sha>/…`, which must be covered by `allowed_remote_resources`; that host is also added to the run's fetch policy, which otherwise admits only `github.com` and `raw.githubusercontent.com`. The relative companion files that harness references (agent, policy, scripts) are read the same way, pinned to the same commit and subject to the same allowlist. Directory resources (a relative skill or plugin directory, or the helper files next to a script) are read the same way: the directory is listed and its files are read through that host's API at the same commit, with the same token and allowlist check, instead of by git sparse checkout from `raw.githubusercontent.com`, and are bounded by the same file-count and size limits. The offline cache lookup does not yet resolve on such a host: it still uses the `raw.githubusercontent.com` prefix. When a Forgejo agent source is configured (`FULLSEND_FORGEJO_URL`, `FULLSEND_FORGEJO_AGENTS_REPO`, `FULLSEND_FORGEJO_AGENTS_REF`), it replaces the GitHub fallback: definitions are read from that Forgejo instance, pinned to a full commit SHA, and recorded under Forgejo raw URLs that `allowed_remote_resources` must cover. A failure to resolve or read from the Forgejo source is an error; there is no fallback to GitHub (see [`fullsend run`](cli/run.md)).
 - Config lookup: config entries are looked up directly via `findConfigAgentEntry`; the agents-repo fallback operates independently when the agent is not found in config. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
 - CLI management: `fullsend agent add|list|set|update|remove` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
 - Agent generation: `fullsend agent new <name>` writes a complete custom agent — harness, agent definition, result schema, post-script, and the base policy a per-repo install does not vendor; its built-in providers are bare names whose definitions and profiles come from the `fullsend` binary — validates it with the loader dispatch uses, and registers it through the `agent add` path above. A `trigger:` is mandatory, because a trigger-less harness registers and validates and is then silently never dispatched; `--role` is a closed table of the roles the hosted mint serves, so an unservable role fails locally rather than as a `403` at first dispatch ([ADR 0102](ADRs/0102-generate-custom-agents-from-the-cli.md)).
@@ -1264,9 +1352,10 @@ GitHub event ──► SHIM WORKFLOW (.github/workflows/fullsend.yaml in the rep
                  ║ │                                                           │ ║
                  ║ │ Extracts from destroyed sandbox:                          │ ║
                  ║ │   /sandbox/workspace/output/, JSONL transcripts,          │ ║
-                 ║ │   SafeDownload repo (sanitize symlinks, strip hooks)      │ ║
-                 ║ │   replacement refs, grafts, commit graphs removed         │ ║
-                 ║ │   root shallow state restored from pre-upload snapshot    │ ║
+                 ║ │   SafeDownload repo: sanitized, host settings restored    │ ║
+                 ║ │   hooks, symlinks and ancestry overrides removed          │ ║
+                 ║ │   downloaded Git config rebuilt from declared format      │ ║
+                 ║ │   shallow state restored from pre-upload snapshot         │ ║
                  ║ │ Post-agent secret scan (redact from extracted output).    │ ║
                  ║ │                                                           │ ║
                  ║ │ Post-script (scripts/post-code.sh, with PUSH_TOKEN):      │ ║

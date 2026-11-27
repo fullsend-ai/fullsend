@@ -84,51 +84,56 @@ func (p *Poller) roleSourceFor(event JiraEvent) roleSource {
 	return roleNotResolved
 }
 
-// roleLoadError marks a failure to load the project role roster. Run fails
+// roleLoadError marks a failure to load a project role roster. Run fails
 // the whole cycle on it, without committing any checkpoint, instead of
 // failing only the issue being processed.
 type roleLoadError struct {
-	err error
+	project string
+	err     error
 }
 
 func (e *roleLoadError) Error() string { return e.err.Error() }
 func (e *roleLoadError) Unwrap() error { return e.err }
 
-// ensureRoleStructure loads the project role roster once per cycle, the
-// first time an event needs it. A load failure is returned as a
-// *roleLoadError: with no roster every actor would resolve to "external",
-// write-gated events would route to nothing, and the checkpoint would still
-// advance past them, permanently dropping real events over a transient
-// roles-API error. (A missing project key is different: JQL-only mode is
-// documented as always-external, so that path proceeds.)
-func (p *Poller) ensureRoleStructure(ctx context.Context) error {
-	if p.rolesLoaded {
-		return nil
+// ensureRoleStructure returns project's role roster, loading it once per
+// cycle the first time an event of that project needs it. It returns nil,
+// and loads nothing, for a project outside Options.JiraProjects: the
+// search is scoped to the set, so such an issue (for example one moved
+// between projects) gets no project role and resolveRole fails it closed
+// to "external". A load failure is returned as a *roleLoadError: with no
+// roster every actor would resolve to "external", write-gated events would
+// route to nothing, and the checkpoint would still advance past them,
+// permanently dropping real events over a transient roles-API error.
+func (p *Poller) ensureRoleStructure(ctx context.Context, project string) (*projectRoster, error) {
+	if roster, ok := p.rosters[project]; ok {
+		return roster, nil
 	}
-	if p.opts.JiraProject == "" {
-		log.Printf("WARNING: no Jira project key set, cannot resolve actor roles (defaulting to external)")
-		p.rolesLoaded = true
-		return nil
+	if !slices.Contains(p.opts.JiraProjects, project) {
+		return nil, nil
 	}
-	if err := p.loadRoleStructure(ctx, p.opts.JiraProject); err != nil {
-		return &roleLoadError{err: err}
+	roster, err := p.loadRoleStructure(ctx, project)
+	if err != nil {
+		return nil, &roleLoadError{project: project, err: err}
 	}
-	p.rolesLoaded = true
-	return nil
+	if p.rosters == nil {
+		p.rosters = make(map[string]*projectRoster)
+	}
+	p.rosters[project] = roster
+	return roster, nil
 }
 
 // resolveEventRoles fetches what toNormalizedEvent needs to resolve each
-// event's actor.role: the project role roster, only when some event uses
-// it, and the group memberships of actors that the jira lists or the
-// roster's role-assigned groups may match. Group memberships are cached
-// per actor for the cycle.
+// event's actor.role: the role roster of the event's issue project, only
+// when some event of that project uses it, and the group memberships of
+// actors that the jira lists or the roster's role-assigned groups may
+// match. Group memberships are cached per actor for the cycle.
 //
 // Any group lookup failure, partial or total, fails this issue so it is
 // retried next cycle, rather than dispatching a role downgraded by the
 // missing membership.
 func (p *Poller) resolveEventRoles(ctx context.Context, events []JiraEvent) error {
-	var listActors, roleActors []string
-	needRoster := false
+	var listActors, rosterProjects []string
+	roleActors := make(map[string][]string) // issue project → actors resolved through its roster
 	for _, event := range events {
 		// An event that fails validation is skipped after this, so it must
 		// not make the cycle depend on the roster or group lookups. Ask
@@ -139,18 +144,18 @@ func (p *Poller) resolveEventRoles(ctx context.Context, events []JiraEvent) erro
 			continue
 		}
 		aid := actorID(event)
-		source := p.roleSourceFor(event)
-		if source == roleFromProjectRoles {
-			needRoster = true
-		}
-		switch source {
+		switch p.roleSourceFor(event) {
 		case roleFromLists:
 			if p.listsNeedGroups(aid) && !slices.Contains(listActors, aid) {
 				listActors = append(listActors, aid)
 			}
 		case roleFromProjectRoles:
-			if !slices.Contains(roleActors, aid) {
-				roleActors = append(roleActors, aid)
+			project := issueProjectKey(event.IssueKey)
+			if _, ok := roleActors[project]; !ok {
+				rosterProjects = append(rosterProjects, project)
+			}
+			if !slices.Contains(roleActors[project], aid) {
+				roleActors[project] = append(roleActors[project], aid)
 			}
 		}
 	}
@@ -159,27 +164,30 @@ func (p *Poller) resolveEventRoles(ctx context.Context, events []JiraEvent) erro
 		return fmt.Errorf("resolve jira list groups: %w", err)
 	}
 
-	if !needRoster {
-		return nil
-	}
-	if err := p.ensureRoleStructure(ctx); err != nil {
-		return err
-	}
-	if p.opts.JiraProject == "" || len(p.roleGroups) == 0 {
-		return nil
-	}
-	// Check groups for actors below the highest possible priority
-	// (Administrators). A direct role assignment doesn't rule out also
-	// belonging to a higher-priority group, so every such actor is
-	// checked, not just ones with no role yet. roleGroupsChecked skips
-	// actors already resolved via groups earlier this cycle.
-	var candidates []string
-	for _, aid := range roleActors {
-		if !p.roleGroupsChecked[aid] && jira.RolePriority(p.roleMembership[aid]) < maxRolePriority {
-			candidates = append(candidates, aid)
+	for _, project := range rosterProjects {
+		roster, err := p.ensureRoleStructure(ctx, project)
+		if err != nil {
+			return err
+		}
+		if roster == nil || len(roster.groups) == 0 {
+			continue
+		}
+		// Check groups for actors below the highest possible priority
+		// (Administrators). A direct role assignment doesn't rule out also
+		// belonging to a higher-priority group, so every such actor is
+		// checked, not just ones with no role yet. groupsChecked skips
+		// actors already resolved via this project's groups this cycle.
+		var candidates []string
+		for _, aid := range roleActors[project] {
+			if !roster.groupsChecked[aid] && jira.RolePriority(roster.membership[aid]) < maxRolePriority {
+				candidates = append(candidates, aid)
+			}
+		}
+		if err := p.resolveActorRoles(ctx, roster, candidates); err != nil {
+			return err
 		}
 	}
-	return p.resolveActorRoles(ctx, candidates)
+	return nil
 }
 
 // listsNeedGroups reports whether resolving aid against the jira lists
