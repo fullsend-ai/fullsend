@@ -229,8 +229,9 @@ name, plain words no scan touches. So
 `fullsend.truncated` means different things by part type: on a tool
 result, part of the response is kept; on a tool call, the arguments were
 dropped whole. Read it together with the part's `type`. The input message is not cut at this stage:
-the validation output inside it is cut at 10 KiB when the prompt is
-composed (the prompt then says `[truncated]`), and the two markers above
+the validation output inside it is cut to its first 2 KiB and last 8 KiB
+when the prompt is composed (the prompt then says
+`[truncated: N bytes omitted]` between them), and the two markers above
 do not describe it. The recorded copy is the redacted one, so it can
 differ from the prompt the agent received: compatibility characters are
 folded, which can make it about eleven times longer, and its encoded size

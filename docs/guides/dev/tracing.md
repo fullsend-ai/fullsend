@@ -352,9 +352,10 @@ a retry prompt (`buildFeedbackPrompt`, under `feedback_mode: append`),
 ran before the feedback was sanitized and framed, and sanitizing can join
 a token that scan saw split, so the recorded copy is pattern-scanned
 again; a prompt the composition altered in a way that pass cannot see —
-sanitized, or cut at `maxFeedbackBytes` while holding compatibility
-characters or a URL `maskURLs` would mask, since the cut can take the `@`
-that marks a password (`promptHidesAlterations`) — is recorded `***` whole; the
+sanitized, or cut (head and tail, over `maxFeedbackBytes`) while holding
+compatibility characters or a URL `maskURLs` would mask, since either cut
+can take the `@` that marks a password (`promptHidesAlterations`) — is
+recorded `***` whole; the
 prompt the agent is sent is not changed, and the mask the first
 scan leaves for a connection-string password of ten or more bytes matches
 its own pattern and counts a finding —

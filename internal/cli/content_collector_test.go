@@ -494,8 +494,9 @@ func TestAttachInput_APromptAlteredUpstreamIsMaskedWhole(t *testing.T) {
 	// the sanitizer stripped: a colour code that ate a token's first
 	// letter plus a zero-width character that kept the token from the
 	// pattern scan leave "hp_" and the body; and a token in compatibility
-	// forms straddling the cut is split before anything can fold it; and a
-	// URL password straddling the cut loses the '@' that marks it. All are
+	// forms straddling either cut is split before anything can fold it; and
+	// a URL password straddling the head cut loses the '@' that marks it,
+	// one straddling the tail cut the "https://deploy:" before it. All are
 	// recorded masked whole (promptHidesAlterations). Big plain feedback,
 	// a URL with nothing to mask in it included, is not.
 	token := "ghp_" + strings.Repeat("r", 36)
@@ -504,13 +505,21 @@ func TestAttachInput_APromptAlteredUpstreamIsMaskedWhole(t *testing.T) {
 		fw.WriteRune(r + 0xfee0)
 	}
 	plain := strings.Repeat("the validator said no. ", 600) // over maxFeedbackBytes
+	url := "https://deploy:" + token[4:20] + "@git.example.com/o/r"
+	// The tail cut lies feedbackTailBytes before the end: these suffixes
+	// put it 48 bytes into the fullwidth token, and 12 bytes before the
+	// end of the URL password, so the cut takes "https://deploy:".
+	fwTail := strings.Repeat("x", feedbackTailBytes-1-(fw.Len()-48))
+	urlTail := strings.Repeat("x", feedbackTailBytes-1-12-len("@git.example.com/o/r"))
 	for name, tc := range map[string]struct {
 		feedback string
 		masked   bool
 	}{
 		"a colour code ate the first letter of a zero-width-split token": {"\x1b[" + token[:20] + "\u200b" + token[20:], true},
-		"a fullwidth token straddling the cut":                           {strings.Repeat("x", maxFeedbackBytes-48) + " " + fw.String(), true},
-		"a URL password straddling the cut, 12 bytes before it":          {strings.Repeat("x", maxFeedbackBytes-28) + " https://deploy:" + token[4:20] + "@git.example.com/o/r", true},
+		"a fullwidth token straddling the head cut":                      {strings.Repeat("x", feedbackHeadBytes-48) + " " + fw.String() + " " + plain, true},
+		"a URL password straddling the head cut, 12 bytes before it":     {strings.Repeat("x", feedbackHeadBytes-28) + " " + url + " " + plain, true},
+		"a fullwidth token straddling the tail cut":                      {plain + " " + fw.String() + " " + fwTail, true},
+		"a URL password straddling the tail cut, 12 bytes after it":      {plain + " " + url + " " + urlTail, true},
 		"plain feedback over the cut":                                    {plain + " see https://example.com/docs", false},
 	} {
 		t.Run(name, func(t *testing.T) {
