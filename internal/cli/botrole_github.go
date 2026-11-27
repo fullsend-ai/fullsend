@@ -77,7 +77,7 @@ func (g *githubCommentActors) EntityID(ctx context.Context, repo, number string)
 	if err != nil {
 		return "", err
 	}
-	typename, nodeID, err := client.IssueOrPullRequestNodeID(ctx, owner, name, n)
+	typename, nodeID, err := client.GetIssueOrPullRequestNodeID(ctx, owner, name, n)
 	if err != nil {
 		return "", err
 	}

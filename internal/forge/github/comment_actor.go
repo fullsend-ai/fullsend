@@ -15,7 +15,7 @@ import (
 // queries read.
 const maxCommentActorResponseBytes = 1 << 20
 
-// IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
+// GetIssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
 // "PullRequest") and node ID of issue or pull request number in owner/repo.
 // The node ID is in GitHub's new global-ID format (nextGlobalIDHeader),
 // which GitHub documents for github.com — on GitHub Enterprise Server the
@@ -25,7 +25,7 @@ const maxCommentActorResponseBytes = 1 << 20
 // the legacy format on older objects, and which canonical format every
 // producer can emit is not settled (see the normalized-entity spec,
 // docs/normative/normalized-entity/v1/README.md).
-func (c *LiveClient) IssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (string, string, error) {
+func (c *LiveClient) GetIssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (string, string, error) {
 	var data struct {
 		Repository *struct {
 			IssueOrPullRequest *struct {

@@ -41,9 +41,6 @@ import (
 //   - The script cannot choose the target repository: the runner side
 //     binds the lookup to the run's target and entity.
 const (
-	botRoleScriptEnvURL   = "FULLSEND_BOT_ROLE_URL"
-	botRoleScriptEnvToken = "FULLSEND_BOT_ROLE_TOKEN"
-
 	testEntityID  = "fullsend:entity:v1:github:github.com:work_item:I_kwDOAgents9602"
 	testCommentID = "IC_kwDOComment1"
 )
@@ -99,8 +96,8 @@ func TestBotRoleCmd_PrintsRegisteredRole(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	t.Setenv(botRoleScriptEnvURL, srv.URL)
-	t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+	t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+	t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 	stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 	require.NoError(t, err)
@@ -114,8 +111,8 @@ func TestBotRoleCmd_PrintsNoMatch(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	t.Setenv(botRoleScriptEnvURL, srv.URL)
-	t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+	t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+	t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 	stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 	require.NoError(t, err)
@@ -140,8 +137,8 @@ func TestBotRoleCmd_LookupFailureDistinctFromNoMatch(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			t.Setenv(botRoleScriptEnvURL, srv.URL)
-			t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+			t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+			t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 			stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 			require.Error(t, err, "a lookup failure must fail the command so the caller can fail closed")
@@ -159,8 +156,8 @@ func TestBotRoleCmd_LookupFailureDistinctFromNoMatch(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		srv.Close() // a listener that no longer answers
 
-		t.Setenv(botRoleScriptEnvURL, srv.URL)
-		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+		t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+		t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 		require.Error(t, err)
@@ -180,8 +177,8 @@ func TestBotRoleCmd_MissingHelperEnvFailsClosed(t *testing.T) {
 		"URL set with an empty token": {"http://127.0.0.1:1/bot-role", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv(botRoleScriptEnvURL, tc.url)
-			t.Setenv(botRoleScriptEnvToken, tc.token)
+			t.Setenv(botRoleHelperURLEnvKey, tc.url)
+			t.Setenv(botRoleHelperTokenEnvKey, tc.token)
 
 			stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 			require.Error(t, err, "without the runner-side lookup a script must not get an answer")
@@ -198,8 +195,8 @@ func TestBotRoleCmd_MissingHelperEnvFailsClosed(t *testing.T) {
 // external host, so the client's send policy matches the helper's binding
 // policy.
 func TestBotRoleCmd_RefusesNonLoopbackHelperURL(t *testing.T) {
-	t.Setenv(botRoleScriptEnvURL, "http://example.invalid/bot-role")
-	t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+	t.Setenv(botRoleHelperURLEnvKey, "http://example.invalid/bot-role")
+	t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 	stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 	require.Error(t, err, "a non-loopback helper URL must be refused before the token is sent")
@@ -215,8 +212,8 @@ func TestBotRoleCmd_RefusesNonLoopbackHelperURL(t *testing.T) {
 // parser rejects it rather than trusting a partial outcome).
 func TestBotRoleCmd_FailClosedBranches(t *testing.T) {
 	t.Run("malformed helper URL", func(t *testing.T) {
-		t.Setenv(botRoleScriptEnvURL, "http://127.0.0.1\x7f/bot-role")
-		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+		t.Setenv(botRoleHelperURLEnvKey, "http://127.0.0.1\x7f/bot-role")
+		t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 		require.Error(t, err, "a malformed helper URL must fail the command")
@@ -230,8 +227,8 @@ func TestBotRoleCmd_FailClosedBranches(t *testing.T) {
 			_, _ = w.Write([]byte("not json"))
 		}))
 		t.Cleanup(srv.Close)
-		t.Setenv(botRoleScriptEnvURL, srv.URL)
-		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+		t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+		t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 		require.Error(t, err, "a 200 answer the parser rejects must fail the command, never print a guessed outcome")
@@ -246,8 +243,8 @@ func TestBotRoleCmd_FailClosedBranches(t *testing.T) {
 			_, _ = w.Write(body)
 		}))
 		t.Cleanup(srv.Close)
-		t.Setenv(botRoleScriptEnvURL, srv.URL)
-		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+		t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+		t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 		require.Error(t, err, "an answer over the 64 KiB cap is truncated and must fail, never print a partial outcome")
@@ -261,8 +258,8 @@ func TestBotRoleCmd_FailClosedBranches(t *testing.T) {
 			_, _ = w.Write([]byte("upstream exploded"))
 		}))
 		t.Cleanup(srv.Close)
-		t.Setenv(botRoleScriptEnvURL, srv.URL)
-		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+		t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+		t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 		require.Error(t, err, "a non-200 answer that is not the JSON error shape must fail the command")
@@ -277,8 +274,8 @@ func TestBotRoleCmd_FailClosedBranches(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 		}))
 		t.Cleanup(srv.Close)
-		t.Setenv(botRoleScriptEnvURL, srv.URL)
-		t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+		t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+		t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 		stdout, _, err := runBotRoleForScripts(t, commentArgs...)
 		require.Error(t, err, "a non-200 answer with no body must fail the command, never print a guessed outcome")

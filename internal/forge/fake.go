@@ -257,7 +257,7 @@ type FakeClient struct {
 	AppClientIDs map[string]string // key: app slug → client ID
 
 	// IssueOrPullRequestNodeIDs maps "owner/repo/number" → node for
-	// IssueOrPullRequestNodeID.
+	// GetIssueOrPullRequestNodeID.
 	IssueOrPullRequestNodeIDs map[string]IssueOrPullRequestNode
 	// CommentActors maps a comment node ID → its actor for GetCommentActor.
 	CommentActors map[string]CommentActor
@@ -2438,11 +2438,11 @@ func (f *FakeClient) GetAppClientID(_ context.Context, slug string) (string, err
 	return "", fmt.Errorf("%w: app %s", ErrNotFound, slug)
 }
 
-func (f *FakeClient) IssueOrPullRequestNodeID(_ context.Context, owner, repo string, number int) (string, string, error) {
+func (f *FakeClient) GetIssueOrPullRequestNodeID(_ context.Context, owner, repo string, number int) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("IssueOrPullRequestNodeID"); e != nil {
+	if e := f.err("GetIssueOrPullRequestNodeID"); e != nil {
 		return "", "", e
 	}
 

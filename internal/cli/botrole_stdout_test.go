@@ -38,8 +38,8 @@ func botRoleOutcomeServer(t *testing.T, responseBody string) *httptest.Server {
 func TestRunBotRole_StdoutWriteErrorFailsCommand(t *testing.T) {
 	srv := botRoleOutcomeServer(t, `{"outcome":"recognized","role":"triage"}`)
 
-	t.Setenv(botRoleScriptEnvURL, srv.URL)
-	t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+	t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+	t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 	err := runBotRole(context.Background(), testEntityID, testCommentID, failingWriter{})
 	require.Error(t, err, "a failing stdout writer must fail the command instead of reporting success")
@@ -52,8 +52,8 @@ func TestRunBotRole_StdoutWriteErrorOnNoMatchFailsCommand(t *testing.T) {
 	// as no_match.
 	srv := botRoleOutcomeServer(t, `{"outcome":"no_match"}`)
 
-	t.Setenv(botRoleScriptEnvURL, srv.URL)
-	t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
+	t.Setenv(botRoleHelperURLEnvKey, srv.URL)
+	t.Setenv(botRoleHelperTokenEnvKey, "helper-bearer-token")
 
 	err := runBotRole(context.Background(), testEntityID, testCommentID, failingWriter{})
 	require.Error(t, err, "a failing stdout writer must fail the no-match answer too")

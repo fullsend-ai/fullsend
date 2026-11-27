@@ -1087,8 +1087,8 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		},
 		"AddCollaborator":  func(fc *FakeClient) []any { return pack(fc.AddCollaborator(ctx, "o", "r", "u", "push")) },
 		"GetOrgMembership": func(fc *FakeClient) []any { return pack(fc.GetOrgMembership(ctx, "o", "u")) },
-		"IssueOrPullRequestNodeID": func(fc *FakeClient) []any {
-			return pack(fc.IssueOrPullRequestNodeID(ctx, "o", "r", 1))
+		"GetIssueOrPullRequestNodeID": func(fc *FakeClient) []any {
+			return pack(fc.GetIssueOrPullRequestNodeID(ctx, "o", "r", 1))
 		},
 		"GetCommentActor": func(fc *FakeClient) []any { return pack(fc.GetCommentActor(ctx, "node")) },
 

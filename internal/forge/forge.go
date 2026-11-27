@@ -1897,7 +1897,7 @@ type CommentActor struct {
 
 // IssueOrPullRequestNode is the GraphQL type ("Issue" or "PullRequest") and
 // node ID of an issue or pull request: the value type the fake records for
-// IssueOrPullRequestNodeID lookups. The interface method itself returns the
+// GetIssueOrPullRequestNodeID lookups. The interface method itself returns the
 // typename and node ID as strings.
 type IssueOrPullRequestNode struct {
 	Typename string
@@ -1913,7 +1913,7 @@ type GitHubExtensions interface {
 	// GetAppClientID returns the OAuth client ID for the named GitHub App.
 	GetAppClientID(ctx context.Context, slug string) (string, error)
 
-	// IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
+	// GetIssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
 	// "PullRequest") and node ID of issue or pull request number in
 	// owner/repo. The node ID is in GitHub's new global-ID format, which
 	// GitHub documents for github.com — on GitHub Enterprise Server the
@@ -1924,7 +1924,7 @@ type GitHubExtensions interface {
 	// canonical format every producer can emit is not settled (see the
 	// normalized-entity spec, docs/normative/normalized-entity/v1/README.md).
 	// Returns forge.ErrNotFound when no such issue or pull request exists.
-	IssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (typename, nodeID string, err error)
+	GetIssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (typename, nodeID string, err error)
 
 	// GetCommentActor reads a comment's current-revision actor and the
 	// issue or pull request it is on, failing closed when the actor cannot

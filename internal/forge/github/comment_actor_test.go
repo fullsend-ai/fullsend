@@ -46,9 +46,9 @@ func graphqlServer(t *testing.T, status int, body string) (*LiveClient, *graphql
 	return New("tok").WithBaseURL(srv.URL), rec
 }
 
-func TestIssueOrPullRequestNodeID(t *testing.T) {
+func TestGetIssueOrPullRequestNodeID(t *testing.T) {
 	c, rec := graphqlServer(t, http.StatusOK, `{"data":{"repository":{"issueOrPullRequest":{"__typename":"PullRequest","id":"PR_1"}}}}`)
-	typ, id, err := c.IssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
+	typ, id, err := c.GetIssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
 	require.NoError(t, err)
 	assert.Equal(t, "PullRequest", typ)
 	assert.Equal(t, "PR_1", id)
@@ -63,7 +63,7 @@ func TestIssueOrPullRequestNodeID(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _ := graphqlServer(t, http.StatusOK, body)
-			_, _, err := c.IssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
+			_, _, err := c.GetIssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
 			assert.Error(t, err)
 		})
 	}
@@ -174,7 +174,7 @@ func TestGraphQLQuery_NOT_FOUNDInSecondaryPosition(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _ := graphqlServer(t, http.StatusOK, body)
-			_, _, err := c.IssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
+			_, _, err := c.GetIssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, forge.ErrNotFound, "a NOT_FOUND in any position must keep the sentinel")
 		})
@@ -182,7 +182,7 @@ func TestGraphQLQuery_NOT_FOUNDInSecondaryPosition(t *testing.T) {
 
 	t.Run("no NOT_FOUND keeps the generic error", func(t *testing.T) {
 		c, _ := graphqlServer(t, http.StatusOK, `{"data":null,"errors":[{"message":"a","type":"X"},{"message":"b","type":"Y"}]}`)
-		_, _, err := c.IssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
+		_, _, err := c.GetIssueOrPullRequestNodeID(context.Background(), "o", "r", 1)
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, forge.ErrNotFound)
 	})
