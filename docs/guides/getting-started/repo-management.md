@@ -282,6 +282,17 @@ variables, or `inference.openai` in its layered `.fullsend/config.yaml`
 or partial. GCP secrets are optional and kept for Vertex sub-agents.
 GitLab repos cannot select `openai-wif`.
 
+A repo that needs credentials from more than one method lists them, for
+example `auth: [openai-api-key, vertex-wif]` for an OpenAI API key
+parent with Vertex sub-agents. Install provisions and keeps the
+credentials of every listed method, and deletes only the fullsend-managed
+secrets that no listed method uses. With `repos set`, pass the list as a
+comma-separated value (`openai-api-key,vertex-wif`); fullsend writes a mix
+in that form. The order is ignored. A mix needs a fullsend CLI at or above
+the release that ships mixed selections, because older CLIs reject such a
+manifest. See
+[fullsend repos § Inference credentials](../../cli/repos.md#inference-credentials).
+
 Set the selection with `repos set` at the level you want:
 `defaults.inference.auth`, `github.inference.auth`,
 `gitlab.inference.auth`, or a single entry such as
@@ -990,12 +1001,11 @@ the same `pull_request` shim, with the effects below. After the upgrade:
 - **Same-repo PRs** are reviewed automatically, as before, except while the
   PR has a merge conflict: GitHub does not run `pull_request` workflows until
   the conflict is resolved. Comment `/fs-review` or `/fs-retro` meanwhile.
-- **Fork PRs** are not reviewed or retro'd automatically, whoever the author
-  is: an org member or maintainer working from a fork loses the automatic
-  review they got before. Someone with triage or higher access (or an OWNERS
-  approver or reviewer, when the `owners_file` provider is on) comments
-  `/fs-review` on the PR to start a review. Contributors who want automatic
-  review push their branch to the repository instead of a fork.
+- **Fork PRs** (GitHub) are reviewed and retro'd automatically again from
+  the release that adds `.github/workflows/fullsend-fork-pr.yaml`; see
+  [Fork pull requests](#fork-pull-requests). On an older release, someone
+  with triage or higher access (or an OWNERS approver or reviewer, when the
+  `owners_file` provider is on) comments `/fs-review` on the PR.
 - **Dependabot PRs**: events Dependabot itself triggers (opening the PR,
   its own pushes and closes) are not routed, because GitHub gives those
   `pull_request` runs only Dependabot secrets. A maintainer's push, merge or
@@ -1012,6 +1022,50 @@ the same `pull_request` shim, with the effects below. After the upgrade:
 Until a repository upgrades, the dispatch still accepts `pull_request_target`
 and logs a warning on each such run (see
 [Troubleshooting](#shim-still-triggers-on-pull_request_target)).
+
+### Fork pull requests
+
+On GitHub, `fullsend repos install` adds a second managed workflow,
+`.github/workflows/fullsend-fork-pr.yaml`, next to the shim. You do not
+edit or configure it. Upgrading to a release that has it adds it in the
+same install run; `fullsend repos uninstall` removes it.
+
+What it does:
+
+1. A fork PR is opened, pushed to, marked ready for review, or closed.
+   GitHub runs `fullsend-fork-pr.yaml` for
+   the event. It has no permissions and no secrets and does nothing. It
+   always runs on a GitHub-hosted runner (`ubuntu-latest`), never on your
+   configured runner, because the fork controls the copy that runs. If your
+   organization disables GitHub-hosted runners, fork PRs need `/fs-review`.
+2. When that run finishes, GitHub starts the shim (`fullsend.yaml`) from the
+   default branch, with the repository's secrets, the same way a maintainer's
+   `/fs-review` comment does.
+3. The shim looks the PR up by its commit and applies the usual checks:
+
+   | Event | Runs | Who must be authorized |
+   |---|---|---|
+   | Opened, pushed to, marked ready | Review | The PR author: triage access or higher, or an OWNERS approver or reviewer. A bot author is checked the same way (on a same-repo PR a bot author is trusted) |
+   | Closed or merged | Retro | Whoever closed or merged it: write access |
+
+For any other fork PR, such as an outside contributor's, someone with
+triage access or higher comments `/fs-review`. The `ready-for-review`
+label does not start a fork PR review: nothing GitHub records ties a
+label to the commit it was added on.
+
+The shim never runs the fork's code or reads anything the fork's run
+produced: the fork controls its own copy of `fullsend-fork-pr.yaml`. It
+skips a run when:
+
+- the run did not succeed, or came from another workflow file;
+- the PR has new commits since the run (the newer push has its own run);
+- the close happened more than five minutes before the run (the run log
+  shows a warning, so a missed retro is visible).
+
+If your repository requires approval for fork PR workflows (**Settings →
+Actions → General**), the review starts after a maintainer approves the
+fork's run. GitLab and Forgejo work as before: fork merge requests are not
+reviewed automatically.
 
 ## Troubleshooting
 

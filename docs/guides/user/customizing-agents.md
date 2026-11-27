@@ -386,6 +386,8 @@ agents, whose shipped workflows grant `packages: read`. On GitHub Actions,
 `fullsend run` pulls the image with the job's workflow token
 (`GH_WORKFLOW_TOKEN`) before it creates the sandbox. Prerequisites and
 failure behaviour: [GitHub Packages credentials](../../cli/run.md#github-packages-credentials).
+On GitLab CI, an image on the instance's container registry (`CI_REGISTRY`) is
+pulled with the job's `CI_REGISTRY_USER` and `CI_REGISTRY_PASSWORD`.
 
 ### Adding executables
 
@@ -564,8 +566,9 @@ disables nothing because no agent has that harness name.
 ## Choosing when review runs
 
 By default, the dispatch workflow decides when the review agent runs: when a
-same-repository pull request is opened, pushed to or marked ready (fork and
-Dependabot pull requests need a `/fs-review` comment), when the
+pull request is opened, pushed to or marked ready (on GitHub a fork pull
+request through [`fullsend-fork-pr.yaml`](../getting-started/repo-management.md#fork-pull-requests); Dependabot pull
+requests need a `/fs-review` comment), when the
 `ready-for-review` label is added, and on a `/fs-review` comment. To decide it
 yourself, give the `review` entry in `.fullsend/config.yaml` a `trigger`: a
 [CEL expression](cel-triggers-reference.md) over the event. The review still
@@ -600,12 +603,13 @@ job, and how to
 
 By default, the dispatch workflow starts the retro agent when a
 same-repository pull request is closed, merged or not, and on a `/fs-retro`
-comment on an issue or a pull request (a fork pull request needs the comment). To decide it yourself, give the `retro` entry in
+comment on an issue or a pull request (on GitHub a fork pull request also gets it on close, through `fullsend-fork-pr.yaml`). To decide it yourself, give the `retro` entry in
 `.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
 job; the trigger only decides whether that job starts.
 
 Closing or merging a same-repository pull request starts retro only when the
-event actor has write access (a fork pull request needs `/fs-retro`). Merge-queue events follow the same rule, and a CEL routing
+event actor has write access; on GitHub the same holds for the closer of a
+fork pull request. Merge-queue events follow the same rule, and a CEL routing
 failure skips retro for that close event.
 The `/fs-retro` command also requires write access, regardless of a lower
 `role:` on the retro harness; CEL cannot promote a command the Bash route

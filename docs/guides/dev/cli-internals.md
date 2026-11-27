@@ -130,6 +130,13 @@ fullsend
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
+├── prepare          <agent-name>              # Pre-pull a private image and run a sandbox preflight
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
+│   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
+│   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+│   ├── --event-file <path>                  #   Normalized event JSON for overlay resolution
+│   ├── --json                               #   Print the result as JSON on stdout
+│   └── --offline                            #   Reject network fetches
 ├── run                                      # Execute an agent in a sandbox
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --target-repo <path>                 #   Path to the target repository
@@ -904,7 +911,8 @@ fullsend-repo/                      (embedded template)
 ├── scripts/                        → Layered (runtime, not installed)
 ├── env/                            → Layered (runtime, not installed)
 ├── templates/
-│   └── shim-per-repo.yaml          → Rendered to .github/workflows/fullsend.yaml
+│   ├── shim-per-repo.yaml          → Rendered to .github/workflows/fullsend.yaml
+│   └── fork-pr-per-repo.yaml       → Rendered to .github/workflows/fullsend-fork-pr.yaml (GitHub)
 └── (other files)                   → Not installed by per-repo installs
 ```
 
@@ -912,14 +920,14 @@ fullsend-repo/                      (embedded template)
 
 | Category | Installed? | Source | Purpose |
 |----------|-----------|--------|---------|
-| **Installed** | Yes | Scaffold → target repo | `fullsend.yaml` shim (from `templates/shim-per-repo.yaml`) and the `prioritize.yml` thin caller |
+| **Installed** | Yes | Scaffold → target repo | `fullsend.yaml` shim (from `templates/shim-per-repo.yaml`), the `fullsend-fork-pr.yaml` fork PR stub (from `templates/fork-pr-per-repo.yaml`) and the `prioritize.yml` thin caller |
 | **Layered** | No (runtime) or yes with `--vendor` | Upstream `@main` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, scripts/, schemas/, env/ |
 | **Built in** | No | Embedded in the `fullsend` binary; `fullsend run` resolves a bare provider name to it | providers/, profiles/ |
 | **Upstream-only** | No (layered) or yes with `--vendor` | Referenced directly or vendored at install | .github/actions/, .github/scripts/ |
 
 Runtime skips upstream fetch when `.defaults/action.yml` is present (vendored); layered installs sparse-checkout `fullsend-ai/fullsend@main` into `.defaults/`.
 
-This repository is itself a per-repo install: its `.github/workflows/fullsend.yaml` and `.github/workflows/prioritize.yml` must be byte-for-byte what `CollectPerRepoInstallFiles` renders from the templates with the default upstream ref and runner. `TestLivePerRepoScaffoldFilesMatchInstallRender` in `internal/scaffold` enforces this, so a template change is paired with a re-render of the live file in the same PR.
+This repository is itself a per-repo install: its `.github/workflows/fullsend.yaml`, `.github/workflows/fullsend-fork-pr.yaml` and `.github/workflows/prioritize.yml` must be byte-for-byte what `CollectPerRepoInstallFiles` renders from the templates with the default upstream ref and runner. `TestLivePerRepoScaffoldFilesMatchInstallRender` in `internal/scaffold` enforces this, so a template change is paired with a re-render of the live file in the same PR.
 
 ### File Mode Tracking
 

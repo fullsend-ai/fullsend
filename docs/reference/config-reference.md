@@ -413,6 +413,11 @@ include the raw-content prefixes for the same two repositories on that host:
 `https://<host>/fullsend-ai/agents/raw/`. GitHub Actions sets this variable on
 every runner. No other path on that host is added.
 
+A Forgejo agent-definition source (`FULLSEND_FORGEJO_URL`) is never added to
+the defaults. To resolve built-in agents from it, list
+`<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/` here (see
+[Agent definitions from a Forgejo instance](../cli/run.md#agent-definitions-from-a-forgejo-instance)).
+
 In the layered config system, this field uses union-with-deny-all semantics:
 omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
@@ -1311,7 +1316,7 @@ Under `metadata`:
 - **`content`** — The level for every run. Unset means `all`.
 - **`by_source`** — Levels for runs started from one source. Keys are the
   normalized event's `source.system`, the same value CEL triggers see as
-  `event.source.system`. Today's adapters emit `github`, `gitlab` and `jira`.
+  `event.source.system`. Today's adapters emit `github`, `gitlab`, `forgejo` and `jira`.
   `manual` and `schedule` are reserved source names that no adapter emits
   yet; an entry for them is accepted but matches no run. A later adapter's
   source name works as a key with no schema change: validation rejects

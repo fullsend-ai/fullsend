@@ -281,6 +281,14 @@ The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands
 | Contributing | `docs/contributing/sandbox-topology.md` |
 | Go source | `internal/cli/run.go` |
 
+### `prepare`
+
+| Category | Files |
+|----------|-------|
+| CLI reference | `docs/cli/prepare.md`, `docs/cli/run.md` (GitHub Packages credentials) |
+| Guides | `docs/guides/user/running-agents-locally.md`, `docs/guides/dev/cli-internals.md` |
+| Go source | `internal/cli/prepare.go`, `internal/cli/run_compose.go`, `internal/cli/run_image_pull.go` |
+
 ### `issues`
 
 | Category | Files |

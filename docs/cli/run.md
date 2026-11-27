@@ -630,6 +630,21 @@ When `GITHUB_SERVER_URL` names a GitHub server other than github.com, such as Gi
 
 The server URL follows the rule the GitHub API client uses: `https`, no userinfo, path, query or fragment. A URL that breaks this rule leaves the run on github.com. GHE.com (`*.ghe.com`) is not bound: `gh` calls `api.<host>` there and reads `GH_TOKEN`.
 
+## Agent definitions from a Forgejo instance
+
+By default a built-in agent that `config.yaml` does not register with a `source:` (triage, code, review, …) is fetched from `fullsend-ai/agents` on GitHub. A Forgejo installation can instead host these agent definitions in a repository on its own Forgejo instance. Set these environment variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `FULLSEND_FORGEJO_URL` | Base URL of the Forgejo instance. It may include a path prefix. Must use `https`; plain `http` is accepted only for a loopback host such as the local development stack. |
+| `FULLSEND_FORGEJO_AGENTS_REPO` | `owner/repo` of the agent-definition repository on that instance. Default: `fullsend-ai/agents`. |
+| `FULLSEND_FORGEJO_AGENTS_REF` | Full commit SHA (40 or 64 lowercase hex characters) the definitions are pinned to. Branches, tags and abbreviated SHAs are rejected. |
+| `FORGEJO_TOKEN` | Optional API token for the instance. Without it, the repository is read anonymously, which is enough for a public repository. |
+
+Once any of the first three variables is set, built-in agents resolve only from this source. If the configuration is incomplete or invalid, or the file cannot be read, the run fails with an error. It never falls back to GitHub. The harness, its relative companion files (agent prompt, policy, scripts) and its skill and plugin directories are all read at the pinned commit. Forgejo's git data API addresses them by object ID, so a branch named like the commit cannot stand in for it, and every file is checked against its git object ID. Symlinks and submodules are refused, and directories are bounded like git sparse checkout. The token is sent only to the configured instance, and the client does not follow redirects.
+
+Source checks still apply. Files are recorded under Forgejo raw URLs: `<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/commit/<sha>/<path>`. These URLs must be admitted by `allowed_remote_resources`. The Forgejo host is not one of the default prefixes, so add `<FULLSEND_FORGEJO_URL>/<owner>/<repo>/raw/` to `config.yaml`. Content is cached by SHA-256 and recorded in the fetch audit log. In offline mode, the pinned URLs resolve from the cache. `fullsend lint`, `fullsend dispatch --route` and the eval measurement manifest lookup use the same source.
+
 ## GitHub Packages credentials
 
 On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's workflow token) to
@@ -648,8 +663,10 @@ temporary directory, removed after the pull), so the image can be a private pack
 shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
 harnesses; on other agents a private image is denied and sandbox creation fails. The package must also
 allow Actions access from the repository. If the pull fails, the runner logs a warning and the
-OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
-on other registries the runner adds no credentials. See
+OpenShell gateway attempts its own unauthenticated pull, so public images keep working. On GitLab CI
+the runner pulls an image on the instance's container registry (`CI_REGISTRY`) the same way, with the
+job's `CI_REGISTRY_USER` and `CI_REGISTRY_PASSWORD`. For images on other registries the runner adds
+no credentials. See
 [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
 
 Every mint sets `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and

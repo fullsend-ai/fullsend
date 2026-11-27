@@ -107,9 +107,9 @@ const (
 )
 
 // RetrySleepFn is the function called between retry attempts in
-// CreateWithRetry. It defaults to time.Sleep. Override in tests to
-// avoid real delays.
-var RetrySleepFn = time.Sleep
+// CreateWithRetry. When nil (the default) the backoff is a cancellable
+// timer. Override in tests to avoid real delays.
+var RetrySleepFn func(time.Duration)
 
 // ImportProfile imports a single openshell provider profile from a YAML
 // file. The profile defines a provider type schema (credentials, endpoints).
@@ -1106,15 +1106,68 @@ func Create(name string, providers []string, image, policy string) error {
 // retried: retrying would require deleting the sandbox under the same name,
 // which destroys the state the caller asked to keep for inspection.
 func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration, keep bool) error {
+	return CreateWithRetryContext(context.Background(), name, providers, image, policy, maxAttempts, readyTimeoutOverride, keep)
+}
+
+// ErrCleanupFailed marks an error from CreateWithRetryContext whose failed
+// sandbox could not be deleted, so it may still exist.
+var ErrCleanupFailed = errors.New("cleanup failed")
+
+// waitBackoff waits for d, returning ctx.Err() as soon as ctx is cancelled.
+// By default it uses a timer, so no goroutine outlives the call. A test hook
+// in RetrySleepFn takes no context, so it runs in a goroutine that is waited
+// for beside ctx; the hook is read once, before the goroutine starts, so a
+// later reassignment of RetrySleepFn cannot race with it.
+func waitBackoff(ctx context.Context, d time.Duration) error {
+	if sleep := RetrySleepFn; sleep != nil {
+		slept := make(chan struct{})
+		go func() {
+			sleep(d)
+			close(slept)
+		}()
+		select {
+		case <-slept:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// CreateWithRetryContext is CreateWithRetry with cancellation. Cancelling ctx
+// stops polling and further attempts, then deletes the sandbox (the delete
+// does not use ctx, so it still runs) and returns an error wrapping
+// ctx.Err(). A failure to delete the failed sandbox is reported on stderr
+// and in the returned error.
+func CreateWithRetryContext(ctx context.Context, name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration, keep bool) error {
 	if maxAttempts < 1 {
 		return fmt.Errorf("maxAttempts must be >= 1, got %d", maxAttempts)
 	}
 
 	timeout := effectiveReadyTimeout(readyTimeoutOverride)
 
+	// cleanup deletes the failed sandbox and folds a delete failure into err,
+	// so the caller learns the sandbox may still exist.
+	cleanup := func(err error) error {
+		delErr := Delete(name)
+		if delErr == nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
+		return fmt.Errorf("%w (%w for sandbox %s: %v)", err, ErrCleanupFailed, name, delErr)
+	}
+
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		lastErr = createOnce(name, providers, image, policy, timeout)
+		lastErr = createOnceContext(ctx, name, providers, image, policy, timeout)
 		if lastErr == nil {
 			return nil
 		}
@@ -1129,14 +1182,14 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 		// the running sandbox (it reached Ready before verifyPolicy
 		// detected the mismatch) and return immediately.
 		if errors.Is(lastErr, errPolicyGlobal) {
-			if delErr := Delete(name); delErr != nil {
-				fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
-			}
-			return lastErr
+			return cleanup(lastErr)
 		}
 
-		if delErr := Delete(name); delErr != nil {
-			fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
+		lastErr = cleanup(lastErr)
+
+		// A cancelled caller wants no further attempts.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("sandbox creation canceled: %w: %w", ctxErr, lastErr)
 		}
 
 		if attempt < maxAttempts {
@@ -1149,7 +1202,9 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 				backoff = retryMaxBackoff
 			}
 			fmt.Fprintf(os.Stderr, "  Sandbox creation attempt %d/%d failed (%v), retrying in %s...\n", attempt, maxAttempts, lastErr, backoff)
-			RetrySleepFn(backoff)
+			if err := waitBackoff(ctx, backoff); err != nil {
+				return fmt.Errorf("sandbox creation canceled: %w: %w", err, lastErr)
+			}
 		}
 	}
 	return fmt.Errorf("sandbox creation failed after %d attempts: %w", maxAttempts, lastErr)
@@ -1202,7 +1257,13 @@ func terminalSandboxPhase(output string) string {
 // is non-empty, it is passed as --from to start the sandbox from a container
 // image. If policy is non-empty, it is applied at creation time via --policy.
 func createOnce(name string, providers []string, image, policy string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+readyCtxBuffer)
+	return createOnceContext(context.Background(), name, providers, image, policy, timeout)
+}
+
+// createOnceContext is createOnce bounded by parent: cancelling parent stops
+// the create command and the readiness polling.
+func createOnceContext(parent context.Context, name string, providers []string, image, policy string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, timeout+readyCtxBuffer)
 	defer cancel()
 
 	args := []string{
@@ -1311,7 +1372,11 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 					name, phase, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
 			}
 		}
-		time.Sleep(readyPoll)
+		select {
+		case <-time.After(readyPoll):
+		case <-parent.Done():
+			return fmt.Errorf("sandbox %q not ready: %w", name, parent.Err())
+		}
 	}
 
 	// Collect sandbox logs to help diagnose the failure.

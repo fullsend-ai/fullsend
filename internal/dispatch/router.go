@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
@@ -64,29 +65,43 @@ func NewHarnessRouter(agentNames []string) *HarnessRouter {
 
 // Route determines which stages (if any) should handle the event.
 func (r *HarnessRouter) Route(event *NormalizedEvent) ([]string, error) {
-	if event == nil {
-		return nil, nil
-	}
-
-	switch event.Transition.Kind {
-	case "comment_added":
-		return r.routeComment(event)
-	case "label_changed":
-		return r.routeLabel(event)
-	case "merged", "closed":
-		return r.routeMerge(event)
-	case "opened":
-		return r.routeOpened(event)
-	case "synchronized":
-		return r.routeSynchronized(event)
-	default:
-		return nil, nil
-	}
+	stages, _, err := r.RouteWithReason(event)
+	return stages, err
 }
 
-func (r *HarnessRouter) routeComment(event *NormalizedEvent) ([]string, error) {
+// RouteWithReason implements ReasonRouter: it routes like Route and, when
+// no stage is selected, also returns a short human-readable reason so
+// callers (the GitLab poller) can log why an event was skipped.
+func (r *HarnessRouter) RouteWithReason(event *NormalizedEvent) ([]string, string, error) {
+	if event == nil {
+		return nil, "nil event", nil
+	}
+
+	var stages []string
+	var reason string
+	switch event.Transition.Kind {
+	case "comment_added":
+		stages, reason = r.routeComment(event)
+	case "label_changed":
+		stages, reason = r.routeLabel(event)
+	case "merged", "closed":
+		stages, reason = r.routeMerge(event)
+	case "opened":
+		stages, reason = r.routeOpened(event)
+	case "synchronized":
+		stages, reason = r.routeSynchronized(event)
+	default:
+		reason = fmt.Sprintf("transition kind %q is not routed", event.Transition.Kind)
+	}
+	if len(stages) > 0 {
+		return stages, "", nil
+	}
+	return nil, reason, nil
+}
+
+func (r *HarnessRouter) routeComment(event *NormalizedEvent) ([]string, string) {
 	if event.Transition.Comment == nil {
-		return nil, nil
+		return nil, "comment event has no comment"
 	}
 
 	// Slash command: /fs-{agent}
@@ -101,10 +116,10 @@ func (r *HarnessRouter) routeComment(event *NormalizedEvent) ([]string, error) {
 		event.Actor.Kind == "bot" &&
 		strings.Contains(event.Transition.Comment.Body, changesRequestedMarker) {
 		if isForkOrUnknown(event.State) {
-			return nil, nil
+			return nil, "changes-requested marker on a fork or unknown-origin merge request: fix is not allowed"
 		}
 		if !r.validAgents["fix"] {
-			return nil, nil
+			return nil, "changes-requested marker: fix agent is not installed"
 		}
 		// fullsend-no-fix suppresses bot-triggered fix runs, matching
 		// GitHub's check-fix-eligibility.sh gate. GitHub also requires
@@ -113,30 +128,41 @@ func (r *HarnessRouter) routeComment(event *NormalizedEvent) ([]string, error) {
 		// replicate that half of the gate for GitLab, so it is deferred
 		// (see docs/agents/fix.md Control labels section).
 		if slices.Contains(event.State.Labels, noFixLabel) {
-			return nil, nil
+			return nil, "changes-requested marker: " + noFixLabel + " label is set"
 		}
-		return []string{"fix"}, nil
+		return []string{"fix"}, ""
 	}
 
-	return nil, nil
+	return nil, "comment is not a slash command"
 }
 
-func (r *HarnessRouter) routeSlashCommand(event *NormalizedEvent, cmd string) ([]string, error) {
+func (r *HarnessRouter) routeSlashCommand(event *NormalizedEvent, cmd string) ([]string, string) {
 	if !strings.HasPrefix(cmd, "/fs-") {
-		return nil, nil
-	}
-
-	if event.Entity.Kind == "change_proposal" && isForkOrUnknown(event.State) {
-		return nil, nil
+		return nil, fmt.Sprintf("command %q is not an /fs- command", cmd)
 	}
 
 	stage := strings.ToLower(strings.TrimPrefix(cmd, "/fs-"))
 	if stage == "" {
-		return nil, nil
+		return nil, "empty /fs- command"
+	}
+
+	// Fork and unknown-origin MRs: an unknown origin (nil state) fails
+	// closed for every command. On a known fork MR only fork-safe stages
+	// (review) may run; write-capable stages stay denied because their
+	// post-scripts would push to the target project. Review still goes
+	// through the role check below, which is the safeguard the
+	// synchronized path lacks (it cannot tell who pushed).
+	if event.Entity.Kind == "change_proposal" {
+		if event.State.ChangeProposal == nil {
+			return nil, fmt.Sprintf("%q on merge request with unknown origin (no change_proposal state): denied", cmd)
+		}
+		if event.State.ChangeProposal.IsFork && !isForkSafeStage(stage) {
+			return nil, fmt.Sprintf("%q on fork merge request: only /fs-review is allowed on forks", cmd)
+		}
 	}
 
 	if !r.validAgents[stage] {
-		return nil, nil
+		return nil, fmt.Sprintf("%q: agent %q is not installed", cmd, stage)
 	}
 
 	// Observation stages (triage, review) accept the triage role;
@@ -151,11 +177,11 @@ func (r *HarnessRouter) routeSlashCommand(event *NormalizedEvent, cmd string) ([
 		// stages on their own work_item entities even with read-only
 		// access. Does not apply to change_proposal entities.
 		if !(isObservationStage(stage) && event.Entity.Kind == "work_item" && event.Actor.IsEntityAuthor) {
-			return nil, nil
+			return nil, fmt.Sprintf("%q: actor role %q is below the required %q role", cmd, event.Actor.Role, minRole)
 		}
 	}
 
-	return []string{stage}, nil
+	return []string{stage}, ""
 }
 
 // isObservationStage reports whether stage is a read-only observation
@@ -164,9 +190,16 @@ func isObservationStage(stage string) bool {
 	return stage == "triage" || stage == "review"
 }
 
-func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, error) {
+// isForkSafeStage reports whether stage may be dispatched by slash
+// command on a fork MR. Only review qualifies: it reads the MR and posts
+// notes on the target project, and never pushes to the MR source.
+func isForkSafeStage(stage string) bool {
+	return stage == "review"
+}
+
+func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, string) {
 	if event.Transition.Label == nil || event.Transition.Label.Action != "added" {
-		return nil, nil
+		return nil, "label event is not a label addition"
 	}
 
 	var stage string
@@ -176,22 +209,24 @@ func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, error) {
 	case "ready-for-review":
 		stage = "review"
 	default:
-		return nil, nil
+		return nil, fmt.Sprintf("label %q does not trigger a stage", event.Transition.Label.Name)
 	}
 
+	// Labels never dispatch on fork MRs, matching GitHub, where labeling
+	// a fork PR does not start a review; /fs-review is the fork path.
 	if event.Entity.Kind == "change_proposal" && isForkOrUnknown(event.State) {
-		return nil, nil
+		return nil, fmt.Sprintf("label %q on fork or unknown-origin merge request: labels do not dispatch on forks (use /fs-review)", event.Transition.Label.Name)
 	}
 
 	if !HasRole(event.Actor.Role, "write") {
-		return nil, nil
+		return nil, fmt.Sprintf("label %q: actor role %q is below the required \"write\" role", event.Transition.Label.Name, event.Actor.Role)
 	}
 
 	if !r.validAgents[stage] {
-		return nil, nil
+		return nil, fmt.Sprintf("label %q: agent %q is not installed", event.Transition.Label.Name, stage)
 	}
 
-	return []string{stage}, nil
+	return []string{stage}, ""
 }
 
 // routeMerge dispatches retro for merged and closed-unmerged change
@@ -200,17 +235,17 @@ func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, error) {
 // independently checks Developer access before running retro. Only change
 // proposals reach retro: a closed work item (issue close, which the GitLab
 // webhook builder can emit) is not a retro trigger.
-func (r *HarnessRouter) routeMerge(event *NormalizedEvent) ([]string, error) {
+func (r *HarnessRouter) routeMerge(event *NormalizedEvent) ([]string, string) {
 	if event.Entity.Kind != "change_proposal" {
-		return nil, nil
+		return nil, fmt.Sprintf("%s %s is not routed", event.Entity.Kind, event.Transition.Kind)
 	}
 	if !HasRole(event.Actor.Role, "write") {
-		return nil, nil
+		return nil, fmt.Sprintf("%s: actor role %q is below the required \"write\" role", event.Transition.Kind, event.Actor.Role)
 	}
 	if !r.validAgents["retro"] {
-		return nil, nil
+		return nil, fmt.Sprintf("%s: agent \"retro\" is not installed", event.Transition.Kind)
 	}
-	return []string{"retro"}, nil
+	return []string{"retro"}, ""
 }
 
 // routeOpened dispatches triage for a new GitLab work item and review for a
@@ -219,18 +254,23 @@ func (r *HarnessRouter) routeMerge(event *NormalizedEvent) ([]string, error) {
 // matching the previous native merge_request_event path. Review is
 // read-only, so fork MRs are allowed; the agent template skips write
 // stages on forks.
-func (r *HarnessRouter) routeOpened(event *NormalizedEvent) ([]string, error) {
+func (r *HarnessRouter) routeOpened(event *NormalizedEvent) ([]string, string) {
 	switch event.Entity.Kind {
 	case "work_item":
-		if event.Source.System == "gitlab" && r.validAgents["triage"] {
-			return []string{"triage"}, nil
+		if event.Source.System != "gitlab" {
+			return nil, fmt.Sprintf("opened %s work item is not routed", event.Source.System)
 		}
+		if r.validAgents["triage"] {
+			return []string{"triage"}, ""
+		}
+		return nil, "opened: agent \"triage\" is not installed"
 	case "change_proposal":
 		if r.validAgents["review"] {
-			return []string{"review"}, nil
+			return []string{"review"}, ""
 		}
+		return nil, "opened: agent \"review\" is not installed"
 	}
-	return nil, nil
+	return nil, fmt.Sprintf("opened %s is not routed", event.Entity.Kind)
 }
 
 // routeSynchronized dispatches review for a same-project change proposal
@@ -238,17 +278,20 @@ func (r *HarnessRouter) routeOpened(event *NormalizedEvent) ([]string, error) {
 // event actor is the MR author), so the pusher is never authorized here.
 // Fork and unknown-origin MRs are denied: a non-member with push access to
 // the fork could otherwise trigger repeated reviews under the author's
-// identity. Fork MR re-review is currently unsupported, since
-// routeSlashCommand also denies fork MRs. For a same-project MR any pusher
-// already holds project push access.
-func (r *HarnessRouter) routeSynchronized(event *NormalizedEvent) ([]string, error) {
-	if event.Entity.Kind != "change_proposal" || isForkOrUnknown(event.State) {
-		return nil, nil
+// identity. Fork MR re-review runs through /fs-review instead
+// (routeSlashCommand), which authorizes the commenting actor. For a
+// same-project MR any pusher already holds project push access.
+func (r *HarnessRouter) routeSynchronized(event *NormalizedEvent) ([]string, string) {
+	if event.Entity.Kind != "change_proposal" {
+		return nil, fmt.Sprintf("synchronized %s is not routed", event.Entity.Kind)
+	}
+	if isForkOrUnknown(event.State) {
+		return nil, "push to fork or unknown-origin merge request is not reviewed automatically (use /fs-review)"
 	}
 	if r.validAgents["review"] {
-		return []string{"review"}, nil
+		return []string{"review"}, ""
 	}
-	return nil, nil
+	return nil, "synchronized: agent \"review\" is not installed"
 }
 
 // isForkOrUnknown reports whether the event's change proposal state

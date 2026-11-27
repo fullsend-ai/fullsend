@@ -93,6 +93,9 @@ type Stack struct {
 	url           string
 	adminPassword string
 
+	// agentsRef is the commit of the seeded agent-definition repository.
+	agentsRef string
+
 	mu         sync.Mutex
 	containers []startedContainer
 	tornDown   bool
@@ -209,6 +212,10 @@ func (s *Stack) start(ctx context.Context) error {
 		"--username", adminUser, "--password", s.adminPassword, "--email", adminEmail,
 		"--must-change-password=false"); err != nil {
 		return fmt.Errorf("startup: creating the admin user: %w", err)
+	}
+	logf("forgejo-dev: seeding the agent-definition repository %s/%s", AgentsOwner, AgentsRepo)
+	if err := s.seedAgentDefinitions(ctx); err != nil {
+		return fmt.Errorf("startup: seeding the agent-definition repository: %w", err)
 	}
 	token, err := s.exec(ctx, forgejoID, "forgejo", "actions", "generate-runner-token")
 	if err != nil {
