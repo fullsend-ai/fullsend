@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func TestBuildScaffoldPRMetadata_FreshInstall(t *testing.T) {
@@ -70,10 +71,58 @@ func TestBuildScaffoldPRMetadata_UpgradeWithNewVersionOnly(t *testing.T) {
 	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.28.0",
 		ScaffoldMetadataOpts{GuardInstalled: &installed})
 
-	assert.Equal(t, "chore: bump fullsend to v0.28.0", meta.CommitMsg)
-	assert.Equal(t, "chore: bump fullsend to v0.28.0", meta.PRTitle)
-	assert.Contains(t, meta.PRBody, "to v0.28.0")
-	assert.Equal(t, "fullsend/bump-v0.28.0", meta.Branch)
+	// The installed version is unknown, so the change may not be a version
+	// bump at all; it must not be described as one (#9901).
+	assert.Equal(t, "chore: update fullsend per-repo installation", meta.CommitMsg)
+	assert.Equal(t, "chore: update fullsend per-repo installation", meta.PRTitle)
+	assert.NotContains(t, meta.CommitMsg, "bump")
+	assert.Equal(t, DefaultScaffoldBranch, meta.Branch)
+}
+
+func TestBuildScaffoldPRMetadata_UpgradeSameVersion(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents = map[string][]byte{
+		"acme/widget/.github/workflows/fullsend.yaml": []byte(
+			"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v0.28.0\n"),
+	}
+	installed := true
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.28.0",
+		ScaffoldMetadataOpts{GuardInstalled: &installed})
+
+	// A config-only change on an install already at the new version is not
+	// a bump (#9901).
+	assert.Equal(t, "chore: update fullsend per-repo installation", meta.CommitMsg)
+	assert.Equal(t, "chore: update fullsend per-repo installation", meta.PRTitle)
+	assert.Contains(t, meta.PRBody, "updates the fullsend scaffold files")
+	assert.Equal(t, DefaultScaffoldBranch, meta.Branch)
+}
+
+func TestBuildScaffoldPRMetadata_GitLabSameVersion(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents = map[string][]byte{
+		"group/project/" + fullsendPipelineInclude: []byte(
+			"---\n# fullsend-ref: 0123456789abcdef0123456789abcdef01234567 (v0.57.1)\nstages: [fullsend]\n"),
+	}
+	installed := true
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "group", "project", "v0.57.1",
+		ScaffoldMetadataOpts{GuardInstalled: &installed})
+
+	assert.Equal(t, "chore: update fullsend per-repo installation", meta.CommitMsg)
+	assert.Equal(t, DefaultScaffoldBranch, meta.Branch)
+}
+
+func TestBuildScaffoldPRMetadata_GitLabUpgrade(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents = map[string][]byte{
+		"group/project/" + fullsendPipelineInclude: []byte(
+			"---\n# fullsend-ref: 0123456789abcdef0123456789abcdef01234567 (v0.56.0)\nstages: [fullsend]\n"),
+	}
+	installed := true
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "group", "project", "v0.57.1",
+		ScaffoldMetadataOpts{GuardInstalled: &installed})
+
+	assert.Equal(t, "chore: bump fullsend from v0.56.0 to v0.57.1", meta.CommitMsg)
+	assert.Equal(t, "fullsend/bump-v0.57.1", meta.Branch)
 }
 
 func TestBuildScaffoldPRMetadata_UpgradeWithNoVersions(t *testing.T) {
@@ -104,8 +153,19 @@ func TestBuildScaffoldPRMetadata_PreFetchedGuardInstalled(t *testing.T) {
 	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.28.0",
 		ScaffoldMetadataOpts{GuardInstalled: &installed})
 
-	assert.Equal(t, "chore: bump fullsend to v0.28.0", meta.CommitMsg)
-	assert.Equal(t, "fullsend/bump-v0.28.0", meta.Branch)
+	// Installed, but no installed version is detectable: generic update.
+	assert.Equal(t, "chore: update fullsend per-repo installation", meta.CommitMsg)
+	assert.Equal(t, DefaultScaffoldBranch, meta.Branch)
+}
+
+func TestBuildScaffoldPRMetadata_PreFetchedOldVersionSameAsNew(t *testing.T) {
+	fc := forge.NewFakeClient()
+	installed := true
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.28.0",
+		ScaffoldMetadataOpts{GuardInstalled: &installed, OldVersion: "v0.28.0"})
+
+	assert.Equal(t, "chore: update fullsend per-repo installation", meta.CommitMsg)
+	assert.Equal(t, DefaultScaffoldBranch, meta.Branch)
 }
 
 func TestBuildScaffoldPRMetadata_PreFetchedGuardNotInstalled(t *testing.T) {
@@ -184,6 +244,47 @@ func TestDetectExistingVersion(t *testing.T) {
 		}
 		v := detectExistingVersion(context.Background(), fc, "acme", "widget")
 		assert.Equal(t, "v1.0.0-alpha-1", v)
+	})
+
+	t.Run("gitlab marker with sha and tag", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.FileContents = map[string][]byte{
+			"acme/widget/" + fullsendPipelineInclude: []byte(
+				"---\n# fullsend-ref: deadbeefdeadbeef (v0.57.1)\nstages: [fullsend]\n"),
+		}
+		v := detectExistingVersion(context.Background(), fc, "acme", "widget")
+		assert.Equal(t, "v0.57.1", v)
+	})
+
+	t.Run("gitlab marker with tag only", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.FileContents = map[string][]byte{
+			"acme/widget/" + fullsendPipelineInclude: []byte(
+				"---\n# fullsend-ref: v1.0.0-rc.1\nstages: [fullsend]\n"),
+		}
+		v := detectExistingVersion(context.Background(), fc, "acme", "widget")
+		assert.Equal(t, "v1.0.0-rc.1", v)
+	})
+
+	t.Run("gitlab marker with non-version ref", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.FileContents = map[string][]byte{
+			"acme/widget/" + fullsendPipelineInclude: []byte(
+				"---\n# fullsend-ref: main\nstages: [fullsend]\n"),
+		}
+		v := detectExistingVersion(context.Background(), fc, "acme", "widget")
+		assert.Equal(t, "", v)
+	})
+
+	t.Run("gitlab marker matches FormatVersionMarker output", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.FileContents = map[string][]byte{
+			"acme/widget/" + fullsendPipelineInclude: []byte(scaffold.InsertAfterDocStart(
+				"---\nstages: [fullsend]\n",
+				scaffold.FormatVersionMarker("0123456789abcdef0123456789abcdef01234567", "v0.57.1"))),
+		}
+		v := detectExistingVersion(context.Background(), fc, "acme", "widget")
+		assert.Equal(t, "v0.57.1", v)
 	})
 }
 

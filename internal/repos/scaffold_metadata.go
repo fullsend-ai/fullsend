@@ -9,7 +9,8 @@ import (
 )
 
 // ScaffoldPRMetadata holds commit/PR metadata for scaffold file delivery.
-// Values differ based on whether this is a fresh install or a version upgrade.
+// Values differ based on whether this is a fresh install, a version
+// upgrade, or another update to an existing installation.
 type ScaffoldPRMetadata struct {
 	CommitMsg string
 	PRTitle   string
@@ -56,6 +57,24 @@ const (
 // versionCommentPattern matches "# vX.Y.Z" traceability comments in
 // scaffold workflow files. The version tag is captured in group 1.
 var versionCommentPattern = regexp.MustCompile(`# (v\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)`)
+
+// gitlabVersionMarkerPattern matches the GitLab pipeline wrapper's version
+// marker written by scaffold.FormatVersionMarker, either
+// "# fullsend-ref: <sha> (vX.Y.Z)" or "# fullsend-ref: vX.Y.Z". The version
+// tag is captured in group 1.
+var gitlabVersionMarkerPattern = regexp.MustCompile(
+	`#\s*fullsend-ref:\s+(?:\S+\s+\()?(v\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)`)
+
+// versionSources lists, in order, the scaffold files that carry the
+// installed fullsend version and the pattern that extracts it: the GitHub
+// shim workflow and the GitLab pipeline wrapper.
+var versionSources = []struct {
+	path    string
+	pattern *regexp.Regexp
+}{
+	{".github/workflows/fullsend.yaml", versionCommentPattern},
+	{fullsendPipelineInclude, gitlabVersionMarkerPattern},
+}
 
 // ScaffoldMetadataOpts holds pre-fetched values for BuildScaffoldPRMetadata.
 type ScaffoldMetadataOpts struct {
@@ -135,24 +154,21 @@ func freshInstallMetadata() ScaffoldPRMetadata {
 	}
 }
 
-// upgradeMetadata returns metadata for a version upgrade. It uses the old
-// and new version tags to produce descriptive commit messages and PR titles.
+// upgradeMetadata returns metadata for a change to an existing
+// installation. The change is described as a version bump only when both
+// the installed and the new version tags are known and differ; otherwise
+// (same version, or installed version unknown) it may be a configuration
+// change alone, so a generic update message is used rather than claiming
+// a bump that did not happen.
 func upgradeMetadata(oldVersion, newVersion string) ScaffoldPRMetadata {
 	switch {
-	case oldVersion != "" && newVersion != "":
+	case oldVersion != "" && newVersion != "" && oldVersion != newVersion:
 		return ScaffoldPRMetadata{
 			CommitMsg: fmt.Sprintf("chore: bump fullsend from %s to %s", oldVersion, newVersion),
 			PRTitle:   fmt.Sprintf("chore: bump fullsend from %s to %s", oldVersion, newVersion),
 			PRBody: fmt.Sprintf("This PR updates the fullsend reusable workflow pin from %s to %s.",
 				oldVersion, newVersion),
 			Branch: ScaffoldBumpBranchPrefix + newVersion,
-		}
-	case newVersion != "":
-		return ScaffoldPRMetadata{
-			CommitMsg: fmt.Sprintf("chore: bump fullsend to %s", newVersion),
-			PRTitle:   fmt.Sprintf("chore: bump fullsend to %s", newVersion),
-			PRBody:    fmt.Sprintf("This PR updates the fullsend reusable workflow pin to %s.", newVersion),
-			Branch:    ScaffoldBumpBranchPrefix + newVersion,
 		}
 	default:
 		return ScaffoldPRMetadata{
@@ -164,21 +180,23 @@ func upgradeMetadata(oldVersion, newVersion string) ScaffoldPRMetadata {
 	}
 }
 
-// detectExistingVersion reads the per-repo shim workflow from the target
-// repository and extracts the version tag from the traceability comment
-// (e.g., "# v0.25.2"). Returns an empty string if the file does not exist
-// or no version comment is found.
+// detectExistingVersion reads the installed scaffold from the target
+// repository and extracts the version tag from its traceability comment:
+// "# v0.25.2" in the GitHub shim workflow, or the "# fullsend-ref:" marker
+// in the GitLab pipeline wrapper. Returns an empty string if neither file
+// exists or no version is found.
 func detectExistingVersion(ctx context.Context, client forge.Client,
 	owner, repo string) string {
 
-	content, err := client.GetFileContent(ctx, owner, repo,
-		".github/workflows/fullsend.yaml")
-	if err != nil {
-		return ""
-	}
-	matches := versionCommentPattern.FindSubmatch(content)
-	if len(matches) > 1 {
-		return string(matches[1])
+	for _, src := range versionSources {
+		content, err := client.GetFileContent(ctx, owner, repo, src.path)
+		if err != nil {
+			continue
+		}
+		matches := src.pattern.FindSubmatch(content)
+		if len(matches) > 1 {
+			return string(matches[1])
+		}
 	}
 	return ""
 }
