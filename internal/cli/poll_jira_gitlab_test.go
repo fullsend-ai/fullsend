@@ -146,7 +146,7 @@ func TestPollCmd_JiraPollGitLabPreflight(t *testing.T) {
 
 // TestPollCmd_JiraPollGitLabAuthFailure drives the GitLab target through
 // client construction to the GitLab identity preflight, which runs before
-// any Jira lock or checkpoint is touched.
+// any Jira issue property is touched.
 func TestPollCmd_JiraPollGitLabAuthFailure(t *testing.T) {
 	var gitlabCalls int
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -52,7 +52,7 @@ func TestJiraTracking_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultJiraAPIURL, jira.EffectiveAPIURL())
 	assert.False(t, jira.PollEnabled(), "omitted poll does not install the poll workflow")
 	assert.Equal(t, DefaultJiraPollQuery, jira.PollQuery())
-	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done) ORDER BY updated DESC`, jira.PollJQL())
+	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done)`, jira.PollJQL())
 
 	var nilJira *JiraTrackingConfig
 	assert.Equal(t, DefaultJiraAPIURL, nilJira.EffectiveAPIURL())

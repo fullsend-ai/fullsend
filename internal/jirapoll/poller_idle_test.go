@@ -3,9 +3,10 @@ package jirapoll
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -81,8 +82,8 @@ func dispatchedKeys(p *Poller) []string {
 	return keys
 }
 
-// An idle candidate is dropped before the pick and costs no lock write, no
-// listing and no lastCheck write; the cycle line carries the active count.
+// An idle candidate is dropped before the pick and costs no property write,
+// no listing and no lastCheck write; the cycle line carries the active count.
 func TestRunSkipsIdleCandidates(t *testing.T) {
 	logs := captureLog(t)
 	now := time.Now().Truncate(time.Second)
@@ -118,7 +119,7 @@ func TestRunSkipsIdleCandidates(t *testing.T) {
 				key, mc.listCommentsCalls[key], mc.listChangelogCalls[key], mc.propertySetCalls[key], mc.propertyDeleteCalls[key])
 		}
 	}
-	if want := "poll complete: 10 candidates, 10 unlocked, 3 active, 3 selected, 3 dispatches"; !strings.Contains(logs.String(), want) {
+	if want := "poll complete: 10 candidates, 3 active, 3 selected, 3 dispatches"; !strings.Contains(logs.String(), want) {
 		t.Errorf("log lacks %q:\n%s", want, logs.String())
 	}
 }
@@ -140,40 +141,6 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-// A candidate that holds a live lock is dropped before its lastCheck is
-// read.
-func TestFilterLockedDoesNotReadLockedLastCheck(t *testing.T) {
-	now := time.Now().Truncate(time.Second)
-	mc := newMockClient()
-	p := idleTestPoller(mc, t)
-	locked := idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Minute))
-	free := idleTestIssue(2, now.Add(-48*time.Hour), now.Add(-time.Minute))
-	if err := mc.SetEntityProperty(context.Background(), locked.Key, p.lockKey(), LockValue{ID: "other-cycle", TS: now.UTC().Format(time.RFC3339), Phase: "pending"}); err != nil {
-		t.Fatal(err)
-	}
-	setLastCheck(mc, locked.Key, "acme", "platform", now.Add(-30*time.Minute))
-	setLastCheck(mc, free.Key, "acme", "platform", now.Add(-30*time.Minute))
-
-	var reads []string
-	mc.getPropertyHook = func(issueKey, propKey string) { reads = append(reads, issueKey+" "+propKey) }
-
-	active, unlocked, err := p.filterLocked(context.Background(), []jira.Issue{locked, free})
-	if err != nil {
-		t.Fatalf("filterLocked() error: %v", err)
-	}
-	if unlocked != 1 || len(active) != 1 || active[0].Key != free.Key {
-		t.Fatalf("filterLocked() = %d active %+v, %d unlocked; want only %s", len(active), active, unlocked, free.Key)
-	}
-	for _, r := range reads {
-		if r == locked.Key+" "+p.lastCheckKey() {
-			t.Errorf("read the lastCheck of the locked candidate %s", locked.Key)
-		}
-	}
-	if !slices.Contains(reads, free.Key+" "+p.lastCheckKey()) {
-		t.Errorf("did not read the lastCheck of %s; reads: %v", free.Key, reads)
-	}
 }
 
 // Clamped lastCheck values are reported in one line per cycle, not one
@@ -335,23 +302,74 @@ func TestRunFirstLookOldActivityThenIdle(t *testing.T) {
 	}
 }
 
-// A garbage lastCheck keeps its issue active (an editor must not be able to
-// hide an issue by writing garbage). Alone in the active set it fails every
-// cycle at the all-failed guard, which is unchanged.
-func TestRunGarbageLastCheckAloneFailsCycle(t *testing.T) {
+// A garbage lastCheck is treated as unset (#9766): the issue stays active
+// (an editor must not be able to hide an issue by writing garbage), gets
+// one first-poll look that saves a valid lastCheck, and is idle next cycle.
+// Neither warning prints the stored value. The cases cover both ways a
+// stored value can fail: JSON that is not a string, and a string that is
+// not a timestamp.
+func TestRunGarbageLastCheckTreatedAsUnset(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stored string
+	}{
+		{name: "a string that is not a time", stored: `"garbage-time"`},
+		{name: "JSON that is not a string", stored: `{"garbage":1}`},
+		{name: "not JSON", stored: `garbage, not JSON`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().Truncate(time.Second)
+			updated := now.Add(-time.Hour)
+			mc := newMockClient()
+			mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), updated)}
+			mc.properties["PROJ-1"] = map[string]json.RawMessage{lastCheckPropertyKey("acme", "platform"): json.RawMessage(tc.stored)}
+			for n := 2; n <= 4; n++ {
+				mc.searchResult = append(mc.searchResult, idleTestIssue(n, now.Add(-48*time.Hour), updated))
+				setLastCheck(mc, fmt.Sprintf("PROJ-%d", n), "acme", "platform", updated)
+			}
+
+			logs := captureLog(t)
+			if err := idleTestPoller(mc, t).Run(context.Background()); err != nil {
+				t.Fatalf("cycle 1: %v", err)
+			}
+			if lc := storedLastCheckAt(t, mc, "PROJ-1"); !lc.Equal(updated) {
+				t.Fatalf("lastCheck after cycle 1 = %v, want the issue's updated %v saved over the garbage", lc, updated)
+			}
+			for _, want := range []string{
+				"lastCheck not a timestamp, treated as unset: PROJ-1",
+				"WARNING: lastCheck for PROJ-1 is not a timestamp; treating as unset",
+			} {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("log lacks %q:\n%s", want, logs)
+				}
+			}
+			if strings.Contains(logs.String(), "garbage") {
+				t.Errorf("log prints the stored value:\n%s", logs)
+			}
+
+			before := mc.listCommentsCalls["PROJ-1"]
+			if err := idleTestPoller(mc, t).Run(context.Background()); err != nil {
+				t.Fatalf("cycle 2: %v", err)
+			}
+			if mc.listCommentsCalls["PROJ-1"] != before {
+				t.Error("cycle 2 looked at an issue with nothing new")
+			}
+		})
+	}
+}
+
+// A cycle whose every selected issue fails ends in an error. Here the one
+// active issue's lastCheck cannot be read.
+func TestRunAllSelectedIssuesFailedFailsCycle(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
 	mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Hour))}
-	mc.properties["PROJ-1"] = map[string]json.RawMessage{lastCheckPropertyKey("acme", "platform"): json.RawMessage(`"not-a-time"`)}
-	for n := 2; n <= 4; n++ {
-		mc.searchResult = append(mc.searchResult, idleTestIssue(n, now.Add(-48*time.Hour), now.Add(-time.Hour)))
-		setLastCheck(mc, fmt.Sprintf("PROJ-%d", n), "acme", "platform", now.Add(-time.Hour))
-	}
+	mc.propertyGetErr[lastCheckPropertyKey("acme", "platform")] = fmt.Errorf("503 service unavailable")
 
 	p := idleTestPoller(mc, t)
 	err := p.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "all 1 selected issues failed to process") {
-		t.Fatalf("Run() error = %v, want the all-failed guard for the one garbage issue", err)
+		t.Fatalf("Run() error = %v, want the all-failed guard", err)
 	}
 	if len(p.dispatches) != 0 {
 		t.Errorf("dispatched %d, want 0", len(p.dispatches))
@@ -359,9 +377,11 @@ func TestRunGarbageLastCheckAloneFailsCycle(t *testing.T) {
 }
 
 // Every row of the activity filter's decision table (ADR 0160, Decision
-// item 1): only an issue whose usable lastCheck is at or after its updated
-// value is dropped; every error and unset case keeps the issue.
-func TestFilterLockedActivityDecision(t *testing.T) {
+// item 1), with lastCheck taken from the search row (ADR 0085, Decision
+// item 2): only an issue whose usable lastCheck is at or after its updated
+// value is dropped; every error and unset case keeps the issue. The filter
+// reads no property itself.
+func TestFilterActiveDecision(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	key := lastCheckPropertyKey("acme", "platform")
 	stamp := func(t time.Time) json.RawMessage {
@@ -371,12 +391,10 @@ func TestFilterLockedActivityDecision(t *testing.T) {
 	elsewhere := time.FixedZone("UTC-5", -5*3600)
 	cases := []struct {
 		name    string
-		stored  json.RawMessage // nil: no property
-		readErr bool
+		stored  json.RawMessage // nil: the search returned no property
 		updated string
 		active  bool
 	}{
-		{name: "read fails", readErr: true, updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
 		{name: "not JSON", stored: json.RawMessage(`not json`), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
 		{name: "JSON but not a time", stored: json.RawMessage(`"yesterday"`), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
 		{name: "JSON number", stored: json.RawMessage(`42`), updated: now.Add(-time.Hour).Format(jiraTimeLayout), active: true},
@@ -396,20 +414,12 @@ func TestFilterLockedActivityDecision(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mc := newMockClient()
-			if tc.readErr {
-				mc.propertyGetErr[key] = fmt.Errorf("503 service unavailable")
-			}
-			if tc.stored != nil {
-				mc.properties["PROJ-1"] = map[string]json.RawMessage{key: tc.stored}
-			}
+			mc.getPropertyHook = func(issueKey, propKey string) { t.Errorf("filter read %s of %s", propKey, issueKey) }
 			issue := jira.Issue{ID: "10001", Key: "PROJ-1", Fields: jira.IssueFields{Updated: tc.updated}}
-			active, unlocked, err := idleTestPoller(mc, t).filterLocked(context.Background(), []jira.Issue{issue})
-			if err != nil {
-				t.Fatalf("filterLocked() error: %v", err)
+			if tc.stored != nil {
+				issue.Properties = map[string]json.RawMessage{key: tc.stored}
 			}
-			if unlocked != 1 {
-				t.Errorf("unlocked = %d, want 1", unlocked)
-			}
+			active := idleTestPoller(mc, t).filterActive([]jira.Issue{issue})
 			if got := len(active) == 1; got != tc.active {
 				t.Errorf("active = %v, want %v", got, tc.active)
 			}
@@ -419,7 +429,7 @@ func TestFilterLockedActivityDecision(t *testing.T) {
 
 // A GitLab-target poller compares updated with its own lastCheck key, not
 // the GitHub-style one.
-func TestFilterLockedGitLabTargetReadsItsOwnKey(t *testing.T) {
+func TestFilterActiveGitLabTargetReadsItsOwnKey(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	opts := Options{
 		TargetRepo:  "group/project",
@@ -430,19 +440,16 @@ func TestFilterLockedGitLabTargetReadsItsOwnKey(t *testing.T) {
 	}
 	issue := idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Hour))
 
-	mc := newMockClient()
-	p := newTestPoller(mc, nil, opts)
-	if err := p.advanceLastCheck(context.Background(), issue.Key, now.Add(-time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if active, _, err := p.filterLocked(context.Background(), []jira.Issue{issue}); err != nil || len(active) != 0 {
-		t.Errorf("lastCheck equal to updated under the GitLab key: active %v, err %v; want idle", active, err)
+	stamp, _ := json.Marshal(now.Add(-time.Hour).UTC().Format(time.RFC3339Nano))
+	p := newTestPoller(newMockClient(), nil, opts)
+	issue.Properties = map[string]json.RawMessage{p.lastCheckKey(): stamp}
+	if active := p.filterActive([]jira.Issue{issue}); len(active) != 0 {
+		t.Errorf("lastCheck equal to updated under the GitLab key: active %v; want idle", active)
 	}
 
-	mc = newMockClient()
-	setLastCheck(mc, issue.Key, "group", "project", now.Add(-time.Hour))
-	if active, _, err := newTestPoller(mc, nil, opts).filterLocked(context.Background(), []jira.Issue{issue}); err != nil || len(active) != 1 {
-		t.Errorf("lastCheck only under the GitHub-style key: active %v, err %v; want active", active, err)
+	issue.Properties = map[string]json.RawMessage{lastCheckPropertyKey("group", "project"): stamp}
+	if active := p.filterActive([]jira.Issue{issue}); len(active) != 1 {
+		t.Errorf("lastCheck only under the GitHub-style key: active %v; want active", active)
 	}
 }
 
@@ -602,5 +609,278 @@ func TestDetectChangesMaxSeenReachesUpdated(t *testing.T) {
 				t.Errorf("maxSeen = %v, want %v", res.maxSeen, tc.want)
 			}
 		})
+	}
+}
+
+// processIssue hands back an issue's records together with its checkpoint
+// and adds nothing to the cycle itself, so Run takes or leaves an issue's
+// records as one unit.
+func TestProcessIssueReturnsRecordsAsOneUnit(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	addTriageComment(mc, "PROJ-1", "501", now.Add(-2*time.Minute))
+	addTriageComment(mc, "PROJ-1", "502", now.Add(-time.Minute))
+	p := idleTestPoller(mc, t)
+
+	pc, err := p.processIssue(context.Background(), idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Minute)))
+	if err != nil {
+		t.Fatalf("processIssue() error: %v", err)
+	}
+	if len(p.dispatches) != 0 {
+		t.Errorf("processIssue added %d records to the cycle, want 0", len(p.dispatches))
+	}
+	if pc.issueKey != "PROJ-1" || pc.t.IsZero() || len(pc.records) != 2 {
+		t.Errorf("processIssue() = key %q, checkpoint %v, %d records; want PROJ-1, a checkpoint and both comments' records", pc.issueKey, pc.t, len(pc.records))
+	}
+}
+
+// slowClient blocks ListComments on the issues in slow until the call's
+// context ends, like a Jira read that never returns, and fails a property
+// write made with an ended context, so a commit that wrongly used the
+// cycle's read context would fail.
+type slowClient struct {
+	*mockClient
+	slow map[string]bool
+}
+
+func (c slowClient) ListComments(ctx context.Context, key string) ([]jira.Comment, error) {
+	if c.slow[key] {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return c.mockClient.ListComments(ctx, key)
+}
+
+func (c slowClient) SetEntityProperty(ctx context.Context, issueKey, propKey string, value any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.mockClient.SetEntityProperty(ctx, issueKey, propKey, value)
+}
+
+// timeLimitPoller returns a poller over two issues, PROJ-1 then PROJ-2, each
+// with a fresh triage comment. With two active issues and N = 5 the pick
+// keeps the search order.
+func timeLimitPoller(t *testing.T, mc *mockClient, slow map[string]bool, cycle, issue time.Duration) *Poller {
+	now := time.Now().Truncate(time.Second)
+	if len(mc.searchResult) == 0 {
+		for n := 1; n <= 2; n++ {
+			mc.searchResult = append(mc.searchResult, idleTestIssue(n, now.Add(-48*time.Hour), now.Add(-time.Minute)))
+			addTriageComment(mc, fmt.Sprintf("PROJ-%d", n), fmt.Sprintf("50%d", n), now.Add(-time.Minute))
+		}
+	}
+	return newTestPoller(slowClient{mc, slow}, &stubMatcher{agents: []string{"triage"}}, Options{
+		TargetRepo:     "acme/platform",
+		JiraBaseURL:    "https://acme.atlassian.net",
+		JiraProject:    "PROJ",
+		OutputPath:     filepath.Join(t.TempDir(), "dispatches.json"),
+		CycleTimeLimit: cycle,
+		IssueTimeLimit: issue,
+	})
+}
+
+// An issue that takes longer than the per-issue limit is treated as a
+// failed read: a WARNING names it, none of its records are taken, its
+// lastCheck stays, and the next issue is served (ADR 0085, Decision
+// item 3).
+func TestRunIssueTimeLimit(t *testing.T) {
+	logs := captureLog(t)
+	mc := newMockClient()
+	p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true}, time.Hour, 50*time.Millisecond)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if got := dispatchedKeys(p); len(got) != 1 || got[0] != "10002" {
+		t.Errorf("dispatched for %v, want PROJ-2 only", got)
+	}
+	if !storedLastCheckAt(t, mc, "PROJ-1").IsZero() {
+		t.Error("the timed-out issue's lastCheck advanced")
+	}
+	if storedLastCheckAt(t, mc, "PROJ-2").IsZero() {
+		t.Error("the served issue's lastCheck was not committed")
+	}
+	if want := "WARNING: reading PROJ-1 took longer than 50ms"; !strings.Contains(logs.String(), want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+}
+
+// The cycle limit stops reading mid-issue: the cycle dispatches and commits
+// what it finished and exits normally, and the cut-off issue's request is
+// served by the next cycle.
+func TestRunCycleTimeLimitLeavesRestForNextCycle(t *testing.T) {
+	logs := captureLog(t)
+	mc := newMockClient()
+	p := timeLimitPoller(t, mc, map[string]bool{"PROJ-2": true}, 200*time.Millisecond, time.Hour)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	if got := dispatchedKeys(p); len(got) != 1 || got[0] != "10001" {
+		t.Errorf("cycle 1 dispatched for %v, want PROJ-1 only", got)
+	}
+	if storedLastCheckAt(t, mc, "PROJ-1").IsZero() {
+		t.Error("cycle 1 did not commit PROJ-1's lastCheck after the read limit passed")
+	}
+	if !storedLastCheckAt(t, mc, "PROJ-2").IsZero() {
+		t.Error("cycle 1 advanced the cut-off issue's lastCheck")
+	}
+	if want := "WARNING: the 200ms cycle time limit cut off reading PROJ-2"; !strings.Contains(logs.String(), want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+
+	p = timeLimitPoller(t, mc, nil, time.Hour, time.Hour)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if got := dispatchedKeys(p); len(got) != 1 || got[0] != "10002" {
+		t.Errorf("cycle 2 dispatched for %v, want the request cycle 1 left: PROJ-2", got)
+	}
+}
+
+// slowSearchClient holds SearchIssues until the call's context ends. It then
+// fails with the context's error or, when late is set, returns the rows,
+// like a search whose last page arrives just after the time limit.
+type slowSearchClient struct {
+	*mockClient
+	late bool
+}
+
+func (c slowSearchClient) SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error) {
+	<-ctx.Done()
+	if !c.late {
+		return nil, ctx.Err()
+	}
+	return c.mockClient.SearchIssues(context.Background(), jql, limit, properties...)
+}
+
+// Reaching the cycle time limit is not a failure by itself: the cycle exits
+// normally, even when it finished no issue. A cycle in which every issue it
+// read failed or timed out ends in an error, so a poller blocked by slow
+// issues shows as a failed run (ADR 0085, Decision item 3).
+func TestRunTimeLimitOutcomes(t *testing.T) {
+	t.Run("the cycle limit cuts off the first issue: normal exit", func(t *testing.T) {
+		logs := captureLog(t)
+		mc := newMockClient()
+		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true}, 100*time.Millisecond, time.Hour)
+		if err := p.Run(context.Background()); err != nil {
+			t.Fatalf("Run() error: %v", err)
+		}
+		for _, want := range []string{"cycle time limit cut off reading PROJ-1", "1 selected issue(s) not read"} {
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("log lacks %q:\n%s", want, logs)
+			}
+		}
+		if mc.listCommentsCalls["PROJ-2"] != 0 {
+			t.Error("read PROJ-2 after the cycle limit")
+		}
+		if len(p.dispatches) != 0 || !storedLastCheckAt(t, mc, "PROJ-1").IsZero() {
+			t.Errorf("dispatched %d and saved a lastCheck for an issue that was not finished", len(p.dispatches))
+		}
+	})
+
+	t.Run("a slow issue, then the cycle limit: error", func(t *testing.T) {
+		mc := newMockClient()
+		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true, "PROJ-2": true}, 450*time.Millisecond, 300*time.Millisecond)
+		err := p.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "all 1 issues read before the 450ms cycle time limit failed or timed out; the other 1 selected issues wait") {
+			t.Fatalf("Run() error = %v, want the failure of a cycle blocked by a slow issue", err)
+		}
+	})
+
+	t.Run("every issue over the per-issue limit: error", func(t *testing.T) {
+		mc := newMockClient()
+		p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true, "PROJ-2": true}, time.Hour, 20*time.Millisecond)
+		err := p.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "all 2 selected issues failed to process") {
+			t.Fatalf("Run() error = %v, want the all-failed guard", err)
+		}
+	})
+
+	for _, late := range []bool{false, true} {
+		name := "the search fails at the cycle limit: normal exit"
+		want := "cycle time limit was reached during the search; no issue was read this cycle"
+		if late {
+			name = "the search returns after the cycle limit: normal exit"
+			want = "2 selected issue(s) not read"
+		}
+		t.Run(name, func(t *testing.T) {
+			logs := captureLog(t)
+			mc := newMockClient()
+			timeLimitPoller(t, mc, nil, time.Hour, time.Hour) // fills mc with the two issues
+			out := filepath.Join(t.TempDir(), "dispatches.json")
+			p := newTestPoller(slowSearchClient{mc, late}, &stubMatcher{agents: []string{"triage"}}, Options{
+				TargetRepo:     "acme/platform",
+				JiraBaseURL:    "https://acme.atlassian.net",
+				JiraProject:    "PROJ",
+				OutputPath:     out,
+				CycleTimeLimit: 50 * time.Millisecond,
+			})
+			if err := p.Run(context.Background()); err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("log lacks %q:\n%s", want, logs)
+			}
+			if mc.listCommentsCalls["PROJ-1"]+mc.listCommentsCalls["PROJ-2"] != 0 {
+				t.Error("read an issue after the cycle limit")
+			}
+			if data, err := os.ReadFile(out); err != nil || string(data) != "[]\n" {
+				t.Errorf("dispatch file = %q, %v; want an empty batch", data, err)
+			}
+		})
+	}
+}
+
+// The search returns each candidate's lastCheck, so an idle candidate costs
+// no property read (ADR 0085, Decision item 2); a picked issue's lastCheck
+// is still read from the issue before processing.
+func TestRunTakesLastCheckFromSearch(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Hour)),
+		idleTestIssue(2, now.Add(-48*time.Hour), now.Add(-time.Minute)),
+	}
+	setLastCheck(mc, "PROJ-1", "acme", "platform", now.Add(-time.Hour))
+	setLastCheck(mc, "PROJ-2", "acme", "platform", now.Add(-time.Hour))
+	addTriageComment(mc, "PROJ-2", "502", now.Add(-time.Minute))
+	reads := map[string]int{}
+	mc.getPropertyHook = func(issueKey, _ string) { reads[issueKey]++ }
+
+	p := idleTestPoller(mc, t)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if got := mc.lastSearchProperties; len(got) != 1 || got[0] != lastCheckPropertyKey("acme", "platform") {
+		t.Errorf("search asked for properties %v, want only the lastCheck key", got)
+	}
+	if reads["PROJ-1"] != 0 {
+		t.Errorf("read %d properties of the idle PROJ-1, want 0", reads["PROJ-1"])
+	}
+	if reads["PROJ-2"] == 0 {
+		t.Error("processing did not read PROJ-2's lastCheck from the issue")
+	}
+	if got := dispatchedKeys(p); len(got) != 1 || got[0] != "10002" {
+		t.Errorf("dispatched for %v, want PROJ-2 only", got)
+	}
+}
+
+// When the caller's context ends, the cycle stops with that error and does
+// not blame a time limit of its own.
+func TestRunCallerCancelIsNotATimeLimit(t *testing.T) {
+	logs := captureLog(t)
+	mc := newMockClient()
+	p := timeLimitPoller(t, mc, map[string]bool{"PROJ-1": true}, time.Hour, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	err := p.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want the caller's cancellation", err)
+	}
+	if strings.Contains(logs.String(), "time limit") || strings.Contains(logs.String(), "took longer than") {
+		t.Errorf("a cancelled cycle logged a time limit:\n%s", logs)
+	}
+	if mc.listCommentsCalls["PROJ-2"] != 0 {
+		t.Error("read PROJ-2 after the cycle was cancelled")
 	}
 }

@@ -1926,4 +1926,10 @@ the mock must serve it the way Jira does. This is deliberately not treated
 as a breaking change: no function or signature changed, and a scenario that
 adds activity after creating the issue sees `updated` move with it.
 
+**`jiramock` search properties change:** the search endpoint now returns the
+entity properties named in the request's `properties` list that an issue
+has, in each row's `properties` object, as Jira does. The Jira poller reads
+each candidate's `lastCheck` from there, so the mock must serve it. A search
+that names no properties is served as before.
+
 Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.
