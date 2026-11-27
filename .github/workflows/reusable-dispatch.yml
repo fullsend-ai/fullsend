@@ -146,6 +146,7 @@ jobs:
       stage: ${{ steps.review-skip-publish.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
+      mint_url: ${{ steps.resolve-mint.outputs.mint_url }}
       # The fork PR number for workflow_run events, whose payload has none;
       # the stage concurrency groups fall back to it.
       pr_number: ${{ steps.fork-pr.outputs.number }}
@@ -160,8 +161,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # checkout@v7 blocks fork PR checkouts on pull_request_target by
-          # default. Safe here: only .fullsend/ config is read, no fork code
-          # is executed, and credentials are not persisted. Pin to base branch
+          # default. Safe here: trusted config under .fullsend/ is read; the
+          # vendored or workflow-pinned mint URL resolver may run later with
+          # id-token scope. Credentials are not persisted. Pin to base branch
           # SHA for PR-scoped events so kill-switch / role gating always reads
           # trusted config — PR authors cannot self-authorize.
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
@@ -170,6 +172,7 @@ jobs:
           sparse-checkout: |
             .fullsend/config.yaml
             .fullsend/config.base.yaml
+            .defaults/.github/scripts/resolve-effective-mint-url.sh
             .defaults/action.yml
             .defaults/.github/actions/mint-token/
             .defaults/.github/actions/prepare-workspace/
@@ -1357,113 +1360,8 @@ jobs:
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
-      # Only obtain a write-capable review token after final routing has
-      # authorized the review stage. The diff check above remains read-only.
-      - name: Checkout upstream defaults for review skip note
-        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
-          path: .defaults
-          fetch-depth: 1
-          sparse-checkout: |
-            .github/actions/
-            internal/scaffold/fullsend-repo/
-          sparse-checkout-cone-mode: false
-
-      - name: Prepare workspace for review skip note
-        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
-        id: review-token-workspace
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: ./.defaults/.github/actions/prepare-workspace
-        with:
-          source_repo: ${{ github.repository }}
-
-      # Older vendored prepare-workspace actions use the historical
-      # .defaults path internally. Provide that compatibility path while
-      # the action's defaults_root input is adopted by existing callers.
-      - name: Stage nested defaults compatibility path
-        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
-        shell: bash
-        run: ln -s .fullsend/.defaults .defaults
-
-      - name: Prepare workspace for review skip note (nested vendor)
-        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
-        id: review-token-workspace-nested
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: ./.fullsend/.defaults/.github/actions/prepare-workspace
-        with:
-          defaults_root: .fullsend/.defaults
-          source_repo: ${{ github.repository }}
-
-      - name: Mint review token for review skip note
-        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
-        id: review-token
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: ./.defaults/.github/actions/mint-token
-        with:
-          role: review
-          repos: ${{ steps.review-token-workspace.outputs.repo_name }}
-          level: write
-          mint_url: ${{ inputs.mint_url }}
-
-      - name: Mint review token for review skip note (nested vendor)
-        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
-        id: review-token-nested
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: ./.fullsend/.defaults/.github/actions/mint-token
-        with:
-          role: review
-          repos: ${{ steps.review-token-workspace-nested.outputs.repo_name }}
-          level: write
-          mint_url: ${{ inputs.mint_url }}
-
-      - name: Publish review skip note
-        id: review-skip-publish
-        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
-          REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
-          SOURCE_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number || steps.fork-pr.outputs.number }}
-          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
-          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "skipped=false" >> "${GITHUB_OUTPUT}"
-          if [[ -z "${REVIEW_TOKEN}" ]]; then
-            echo "::notice::Review-App token was unavailable; running the full review"
-            exit 0
-          fi
-          dedup_cli="${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
-          if [[ ! -x "${dedup_cli}" ]]; then
-            echo "::warning::Review deduplication CLI unavailable; running review"
-            exit 0
-          fi
-          if ! decision="$("${dedup_cli}" review-dedup \
-            --repo "${SOURCE_REPO}" \
-            --pr "${PR_NUMBER}" \
-            --app-set "${FULLSEND_APP_SET}" \
-            --app-client-id "${REVIEW_APP_CLIENT_ID}" \
-            --publish)"; then
-            echo "::warning::Review deduplication CLI failed to publish the skip note; running review"
-            exit 0
-          fi
-          printf '%s\n' "${decision}"
-          if grep -qx 'skipped=true' <<<"${decision}"; then
-            echo "::notice::Skipping review after final routing: synchronize event has the same effective diff as the previous review"
-            echo "skipped=true" >> "${GITHUB_OUTPUT}"
-          fi
-
+      # Validate the final route and resolve the mint URL before any
+      # write-capable review skip-note token is minted.
       - name: Validate routed stage
         if: steps.route.outputs.stage != ''
         env:
@@ -1526,6 +1424,159 @@ jobs:
             echo "::error::Kill switch is active — all agent dispatch halted"
             echo "::error::Set kill_switch: false in .fullsend/config.yaml or .fullsend/config.base.yaml to resume"
             exit 1
+          fi
+
+      - name: Prepare mint URL resolver script
+        if: steps.route.outputs.stage != ''
+        id: mint-resolver-script
+        run: |
+          set -euo pipefail
+          RESOLVER=""
+          if [[ -f .defaults/.github/scripts/resolve-effective-mint-url.sh ]]; then
+            RESOLVER=".defaults/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ -n "${RESOLVER}" ]]; then
+            echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "fetched=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout workflow mint URL resolver
+        if: steps.route.outputs.stage != '' && steps.mint-resolver-script.outputs.fetched == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          path: .workflow-mint-resolver
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/resolve-effective-mint-url.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve effective mint URL
+        if: steps.route.outputs.stage != ''
+        id: resolve-mint
+        env:
+          FALLBACK_MINT_URL: ${{ inputs.mint_url }}
+        run: |
+          set -euo pipefail
+          RESOLVER="${{ steps.mint-resolver-script.outputs.path }}"
+          if [[ -z "${RESOLVER}" ]]; then
+            RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ ! -f "${RESOLVER}" ]]; then
+            echo "::error::resolve-effective-mint-url.sh is missing from vendored defaults and workflow repository"
+            exit 1
+          fi
+          bash "${RESOLVER}"
+
+      # Only obtain a write-capable review token after final routing has
+      # authorized the review stage. The diff check above remains read-only.
+      - name: Checkout upstream defaults for review skip note
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            internal/scaffold/fullsend-repo/
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare workspace for review skip note
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
+        id: review-token-workspace
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          source_repo: ${{ github.repository }}
+
+      # Older vendored prepare-workspace actions use the historical
+      # .defaults path internally. Provide that compatibility path while
+      # the action's defaults_root input is adopted by existing callers.
+      - name: Stage nested defaults compatibility path
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        shell: bash
+        run: ln -s .fullsend/.defaults .defaults
+
+      - name: Prepare workspace for review skip note (nested vendor)
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        id: review-token-workspace-nested
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.fullsend/.defaults/.github/actions/prepare-workspace
+        with:
+          defaults_root: .fullsend/.defaults
+          source_repo: ${{ github.repository }}
+
+      - name: Mint review token for review skip note
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && steps.resolve-mint.outcome == 'success' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
+        id: review-token
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace.outputs.repo_name }}
+          level: write
+          mint_url: ${{ steps.resolve-mint.outputs.mint_url }}
+
+      - name: Mint review token for review skip note (nested vendor)
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && steps.resolve-mint.outcome == 'success' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
+        id: review-token-nested
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.fullsend/.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace-nested.outputs.repo_name }}
+          level: write
+          mint_url: ${{ steps.resolve-mint.outputs.mint_url }}
+
+      - name: Publish review skip note
+        id: review-skip-publish
+        if: ((github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && inputs.event_action == 'synchronize' || (github.event_name == 'workflow_run' && steps.bash-route.outputs.event_action == 'synchronize')) && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
+          REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || steps.fork-pr.outputs.number }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "skipped=false" >> "${GITHUB_OUTPUT}"
+          if [[ -z "${REVIEW_TOKEN}" ]]; then
+            echo "::notice::Review-App token was unavailable; running the full review"
+            exit 0
+          fi
+          dedup_cli="${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
+          if [[ ! -x "${dedup_cli}" ]]; then
+            echo "::warning::Review deduplication CLI unavailable; running review"
+            exit 0
+          fi
+          if ! decision="$("${dedup_cli}" review-dedup \
+            --repo "${SOURCE_REPO}" \
+            --pr "${PR_NUMBER}" \
+            --app-set "${FULLSEND_APP_SET}" \
+            --app-client-id "${REVIEW_APP_CLIENT_ID}" \
+            --publish)"; then
+            echo "::warning::Review deduplication CLI failed to publish the skip note; running review"
+            exit 0
+          fi
+          printf '%s\n' "${decision}"
+          if grep -qx 'skipped=true' <<<"${decision}"; then
+            echo "::notice::Skipping review after final routing: synchronize event has the same effective diff as the previous review"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Validate agents config
@@ -1756,7 +1807,7 @@ jobs:
         with:
           role: triage
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1826,7 +1877,7 @@ jobs:
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report triage launch failure
@@ -1910,7 +1961,7 @@ jobs:
         with:
           role: coder
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2001,7 +2052,7 @@ jobs:
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report code launch failure
@@ -2194,7 +2245,7 @@ jobs:
         with:
           role: review
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2312,7 +2363,7 @@ jobs:
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report review launch failure
@@ -2396,7 +2447,7 @@ jobs:
         with:
           role: coder
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Resolve bot identity
         env:
@@ -2620,7 +2671,7 @@ jobs:
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report fix launch failure
@@ -2703,7 +2754,7 @@ jobs:
         with:
           role: retro
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2773,7 +2824,7 @@ jobs:
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report retro launch failure
@@ -2906,7 +2957,7 @@ jobs:
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
 
       - name: Report prioritize launch failure
         if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
@@ -2977,6 +3028,7 @@ jobs:
             .defaults/.github/actions/install-fullsend-cli/
             .defaults/.github/scripts/report-agent-startup-failure.sh
             .fullsend/.defaults/action.yml
+            .defaults/.github/scripts/resolve-effective-mint-url.sh
             .fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh
           sparse-checkout-cone-mode: false
 
@@ -2998,6 +3050,52 @@ jobs:
             fi
           fi
           echo "has_triggers=${has_triggers}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare mint URL resolver script
+        if: steps.triggers.outputs.has_triggers == 'true'
+        id: mint-resolver-script
+        run: |
+          set -euo pipefail
+          RESOLVER=""
+          if [[ -f .defaults/.github/scripts/resolve-effective-mint-url.sh ]]; then
+            RESOLVER=".defaults/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ -n "${RESOLVER}" ]]; then
+            echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "fetched=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout workflow mint URL resolver
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.mint-resolver-script.outputs.fetched == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          path: .workflow-mint-resolver
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/resolve-effective-mint-url.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve effective mint URL
+        if: steps.triggers.outputs.has_triggers == 'true'
+        id: resolve-mint
+        env:
+          FALLBACK_MINT_URL: ${{ inputs.mint_url }}
+        run: |
+          set -euo pipefail
+          RESOLVER="${{ steps.mint-resolver-script.outputs.path }}"
+          if [[ -z "${RESOLVER}" ]]; then
+            RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ ! -f "${RESOLVER}" ]]; then
+            echo "::error::resolve-effective-mint-url.sh is missing from vendored defaults and workflow repository"
+            exit 1
+          fi
+          bash "${RESOLVER}"
 
       - name: Detect dispatch CLI install mode
         id: mode
@@ -3105,7 +3203,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ inputs.event_action }}
-          FULLSEND_MINT_URL: ${{ inputs.mint_url }}
+          FULLSEND_MINT_URL: ${{ steps.resolve-mint.outputs.mint_url }}
         run: |
           set -euo pipefail
           if [[ "${{ steps.triggers.outputs.has_triggers }}" != "true" ]]; then
@@ -3213,6 +3311,50 @@ jobs:
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
+      - name: Prepare mint URL resolver script
+        id: mint-resolver-script
+        run: |
+          set -euo pipefail
+          RESOLVER=""
+          if [[ -f .defaults/.github/scripts/resolve-effective-mint-url.sh ]]; then
+            RESOLVER=".defaults/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ -n "${RESOLVER}" ]]; then
+            echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "fetched=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout workflow mint URL resolver
+        if: steps.mint-resolver-script.outputs.fetched == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          path: .workflow-mint-resolver
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/resolve-effective-mint-url.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve effective mint URL
+        id: resolve-mint
+        env:
+          FALLBACK_MINT_URL: ${{ inputs.mint_url }}
+        run: |
+          set -euo pipefail
+          RESOLVER="${{ steps.mint-resolver-script.outputs.path }}"
+          if [[ -z "${RESOLVER}" ]]; then
+            RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ ! -f "${RESOLVER}" ]]; then
+            echo "::error::resolve-effective-mint-url.sh is missing from vendored defaults and workflow repository"
+            exit 1
+          fi
+          bash "${RESOLVER}"
+
       - name: Extract repo metadata
         id: repo-parts
         shell: bash
@@ -3238,7 +3380,7 @@ jobs:
         with:
           role: ${{ matrix.role }}
           repos: ${{ steps.repo-parts.outputs.name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ steps.resolve-mint.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3390,7 +3532,7 @@ jobs:
           source-system: ${{ matrix.event_payload._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ matrix.event_payload.comment.id }}
           failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ steps.resolve-mint.outputs.mint_url }}
           pr-head-sha: ${{ matrix.event_payload.pull_request.head.sha || '' }}
           artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}
       - name: Report harness launch failure
