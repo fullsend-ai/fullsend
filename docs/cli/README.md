@@ -31,7 +31,7 @@ To update an installed binary later, run [`fullsend self-update`](self-update.md
 | [`fullsend prepare`](prepare.md) | Resolve an agent's sandbox image as `fullsend run` does, pre-pull a private image with the CI job's registry credential (`ghcr.io` on GitHub Actions, `CI_REGISTRY` on GitLab CI) as `run` does, and create and delete a restrictive preflight sandbox, which makes the gateway pull the image. Run it once before many parallel runs. `--json` prints the resolved image, architecture, and result. |
 | [`fullsend poll`](poll.md) | Discover forge events and dispatch agent pipelines — GitLab cron polling, Jira polling, and the GitLab webhook fast path. |
 | [`fullsend dispatch`](dispatch.md) | Evaluate harness CEL triggers for one forge event and print the dispatch matrix, or decide routing for one built-in agent with `--route`. |
-| [`fullsend lock [agent-name]`](lock.md) | Pin remote dependencies to `lock.yaml`. |
+| [`fullsend lock`](lock.md) | Pin remote dependencies to `lock.yaml`. |
 | [`fullsend lint`](lint.md) | Lint `config.yaml` and agent harness definitions — deprecations, misconfigurations, and file checks, with diagnostics for each enabled agent, or for one agent with `fullsend lint <agent-name>`. See [Checking a trigger before you merge](../guides/user/cel-triggers-reference.md#checking-a-trigger-before-you-merge) for a walkthrough. |
 | `fullsend scan` | Run security scanners on agent input/output |
 | [`fullsend self-update`](self-update.md) | Update the local `fullsend` binary to the latest release, or to `--version`, after verifying the release's Sigstore signature and checksum. |

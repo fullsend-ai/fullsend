@@ -9,7 +9,7 @@ Pin remote dependencies to `lock.yaml`.
 ## Usage
 
 ```bash
-fullsend lock [agent-name]
+fullsend lock [agent-name] [flags]
 ```
 
 ## Existing lock file
