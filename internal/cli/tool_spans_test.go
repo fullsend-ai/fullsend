@@ -693,20 +693,28 @@ func parseCodexFixture(t *testing.T, tr *toolSpanTracker, name string) {
 
 func TestToolSpanTracker_CodexLiveCaptureHasNoUnansweredCall(t *testing.T) {
 	// The live codex capture through the real parser: one execute_tool span
-	// per call, each closed by its own result.
+	// per call, each closed by its own result. The spans are compared as a
+	// set, not in order, so a re-capture in which the model orders the
+	// calls differently needs no edit here.
 	tr, rec, _ := toolSpanFixture(t)
 	parseCodexFixture(t, tr, "basic_run.ndjson")
 	assert.Zero(t, tr.Finish())
 
-	spans := endedToolSpans(rec)
 	var names []string
-	for _, s := range spans {
+	ids := map[string]bool{}
+	for _, s := range endedToolSpans(rec) {
 		names = append(names, s.Name)
-		assert.NotContains(t, toolSpanAttrs(s), attribute.Key("error.type"), s.Name)
-		assert.NotContains(t, toolSpanAttrs(s), attribute.Key("fullsend.tool.unmatched"), s.Name)
+		attrs := toolSpanAttrs(s)
+		id := attrs[attribute.Key("gen_ai.tool.call.id")].AsString()
+		assert.NotEmpty(t, id, s.Name)
+		assert.False(t, ids[id], "call id %q has one span", id)
+		ids[id] = true
+		assert.NotContains(t, attrs, attribute.Key("error.type"), s.Name)
+		assert.NotContains(t, attrs, attribute.Key("fullsend.tool.unmatched"), s.Name)
 		assert.Equal(t, codes.Ok, s.Status.Code, s.Name)
 	}
-	assert.Equal(t, []string{"execute_tool Bash", "execute_tool Write", "execute_tool Bash"}, names)
+	assert.ElementsMatch(t, []string{"execute_tool Bash", "execute_tool Write", "execute_tool Bash"}, names,
+		"the capture's two commands and its file write")
 }
 
 func TestToolSpanTracker_CodexEveryItemKind(t *testing.T) {
