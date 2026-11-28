@@ -5913,6 +5913,9 @@ func TestFetchBaseFile_PreservesExtension(t *testing.T) {
 
 func TestFetchBaseFile_SymlinkError(t *testing.T) {
 	t.Run("cache hit", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root bypasses directory permission checks")
+		}
 		dir := t.TempDir()
 		cacheDir := filepath.Join(dir, "cache")
 

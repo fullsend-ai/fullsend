@@ -364,7 +364,7 @@ func TestMintDeployCmd_DryRunWithPemDir(t *testing.T) {
 
 func TestMintDeployCmd_DryRunWithBadPemDir(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--pem-dir=/nonexistent"})
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--pem-dir=" + filepath.Join(t.TempDir(), "missing")})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--pem-dir")
@@ -826,7 +826,7 @@ func TestMintDeployCmd_CloudflareDryRunWithBadPemDir(t *testing.T) {
 		"mint", "deploy",
 		"--platform=cloudflare",
 		"--dry-run",
-		"--pem-dir=/nonexistent/path",
+		"--pem-dir=" + filepath.Join(t.TempDir(), "missing"),
 	})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -2698,7 +2698,7 @@ func TestLoadAppSetPEMs_InvalidPEM(t *testing.T) {
 }
 
 func TestLoadAppSetPEMs_BadDir(t *testing.T) {
-	_, _, err := loadAppSetPEMs(context.Background(), "/nonexistent/path", "fullsend-ai", nil)
+	_, _, err := loadAppSetPEMs(context.Background(), filepath.Join(t.TempDir(), "missing"), "fullsend-ai", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--pem-dir")
 }

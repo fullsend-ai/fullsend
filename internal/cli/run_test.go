@@ -462,6 +462,9 @@ func TestTryLoadFullsendConfig_MissingFile(t *testing.T) {
 }
 
 func TestTryLoadFullsendConfig_UnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses file permission checks")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
@@ -492,6 +495,9 @@ func TestRequireFullsendConfig_MissingFile(t *testing.T) {
 }
 
 func TestRequireFullsendConfig_UnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses file permission checks")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
@@ -2018,9 +2024,14 @@ func TestTryAgentsRepoFallback_CachePutFailure(t *testing.T) {
 	fakeClient := forge.NewFakeClient()
 	fakeClient.Refs["fullsend-ai/agents/heads/main"] = fakeSHA
 
+	// A workspace under a regular file cannot be created by any user, root
+	// included, so the cache write fails without touching a host path.
+	blocker := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(blocker, nil, 0o644))
+
 	printer := ui.New(io.Discard)
 	opts := harness.ComposeOpts{
-		WorkspaceRoot: "/nonexistent/path/that/will/fail",
+		WorkspaceRoot: filepath.Join(blocker, "workspace"),
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{srv.URL + "/"},
 	}
@@ -10288,6 +10299,9 @@ func TestDedupResolvedProviders_ComposeScenario(t *testing.T) {
 }
 
 func TestForceRemoveAll_ReadOnlyTree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permission checks")
+	}
 	// Simulate the readonly_repo enforcement: create a directory tree
 	// with files and directories that have had write permission removed.
 	// forceRemoveAll must restore permissions and successfully delete.
