@@ -154,7 +154,7 @@ type rawSearchClient struct {
 	*mockClient
 }
 
-func (c *rawSearchClient) SearchIssues(ctx context.Context, jql string, limit int) ([]jira.Issue, error) {
+func (c *rawSearchClient) SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error) {
 	if c.searchErr != nil {
 		return nil, c.searchErr
 	}
@@ -460,7 +460,7 @@ func TestRun_MalformedKeyEventSkipped(t *testing.T) {
 // the next cycle re-detects the same event and fails again. The repeat is the
 // guard's intent (nothing is lost behind a green run) and is bounded: it ends
 // when the event ages past the first-poll backfill floor (24h by default) or
-// another selected issue produces a valid event. Reviewed on PR #9191
+// another issue produces a valid event. Reviewed on PR #9191
 // (thread 4526836669): this pins the one-issue-alone outcome as intended.
 func TestRun_LoneBadEventFailsEveryCycle(t *testing.T) {
 	now := time.Now().Truncate(time.Second)

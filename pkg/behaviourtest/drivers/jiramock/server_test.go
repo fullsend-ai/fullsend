@@ -30,6 +30,35 @@ func TestSearchReturnsAddedIssues(t *testing.T) {
 	assert.Len(t, issues, 2)
 }
 
+// Search returns each requested entity property an issue has, as Jira
+// does, and no property it was not asked for.
+func TestSearchReturnsRequestedProperties(t *testing.T) {
+	t.Parallel()
+	srv, state := NewServer()
+	defer srv.Close()
+
+	state.AddIssue("PROJ-1", nil)
+	state.AddIssue("PROJ-2", nil)
+
+	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, client.SetEntityProperty(ctx, "PROJ-1", "acme.lastCheck", "2026-11-25T10:00:00Z"))
+	require.NoError(t, client.SetEntityProperty(ctx, "PROJ-1", "acme.other", "x"))
+
+	issues, err := client.SearchIssues(ctx, "project = PROJ", 0, "acme.lastCheck")
+	require.NoError(t, err)
+	require.Len(t, issues, 2)
+	for _, issue := range issues {
+		switch issue.Key {
+		case "PROJ-1":
+			assert.Equal(t, map[string]json.RawMessage{"acme.lastCheck": json.RawMessage(`"2026-11-25T10:00:00Z"`)}, issue.Properties)
+		case "PROJ-2":
+			assert.Nil(t, issue.Properties)
+		}
+	}
+}
+
 // An issue without labels is served with "labels": [], as Jira serves it,
 // not null.
 func TestIssueWithoutLabelsHasEmptyList(t *testing.T) {

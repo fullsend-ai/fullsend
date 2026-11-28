@@ -277,3 +277,20 @@ their own discovery and are unaffected. Forgejo has no Jira poll target.
 - Starvation beyond the top M stays documented and unmitigated: the filter
   neither widens nor narrows the window, and the clearance bound above
   applies only to candidates inside it.
+
+## Amendments
+
+### 2026-11-25: A checkpoint that is not a timestamp is treated as unset (#9766)
+
+Decision item 1 sends a checkpoint that cannot be parsed to processing,
+where "the existing per-issue error path reports it as today". That path
+fails the issue on every pick and never saves a new checkpoint, so the
+issue is never processed again, and when it is the only active candidate
+every quiet cycle ends in the all-failed error. The driver now treats a
+stored value that is not a timestamp as unset, as it already treats one
+dated in the future: the issue stays active, gets one first-poll look
+bounded by the backfill window, and that look saves a valid checkpoint.
+Processing logs a WARNING naming the issue without the stored value, and
+the filter's one line per cycle names such candidates. A failed read is
+still an error. Replay stays bounded by one backfill window, the same as
+deleting or forward-dating the checkpoint today.

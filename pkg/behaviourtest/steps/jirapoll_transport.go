@@ -330,7 +330,6 @@ func whenJiraGitLabPollerRuns(ctx context.Context, w *world.World) error {
 		// jira_lifecycle_test.go uses).
 		JiraBaseURL: "https://acme.atlassian.net",
 		JiraProject: "PROJ",
-		N:           50, // process all candidates
 		TargetForge: jirapoll.TargetForgeGitLab,
 		GitLabURL:   "https://gitlab.example.com",
 		Dispatcher:  jiradispatch.GitLabDispatcher{Poller: glPoller},

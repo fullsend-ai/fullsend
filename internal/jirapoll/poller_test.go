@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,11 +19,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
-// newTestPoller creates a Poller with a no-op sleep for fast tests.
+// newTestPoller creates a Poller for tests.
 func newTestPoller(client JiraClient, matcher EventMatcher, opts Options) *Poller {
-	p := New(client, matcher, opts)
-	p.sleepFn = func(_ context.Context, _ time.Duration) {} // skip jitter in tests
-	return p
+	return New(client, matcher, opts)
 }
 
 // mockClient implements JiraClient with configurable return values.
@@ -33,6 +32,8 @@ type mockClient struct {
 	searchErr    error
 	lastQuery    string
 	lastLimit    int
+
+	lastSearchProperties []string
 
 	issues   map[string]*jira.Issue
 	issueErr map[string]error
@@ -66,9 +67,8 @@ type mockClient struct {
 	roleActorsCalls int            // GetProjectRoleActors call count
 	userGroupsCalls map[string]int // accountID -> GetUserGroups call count
 
-	// Per-issue call counts, so a test can show an issue cost nothing.
-	// Writes and deletes are counted because a lock is written and then
-	// deleted, which the end state cannot show.
+	// Per-issue call counts, so a test can show an issue cost nothing,
+	// including a write or a delete that the end state would not show.
 	listCommentsCalls   map[string]int // issueKey -> ListComments calls
 	listChangelogCalls  map[string]int // issueKey -> ListChangelog calls
 	propertySetCalls    map[string]int // issueKey -> SetEntityProperty calls
@@ -103,9 +103,10 @@ func newMockClient() *mockClient {
 	}
 }
 
-func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]jira.Issue, error) {
+func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error) {
 	m.lastQuery = jql
 	m.lastLimit = limit
+	m.lastSearchProperties = properties
 	if m.searchErr != nil {
 		return nil, m.searchErr
 	}
@@ -117,10 +118,25 @@ func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]j
 			m.searchResult[i].Fields.Labels = []string{}
 		}
 	}
-	if limit > 0 && len(m.searchResult) > limit {
-		return m.searchResult[:limit], nil
+	rows := m.searchResult
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
 	}
-	return m.searchResult, nil
+	// Like Jira, return each requested entity property the issue has.
+	out := make([]jira.Issue, len(rows))
+	for i, issue := range rows {
+		for _, key := range properties {
+			if v, ok := m.properties[issue.Key][key]; ok {
+				issue.Properties = maps.Clone(issue.Properties)
+				if issue.Properties == nil {
+					issue.Properties = map[string]json.RawMessage{}
+				}
+				issue.Properties[key] = v
+			}
+		}
+		out[i] = issue
+	}
+	return out, nil
 }
 
 func (m *mockClient) GetIssue(_ context.Context, key string) (*jira.Issue, error) {
@@ -299,14 +315,11 @@ func TestNew(t *testing.T) {
 		JiraBaseURL: "https://acme.atlassian.net",
 		JiraProject: "PROJ",
 	})
-	if p.opts.M != 50 {
-		t.Errorf("M = %d, want default 50", p.opts.M)
+	if p.opts.MaxDispatchesPerCycle != 100 {
+		t.Errorf("MaxDispatchesPerCycle = %d, want default 100", p.opts.MaxDispatchesPerCycle)
 	}
-	if p.opts.N != 5 {
-		t.Errorf("N = %d, want default 5", p.opts.N)
-	}
-	if p.opts.StaleThreshold != 900*time.Second {
-		t.Errorf("StaleThreshold = %v, want default 900s", p.opts.StaleThreshold)
+	if p.opts.CycleTimeLimit != 5*time.Minute || p.opts.IssueTimeLimit != 2*time.Minute {
+		t.Errorf("time limits = %v per cycle, %v per issue; want the ADR 0085 defaults 5m and 2m", p.opts.CycleTimeLimit, p.opts.IssueTimeLimit)
 	}
 }
 
@@ -737,17 +750,17 @@ func TestProcessIssue_CheckpointNeverRegresses(t *testing.T) {
 			Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
 		},
 	}
-	checkpoint, err := p.processIssue(context.Background(), issue, "cycle-1")
+	pc, err := p.processIssue(context.Background(), issue)
 	if err != nil {
 		t.Fatalf("processIssue() error: %v", err)
 	}
 	// The clamp puts maxSeen ~10s before now, which is before the stored
 	// lastCheck — the returned checkpoint must be zero (skip advance), not
 	// an earlier-than-stored value.
-	if !checkpoint.IsZero() && checkpoint.Before(storedLastCheck) {
-		t.Errorf("checkpoint %v regresses behind stored lastCheck %v; expected zero (skip)", checkpoint, storedLastCheck)
+	if !pc.t.IsZero() && pc.t.Before(storedLastCheck) {
+		t.Errorf("checkpoint %v regresses behind stored lastCheck %v; expected zero (skip)", pc.t, storedLastCheck)
 	}
-	if len(p.dispatches) == 0 {
+	if len(pc.records) == 0 {
 		t.Error("expected the comment after lastCheck to still dispatch")
 	}
 }
@@ -1040,33 +1053,17 @@ func TestReadLastCheck_ClampsUntrustedValues(t *testing.T) {
 	}
 }
 
-// TestIsLockStale_FutureTimestampIsStale: a future-dated lock (clock skew
-// beyond tolerance or a tampered value) must be reclaimable, not treated
-// as forever-fresh.
-func TestIsLockStale_FutureTimestampIsStale(t *testing.T) {
-	threshold := 900 * time.Second
-	future := LockValue{ID: "x", TS: time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)}
-	if !isLockStale(future, threshold) {
-		t.Error("a far-future lock timestamp must be treated as stale/reclaimable")
-	}
-	// A small future skew (within threshold) is not stale.
-	skew := LockValue{ID: "x", TS: time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339)}
-	if isLockStale(skew, threshold) {
-		t.Error("a small clock-skew-sized future offset must not be treated as stale")
-	}
-}
-
 // TestPropertyKey_DottedSlugsDoNotCollide: distinct target repos with dots
 // must not collapse to the same lock/lastCheck property key.
 func TestPropertyKey_DottedSlugsDoNotCollide(t *testing.T) {
 	o1, r1 := splitOwnerRepo("a.b/c")
 	o2, r2 := splitOwnerRepo("a/b.c")
-	if lockPropertyKey(o1, r1) == lockPropertyKey(o2, r2) {
-		t.Errorf("dotted slugs a.b/c and a/b.c collide on lock key %q", lockPropertyKey(o1, r1))
+	if writeCheckPropertyKey(o1, r1) == writeCheckPropertyKey(o2, r2) {
+		t.Errorf("dotted slugs a.b/c and a/b.c collide on write-check key %q", writeCheckPropertyKey(o1, r1))
 	}
 	// Common dot-free slug keeps the readable, documented format.
-	if got := lockPropertyKey(splitOwnerRepo("acme/platform")); got != "fullsend.poll.acme.platform.lock" {
-		t.Errorf("dot-free key = %q, want the documented fullsend.poll.acme.platform.lock", got)
+	if got := writeCheckPropertyKey(splitOwnerRepo("acme/platform")); got != "fullsend.poll.acme.platform.writeCheck" {
+		t.Errorf("dot-free key = %q, want the documented fullsend.poll.acme.platform.writeCheck", got)
 	}
 }
 
@@ -1093,7 +1090,7 @@ func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
 		JiraBaseURL: "https://acme.atlassian.net",
 		JiraProject: "PROJ",
 	})
-	if _, err := p.processIssue(context.Background(), jira.Issue{
+	pc, err := p.processIssue(context.Background(), jira.Issue{
 		ID:  "10042",
 		Key: "PROJ-123",
 		Fields: jira.IssueFields{
@@ -1101,13 +1098,14 @@ func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
 			Reporter: jira.User{AccountID: "reporter-id"},
 			Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
 		},
-	}, "cycle-1"); err != nil {
+	})
+	if err != nil {
 		// seed a lastCheck so it's not a first poll
 		_ = lastCheck
 		t.Fatalf("processIssue() error: %v", err)
 	}
-	if len(p.dispatches) != maxEventsPerIssue {
-		t.Errorf("dispatched %d records, want capped at %d", len(p.dispatches), maxEventsPerIssue)
+	if len(pc.records) != maxEventsPerIssue {
+		t.Errorf("dispatched %d records, want capped at %d", len(pc.records), maxEventsPerIssue)
 	}
 }
 
@@ -1461,44 +1459,10 @@ func TestRunHumanFollowupAlongsideSelfAuthored(t *testing.T) {
 	}
 }
 
-// TestAttemptLock_LiveLockRejectedWithoutWriting is a regression test:
-// attemptLock previously wrote its own lock unconditionally before ever
-// checking for an existing one, so a poller reaching attemptLock well after
-// filterLocked's read (e.g. behind other candidates in the same cycle)
-// could overwrite an active holder's lock outright and both would proceed
-// to dispatch. attemptLock must now check for a live lock first and bail
-// out without writing.
-func TestAttemptLock_LiveLockRejectedWithoutWriting(t *testing.T) {
-	mc := newMockClient()
-	holder := LockValue{ID: "holder-cycle", TS: time.Now().UTC().Format(time.RFC3339), Phase: "pending"}
-	holderJSON, _ := json.Marshal(holder)
-	mc.properties["PROJ-123"] = map[string]json.RawMessage{
-		"fullsend.poll.acme.platform.lock": holderJSON,
-	}
-
-	p := newTestPoller(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net"})
-
-	acquired, err := p.attemptLock(context.Background(), "PROJ-123", "late-arriver-cycle")
-	if err != nil {
-		t.Fatalf("attemptLock() error: %v", err)
-	}
-	if acquired {
-		t.Error("expected attemptLock to reject a live lock held by another cycle")
-	}
-
-	// The holder's lock must be untouched — attemptLock must not have
-	// written over it before checking.
-	raw := mc.properties["PROJ-123"]["fullsend.poll.acme.platform.lock"]
-	var current LockValue
-	if err := json.Unmarshal(raw, &current); err != nil {
-		t.Fatalf("unmarshal stored lock: %v", err)
-	}
-	if current.ID != "holder-cycle" {
-		t.Errorf("expected the original holder's lock (ID %q) to remain, got ID %q", "holder-cycle", current.ID)
-	}
-}
-
-func TestRunLockContention(t *testing.T) {
+// A lock property left by an earlier version is neither read, honoured nor
+// removed (ADR 0085, Decision item 1): the issue is processed, and the
+// write-access check writes its own property.
+func TestRunIgnoresLegacyLock(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
 	mc.searchResult = []jira.Issue{
@@ -1514,191 +1478,118 @@ func TestRunLockContention(t *testing.T) {
 		},
 	}
 
-	lockPropKey := lockPropertyKey("acme", "platform")
-	lockVal := LockValue{
-		ID:    "other-poller-uuid",
-		TS:    now.Format(time.RFC3339),
-		Phase: "running",
-	}
-	lockData, _ := json.Marshal(lockVal)
-	mc.properties["PROJ-123"] = map[string]json.RawMessage{
-		lockPropKey: lockData,
-	}
-
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
+	const legacyLockKey = "fullsend.poll.acme.platform.lock"
+	legacyLock := json.RawMessage(`{"id":"other-poller-uuid","ts":"` + now.Format(time.RFC3339) + `","phase":"running"}`)
+	mc.properties["PROJ-123"] = map[string]json.RawMessage{legacyLockKey: legacyLock}
 
 	router := &stubMatcher{agents: []string{"triage"}}
 	p := newTestPoller(mc, router, Options{
 		TargetRepo:  "acme/platform",
 		JiraBaseURL: "https://acme.atlassian.net",
 		JiraProject: "PROJ",
-		OutputPath:  outputPath,
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
 	})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
-
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
+	if len(p.dispatches) != 1 {
+		t.Errorf("dispatched %d, want 1: a legacy lock must not hold the issue back", len(p.dispatches))
 	}
-	if string(data) != "[]\n" {
-		t.Errorf("expected empty dispatches (locked), got %q", string(data))
+	if got := string(mc.properties["PROJ-123"][legacyLockKey]); got != string(legacyLock) {
+		t.Errorf("legacy lock = %s, want it untouched", got)
+	}
+	if mc.propertyDeleteCalls["PROJ-123"] != 0 {
+		t.Errorf("deleted %d properties, want 0", mc.propertyDeleteCalls["PROJ-123"])
+	}
+	var checked string
+	if err := json.Unmarshal(mc.properties["PROJ-123"][writeCheckPropertyKey("acme", "platform")], &checked); err != nil {
+		t.Fatalf("write-check property: %v", err)
+	}
+	if _, err := time.Parse(time.RFC3339, checked); err != nil {
+		t.Errorf("write-check property = %q, want an RFC 3339 time: %v", checked, err)
+	}
+	if n := mc.propertySetCalls["PROJ-123"]; n != 2 {
+		t.Errorf("wrote %d properties, want 2: one write check and one lastCheck", n)
 	}
 }
 
-func TestRunStaleLock(t *testing.T) {
+// writeDeniedClient fails every entity property write on the issues in deny,
+// as Jira does for a credential that can read an issue but not edit it.
+type writeDeniedClient struct {
+	*mockClient
+	deny map[string]bool
+}
+
+func (c writeDeniedClient) SetEntityProperty(ctx context.Context, issueKey, propKey string, value any) error {
+	if c.deny[issueKey] {
+		return fmt.Errorf("403 forbidden")
+	}
+	return c.mockClient.SetEntityProperty(ctx, issueKey, propKey, value)
+}
+
+// An issue that fails the write-access check yields no records and its
+// comments and history are not read; the other issues are processed. A
+// cycle in which every issue fails ends in an error (ADR 0085, Decision
+// item 1).
+func TestRunWriteAccessCheck(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	mc := newMockClient()
-	mc.roleMembership = map[string]string{
-		"user1": "Developers",
-	}
-	mc.searchResult = []jira.Issue{
-		{
-			ID:  "10042",
-			Key: "PROJ-123",
-			Fields: jira.IssueFields{
-				Labels:   []string{"bug"},
-				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
-				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
-				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
-			},
-		},
-	}
-
-	lockPropKey := lockPropertyKey("acme", "platform")
-	lockVal := LockValue{
-		ID:    "old-poller-uuid",
-		TS:    now.Add(-2 * time.Hour).Format(time.RFC3339),
-		Phase: "running",
-	}
-	lockData, _ := json.Marshal(lockVal)
-	mc.properties["PROJ-123"] = map[string]json.RawMessage{
-		lockPropKey: lockData,
-	}
-
-	mc.comments["PROJ-123"] = []jira.Comment{
-		{
-			ID:      "50001",
-			Body:    "/fs-triage handle this",
-			Created: now.Format("2006-01-02T15:04:05.000-0700"),
-			Author: jira.User{
-				AccountID:   "user1",
-				AccountType: "atlassian",
-			},
-		},
-	}
-
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
-	router := &stubMatcher{agents: []string{"triage"}}
-	p := newTestPoller(mc, router, Options{
-		TargetRepo:     "acme/platform",
-		JiraBaseURL:    "https://acme.atlassian.net",
-		JiraProject:    "PROJ",
-		OutputPath:     outputPath,
-		StaleThreshold: 15 * time.Minute,
-	})
-
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	var dispatches []DispatchRecord
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	if len(dispatches) == 0 {
-		t.Error("expected dispatches after stale lock cleanup")
-	}
-}
-
-// TestFilterLockedStaleCleanupPreservesConcurrentFreshLock guards against a
-// regression where stale-lock cleanup released the lock property
-// unconditionally (expectedID == "") instead of using the stale lock's own
-// ID, so a fresh lock written by a different poller in the race window
-// between the read and the release got deleted without any ownership check.
-func TestFilterLockedStaleCleanupPreservesConcurrentFreshLock(t *testing.T) {
-	mc := newMockClient()
-	p := newTestPoller(mc, nil, Options{
-		TargetRepo:     "acme/platform",
-		StaleThreshold: 15 * time.Minute,
-	})
-
-	propKey := lockPropertyKey("acme", "platform")
-	staleLock := LockValue{
-		ID:    "stale-poller-uuid",
-		TS:    time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
-		Phase: "running",
-	}
-	staleData, err := json.Marshal(staleLock)
-	if err != nil {
-		t.Fatalf("marshal stale lock: %v", err)
-	}
-	mc.properties["PROJ-123"] = map[string]json.RawMessage{propKey: staleData}
-
-	// Simulate a different poller acquiring a fresh lock on the same issue
-	// in the window between this poller's stale-lock read and its release.
-	freshLock := LockValue{
-		ID:    "fresh-poller-uuid",
-		TS:    time.Now().UTC().Format(time.RFC3339),
-		Phase: "pending",
-	}
-	freshData, err := json.Marshal(freshLock)
-	if err != nil {
-		t.Fatalf("marshal fresh lock: %v", err)
-	}
-	mc.getPropertyHook = func(issueKey, key string) {
-		if issueKey == "PROJ-123" && key == propKey {
-			mc.properties["PROJ-123"][propKey] = freshData
+	newMC := func() *mockClient {
+		mc := newMockClient()
+		for n := 1; n <= 2; n++ {
+			key := fmt.Sprintf("PROJ-%d", n)
+			mc.searchResult = append(mc.searchResult, idleTestIssue(n, now.Add(-48*time.Hour), now.Add(-time.Minute)))
+			addTriageComment(mc, key, fmt.Sprintf("50%d", n), now.Add(-time.Minute))
 		}
+		return mc
+	}
+	poller := func(c JiraClient) *Poller {
+		return newTestPoller(c, &stubMatcher{agents: []string{"triage"}}, Options{
+			TargetRepo:  "acme/platform",
+			JiraBaseURL: "https://acme.atlassian.net",
+			JiraProject: "PROJ",
+			OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+		})
 	}
 
-	if _, _, err := p.filterLocked(context.Background(), []jira.Issue{{Key: "PROJ-123"}}); err != nil {
-		t.Fatalf("filterLocked() error: %v", err)
-	}
+	t.Run("one issue denied", func(t *testing.T) {
+		logs := captureLog(t)
+		mc := newMC()
+		p := poller(writeDeniedClient{mc, map[string]bool{"PROJ-1": true}})
+		if err := p.Run(context.Background()); err != nil {
+			t.Fatalf("Run() error: %v", err)
+		}
+		if len(p.dispatches) != 1 {
+			t.Errorf("dispatched %d, want 1 (PROJ-2 only)", len(p.dispatches))
+		}
+		if c := mc.listCommentsCalls["PROJ-1"] + mc.listChangelogCalls["PROJ-1"]; c != 0 {
+			t.Errorf("read PROJ-1's comments or history %d times after its write check failed", c)
+		}
+		if mc.listCommentsCalls["PROJ-2"] == 0 {
+			t.Error("PROJ-2 was not read")
+		}
+		if !storedLastCheckAt(t, mc, "PROJ-1").IsZero() {
+			t.Error("the denied issue's lastCheck advanced, so its request would not be retried")
+		}
+		if storedLastCheckAt(t, mc, "PROJ-2").IsZero() {
+			t.Error("the served issue's lastCheck was not committed")
+		}
+		if want := "WARNING: processing PROJ-1: check write access to PROJ-1"; !strings.Contains(logs.String(), want) {
+			t.Errorf("log lacks %q:\n%s", want, logs)
+		}
+	})
 
-	raw, ok := mc.properties["PROJ-123"][propKey]
-	if !ok {
-		t.Fatal("expected fresh lock to survive stale-lock cleanup, but property was deleted")
-	}
-	var current LockValue
-	if err := json.Unmarshal(raw, &current); err != nil {
-		t.Fatalf("unmarshal current lock: %v", err)
-	}
-	if current.ID != freshLock.ID {
-		t.Errorf("expected surviving lock ID %q, got %q", freshLock.ID, current.ID)
-	}
-}
-
-// TestFilterLockedErrorsWhenAllLockReadsFail guards against a regression
-// where a lock-property read error was treated the same as "locked" and
-// silently skipped, so a persistent auth/config problem that makes every
-// read fail produced an empty (rather than error) result — indistinguishable
-// from a genuinely quiet Jira project.
-func TestFilterLockedErrorsWhenAllLockReadsFail(t *testing.T) {
-	mc := newMockClient()
-	propKey := lockPropertyKey("acme", "platform")
-	mc.propertyGetErr[propKey] = fmt.Errorf("403 forbidden")
-
-	p := newTestPoller(mc, nil, Options{TargetRepo: "acme/platform"})
-
-	issues := []jira.Issue{{Key: "PROJ-1"}, {Key: "PROJ-2"}}
-	active, unlocked, err := p.filterLocked(context.Background(), issues)
-	if err == nil {
-		t.Fatal("filterLocked() error = nil, want error when every lock read fails")
-	}
-	if len(active) != 0 || unlocked != 0 {
-		t.Errorf("active = %v, unlocked = %d, want none", active, unlocked)
-	}
+	t.Run("every issue denied", func(t *testing.T) {
+		mc := newMC()
+		p := poller(writeDeniedClient{mc, map[string]bool{"PROJ-1": true, "PROJ-2": true}})
+		err := p.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "all 2 active issues failed to process") {
+			t.Fatalf("Run() error = %v, want the all-failed guard", err)
+		}
+		if len(p.dispatches) != 0 {
+			t.Errorf("dispatched %d, want 0", len(p.dispatches))
+		}
+	})
 }
 
 // TestSearchCandidatesQuotesProjectKey checks that the default JQL quotes
@@ -1712,32 +1603,113 @@ func TestSearchCandidatesQuotesProjectKey(t *testing.T) {
 		t.Fatalf("searchCandidates() error: %v", err)
 	}
 
-	want := `project = "PROJ" AND statusCategory != Done ORDER BY updated DESC`
+	want := `(project = "PROJ" AND statusCategory != Done) AND updated >= "-24h" ORDER BY updated ASC`
 	if mc.lastQuery != want {
 		t.Errorf("JQL = %q, want %q", mc.lastQuery, want)
 	}
 }
 
-// TestSearchCandidatesBoundsBySettingM checks that searchCandidates asks
-// SearchIssues to stop paginating once M results are collected, instead of
-// exhausting the full JQL match set and truncating client-side.
-func TestSearchCandidatesBoundsBySettingM(t *testing.T) {
+// TestSearchCandidatesHasNoRowLimit checks that searchCandidates reads every
+// row of the search instead of the first 50 (ADR 0085, Decision item 2).
+func TestSearchCandidatesHasNoRowLimit(t *testing.T) {
 	mc := newMockClient()
 	mc.searchResult = make([]jira.Issue, 200)
 	for i := range mc.searchResult {
 		mc.searchResult[i] = jira.Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1)}
 	}
-	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ", M: 50})
+	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ"})
 
 	candidates, err := p.searchCandidates(context.Background())
 	if err != nil {
 		t.Fatalf("searchCandidates() error: %v", err)
 	}
-	if len(candidates) != 50 {
-		t.Errorf("len(candidates) = %d, want 50", len(candidates))
+	if len(candidates) != 200 {
+		t.Errorf("len(candidates) = %d, want all 200", len(candidates))
 	}
-	if mc.lastLimit != 50 {
-		t.Errorf("SearchIssues called with limit %d, want 50 (p.opts.M)", mc.lastLimit)
+	if mc.lastLimit != 0 {
+		t.Errorf("SearchIssues called with limit %d, want 0 (no row limit)", mc.lastLimit)
+	}
+}
+
+// TestWindowJQL: the search is limited to the backfill window, keeps the
+// query's own ORDER BY, defaults to oldest change first, and warns only
+// when the query sorts newest change first (ADR 0085, Decision item 2).
+func TestWindowJQL(t *testing.T) {
+	cases := []struct {
+		name   string
+		query  string
+		window time.Duration
+		want   string
+		warn   bool
+	}{
+		{name: "no order by", query: `project = "PROJ" AND (labels = "fullsend")`, want: `(project = "PROJ" AND (labels = "fullsend")) AND updated >= "-24h" ORDER BY updated ASC`},
+		{name: "newest change first", query: `project = "PROJ" ORDER BY updated DESC`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY updated DESC`, warn: true},
+		{name: "newest change first, lowercase alias and a second key", query: `project = "PROJ" order by updatedDate desc, key`, want: `(project = "PROJ") AND updated >= "-24h" order by updatedDate desc, key`, warn: true},
+		{name: "oldest change first", query: `project = "PROJ" ORDER BY updated ASC`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY updated ASC`},
+		{name: "updated without a direction", query: `project = "PROJ" ORDER BY updated`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY updated`},
+		{name: "another order", query: `project = "PROJ" ORDER BY created DESC`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY created DESC`},
+		{name: "updated as a later key", query: `project = "PROJ" ORDER BY priority, updated DESC`, want: `(project = "PROJ") AND updated >= "-24h" ORDER BY priority, updated DESC`},
+		{name: "order by inside quotes", query: `summary ~ "order by updated desc"`, want: `(summary ~ "order by updated desc") AND updated >= "-24h" ORDER BY updated ASC`},
+		{name: "only an order by", query: `ORDER BY key`, want: `updated >= "-24h" ORDER BY key`},
+		{name: "longer window", query: `project = "PROJ"`, window: 72 * time.Hour, want: `(project = "PROJ") AND updated >= "-72h" ORDER BY updated ASC`},
+		{name: "part of an hour rounds up", query: `project = "PROJ"`, window: 90 * time.Minute, want: `(project = "PROJ") AND updated >= "-2h" ORDER BY updated ASC`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLog(t)
+			p := newTestPoller(newMockClient(), nil, Options{JiraProject: "PROJ", FirstPollBackfillWindow: tc.window})
+			if got := p.windowJQL(tc.query); got != tc.want {
+				t.Errorf("windowJQL() = %q, want %q", got, tc.want)
+			}
+			if got := strings.Contains(logs.String(), "WARNING: the poll query sorts newest change first"); got != tc.warn {
+				t.Errorf("warned = %v, want %v:\n%s", got, tc.warn, logs)
+			}
+		})
+	}
+}
+
+// truncatedSearchClient serves the mock's rows as a search the client cut
+// short at its page cap.
+type truncatedSearchClient struct {
+	*mockClient
+}
+
+func (c truncatedSearchClient) SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error) {
+	issues, err := c.mockClient.SearchIssues(ctx, jql, limit, properties...)
+	if err != nil {
+		return nil, err
+	}
+	return issues, jira.ErrSearchTruncated
+}
+
+// A search cut short at the client's page cap is not silent: the cycle
+// warns, serves the rows it has, and exits normally. A query that sorts
+// newest change first draws its warning once per cycle.
+func TestRunSearchWarnings(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	logs := captureLog(t)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{idleTestIssue(1, now.Add(-48*time.Hour), now.Add(-time.Minute))}
+	addTriageComment(mc, "PROJ-1", "501", now.Add(-time.Minute))
+	p := newTestPoller(truncatedSearchClient{mc}, &stubMatcher{agents: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		JQL:         `project = "PROJ" ORDER BY updated DESC`,
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if len(p.dispatches) != 1 {
+		t.Errorf("dispatched %d, want the returned row served", len(p.dispatches))
+	}
+	if want := "WARNING: the search stopped after 1 issues with more remaining"; !strings.Contains(logs.String(), want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+	if n := strings.Count(logs.String(), "WARNING: the poll query sorts newest change first"); n != 1 {
+		t.Errorf("newest-first warning logged %d times, want once per cycle:\n%s", n, logs)
 	}
 }
 
@@ -1872,58 +1844,6 @@ func TestRunMultipleEvents(t *testing.T) {
 
 	if len(dispatches) < 2 {
 		t.Errorf("expected at least 2 dispatches (comment + label), got %d: %+v", len(dispatches), dispatches)
-	}
-}
-
-func TestIsLockStale(t *testing.T) {
-	threshold := 15 * time.Minute
-
-	tests := []struct {
-		name string
-		lock LockValue
-		want bool
-	}{
-		{
-			name: "fresh lock",
-			lock: LockValue{ID: "uuid", TS: time.Now().Format(time.RFC3339)},
-			want: false,
-		},
-		{
-			name: "stale lock",
-			lock: LockValue{ID: "uuid", TS: time.Now().Add(-1 * time.Hour).Format(time.RFC3339)},
-			want: true,
-		},
-		{
-			name: "unparseable timestamp",
-			lock: LockValue{ID: "uuid", TS: "garbage"},
-			want: true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := isLockStale(tc.lock, threshold)
-			if got != tc.want {
-				t.Errorf("isLockStale() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestSelectRandom(t *testing.T) {
-	issues := make([]jira.Issue, 10)
-	for i := range issues {
-		issues[i] = jira.Issue{Key: "PROJ-" + string(rune('0'+i))}
-	}
-
-	selected := selectRandom(issues, 3)
-	if len(selected) != 3 {
-		t.Errorf("selected %d, want 3", len(selected))
-	}
-
-	all := selectRandom(make([]jira.Issue, 2), 5)
-	if len(all) != 2 {
-		t.Errorf("selected %d, want 2", len(all))
 	}
 }
 
@@ -2600,20 +2520,6 @@ func setLastCheck(mc *mockClient, issueKey, owner, repo string, t time.Time) {
 		mc.properties[issueKey] = make(map[string]json.RawMessage)
 	}
 	mc.properties[issueKey][propKey] = ts
-}
-
-func TestReadLock_NotFound(t *testing.T) {
-	mc := newMockClient()
-	p := New(mc, nil, Options{TargetRepo: "acme/platform"})
-
-	// No properties set — mock returns forge.ErrNotFound.
-	lock, err := p.readLock(context.Background(), "PROJ-123")
-	if err != nil {
-		t.Fatalf("readLock() should return nil error for missing property, got: %v", err)
-	}
-	if lock != nil {
-		t.Errorf("readLock() = %+v, want nil (unlocked)", lock)
-	}
 }
 
 func TestReadLastCheck_NotFound(t *testing.T) {
