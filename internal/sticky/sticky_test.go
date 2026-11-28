@@ -283,6 +283,36 @@ func TestPost_CreateNew(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "Body.")
 }
 
+func TestPost_CreateNew_TruncatesOversizedBody(t *testing.T) {
+	tests := []struct {
+		name    string
+		maxSize int
+		want    int
+	}{
+		{name: "default limit", want: defaultMaxSize},
+		{name: "custom limit", maxSize: 500, want: 500},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := forge.NewFakeClient()
+			client.AuthenticatedUser = "bot"
+			printer := ui.New(io.Discard)
+
+			cfg := Config{Marker: "<!-- test -->", MaxSize: tt.maxSize}
+			body := strings.Repeat("a", tt.want+1000)
+			_, err := Post(context.Background(), client, "o", "r", 1, body, cfg, printer)
+			require.NoError(t, err)
+
+			comments := client.IssueComments["o/r/1"]
+			require.Len(t, comments, 1)
+			assert.LessOrEqual(t, len(comments[0].Body), tt.want)
+			assert.True(t, strings.HasPrefix(comments[0].Body, "<!-- test -->\n"))
+			assert.Contains(t, comments[0].Body, "truncated")
+		})
+	}
+}
+
 func TestPost_UpdateExisting(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "bot"
