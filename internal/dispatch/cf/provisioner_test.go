@@ -2000,7 +2000,7 @@ func TestFileExistsAndNonEmpty_EmptyFile(t *testing.T) {
 }
 
 func TestFileExistsAndNonEmpty_NonExistent(t *testing.T) {
-	assert.False(t, fileExistsAndNonEmpty("/nonexistent/path"))
+	assert.False(t, fileExistsAndNonEmpty(filepath.Join(t.TempDir(), "missing")))
 }
 
 func TestFileExistsAndNonEmpty_NonEmpty(t *testing.T) {

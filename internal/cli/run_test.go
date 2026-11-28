@@ -2024,9 +2024,14 @@ func TestTryAgentsRepoFallback_CachePutFailure(t *testing.T) {
 	fakeClient := forge.NewFakeClient()
 	fakeClient.Refs["fullsend-ai/agents/heads/main"] = fakeSHA
 
+	// A workspace under a regular file cannot be created by any user, root
+	// included, so the cache write fails without touching a host path.
+	blocker := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(blocker, nil, 0o644))
+
 	printer := ui.New(io.Discard)
 	opts := harness.ComposeOpts{
-		WorkspaceRoot: "/nonexistent/path/that/will/fail",
+		WorkspaceRoot: filepath.Join(blocker, "workspace"),
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{srv.URL + "/"},
 	}
