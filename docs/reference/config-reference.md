@@ -81,7 +81,7 @@ tracker:                             # Issue tracker. At most one provider block
   #     projects: [OTHER]            # Jira project keys for cross-project issue creation or moves
   #   poll:
   #     enabled: true                # Managed poll workflow switch (see the tracker.jira section)
-  #     query: 'labels = "fullsend" ORDER BY updated DESC' # JQL; always scoped to project
+  #     query: 'labels = "fullsend"'  # JQL; always scoped to project
 
 # ── Authorization ────────────────────────────────────────────
 authorization:                       # Extra sources of permission for triggering agents
@@ -474,7 +474,7 @@ tracker:
       projects: [OTHER]
     poll:
       enabled: true
-      query: 'labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC'
+      query: 'labels = "fullsend" AND statusCategory != Done'
 ```
 
 - **`tracker.jira.base_url`** — The Jira site URL. It must be an `https` URL
@@ -530,11 +530,18 @@ tracker:
   `fullsend jira poll` pipeline schedule. See
   [Jira polling](../cli/repos.md#jira-polling).
 - **`tracker.jira.poll.query`** — The JQL the poller runs. It defaults to
-  `statusCategory != Done ORDER BY updated DESC`. The query is always scoped
-  to `project`: the poller runs `project = "<project>" AND (<query>)` and
-  keeps a trailing `ORDER BY` after the closing parenthesis. The parentheses
-  in the query must be balanced. For example, the query above runs as
-  `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
+  `statusCategory != Done`. The query is always scoped to `project` and to
+  the 24-hour backfill window: the poller runs
+  `(project = "<project>" AND (<query>)) AND updated >= "-24h"` and keeps a
+  trailing `ORDER BY` at the end. The parentheses in the query must be
+  balanced. For example, the query above runs as
+  `(project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done)) AND updated >= "-24h" ORDER BY updated ASC`.
+  Without an `ORDER BY` the poller sorts oldest change first
+  (`ORDER BY updated ASC`), which is recommended. A query with its own
+  `ORDER BY` is searched in that order, and `ORDER BY updated DESC` logs a
+  WARNING every cycle: when more issues changed within the window than the
+  search reads, newest change first leaves the oldest requests out. See
+  [Custom JQL](../guides/user/jira-integration.md#custom-jql).
 
 `base_url` and `project` are required once `base_url`, `api_url`, `project`,
 a nonempty `run_label`, or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
