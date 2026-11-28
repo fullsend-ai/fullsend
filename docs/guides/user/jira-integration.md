@@ -43,8 +43,8 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 2. **Grant it the minimum Jira permissions** in the target project, usually
    through the **Developers** project role. The poller needs Browse
    Projects, Edit Issues, Add Comments, and Edit Own Comments to operate on
-   issues and write the entity properties it uses for lock and checkpoint
-   coordination. Then choose how Jira users are authorized:
+   issues and write the entity properties it uses for its write-access
+   check and checkpoint. Then choose how Jira users are authorized:
    - **Recommended:** list who may trigger agents under a `jira` provider in
      `.fullsend/config.yaml`. The poller account then also needs the
      Browse users and groups global permission, but only if the lists name
@@ -990,11 +990,11 @@ reuse fullsend's harness infrastructure the same way. See
 [Custom Poller Example](custom-poller-example.md) for more details on this
 pattern.
 
-**The poll job's concurrency group (`cancel-in-progress: false`)** makes overlapping poll cycles queue rather than cancel each other. It is the primary defense against concurrent runs: only one poll cycle for this workflow runs at a time in the common case, including manually triggered runs. The poller's own Jira entity-property locking is a secondary guard for cases outside that group: it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
+**The poll job's concurrency group (`cancel-in-progress: false`)** makes overlapping poll cycles queue rather than cancel each other, so only one poll cycle for this workflow runs at a time, including manually triggered runs. The poller relies on it: it keeps no per-issue lock, so two overlapping cycles for one repository dispatch the same requests twice. The group covers this workflow file only, so do not poll the same repository from a second workflow: nothing queues the two against each other. A scheduler other than the managed workflow or the managed GitLab schedule must itself keep cycles for one repository from overlapping.
 
 ### Custom JQL
 
-By default the poller searches for all non-done issues in the project, ordered by most recently updated.
+By default the poller searches for all non-done issues in the project that changed within the last 24 hours, oldest change first.
 
 The poller reads the Jira site, project, and query only from
 [`tracker.jira`](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)
@@ -1008,17 +1008,30 @@ tracker:
     project: PROJ
     poll:
       enabled: true
-      query: 'labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC'
+      query: 'labels = "fullsend" AND statusCategory != Done'
 ```
 
 `base_url` and `project` are required. `api_url` defaults to
 `https://api.atlassian.com`. The poller always scopes the query as
-`project = "<project>" AND (<query>)`, keeping a trailing `ORDER BY` at the
-end, so the example above runs as
-`project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
+`project = "<project>" AND (<query>)`, limits it to the issues whose
+`updated` time falls within the 24-hour backfill window, and keeps a trailing
+`ORDER BY` at the end, so the example above runs as
+`(project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done)) AND updated >= "-24h" ORDER BY updated ASC`.
 The parentheses in `poll.query` must be balanced. When `poll.query` is
 omitted, the poller uses the default filter above. Unless `poll.enabled` is
 `true`, the poller skips the cycle without contacting Jira.
+
+Leave `ORDER BY` out of `poll.query` unless you need a particular order:
+without one the poller sorts oldest change first (`ORDER BY updated ASC`),
+which is the recommended order. A query with its own `ORDER BY` is served
+in that order. The order decides who waits when a cycle cannot serve every
+issue (see [Poll coordination](#poll-coordination)): under a sustained
+backlog an order other than oldest change first can leave older requests
+waiting until they leave the window, where they are lost. A query that
+sorts newest change first (`ORDER BY updated DESC`) logs a WARNING every
+cycle that recommends oldest change first. Oldest change first has a cost
+of its own: any change to a waiting issue, including a comment from anyone
+allowed to comment, moves it to the back of the line.
 
 The `--jira-url`, `--jira-project`, and `--jql` flags were removed and are
 rejected, and `JIRA_BASE_URL` is not read. Because the query is always
@@ -1177,7 +1190,7 @@ then only the `[…truncated]` marker — and ran it shortened. A one-line
 command up to about 3,000 ASCII characters now runs whole, and a longer one
 is refused instead of dispatched.
 
-GitLab targets keep their lock and checkpoint properties in their own
+GitLab targets keep their checkpoint and write-check properties in their own
 namespace, `fullsend.poll.gitlab.{instance}.{group path}.{project}.*`, where
 `{instance}` is the host and any path prefix of `--gitlab-url`. A GitLab
 project never shares Jira coordination state with a GitHub repository of the
@@ -1433,20 +1446,91 @@ entry's default `labels: jira_editors`, anyone with Edit Issues on the project c
 add a label such as `ready-to-code` and dispatch the agent whose trigger
 matches it. Use `labels: allowlist` if that group is broader than you want.
 
+## Upgrading the Jira poller
+
+Fullsend v0.58.0 changes which issues the poller serves in a cycle and how
+two cycles are kept apart (ADR 0085). It affects every repository that polls
+Jira, on GitHub and on GitLab. The Jira credential and the permissions the
+poller needs do not change.
+
+| | Before v0.58.0 | From v0.58.0 |
+|---|---|---|
+| Issues served in a cycle | Five, picked at random from the first 50 the query returned | Every issue with new activity, in the query's order, until the cycle holds 100 dispatch records |
+| What the search covers | The first 50 issues of the query, newest change first by default | Every issue that matches the query and changed within the last 24 hours, oldest change first by default |
+| Default `poll.query` | `statusCategory != Done ORDER BY updated DESC` | `statusCategory != Done` |
+| Two cycles at the same time | Kept apart by a lock on each issue | Not kept apart: the scheduler runs one cycle at a time |
+| Time a cycle may take | Limited only by the job's timeout | Reading stops after five minutes, and after two minutes on one issue; what is left waits for the next cycle |
+| Dispatch records from one issue | No limit beyond 100 events per look | Also at most 250 records and, on GitHub, 768 KB; the oldest are kept |
+
+A repository on the managed poll workflow or the managed GitLab schedule
+needs no change before the upgrade: both already run one cycle at a time.
+
+**Before you upgrade:**
+
+- **Your own scheduler.** If anything other than the managed workflow or the
+  managed GitLab schedule runs `fullsend poll --input-driver jira-poll`, make
+  sure it never runs two cycles for one repository at the same time, and that
+  only one workflow or job polls a repository. On GitHub Actions, give the
+  poll job a concurrency group with `cancel-in-progress: false`, as the
+  [custom poller example](custom-poller-example.md) does. The workflow that
+  earlier versions of this guide had you copy has one. Without the lock,
+  overlapping cycles dispatch the same requests twice.
+- **The new setting.** Leave `tracker.jira.poll.max_dispatches_per_cycle` out
+  of the configuration until the upgrade is in place. A fullsend older than
+  v0.58.0 rejects a configuration that sets it, and stops polling. For the
+  same reason, remove the setting before you go back to an older version.
+
+**After you upgrade:**
+
+- **More agent runs per cycle.** A cycle starts up to 100 agent runs where it
+  used to read five issues, and more than 100 when a single issue produces
+  more. The first cycles also serve the requests from the last 24 hours
+  that were still waiting to be picked. To start fewer runs per cycle, set
+  `tracker.jira.poll.max_dispatches_per_cycle` to a lower number, from 1 to
+  250. Requests then wait longer, and one that waits more than 24 hours is
+  lost.
+- **`ORDER BY updated DESC`.** If `poll.query` ends in that clause, remove it.
+  The query still runs, and the poller logs a WARNING every cycle: when a
+  cycle cannot serve every issue, newest change first leaves the older
+  requests waiting until they leave the 24-hour window. See
+  [Custom JQL](#custom-jql).
+- **Log lines.** If you search the run logs for the poller's lines, the
+  summary now reads
+  `poll complete: <N> candidates, <N> active, <N> served, <N> dispatches`,
+  where it reported `unlocked` and `selected`. A cycle in which every issue
+  failed ends with `all <N> active issues failed to process`, where it said
+  `selected`.
+- **Issue properties.** The poller no longer reads or removes a lock
+  property that an earlier version left on an issue
+  (`fullsend.poll.{owner}.{repo}.lock`, or its `fullsend.poll.gitlab.*`
+  counterpart). Delete it or leave it. The poller writes a new property,
+  `writeCheck`, beside `lastCheck` on each issue it reads.
+- **After a long stop.** Requests more than 24 hours old were already lost
+  when polling stopped for that long. They now leave no WARNING in the run
+  log unless the issue changed again within the last 24 hours.
+
+[Poll coordination](#poll-coordination) describes each of these in full.
+
 ## Poll coordination
 
-The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following a write-then-verify protocol. Each cycle first drops the candidates with no new activity, then randomly selects up to N (default 5) of the rest for processing, spreading load across cycles. A candidate has new activity when its `updated` time is after its `lastCheck`, clamped as described below; a candidate with no usable `lastCheck` (missing, unreadable, or in the future) or no usable `updated` time counts as new. Two properties are stored on each processed issue:
+The poller uses Jira entity properties for checkpoint tracking. It keeps no per-issue lock: it relies on one poll cycle at a time per target repository (see [Scheduled workflow](#scheduled-workflow)). Each cycle searches for every issue that matches the query and changed within the 24-hour backfill window, with no row limit, drops the candidates with no new activity, then serves the rest in the search's order, oldest change first by default, until the cycle is full (see **Per-cycle limit** below). A candidate has new activity when its `updated` time is after its `lastCheck`, which the search returns with each row, clamped as described below; a candidate with no usable `lastCheck` (missing, unreadable, not a timestamp, or in the future) or no usable `updated` time counts as new. Two properties are stored on each processed issue:
 
-- **Lock** (`fullsend.poll.{owner}.{repo}.lock`) — prevents concurrent pollers from *detecting changes on* the same issue simultaneously. The lock covers the change-detection window only: it is released when an issue finishes processing, before the dispatch records are written and consumed by the downstream dispatch step, and it is not renewed while an issue is being processed — a cycle that stalls longer than the stale threshold (15 minutes) can have its lock reclaimed by a concurrent poller, which may produce duplicate dispatches. Lock ownership through dispatch scheduling is part of the same tracked follow-up as dispatch confirmation.
+- **Write check** (`fullsend.poll.{owner}.{repo}.writeCheck`) — written before the poller reads an issue's comments and history, to confirm the credential can write to the issue and so commit its `lastCheck`; nothing reads it. It stays on the issue and is overwritten on the next look: the poller does not delete it, because a delete would cost a second call per issue every cycle. An issue that fails the check is skipped with `WARNING: processing <KEY>: check write access to <KEY>: ...`, and a cycle in which every issue it reads fails ends in an error, so a credential that cannot write shows as a failed run. Earlier versions kept a lock at `fullsend.poll.{owner}.{repo}.lock`; the poller no longer reads, writes or removes it.
 - **Last check** (`fullsend.poll.{owner}.{repo}.lastCheck`) — tracks the timestamp of the most recent processed change. Only changes newer than this timestamp trigger agent dispatch. After each look at an issue it also advances to the issue's `updated` time when that is later, so an issue with nothing new since is skipped the next cycle.
 
 These properties are namespaced per target repo, so multiple repos can poll the same Jira project without interference. GitLab targets use a separate `fullsend.poll.gitlab.*` namespace that also includes the GitLab instance (see [GitLab runtime](#gitlab-runtime)). The properties are visible in Jira's issue properties API but do not appear in the issue UI.
 
-> **Security note — coordination state is tamperable by any project editor.** Writing an issue entity property requires only Jira's **Edit Issues** permission, which is typically far broader than the project roles this driver maps to `write`. That means anyone who can edit a polled issue can write its `lastCheck` and lock properties. The driver treats both as untrusted: a `lastCheck` dated in the future is ignored (it would otherwise suppress all detection on the issue), and one rewound before the backfill window is clamped to the window's start, so a rewind can replay at most one backfill window of history rather than the whole issue — but within that window it can still re-surface old comments. Per-issue dispatch is capped to bound the blast radius. Even so, **treat Edit-Issues on a polled project as part of the trust boundary**: prefer scoping the poll to a project whose editors you trust, and remember that the authorization gate keys on the *comment's* Jira role, so who can edit issues (and comments) matters as much as who holds `write`.
+**Time limits.** A cycle stops reading from Jira five minutes after it starts: the authentication check, the search and the issues it reads all count. Reading one issue stops after two minutes. An issue that takes longer is skipped with `WARNING: reading <KEY> took longer than 2m0s; ...`: none of its records are dispatched and its `lastCheck` stays where it was, so it is tried again next cycle. When the five minutes run out, the poller dispatches what it finished, commits those checkpoints and exits normally; the issue it was reading and any it had not reached wait for the next cycle, and the run log names them or says how many. Dispatching and committing are not counted against the five minutes. Running into the five minutes is not a failure by itself, so a cycle whose search used them up reads no issue and still exits normally, with a WARNING. A cycle in which every issue it read failed or took longer than two minutes does fail, so a poller blocked by slow issues shows as a failed run. The limits are not configurable.
+
+**Per-issue limits.** One look at an issue handles at most 100 events, and the dispatch records they produce (one for each agent an event matches) are limited to 250 per issue and, on GitHub, to 768 KB of the poll job's `matrix` output. The size is counted the way GitHub counts job outputs, at two bytes for each byte of the output's UTF-8 text, so 768 KB is about 384 KB of JSON. Over a limit the poller keeps the oldest records, drops the rest, logs `WARNING: <KEY> produced <N> dispatch records this cycle; ...`, and still advances `lastCheck`, so the dropped requests are not retried. The limits bound the agent runs that a rewound `lastCheck` or a bulk change can start from one issue: 250 is GitHub's limit of 256 jobs in a matrix less a small margin, and 768 KB is three quarters of GitHub's 1 MB limit on a job's outputs. The size limit does not apply on GitLab, which starts each pipeline separately.
+
+**Per-cycle limit.** The poller reads the issues with new activity one by one, in the search's order, and stops when the cycle holds `tracker.jira.poll.max_dispatches_per_cycle` dispatch records (default 100, from 1 to 250). All of an issue's records go out in the same cycle: an issue whose records do not fit in the room left waits for the next cycle, and so do the issues behind it, because the poller does not skip ahead to a smaller one. An issue is always taken when the cycle holds no records yet, so an issue with more records than the limit is dispatched alone and the cycle exceeds the limit by that one issue. On GitHub the cycle also stops before the issue whose records would take the `matrix` output past 768 KB. An issue that waits keeps its `lastCheck`, so nothing is lost by waiting unless its request leaves the 24-hour window first. The run log says how many issues wait: `the cycle holds <N> dispatch records, at its limit of <M>; <K> active issue(s) wait for the next cycle`. The limit sets how fast a backlog drains: raise it if requests wait too long, and lower it to start fewer agent runs per cycle.
+
+> **Security note — coordination state is tamperable by any project editor.** Writing an issue entity property requires only Jira's **Edit Issues** permission, which is typically far broader than the project roles this driver maps to `write`. That means anyone who can edit a polled issue can write its `lastCheck` property. The driver treats it as untrusted: a `lastCheck` dated in the future is ignored (it would otherwise suppress all detection on the issue), one that is not a timestamp is ignored too (logged as `WARNING: lastCheck for <KEY> is not a timestamp; treating as unset`, without the stored value), and in both cases the issue gets one look bounded by the backfill window, which saves a valid `lastCheck`; one rewound before the backfill window is clamped to the window's start, so a rewind can replay at most one backfill window of history rather than the whole issue — but within that window it can still re-surface old comments. Per-issue dispatch is capped, and so is the number of dispatch records in one cycle, to bound the blast radius. A rewind does not move an issue in the line, so an editor who keeps rewinding issues near the front can hold back the requests behind them. Even so, **treat Edit-Issues on a polled project as part of the trust boundary**: prefer scoping the poll to a project whose editors you trust, and remember that the authorization gate keys on the *comment's* Jira role, so who can edit issues (and comments) matters as much as who holds `write`.
 
 Three edge cases of checkpoint tracking are worth knowing:
 
-- **First enable on an existing backlog.** Every issue starts with an unset `lastCheck`, so on the first poll of an issue the poller has no checkpoint to filter by. Activity is instead bounded by a fixed 24-hour backfill window (not currently configurable): an `opened` event is emitted only for issues created within the window, and only comments and changelog entries from within the window produce events. Backlog issues with no activity (including comment edits) inside the window are silently checkpointed without dispatching. If you want the initial rollout scoped even tighter, narrow the candidate set with a custom `--jql`.
+- **First enable on an existing backlog.** Every issue starts with an unset `lastCheck`, so on the first poll of an issue the poller has no checkpoint to filter by. Activity is instead bounded by a fixed 24-hour backfill window (not currently configurable): an `opened` event is emitted only for issues created within the window, and only comments and changelog entries from within the window produce events. Backlog issues with no activity (including comment edits) inside the window are not returned by the search, so nothing is dispatched for them. If you want the initial rollout scoped even tighter, narrow `tracker.jira.poll.query`.
 - **Resuming after a gap longer than 24 hours permanently drops events in the
   gap.** The same 24-hour backfill window that bounds a first poll also bounds
   resumption. When the poller reads a stored `lastCheck` older than
@@ -1455,32 +1539,33 @@ Three edge cases of checkpoint tracking are worth knowing:
   issue's entire history), but it cannot distinguish a malicious rewind from a
   legitimate long stop. Any Jira activity between the true checkpoint and the
   clamped value is silently skipped. The cycle succeeds, and the only evidence
-  is in the run log: an issue that is selected logs
-  `WARNING: lastCheck for <KEY> ("<timestamp>") predates the backfill window; clamping to <floor>`,
-  and an issue that is skipped, because its `updated` time is more than a second
-  after its `lastCheck` but still older than the window, is named in one
-  `WARNING: activity filter: …` line per cycle that contains the same phrase
-  `predates the backfill window`. Activity on such an issue may have been
-  missed. Treat either line as an alert, not noise. Because detection
+  is in the run log, and only for an issue that changed again within the
+  window: when it is processed it logs
+  `WARNING: lastCheck for <KEY> ("<timestamp>") predates the backfill window; clamping to <floor>`.
+  An issue whose last change is older than the window is not returned by the
+  search, so activity on it that fell out of the window leaves no line in the
+  log. The `WARNING: activity filter: …` line that contains the same phrase
+  `predates the backfill window` now appears only for an issue at the very
+  edge of the window. Treat either line as an alert, not noise. Because detection
   is checkpoint-based, ordinary cron jitter and occasional skipped ticks are
   harmless (schedule accuracy affects latency, not correctness); the guarantee
   simply ends at 24 hours. A realistic trigger: **GitHub disables scheduled
   workflows after 60 days of repository inactivity**, which stops the poller
-  with no error anywhere. After a long gap, the starvation limit (M = 50, see
-  below) compounds the problem — many issues may have accumulated new activity
-  simultaneously, and there is no rotation across cycles to reach issues
-  beyond the top M. If your deployment cannot tolerate the 24-hour bound, the
+  with no error anywhere. After a long gap many issues may have new activity
+  at once; the poller serves them oldest change first, up to the per-cycle
+  limit, so the newest requests wait for later cycles. If
+  your deployment cannot tolerate the 24-hour bound, the
   scheduler is pluggable: an external cron or Kubernetes CronJob that runs
   independently of GitHub Actions avoids the auto-disable risk.
 - **Comment edits count as new activity, and are attributed to the editor.** The poller filters comments on the later of their created and updated timestamps, so editing a comment (for example, adding a slash command to an old comment) is detected on the next cycle. Jira bumps a comment's updated timestamp on modifications other than body edits too (such as visibility changes), and any such bump counts as activity. The flip side: modifying a comment whose slash command was already dispatched makes it look new again and can re-dispatch it. An edit-detected comment is attributed to the account that last modified it (Jira's `updateAuthor`), not the original author — so a user who edits someone else's comment to inject a command is authorized on *their own* role, not the original author's.
 
-Because each cron run is a fresh process, per-cycle Jira API cost is worth sizing for: a cycle loads the project's role structure (a role-list call plus one detail call per role) only when some selected issue has an event that needs project-role resolution (no `jira` entry, `labels: project_roles`, or a slash command when the `jira` entry sets no lists), then, in such a cycle, makes one additional call for each distinct actor below the highest role priority the first time they're seen that cycle, to check their group memberships (cached per actor for the rest of the cycle, but not across cron runs). Cost scales with the number of distinct commenting actors per cycle rather than the size of the groups backing a role. The activity filter adds one property read per unlocked candidate (at most M per cycle); a candidate with nothing new costs no lock write, no comment or changelog listing and no `lastCheck` write.
+Because each cron run is a fresh process, per-cycle Jira API cost is worth sizing for: a cycle loads the project's role structure (a role-list call plus one detail call per role) only when some issue it reads has an event that needs project-role resolution (no `jira` entry, `labels: project_roles`, or a slash command when the `jira` entry sets no lists), then, in such a cycle, makes one additional call for each distinct actor below the highest role priority the first time they're seen that cycle, to check their group memberships (cached per actor for the rest of the cycle, but not across cron runs). Cost scales with the number of distinct commenting actors per cycle rather than the size of the groups backing a role. The search returns each candidate's `lastCheck` with its row, so the activity filter makes no call of its own; a candidate with nothing new costs no property read or write and no comment or changelog listing. An issue's `lastCheck` is still read from the issue before it is processed. Each issue the poller reads costs one property write for the write-access check.
 
 Two more scaling limits:
 
-- **Issues beyond the top M candidates can be starved.** Each cycle's JQL search returns at most M (default 50) candidates, ordered by `updated DESC`. If a project has more than M issues with in-scope activity at once, whichever issues aren't in that top-M window this cycle are simply never selected — there's no rotation across cycles to eventually reach them. Issues with nothing new still take rows of the top M, because the activity filter runs on the rows the search returned. This is expected to self-resolve for most projects (an issue with new activity moves toward the front of `updated DESC` on its own), but a project that consistently has more than M simultaneously-active issues will have some starved indefinitely. Narrow the default `--jql` (e.g. scope to a label or a subset of issue types) if this applies to you.
+- **Every cycle lists the whole backfill window.** The search reads every issue that matches the query and changed within the last 24 hours, 50 rows per call, including issues already handled. A project where many issues change each day pays for that listing every cycle, and it counts against the cycle's five-minute time limit. The search stops after 200 calls (10,000 issues at 50 per call) and logs `WARNING: the search stopped after <N> issues with more remaining; ...`; the issues beyond them are not examined that cycle. Narrow `tracker.jira.poll.query` (for example to a label or a subset of issue types) if this applies to you.
 - **Comments are re-listed in full, oldest-first, every cycle.** The Jira REST API has no way to filter comments server-side by date, so `ListComments` always paginates from the start of an issue's comment history; the poller then filters client-side by timestamp. For issues with very long comment histories, this means re-fetching (and re-decoding) old comments every cycle just to discard them. Listings are capped at 10,000 entries per issue; an issue beyond that cap has its newest activity invisible to the poller (a WARNING is logged when the cap is hit). Each API response is bounded to 10MB, but the accumulated per-issue comment history is bounded only by the page cap — a per-issue byte budget is a tracked follow-up; against real Jira Cloud (which caps individual comments) the realistic worst case is tens of MB per issue.
-- **Sustained Jira errors can stall a cycle.** Each Jira call retries up to 5 times with exponential backoff, honoring `Retry-After` (capped at 5 minutes). Under a sustained 429 or outage a single cycle can therefore run long; the workflow's concurrency group queues subsequent cron runs rather than stacking them, and a failed cycle simply retries from its checkpoints on the next run.
+- **Sustained Jira errors slow a cycle down.** Each Jira call retries up to 5 times with exponential backoff, honoring `Retry-After` (capped at 5 minutes). While the poller is reading, those waits count against the time limits above, so retries cannot hold one issue for more than two minutes or the reading for more than five. Committing checkpoints is not limited and can still run long under a sustained 429 or outage; the workflow's concurrency group queues subsequent cron runs rather than stacking them, and a failed cycle simply retries from its checkpoints on the next run.
 
 ## Multi-repo polling
 
@@ -1493,32 +1578,32 @@ The `--target-repo` flag passed to `fullsend poll` (defaulting to
 `${{ github.repository }}`; an `owner/repo` slug, and one that contains `..`
 is refused) controls two things:
 
-1. **Entity property namespace.** Lock and checkpoint properties are keyed as `fullsend.poll.{owner}.{repo}.*`, so repos `acme/frontend` and `acme/backend` polling the same Jira project write to separate property keys on each issue and never interfere with each other.
+1. **Entity property namespace.** Checkpoint and write-check properties are keyed as `fullsend.poll.{owner}.{repo}.*`, so repos `acme/frontend` and `acme/backend` polling the same Jira project write to separate property keys on each issue and never interfere with each other.
 2. **GHA concurrency group.** The workflow's `concurrency.group` is scoped to the workflow file, which lives in the repo — so each repo's poll cycles queue independently.
 
 This means each repo discovers and dispatches changes on its own schedule, with its own credentials and its own `tracker.jira.poll.query` filter. There is no shared state between repos.
 
-### How entity property locks namespace across repos
+### How entity properties namespace across repos
 
 The poller stores two properties per issue, both namespaced by the target repo's `{owner}/{repo}` slug:
 
 | Property | Key pattern |
 |---|---|
-| Lock | `fullsend.poll.{owner}.{repo}.lock` |
+| Write check | `fullsend.poll.{owner}.{repo}.writeCheck` |
 | Checkpoint | `fullsend.poll.{owner}.{repo}.lastCheck` |
 
 When `acme/frontend` and `acme/backend` both poll issue `PROJ-42`:
 
-- `acme/frontend` reads and writes `fullsend.poll.acme.frontend.lock` and `fullsend.poll.acme.frontend.lastCheck`.
-- `acme/backend` reads and writes `fullsend.poll.acme.backend.lock` and `fullsend.poll.acme.backend.lastCheck`.
+- `acme/frontend` writes `fullsend.poll.acme.frontend.writeCheck` and reads and writes `fullsend.poll.acme.frontend.lastCheck`.
+- `acme/backend` writes `fullsend.poll.acme.backend.writeCheck` and reads and writes `fullsend.poll.acme.backend.lastCheck`.
 
-The two repos lock independently, checkpoint independently, and can process the same Jira comment — each dispatching to its own agent workflows. This is intentional: the same `/fs-triage` comment on a Jira issue may be relevant to multiple repos if their harness triggers match.
+The two repos checkpoint independently and can process the same Jira comment — each dispatching to its own agent workflows. This is intentional: the same `/fs-triage` comment on a Jira issue may be relevant to multiple repos if their harness triggers match.
 
-### 50-candidate cap with multiple repos
+### Candidate search with multiple repos
 
-Each repo's poller runs its own JQL query and gets its own top-M (default 50) candidate window. The cap is per-poller, not global — three repos polling the same project each see up to 50 candidates per cycle, not 50 shared across all three.
+Each repo's poller runs its own JQL query and lists every matching issue that changed within the backfill window. Nothing is shared: three repos polling the same project each run the whole search, and each has its own per-cycle limit.
 
-However, more pollers against the same Jira project means more API calls per cycle. Each poller independently reads entity properties for lock filtering, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
+However, more pollers against the same Jira project means more API calls per cycle. Each poller independently runs its search, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
 
 - **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so it skips issues that belong to other repos.
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.
@@ -1546,11 +1631,11 @@ However, more pollers against the same Jira project means more API calls per cyc
 | `Jira polling is disabled` and no dispatches | `tracker.jira.poll.enabled` is not `true` | Set `tracker.jira.poll.enabled: true` |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `tracker.jira.poll.query` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
-| Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap may have been permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
+| Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap may have been permanently lost. An issue with no change inside the window is not returned by the search and leaves no log line, so its lost events are not reported. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
 | GitLab Jira dispatch fails with `does not accept Jira work items` | The project's scaffold predates Jira dispatch | Rerun `fullsend repos install` for the project and merge the scaffold update. See [GitLab runtime](#gitlab-runtime) |
 | `WARNING: skipping event … for issue …: normalized event: …` in the poll log | The poller could not map the Jira event to a valid normalized event (for example a non-numeric issue id, or an author with neither an `accountId` nor a `name`) | The event is never dispatched: the checkpoint advances past it (for a GitLab target, once the issue's other dispatches succeed; until then each retry logs the warning again, see [Failures](#failures)) — unless *every* event of the cycle was dropped (failed validation or failed matching), in which case the poll fails and no checkpoint advances (see the next two rows). For an author with neither `accountId` nor `name`, a comment from another account maps cleanly and re-triggers. A non-numeric issue id belongs to the issue, so no new activity on it maps; report it to fullsend with the log line, which names the raw id Jira sent (an id the Jira UI does not show). An issue served without a `labels` field is treated as unlabeled, not skipped |
-| The poll fails with `all N events this cycle failed normalized-event validation` | Every event of the cycle was dropped for failing normalized-event validation — either a systemic cause (a Jira response-shape change, or an adapter gap) or the cycle's one event being bad: the guard counts events, not issues, so a single bad event in a one-event cycle is "every event" | No checkpoint was advanced, so the events are retried next cycle — and, while the dropped events are the cycle's only activity, every cycle: the red runs repeat until the events age past the first-poll backfill floor (24h by default) or another selected issue produces a valid event. Read the per-event `WARNING: skipping event …` lines above the error for the cause; if they name one cause for every issue, the Jira response shape may have changed — report it to fullsend with the log lines |
-| The poll fails with `all N events this cycle were dropped before dispatch (… failed matching)` | Every event of the cycle was dropped before dispatch and at least one failed trigger matching — either the matcher errored on each event, or a mixed cycle where the remaining events failed validation; the error's counts say how many of each | No checkpoint was advanced, so the events are retried next cycle — with the same bound as failed validation: the red runs repeat until the events age past the first-poll backfill floor (24h by default) or another selected issue produces a valid event. Read the per-event `WARNING: skipping event …` and `WARNING: matching event …` lines above the error for the cause — when the error lists both counts, inspect both kinds of warning. A matcher that errors on every event is a harness trigger or execution-ref problem, not a Jira problem |
+| The poll fails with `all N events this cycle failed normalized-event validation` | Every event of the cycle was dropped for failing normalized-event validation — either a systemic cause (a Jira response-shape change, or an adapter gap) or the cycle's one event being bad: the guard counts events, not issues, so a single bad event in a one-event cycle is "every event" | No checkpoint was advanced, so the events are retried next cycle — and, while the dropped events are the cycle's only activity, every cycle: the red runs repeat until the events age past the first-poll backfill floor (24h by default) or another issue produces a valid event. Read the per-event `WARNING: skipping event …` lines above the error for the cause; if they name one cause for every issue, the Jira response shape may have changed — report it to fullsend with the log lines |
+| The poll fails with `all N events this cycle were dropped before dispatch (… failed matching)` | Every event of the cycle was dropped before dispatch and at least one failed trigger matching — either the matcher errored on each event, or a mixed cycle where the remaining events failed validation; the error's counts say how many of each | No checkpoint was advanced, so the events are retried next cycle — with the same bound as failed validation: the red runs repeat until the events age past the first-poll backfill floor (24h by default) or another issue produces a valid event. Read the per-event `WARNING: skipping event …` and `WARNING: matching event …` lines above the error for the cause — when the error lists both counts, inspect both kinds of warning. A matcher that errors on every event is a harness trigger or execution-ref problem, not a Jira problem |
 | The poll fails with `all N events this cycle failed normalized-event validation` and the per-event warnings name `entity.key "P-1" is not a Jira work item key` (every cycle) | The Jira project's key is a single character, which exists only on legacy Server/Data Center deployments: the config gate accepts it (`jiraProjectKeyRe`), but a Jira work item key requires a two-or-more-character project part, so every event of the project fails validation | Such a project cannot be polled by this driver. No checkpoint advances, so the failure repeats every cycle; report it to fullsend with the log lines |
 | Triage or code results do not appear on the Jira issue | The built-in agents are pinned to a release that predates Jira result writes | Use built-in agents from the agents release that follows v0.52.0, or later. Re-pin a harness registered with `source:` or composed with `base:` with `fullsend agent update <name>`. See [Where built-in agent results appear](#where-built-in-agent-results-appear) |
 | Code run skipped; the Jira issue has a comment starting `An open pull request already addresses <KEY> — skipping automated implementation.` | An open pull request written by a person names the issue key in its title or description. Bot pull requests do not count | GitHub: comment `/fs-code --force` on the Jira issue. GitLab: close the merge request, then comment `/fs-code`. See [If the code agent skips the run](#if-the-code-agent-skips-the-run) |

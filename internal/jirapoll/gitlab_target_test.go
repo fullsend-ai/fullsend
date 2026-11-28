@@ -261,28 +261,28 @@ func TestRunGitLabTarget_LabelsBoundBeforeTriggerMatch(t *testing.T) {
 func TestPropertyKeys_GitLabTargetNamespace(t *testing.T) {
 	github := New(nil, nil, Options{TargetRepo: "group/project"})
 	gitlab := New(nil, nil, Options{TargetRepo: "group/project", TargetForge: TargetForgeGitLab, GitLabURL: "https://gitlab.com"})
-	if github.lockKey() != "fullsend.poll.group.project.lock" || github.lastCheckKey() != "fullsend.poll.group.project.lastCheck" {
-		t.Errorf("GitHub keys changed: %q, %q", github.lockKey(), github.lastCheckKey())
+	if github.writeCheckKey() != "fullsend.poll.group.project.writeCheck" || github.lastCheckKey() != "fullsend.poll.group.project.lastCheck" {
+		t.Errorf("GitHub keys changed: %q, %q", github.writeCheckKey(), github.lastCheckKey())
 	}
-	if gitlab.lockKey() == github.lockKey() || gitlab.lastCheckKey() == github.lastCheckKey() {
+	if gitlab.writeCheckKey() == github.writeCheckKey() || gitlab.lastCheckKey() == github.lastCheckKey() {
 		t.Error("GitLab and GitHub targets with the same path share coordination keys")
 	}
-	if got := gitlab.lockKey(); got != "fullsend.poll.gitlab.gitlab%2Ecom.group.project.lock" {
-		t.Errorf("GitLab lock key = %q", got)
+	if got := gitlab.writeCheckKey(); got != "fullsend.poll.gitlab.gitlab%2Ecom.group.project.writeCheck" {
+		t.Errorf("GitLab write-check key = %q", got)
 	}
 
 	selfManaged := New(nil, nil, Options{TargetRepo: "group/project", TargetForge: TargetForgeGitLab, GitLabURL: "https://GitLab.Example.com/gitlab/"})
 	if got := selfManaged.lastCheckKey(); got != "fullsend.poll.gitlab.gitlab%2Eexample%2Ecom/gitlab.group.project.lastCheck" {
 		t.Errorf("self-managed lastCheck key = %q, want the lowercased host and path prefix", got)
 	}
-	if selfManaged.lockKey() == gitlab.lockKey() {
-		t.Error("the same project path on two GitLab instances shares a lock key")
+	if selfManaged.writeCheckKey() == gitlab.writeCheckKey() {
+		t.Error("the same project path on two GitLab instances shares a write-check key")
 	}
 
 	nested := New(nil, nil, Options{TargetRepo: "a.b/c", TargetForge: TargetForgeGitLab, GitLabURL: "https://gitlab.com"})
 	dotted := New(nil, nil, Options{TargetRepo: "a/b.c", TargetForge: TargetForgeGitLab, GitLabURL: "https://gitlab.com"})
-	if nested.lockKey() == dotted.lockKey() {
-		t.Errorf("dotted GitLab paths collide on %q", nested.lockKey())
+	if nested.writeCheckKey() == dotted.writeCheckKey() {
+		t.Errorf("dotted GitLab paths collide on %q", nested.writeCheckKey())
 	}
 }
 

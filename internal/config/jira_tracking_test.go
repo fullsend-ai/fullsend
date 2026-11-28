@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,9 +53,11 @@ func TestJiraTracking_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultJiraAPIURL, jira.EffectiveAPIURL())
 	assert.False(t, jira.PollEnabled(), "omitted poll does not install the poll workflow")
 	assert.Equal(t, DefaultJiraPollQuery, jira.PollQuery())
-	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done) ORDER BY updated DESC`, jira.PollJQL())
+	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done)`, jira.PollJQL())
+	assert.Equal(t, 100, jira.PollMaxDispatchesPerCycle())
 
 	var nilJira *JiraTrackingConfig
+	assert.Equal(t, DefaultJiraPollMaxDispatchesPerCycle, nilJira.PollMaxDispatchesPerCycle())
 	assert.Equal(t, DefaultJiraAPIURL, nilJira.EffectiveAPIURL())
 	assert.False(t, nilJira.PollEnabled())
 	assert.Equal(t, DefaultJiraPollQuery, nilJira.PollQuery())
@@ -154,6 +157,7 @@ func TestJiraTracking_ManagedConfigSurvivesMergeAndClone(t *testing.T) {
     poll:
       enabled: true
       query: labels = "fullsend"
+      max_dispatches_per_cycle: 40
 `), &m))
 	require.True(t, m.IsSet())
 	want := m.Writer().IssueTracking()
@@ -167,12 +171,15 @@ func TestJiraTracking_ManagedConfigSurvivesMergeAndClone(t *testing.T) {
 	got := merged.IssueTracking()
 	assert.Equal(t, want, got)
 	assert.Equal(t, `project = "PROJ" AND (labels = "fullsend")`, got.Jira.PollJQL())
+	assert.Equal(t, 40, got.Jira.PollMaxDispatchesPerCycle())
 
 	// The clone is deep: mutating it leaves the source untouched.
 	copied := cloneTracking(want)
 	*copied.Jira.Poll.Enabled = false
+	*copied.Jira.Poll.MaxDispatchesPerCycle = 7
 	copied.Jira.AllowedTargets.Projects[0] = "CHANGED"
 	assert.True(t, want.Jira.PollEnabled())
+	assert.Equal(t, 40, want.Jira.PollMaxDispatchesPerCycle())
 	assert.Equal(t, "OTHER", want.Jira.AllowedTargets.Projects[0])
 
 	// Re-marshal through the managed form keeps the settings.
@@ -210,6 +217,43 @@ func TestScopeJQLToProject(t *testing.T) {
 func TestScopeJQLToProject_QuotesReservedWordKey(t *testing.T) {
 	for _, key := range []string{"AND", "OR", "IN"} {
 		assert.Equal(t, `project = "`+key+`" AND (labels = a)`, ScopeJQLToProject(key, "labels = a"))
+	}
+}
+
+// poll.max_dispatches_per_cycle is a whole number from 1 to 250 (ADR 0085,
+// Decision items 3 and 4); omitted, it is 100.
+func TestJiraTracking_ValidatePollMaxDispatchesPerCycle(t *testing.T) {
+	for _, c := range []struct {
+		value   int
+		wantErr bool
+	}{
+		{value: 1},
+		{value: 100},
+		{value: 250},
+		{value: 0, wantErr: true},
+		{value: -5, wantErr: true},
+		{value: 251, wantErr: true},
+	} {
+		t.Run(fmt.Sprintf("%d", c.value), func(t *testing.T) {
+			yamlText := fmt.Sprintf("version: \"1\"\ntracker:\n  jira:\n    base_url: https://example.atlassian.net\n    project: PROJ\n    poll:\n      max_dispatches_per_cycle: %d\n", c.value)
+			cfg, err := ParsePerRepoConfigWriter([]byte(yamlText))
+			require.NoError(t, err)
+			err = cfg.Validate()
+			if c.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), fmt.Sprintf("poll.max_dispatches_per_cycle must be a whole number from 1 to 250 (got %d)", c.value))
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, c.value, cfg.IssueTracking().Jira.PollMaxDispatchesPerCycle())
+		})
+	}
+
+	// A value that is not a whole number is rejected, not rounded down.
+	for _, value := range []string{"2.5", "3.0", "1e2", "many", `"7"`} {
+		_, err := ParsePerRepoConfigWriter([]byte("version: \"1\"\ntracker:\n  jira:\n    base_url: https://example.atlassian.net\n    project: PROJ\n    poll:\n      max_dispatches_per_cycle: " + value + "\n"))
+		require.Error(t, err, value)
+		assert.Contains(t, err.Error(), "max_dispatches_per_cycle must be a whole number", value)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/jql"
 )
 
 // Issue-tracker provider names accepted as keys under tracker:.
@@ -98,8 +100,18 @@ const DefaultJiraAPIURL = "https://api.atlassian.com"
 
 // DefaultJiraPollQuery is the JQL predicate the Jira poller uses when
 // tracker.jira.poll.query is unset. It is always scoped to the configured
-// project (see JiraTrackingConfig.PollJQL).
-const DefaultJiraPollQuery = "statusCategory != Done ORDER BY updated DESC"
+// project (see JiraTrackingConfig.PollJQL). It carries no ORDER BY, so the
+// poller serves the oldest change first (ADR 0085, Decision item 2).
+const DefaultJiraPollQuery = "statusCategory != Done"
+
+// Bounds and default of tracker.jira.poll.max_dispatches_per_cycle (ADR 0085,
+// Decision items 3 and 4). The maximum is GitHub's 256-job matrix limit less
+// a small margin.
+const (
+	DefaultJiraPollMaxDispatchesPerCycle = 100
+	MinJiraPollMaxDispatchesPerCycle     = 1
+	MaxJiraPollMaxDispatchesPerCycle     = 250
+)
 
 // JiraTrackingConfig holds Jira issue-tracking settings: the Jira site and
 // project this repository is connected to, the cross-project issue
@@ -130,6 +142,10 @@ type JiraPollConfig struct {
 	// Query is the JQL the poller runs, before project scoping; empty
 	// means DefaultJiraPollQuery.
 	Query string `yaml:"query,omitempty"`
+	// MaxDispatchesPerCycle is the number of dispatch records at which a
+	// poll cycle stops reading issues; nil means
+	// DefaultJiraPollMaxDispatchesPerCycle.
+	MaxDispatchesPerCycle *int `yaml:"max_dispatches_per_cycle,omitempty"`
 }
 
 // jiraTrackingKeys, jiraPollKeys, and jiraAllowedTargetsKeys are the keys
@@ -137,7 +153,7 @@ type JiraPollConfig struct {
 // tracker.jira.allowed_targets.
 var (
 	jiraTrackingKeys       = map[string]bool{"base_url": true, "api_url": true, "run_label": true, "project": true, "allowed_targets": true, "poll": true}
-	jiraPollKeys           = map[string]bool{"enabled": true, "query": true}
+	jiraPollKeys           = map[string]bool{"enabled": true, "query": true, "max_dispatches_per_cycle": true}
 	jiraAllowedTargetsKeys = map[string]bool{"projects": true}
 )
 
@@ -181,6 +197,13 @@ func (j *JiraTrackingConfig) UnmarshalYAML(n *yaml.Node) error {
 				}
 			}
 		}
+		// yaml.v3 decodes 2.5 into an int field as 2, so a value that is not
+		// a whole number is rejected here instead of being rounded down.
+		if poll := mappingNode(r, "poll"); poll != nil && poll.Kind == yaml.MappingNode {
+			if limit := mappingNode(poll, "max_dispatches_per_cycle"); limit != nil && limit.ShortTag() != "!!int" && limit.ShortTag() != "!!null" {
+				return managedFieldError(limit, "tracker.jira.poll.max_dispatches_per_cycle must be a whole number")
+			}
+		}
 	}
 	return n.Decode((*jiraTrackingPlain)(j))
 }
@@ -207,6 +230,15 @@ func (j *JiraTrackingConfig) PollQuery() string {
 	return j.Poll.Query
 }
 
+// PollMaxDispatchesPerCycle returns poll.max_dispatches_per_cycle, or
+// DefaultJiraPollMaxDispatchesPerCycle when it is unset.
+func (j *JiraTrackingConfig) PollMaxDispatchesPerCycle() int {
+	if j == nil || j.Poll == nil || j.Poll.MaxDispatchesPerCycle == nil {
+		return DefaultJiraPollMaxDispatchesPerCycle
+	}
+	return *j.Poll.MaxDispatchesPerCycle
+}
+
 // PollJQL returns the poller's JQL: the configured (or default) query
 // scoped to the repository's project (see ScopeJQLToProject).
 func (j *JiraTrackingConfig) PollJQL() string {
@@ -219,9 +251,6 @@ func (j *JiraTrackingConfig) HasConnectionSettings() bool {
 	return j != nil && (j.BaseURL != "" || j.APIURL != "" || j.Project != "" || j.RunLabel != "" || j.Poll != nil)
 }
 
-// jqlOrderByRe finds a trailing ORDER BY clause, case-insensitively.
-var jqlOrderByRe = regexp.MustCompile(`(?i)\border\s+by\b`)
-
 // ScopeJQLToProject scopes query to project as
 // `project = "<project>" AND (<predicate>)`, keeping a trailing ORDER BY
 // clause after the closing parenthesis. The ORDER BY is located outside
@@ -229,7 +258,7 @@ var jqlOrderByRe = regexp.MustCompile(`(?i)\border\s+by\b`)
 // value is not split. An empty predicate (a query that is only an
 // ORDER BY clause) yields `project = "<project>"` plus the ORDER BY.
 func ScopeJQLToProject(project, query string) string {
-	predicate, orderBy := splitJQLOrderBy(query)
+	predicate, orderBy := jql.SplitOrderBy(query)
 	predicate = strings.TrimSpace(predicate)
 	// Quote the key so a reserved-word key (AND, OR, IN) stays a value.
 	scoped := fmt.Sprintf("project = %q", project)
@@ -240,56 +269,6 @@ func ScopeJQLToProject(project, query string) string {
 		scoped += " " + orderBy
 	}
 	return scoped
-}
-
-// splitJQLOrderBy splits query at its last ORDER BY that is outside a
-// quoted string, returning the predicate and the ORDER BY clause.
-func splitJQLOrderBy(query string) (string, string) {
-	query = strings.TrimSpace(query)
-	quoted := quotedRanges(query)
-	matches := jqlOrderByRe.FindAllStringIndex(query, -1)
-	for i := len(matches) - 1; i >= 0; i-- {
-		start := matches[i][0]
-		if inRanges(start, quoted) {
-			continue
-		}
-		return query[:start], strings.TrimSpace(query[start:])
-	}
-	return query, ""
-}
-
-// quotedRanges returns the [start, end) byte ranges of single- or
-// double-quoted strings in s, honoring backslash escapes.
-func quotedRanges(s string) [][2]int {
-	var out [][2]int
-	var quote byte
-	start := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case quote != 0 && c == '\\':
-			i++
-		case quote != 0 && c == quote:
-			out = append(out, [2]int{start, i + 1})
-			quote = 0
-		case quote == 0 && (c == '"' || c == '\''):
-			quote = c
-			start = i
-		}
-	}
-	if quote != 0 {
-		out = append(out, [2]int{start, len(s)})
-	}
-	return out
-}
-
-func inRanges(pos int, ranges [][2]int) bool {
-	for _, r := range ranges {
-		if pos >= r[0] && pos < r[1] {
-			return true
-		}
-	}
-	return false
 }
 
 // JiraAllowedTargets lists the Jira projects (by key) agents may create
@@ -453,6 +432,10 @@ func cloneTracking(src *TrackingConfig) *TrackingConfig {
 				enabled := *p.Enabled
 				poll.Enabled = &enabled
 			}
+			if p.MaxDispatchesPerCycle != nil {
+				limit := *p.MaxDispatchesPerCycle
+				poll.MaxDispatchesPerCycle = &limit
+			}
 			out.Jira.Poll = poll
 		}
 	}
@@ -564,6 +547,9 @@ func (j *JiraTrackingConfig) ValidateConnection() error {
 	if j.Poll != nil && !jqlParensBalanced(j.Poll.Query) {
 		return fmt.Errorf("tracker.jira: poll.query has unbalanced parentheses: the query is wrapped in parentheses to scope it to the project")
 	}
+	if limit := j.PollMaxDispatchesPerCycle(); limit < MinJiraPollMaxDispatchesPerCycle || limit > MaxJiraPollMaxDispatchesPerCycle {
+		return fmt.Errorf("tracker.jira: poll.max_dispatches_per_cycle must be a whole number from %d to %d (got %d)", MinJiraPollMaxDispatchesPerCycle, MaxJiraPollMaxDispatchesPerCycle, limit)
+	}
 	return nil
 }
 
@@ -571,10 +557,10 @@ func (j *JiraTrackingConfig) ValidateConnection() error {
 // those inside quoted strings, are balanced and never close before they
 // open.
 func jqlParensBalanced(query string) bool {
-	quoted := quotedRanges(query)
+	quoted := jql.QuotedRanges(query)
 	depth := 0
 	for i := 0; i < len(query); i++ {
-		if inRanges(i, quoted) {
+		if jql.InRanges(i, quoted) {
 			continue
 		}
 		switch query[i] {

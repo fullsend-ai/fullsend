@@ -142,7 +142,7 @@ func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
 		return fmt.Errorf("create GitLab client: %w", err)
 	}
 	pollClient := gitlab.NewPollClient(glClient)
-	// Authenticate to GitLab before any Jira lock or checkpoint is touched,
+	// Authenticate to GitLab before any Jira issue property is touched,
 	// so a bad Poller credential fails the cycle up front.
 	if _, err := pollClient.GetAuthenticatedUserID(cmd.Context()); err != nil {
 		return wrapGitLabAuthFailure(sel, fmt.Errorf("resolve GitLab poller identity: %w", err))

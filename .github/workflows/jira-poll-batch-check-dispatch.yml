@@ -1,0 +1,53 @@
+# Dispatch side of the Jira poll batch check (jira-poll-batch-check.yml).
+#
+# Stands in for the harness-run job of reusable-dispatch.yml. It takes the
+# matrix as a string input and turns it into one job per record with
+# fromJSON(inputs.matrix), as that job does. Each job hashes the record it
+# received and looks the digest up among the digests of the batch, where the
+# real job would run an agent.
+name: Jira poll batch check (dispatch)
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        description: Dispatch matrix, as reusable-dispatch.yml takes it.
+        type: string
+        required: true
+      digests:
+        description: JSON array with the digest of every record of the batch.
+        type: string
+        required: true
+
+jobs:
+  record:
+    name: Record ${{ strategy.job-index }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the digest script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/jira-poll-record-digest.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Compare the record with the batch
+        env:
+          RECORD: ${{ toJSON(matrix) }}
+          DIGESTS: ${{ inputs.digests }}
+          INDEX: ${{ strategy.job-index }}
+        run: |
+          set -euo pipefail
+          digest=$(printf '%s' "${RECORD}" | .github/scripts/jira-poll-record-digest.sh)
+          if ! jq -e --arg digest "${digest}" 'index($digest) != null' <<<"${DIGESTS}" > /dev/null; then
+            echo "::error::record ${INDEX} (${digest}) is not a record of the batch"
+            exit 1
+          fi
+          echo "Record ${INDEX} arrived unchanged (${digest})."

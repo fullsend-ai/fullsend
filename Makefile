@@ -195,6 +195,7 @@ script-test:
 	$(call run-timed,bash scripts/run-with-infra-retry-test.sh)
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
 	$(call run-timed,bash .github/scripts/count-fix-commits-test.sh)
+	$(call run-timed,bash .github/scripts/jira-poll-record-digest-test.sh)
 	$(call run-timed,bash .github/scripts/pre-fetch-review-body-test.sh)
 	$(call run-timed,bash .github/scripts/review-diff-hash-test.sh)
 	$(call run-timed,bash .github/scripts/report-agent-startup-failure-test.sh)
