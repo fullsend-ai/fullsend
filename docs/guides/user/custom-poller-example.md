@@ -32,6 +32,13 @@ permissions:
 jobs:
   poll:
     runs-on: ubuntu-24.04
+    # The jira-poll driver keeps no per-issue lock: two overlapping cycles
+    # for one repository dispatch the same requests twice. This group queues
+    # the runs of this workflow; do not poll the same repository from a
+    # second workflow.
+    concurrency:
+      group: ${{ github.workflow }}-poll
+      cancel-in-progress: false
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
     steps:
@@ -98,7 +105,8 @@ jobs:
 
 The poller reads the Jira site, project, and query from `tracker.jira` in
 `.fullsend/config.yaml`, and polls only when `poll.enabled` is `true`. It
-always scopes the query to the project:
+always scopes the query to the project and to the issues that changed within
+the last 24 hours, oldest change first:
 
 ```yaml
 tracker:
@@ -107,7 +115,7 @@ tracker:
     project: MYPROJECT
     poll:
       enabled: true
-      query: 'statusCategory != Done AND updated > -1w AND type = Bug'
+      query: 'statusCategory != Done AND type = Bug'
 ```
 
 See [Jira Integration § Custom JQL](jira-integration.md#custom-jql).

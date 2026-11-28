@@ -236,7 +236,6 @@ func whenJiraPollerRuns(ctx context.Context, w *world.World) error {
 		JiraBaseURL: w.JiraMockServer.URL,
 		JiraProject: "PROJ",
 		OutputPath:  outputPath,
-		N:           50, // process all candidates
 	}
 
 	poller := jirapoll.New(jiraClient, matcher, opts)

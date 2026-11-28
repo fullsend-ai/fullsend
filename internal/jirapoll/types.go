@@ -15,8 +15,11 @@ type JiraClient interface {
 	// SearchIssues executes a JQL search and returns up to limit matching
 	// issues, stopping pagination once that many results are collected.
 	// A limit <= 0 returns all matching issues (bounded by the
-	// implementation's own pagination cap).
-	SearchIssues(ctx context.Context, jql string, limit int) ([]jira.Issue, error)
+	// implementation's own pagination cap; a search cut short by that cap
+	// returns the issues read so far with jira.ErrSearchTruncated). Each
+	// issue carries the entity properties named in properties that it has,
+	// in Issue.Properties.
+	SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]jira.Issue, error)
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
 	// GetStatus resolves a status name to its statusCategory, used to
 	// classify status transitions (closed/reopened) without relying on
@@ -63,10 +66,10 @@ type Options struct {
 	JiraProject             string           // Jira project key for default JQL
 	JQL                     string           // Custom JQL override
 	OutputPath              string           // Path to write dispatch records JSON
-	M                       int              // Max candidate issues per cycle (default: 50)
-	N                       int              // Max issues to process per cycle (default: 5)
-	StaleThreshold          time.Duration    // Lock stale threshold (default: 900s)
+	MaxDispatchesPerCycle   int              // Dispatch records at which a cycle stops reading issues (default: 100, ADR 0085)
 	FirstPollBackfillWindow time.Duration    // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
+	CycleTimeLimit          time.Duration    // Reading budget per cycle, from its start through the last issue read (default: 5m, ADR 0085)
+	IssueTimeLimit          time.Duration    // Reading budget per issue (default: 2m, ADR 0085)
 
 	// Authorization holds the jira authorization provider from
 	// config.yaml. The zero value (no provider entry) resolves every event
@@ -166,15 +169,4 @@ func (e JiraEvent) Key() string {
 		return fmt.Sprintf("label-%s-%s-%s-%d", e.IssueKey, e.ChangedLabel, e.LabelAction, e.UpdatedAt.Unix())
 	}
 	return fmt.Sprintf("%s-%s-%d", e.Type, e.IssueKey, e.UpdatedAt.Unix())
-}
-
-// LockValue is stored in the Jira entity property for coordination.
-type LockValue struct {
-	ID string `json:"id"` // Poll cycle UUID
-	TS string `json:"ts"` // RFC3339 timestamp
-	// Phase is reserved for the two-phase (pending → running) lock handoff
-	// described by ADR 0063. Today it is always written as "pending" and
-	// never read: lock ownership through dispatch scheduling is a tracked
-	// follow-up (see the KNOWN LIMITATION notes in processIssue).
-	Phase string `json:"phase"` // "pending" or "running"
 }

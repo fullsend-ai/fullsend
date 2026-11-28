@@ -344,6 +344,9 @@ type jiraPollSettings struct {
 	project string // tracker.jira.project
 	jql     string // tracker.jira.poll.query (or the default) scoped to project
 	enabled bool   // tracker.jira.poll.enabled is true
+	// maxDispatches is tracker.jira.poll.max_dispatches_per_cycle, or its
+	// default.
+	maxDispatches int
 }
 
 // loadJiraPollSettings reads the Jira site, API gateway, project, and poll
@@ -386,6 +389,8 @@ func loadJiraPollSettings(fullsendDir, jiraURL, jiraProject, jql string) (jiraPo
 		project: jiraCfg.Project,
 		jql:     jiraCfg.PollJQL(),
 		enabled: jiraCfg.PollEnabled(),
+
+		maxDispatches: jiraCfg.PollMaxDispatchesPerCycle(),
 	}, nil
 }
 
@@ -414,7 +419,7 @@ type jiraPollArgs struct {
 
 // validTargetRepo matches "owner/repo" slugs (subgroup segments allowed,
 // matching splitOwnerRepo). Validated up front because a slash-less value
-// would otherwise flow into a silently malformed Jira entity-property lock
+// would otherwise flow into a silently malformed Jira entity-property
 // namespace and into NormalizedEvent.Repo.
 var validTargetRepo = regexp.MustCompile(`^[^/\s]+(/[^/\s]+)+$`)
 
@@ -574,6 +579,8 @@ func jiraPollOptions(args jiraPollArgs, matcher *celMatcher) jirapoll.Options {
 		JiraProject: args.jira.project,
 		JQL:         args.jira.jql,
 		OutputPath:  args.outputPath,
+
+		MaxDispatchesPerCycle: args.jira.maxDispatches,
 
 		Authorization: jiraPollAuthorization(matcher.jiraAuth),
 	}

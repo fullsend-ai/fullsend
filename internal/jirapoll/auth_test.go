@@ -114,7 +114,6 @@ func authTestPoller(mc *mockClient, m EventMatcher, auth Authorization) *Poller 
 		TargetRepo:    "acme/platform",
 		JiraBaseURL:   "https://acme.atlassian.net",
 		JiraProject:   "PROJ",
-		N:             50,
 		Authorization: auth,
 	})
 }

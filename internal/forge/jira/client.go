@@ -524,6 +524,7 @@ type searchRequest struct {
 	MaxResults    int      `json:"maxResults"`
 	Fields        []string `json:"fields"`
 	NextPageToken string   `json:"nextPageToken,omitempty"`
+	Properties    []string `json:"properties,omitempty"`
 }
 
 // searchFields lists the issue fields SearchIssues requests. The poller
@@ -544,6 +545,10 @@ var searchFields = []string{"summary", "status", "labels", "reporter", "assignee
 // from overly broad JQL queries.
 const maxSearchPages = 200
 
+// ErrSearchTruncated is returned by SearchIssues, together with the issues
+// it read, when the search still had results after maxSearchPages pages.
+var ErrSearchTruncated = errors.New("search stopped at the page limit with results remaining")
+
 // SearchIssues executes a JQL search and returns up to limit matching
 // issues, using the POST /rest/api/3/search/jql endpoint with cursor-based
 // pagination (nextPageToken + isLast). Pagination stops as soon as limit
@@ -551,7 +556,13 @@ const maxSearchPages = 200
 // bounds API cost rather than fetching everything and truncating
 // afterward. A limit <= 0 fetches all matching issues, capped at
 // maxSearchPages pages (10,000 issues at 50 per page) to prevent unbounded
-// memory growth.
+// memory growth. A search cut short by that cap returns the issues read so
+// far with ErrSearchTruncated, so the caller can tell a cut from a complete
+// result.
+//
+// properties names issue entity properties to return with each issue in
+// Issue.Properties (Jira returns at most five), so a caller that needs one
+// property per issue does not read it with a call per issue.
 //
 // This endpoint is eventually consistent: Atlassian documents that recent
 // updates might not be immediately visible in results. For the poller that
@@ -563,7 +574,7 @@ const maxSearchPages = 200
 // relies on them being at least as fresh as the row; if they lag it, an
 // entry can be skipped. Do not "fix" ordering assumptions by trusting
 // search freshness.
-func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([]Issue, error) {
+func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int, properties ...string) ([]Issue, error) {
 	var all []Issue
 	var nextPageToken string
 	for page := 0; page < maxSearchPages; page++ {
@@ -576,6 +587,7 @@ func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([
 			MaxResults:    50,
 			Fields:        searchFields,
 			NextPageToken: nextPageToken,
+			Properties:    properties,
 		}
 		bodyJSON, err := json.Marshal(body)
 		if err != nil {
@@ -587,15 +599,14 @@ func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([
 		}
 		all = append(all, result.Issues...)
 		if limit > 0 && len(all) >= limit {
-			all = all[:limit]
-			break
+			return all[:limit], nil
 		}
 		if result.IsLast || len(result.Issues) == 0 || result.NextPageToken == "" {
-			break
+			return all, nil
 		}
 		nextPageToken = result.NextPageToken
 	}
-	return all, nil
+	return all, ErrSearchTruncated
 }
 
 // GetIssue fetches a single issue by ID or key.
