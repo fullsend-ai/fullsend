@@ -1446,6 +1446,71 @@ entry's default `labels: jira_editors`, anyone with Edit Issues on the project c
 add a label such as `ready-to-code` and dispatch the agent whose trigger
 matches it. Use `labels: allowlist` if that group is broader than you want.
 
+## Upgrading the Jira poller
+
+Fullsend v0.58.0 changes which issues the poller serves in a cycle and how
+two cycles are kept apart (ADR 0085). It affects every repository that polls
+Jira, on GitHub and on GitLab. The Jira credential and the permissions the
+poller needs do not change.
+
+| | Before v0.58.0 | From v0.58.0 |
+|---|---|---|
+| Issues served in a cycle | Five, picked at random from the first 50 the query returned | Every issue with new activity, in the query's order, until the cycle holds 100 dispatch records |
+| What the search covers | The first 50 issues of the query, newest change first by default | Every issue that matches the query and changed within the last 24 hours, oldest change first by default |
+| Default `poll.query` | `statusCategory != Done ORDER BY updated DESC` | `statusCategory != Done` |
+| Two cycles at the same time | Kept apart by a lock on each issue | Not kept apart: the scheduler runs one cycle at a time |
+| Time a cycle may take | Limited only by the job's timeout | Reading stops after five minutes, and after two minutes on one issue; what is left waits for the next cycle |
+| Dispatch records from one issue | No limit beyond 100 events per look | Also at most 250 records and, on GitHub, 768 KB; the oldest are kept |
+
+A repository on the managed poll workflow or the managed GitLab schedule
+needs no change before the upgrade: both already run one cycle at a time.
+
+**Before you upgrade:**
+
+- **Your own scheduler.** If anything other than the managed workflow or the
+  managed GitLab schedule runs `fullsend poll --input-driver jira-poll`, make
+  sure it never runs two cycles for one repository at the same time, and that
+  only one workflow or job polls a repository. On GitHub Actions, give the
+  poll job a concurrency group with `cancel-in-progress: false`, as the
+  [custom poller example](custom-poller-example.md) does. The workflow that
+  earlier versions of this guide had you copy has one. Without the lock,
+  overlapping cycles dispatch the same requests twice.
+- **The new setting.** Leave `tracker.jira.poll.max_dispatches_per_cycle` out
+  of the configuration until the upgrade is in place. A fullsend older than
+  v0.58.0 rejects a configuration that sets it, and stops polling. For the
+  same reason, remove the setting before you go back to an older version.
+
+**After you upgrade:**
+
+- **More agent runs per cycle.** A cycle starts up to 100 agent runs where it
+  used to read five issues, and more than 100 when a single issue produces
+  more. The first cycles also serve the requests from the last 24 hours
+  that were still waiting to be picked. To start fewer runs per cycle, set
+  `tracker.jira.poll.max_dispatches_per_cycle` to a lower number, from 1 to
+  250. Requests then wait longer, and one that waits more than 24 hours is
+  lost.
+- **`ORDER BY updated DESC`.** If `poll.query` ends in that clause, remove it.
+  The query still runs, and the poller logs a WARNING every cycle: when a
+  cycle cannot serve every issue, newest change first leaves the older
+  requests waiting until they leave the 24-hour window. See
+  [Custom JQL](#custom-jql).
+- **Log lines.** If you search the run logs for the poller's lines, the
+  summary now reads
+  `poll complete: <N> candidates, <N> active, <N> served, <N> dispatches`,
+  where it reported `unlocked` and `selected`. A cycle in which every issue
+  failed ends with `all <N> active issues failed to process`, where it said
+  `selected`.
+- **Issue properties.** The poller no longer reads or removes a lock
+  property that an earlier version left on an issue
+  (`fullsend.poll.{owner}.{repo}.lock`, or its `fullsend.poll.gitlab.*`
+  counterpart). Delete it or leave it. The poller writes a new property,
+  `writeCheck`, beside `lastCheck` on each issue it reads.
+- **After a long stop.** Requests more than 24 hours old were already lost
+  when polling stopped for that long. They now leave no WARNING in the run
+  log unless the issue changed again within the last 24 hours.
+
+[Poll coordination](#poll-coordination) describes each of these in full.
+
 ## Poll coordination
 
 The poller uses Jira entity properties for checkpoint tracking. It keeps no per-issue lock: it relies on one poll cycle at a time per target repository (see [Scheduled workflow](#scheduled-workflow)). Each cycle searches for every issue that matches the query and changed within the 24-hour backfill window, with no row limit, drops the candidates with no new activity, then serves the rest in the search's order, oldest change first by default, until the cycle is full (see **Per-cycle limit** below). A candidate has new activity when its `updated` time is after its `lastCheck`, which the search returns with each row, clamped as described below; a candidate with no usable `lastCheck` (missing, unreadable, not a timestamp, or in the future) or no usable `updated` time counts as new. Two properties are stored on each processed issue:
