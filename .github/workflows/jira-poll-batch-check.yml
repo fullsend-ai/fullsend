@@ -1,0 +1,90 @@
+# Full-size batch check for the Jira poll hand-off on GitHub (ADR 0085).
+#
+# The managed poll workflow passes a cycle's whole batch from the poll job to
+# the dispatch job as one job output, and runs each record as one job of a
+# matrix. GitHub limits a job's outputs to 1 MB and a matrix to 256 jobs, and
+# a batch over either limit is lost whole. The jira-poll driver therefore
+# stops a cycle at 250 records and 768 KB. This workflow shows, on GitHub,
+# that a batch at those limits arrives whole.
+#
+# It has the shape of the managed caller
+# (internal/scaffold/fullsend-repo/templates/jira-poll-per-repo.yaml): a poll
+# job that returns a matrix through a reusable workflow's output, and a
+# dispatch job, under the same condition, that hands the matrix to a second
+# reusable workflow as an input. Two things differ. The batch comes from the
+# real driver reading a fake Jira (hack/prove-jira-poll-batch) instead of
+# from a Jira site, and each record's job compares the record it received
+# with the one the batch held instead of running an agent.
+#
+# Run it once per case when a change touches the limits, the record format or
+# the hand-off. See "Jira poll batch check" in
+# docs/guides/dev/testing-workflows.md.
+name: Jira poll batch check
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: Batch to send through the hand-off
+        type: choice
+        required: true
+        options:
+          - records
+          - size
+          - wide
+
+permissions: {}
+
+jobs:
+  poll:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/jira-poll-batch-check-poll.yml
+    with:
+      case: ${{ inputs.case }}
+
+  dispatch:
+    needs: poll
+    if: ${{ needs.poll.outputs.matrix != '' && fromJSON(needs.poll.outputs.matrix).include[0] != null }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/jira-poll-batch-check-dispatch.yml
+    with:
+      matrix: ${{ needs.poll.outputs.matrix }}
+      digests: ${{ needs.poll.outputs.digests }}
+
+  verify:
+    name: Verify the batch arrived whole
+    needs: [poll, dispatch]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Count the records that reached their own job
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CASE: ${{ inputs.case }}
+          EXPECTED: ${{ needs.poll.outputs.count }}
+          UTF8_BYTES: ${{ needs.poll.outputs.utf8_bytes }}
+          UTF16_BYTES: ${{ needs.poll.outputs.utf16_bytes }}
+          DISPATCH_RESULT: ${{ needs.dispatch.result }}
+        run: |
+          set -euo pipefail
+          echo "Case ${CASE}: ${EXPECTED} records, ${UTF16_BYTES} bytes in UTF-16, ${UTF8_BYTES} bytes in UTF-8."
+          if [[ -z "${EXPECTED}" || "${EXPECTED}" -eq 0 ]]; then
+            echo "::error::the batch holds no records"
+            exit 1
+          fi
+          if [[ "${DISPATCH_RESULT}" != "success" ]]; then
+            echo "::error::the dispatch job ended as '${DISPATCH_RESULT}': the batch did not arrive whole"
+            exit 1
+          fi
+          arrived=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name | contains("/ Record ")) | select(.conclusion == "success") | .name' | wc -l)
+          if [[ "${arrived}" -ne "${EXPECTED}" ]]; then
+            echo "::error::${arrived} records reached their own job unchanged, want ${EXPECTED}"
+            exit 1
+          fi
+          echo "All ${EXPECTED} records reached their own job unchanged."

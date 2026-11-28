@@ -72,6 +72,53 @@ Push the change and trigger a fullsend action on the test repository:
 `/fs-triage`, `/fs-code`, or another agent command. Revert the references to
 the desired release or branch before deleting or rewriting the test ref.
 
+## Jira poll batch check
+
+On GitHub, the managed Jira poll workflow passes a cycle's dispatch records
+from the poll job to the dispatch job as one job output, and runs each record
+as one job of a matrix. GitHub limits a job's outputs to 1 MB and a matrix to
+256 jobs. A batch over either limit is lost whole, so the jira-poll driver
+stops a cycle at 250 records and 768 KB (ADR 0085).
+
+The `Jira poll batch check` workflow
+(`.github/workflows/jira-poll-batch-check.yml`) shows on GitHub that a batch
+at those limits arrives whole. It runs one real poll cycle against a fake Jira
+(`hack/prove-jira-poll-batch`), so the batch is as large as the driver allows,
+and sends it along the same path as the managed workflow: a job output of a
+reusable workflow, then an input of a second reusable workflow, then one
+matrix job per record. Each matrix job compares the record it received with
+the one the batch held, and a last job checks that every record got a job. No
+agent runs, and the check needs no Jira site, secrets or mint.
+
+Run it once per case when a change touches the driver's limits, the dispatch
+record format, or how `reusable-poll-jira.yml`, the managed caller or
+`reusable-dispatch.yml` hand the matrix over:
+
+```bash
+gh workflow run jira-poll-batch-check.yml -f case=records
+```
+
+| Case | Batch |
+|------|-------|
+| `records` | 250 records, the record limit, with comments as long as still fit in 768 KB |
+| `size` | The largest plain-text records, up to 768 KB |
+| `wide` | The largest records of three-byte characters, up to 768 KB |
+
+GitHub approximates output size from the UTF-16 encoding, and the driver
+measures the same way. The `wide` batch is within 768 KB by that measure and
+over 1 MB in UTF-8, so it passes only while GitHub counts as documented.
+
+A run passes when its `Verify the batch arrived whole` job passes. That job
+prints the batch's record count and its size in both encodings. When the poll
+job's output is over GitHub's limit, the output arrives empty, the dispatch
+job is skipped and the verify job fails.
+
+The check covers the hand-off only. It does not run agents, so it says
+nothing about runner capacity or about how long 250 agent runs take.
+
+`make script-test` fails when the hand-off in the real workflows no longer
+matches the copy in the check (`.github/scripts/jira-poll-record-digest-test.sh`).
+
 ## Running CI checks locally
 
 On macOS, or a Linux distribution other than Ubuntu, `ci-local` runs the PR
