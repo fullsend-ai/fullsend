@@ -2131,6 +2131,9 @@ func TestRunAgentSet_LoadError(t *testing.T) {
 }
 
 func TestRunAgentSet_WriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
 	dir := t.TempDir()
 	writePerRepoConfig(t, dir, "")
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -2335,6 +2338,9 @@ func TestRunAgentAdd_InvalidNameRejected(t *testing.T) {
 }
 
 func TestRunAgentAdd_WriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
 	dir := t.TempDir()
 	writePerRepoConfig(t, dir, "")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "lint.yaml"), []byte("role: coder\n"), 0o644))
@@ -2347,6 +2353,9 @@ func TestRunAgentAdd_WriteError(t *testing.T) {
 }
 
 func TestRunAgentRemove_WriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
 	dir := t.TempDir()
 	writePerRepoConfig(t, dir, `agents:
   - source: harness/lint.yaml
@@ -2360,6 +2369,9 @@ func TestRunAgentRemove_WriteError(t *testing.T) {
 }
 
 func TestRunAgentUpdate_WriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
 	newSHA := "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
 	newContent := []byte("role: triage\n")
 	srv, policy := newAgentTestServer(t, map[string][]byte{

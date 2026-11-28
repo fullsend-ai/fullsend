@@ -462,6 +462,9 @@ func TestTryLoadFullsendConfig_MissingFile(t *testing.T) {
 }
 
 func TestTryLoadFullsendConfig_UnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses file permission checks")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
@@ -492,6 +495,9 @@ func TestRequireFullsendConfig_MissingFile(t *testing.T) {
 }
 
 func TestRequireFullsendConfig_UnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses file permission checks")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
@@ -10288,6 +10294,9 @@ func TestDedupResolvedProviders_ComposeScenario(t *testing.T) {
 }
 
 func TestForceRemoveAll_ReadOnlyTree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permission checks")
+	}
 	// Simulate the readonly_repo enforcement: create a directory tree
 	// with files and directories that have had write permission removed.
 	// forceRemoveAll must restore permissions and successfully delete.

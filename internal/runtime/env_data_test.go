@@ -505,6 +505,9 @@ func TestEnvDataLoad_IgnoresPlantedModules(t *testing.T) {
 // The loader's python3 comes from the system default PATH when it has one,
 // not from a directory early on the launch PATH.
 func TestEnvDataLoad_PinsPythonFromDefaultPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root every directory is writable")
+	}
 	if err := exec.Command("/bin/sh", "-c", "command -p -v python3").Run(); err != nil {
 		t.Skip("no python3 on the default PATH")
 	}
