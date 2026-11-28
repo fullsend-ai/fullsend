@@ -27,12 +27,9 @@ on:
       digests:
         description: JSON array with the digest of every record (jira-poll-record-digest.sh).
         value: ${{ jobs.batch.outputs.digests }}
-      utf8_bytes:
-        description: Size of the matrix in UTF-8.
-        value: ${{ jobs.batch.outputs.utf8_bytes }}
-      utf16_bytes:
-        description: Size of the matrix in UTF-16, which is how GitHub approximates output size.
-        value: ${{ jobs.batch.outputs.utf16_bytes }}
+      bytes:
+        description: Size of the matrix in bytes of UTF-8. GitHub counts each one as two.
+        value: ${{ jobs.batch.outputs.bytes }}
 
 jobs:
   batch:
@@ -44,8 +41,7 @@ jobs:
     outputs:
       count: ${{ steps.describe.outputs.count }}
       digests: ${{ steps.describe.outputs.digests }}
-      utf8_bytes: ${{ steps.describe.outputs.utf8_bytes }}
-      utf16_bytes: ${{ steps.describe.outputs.utf16_bytes }}
+      bytes: ${{ steps.describe.outputs.bytes }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,8 +69,7 @@ jobs:
           {
             echo "count=$(jq 'length' dispatches.json)"
             echo "digests=${digests}"
-            echo "utf8_bytes=$(printf '%s' "${matrix}" | wc -c)"
-            echo "utf16_bytes=$(printf '%s' "${matrix}" | iconv -f UTF-8 -t UTF-16LE | wc -c)"
+            echo "bytes=$(printf '%s' "${matrix}" | wc -c)"
           } >> "${GITHUB_OUTPUT}"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"unicode/utf16"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,22 +33,21 @@ func matrix(t *testing.T, path string) (string, int) {
 	return string(out), len(records)
 }
 
-// utf16Bytes is the size GitHub counts for a job output: it approximates
-// output size from the UTF-16 encoding.
-func utf16Bytes(s string) int {
-	return 2 * len(utf16.Encode([]rune(s)))
+// counted is the size GitHub counts for a job output: two bytes for each
+// byte of its UTF-8 text.
+func counted(s string) int {
+	return 2 * len(s)
 }
 
 // Every case is a batch the real driver stopped at one of its limits, with
 // no room left for another record.
 func TestRunFillsABatchToTheLimits(t *testing.T) {
-	for name, want := range map[string]struct {
-		records  int
-		overOneM bool // larger than 1 MB in UTF-8
-	}{
-		"records": {records: config.MaxJiraPollMaxDispatchesPerCycle},
-		"size":    {records: 30},
-		"wide":    {records: 30, overOneM: true},
+	for name, wantRecords := range map[string]int{
+		"records": config.MaxJiraPollMaxDispatchesPerCycle,
+		"size":    30,
+		// A three-byte character counts three times an ASCII one, so a
+		// third as many of the largest records fit.
+		"wide": 10,
 	} {
 		t.Run(name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "dispatches.json")
@@ -57,21 +55,15 @@ func TestRunFillsABatchToTheLimits(t *testing.T) {
 			require.Zero(t, run([]string{"-case", name, "-out", out}, &stdout, &stderr), stderr.String())
 
 			m, n := matrix(t, out)
-			assert.Equal(t, want.records, n)
+			assert.Equal(t, wantRecords, n)
 			assert.Contains(t, stdout.String(), fmt.Sprintf("case %s: %d records in ", name, n), "run reports the records it wrote")
 
-			size := utf16Bytes(m)
+			size := counted(m)
 			assert.LessOrEqual(t, size, sizeLimit, "the driver keeps the batch within its size limit")
 			// One more record of the average size would not fit, so the batch
 			// is at the size limit as well as, for the records case, at the
 			// record limit.
 			assert.Greater(t, size+size/n, sizeLimit, "the batch has no room for another record")
-
-			if want.overOneM {
-				assert.Greater(t, len(m), 1<<20, "the wide batch is over 1 MB in UTF-8 while within the limit in UTF-16")
-			} else {
-				assert.Less(t, len(m), 1<<20)
-			}
 		})
 	}
 }

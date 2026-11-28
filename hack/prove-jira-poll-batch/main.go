@@ -62,7 +62,7 @@ var cases = map[string]batchCase{
 		fillerLen: maxBody - len(command),
 	},
 	"wide": {
-		about:     "the largest records of three-byte characters, up to the size limit: the same size in UTF-16 as the size case and half as much again in UTF-8",
+		about:     "the largest records of three-byte characters, up to the size limit",
 		issues:    60,
 		filler:    "語",
 		fillerLen: maxBody - len(command),

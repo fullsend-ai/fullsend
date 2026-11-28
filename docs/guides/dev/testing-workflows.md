@@ -104,14 +104,17 @@ gh workflow run jira-poll-batch-check.yml -f case=records
 | `size` | The largest plain-text records, up to 768 KB |
 | `wide` | The largest records of three-byte characters, up to 768 KB |
 
-GitHub approximates output size from the UTF-16 encoding, and the driver
-measures the same way. The `wide` batch is within 768 KB by that measure and
-over 1 MB in UTF-8, so it passes only while GitHub counts as documented.
+GitHub counts two bytes for each byte of an output's UTF-8 text, so a batch
+at the 768 KB limit is about 384 KB of JSON. Its documentation says only that
+the size is "approximated based on UTF-16 encoding". The `wide` case holds the
+difference: a count of two bytes per UTF-16 code unit puts three times as many
+of its records in a batch, and GitHub rejects that batch with
+`Job outputs exceed 1,048,576 bytes`.
 
 A run passes when its `Verify the batch arrived whole` job passes. That job
-prints the batch's record count and its size in both encodings. When the poll
-job's output is over GitHub's limit, the output arrives empty, the dispatch
-job is skipped and the verify job fails.
+prints the batch's record count and size. When the poll job's output is over
+GitHub's limit, GitHub fails the poll job, the dispatch job is skipped and
+the verify job fails.
 
 The check covers the hand-off only. It does not run agents, so it says
 nothing about runner capacity or about how long 250 agent runs take.

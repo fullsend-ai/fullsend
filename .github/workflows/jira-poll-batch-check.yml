@@ -67,12 +67,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CASE: ${{ inputs.case }}
           EXPECTED: ${{ needs.poll.outputs.count }}
-          UTF8_BYTES: ${{ needs.poll.outputs.utf8_bytes }}
-          UTF16_BYTES: ${{ needs.poll.outputs.utf16_bytes }}
+          BYTES: ${{ needs.poll.outputs.bytes }}
           DISPATCH_RESULT: ${{ needs.dispatch.result }}
         run: |
           set -euo pipefail
-          echo "Case ${CASE}: ${EXPECTED} records, ${UTF16_BYTES} bytes in UTF-16, ${UTF8_BYTES} bytes in UTF-8."
+          echo "Case ${CASE}: ${EXPECTED} records in ${BYTES} bytes of UTF-8, which GitHub counts as $((2 * BYTES)) of the 1048576 a job's outputs may hold."
           if [[ -z "${EXPECTED}" || "${EXPECTED}" -eq 0 ]]; then
             echo "::error::the batch holds no records"
             exit 1
