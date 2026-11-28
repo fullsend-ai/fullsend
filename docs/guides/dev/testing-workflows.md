@@ -78,7 +78,7 @@ On GitHub, the managed Jira poll workflow passes a cycle's dispatch records
 from the poll job to the dispatch job as one job output, and runs each record
 as one job of a matrix. GitHub limits a job's outputs to 1 MB and a matrix to
 256 jobs. A batch over either limit is lost whole, so the jira-poll driver
-stops a cycle at 250 records and 768 KB (ADR 0085).
+keeps a cycle to at most 250 records and 768 KB (ADR 0085).
 
 The `Jira poll batch check` workflow
 (`.github/workflows/jira-poll-batch-check.yml`) shows on GitHub that a batch
