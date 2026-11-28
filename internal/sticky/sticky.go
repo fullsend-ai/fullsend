@@ -99,6 +99,8 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 
 	printer.StepStart("No existing comment found, creating new one")
 
+	markedBody = TruncateBody(markedBody, cfg.maxSize())
+
 	if cfg.DryRun {
 		printer.StepInfo("Dry run — would create new comment")
 		printer.StepInfo("Body length: " + strconv.Itoa(len(markedBody)))
