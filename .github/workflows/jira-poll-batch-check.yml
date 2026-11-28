@@ -4,8 +4,8 @@
 # the dispatch job as one job output, and runs each record as one job of a
 # matrix. GitHub limits a job's outputs to 1 MB and a matrix to 256 jobs, and
 # a batch over either limit is lost whole. The jira-poll driver therefore
-# stops a cycle at 250 records and 768 KB. This workflow shows, on GitHub,
-# that a batch at those limits arrives whole.
+# keeps a cycle to at most 250 records and 768 KB. This workflow shows, on
+# GitHub, that a batch at those limits arrives whole.
 #
 # It has the shape of the managed caller
 # (internal/scaffold/fullsend-repo/templates/jira-poll-per-repo.yaml): a poll
