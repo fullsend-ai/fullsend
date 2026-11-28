@@ -1,44 +1,108 @@
 package jirapoll
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf16"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
 // The matrix output is measured as the compact JSON the managed workflow
-// builds, two bytes per UTF-16 code unit.
+// builds, at two bytes for each byte of its UTF-8 text.
 func TestMatrixOutputSize(t *testing.T) {
-	utf16Bytes := func(s string) int { return 2 * len(utf16.Encode([]rune(s))) }
+	counted := func(s string) int { return 2 * len(s) }
 
-	if got, want := matrixOutputSize(nil), utf16Bytes(`{"include":[]}`); got != want {
+	if got, want := matrixOutputSize(nil), counted(`{"include":[]}`); got != want {
 		t.Errorf("empty matrix = %d, want %d", got, want)
 	}
 
 	records := []DispatchRecord{
-		{Agent: "triage", Role: "triage", SourceRepo: "acme/platform", EventType: "comment", EventPayload: json.RawMessage(`{"body":"héllo 😀"}`), StatusRepo: "acme/platform", StatusNumber: "7"},
+		{Agent: "triage", Role: "triage", SourceRepo: "acme/platform", EventType: "comment", EventPayload: json.RawMessage(`{"body":"héllo 語 😀"}`), StatusRepo: "acme/platform", StatusNumber: "7"},
 		{Agent: "code", TriggerSource: "label", EventPayload: json.RawMessage(`{ "body" : "a\u003cb" }`)},
 	}
-	// é is one UTF-16 code unit and 😀 is two. The second payload is
+	// é is two bytes of UTF-8, 語 three and 😀 four. The second payload is
 	// compacted, and its escaped < keeps its six characters.
-	want := utf16Bytes(`{"include":[` +
-		`{"agent":"triage","role":"triage","source_repo":"acme/platform","event_type":"comment","event_payload":{"body":"héllo 😀"},"status_repo":"acme/platform","status_number":"7"},` +
+	want := counted(`{"include":[` +
+		`{"agent":"triage","role":"triage","source_repo":"acme/platform","event_type":"comment","event_payload":{"body":"héllo 語 😀"},"status_repo":"acme/platform","status_number":"7"},` +
 		`{"agent":"code","role":"","source_repo":"","event_type":"","event_payload":{"body":"a\u003cb"},"trigger_source":"label","status_repo":"","status_number":""}` +
 		`]}`)
 	if got := matrixOutputSize(records); got != want {
 		t.Errorf("matrixOutputSize() = %d, want %d", got, want)
 	}
 
+	// jq writes U+007F as \u007f: six bytes where Go wrote one.
+	plain := recordOutputSize(DispatchRecord{EventPayload: json.RawMessage(`{"body":"ab"}`)})
+	withDEL := recordOutputSize(DispatchRecord{EventPayload: json.RawMessage("{\"body\":\"a\x7fb\"}")})
+	if got, want := withDEL-plain, counted(`\u007f`); got != want {
+		t.Errorf("a U+007F adds %d, want %d", got, want)
+	}
+
 	if got := recordOutputSize(DispatchRecord{EventPayload: json.RawMessage(`{`)}); got != 0 {
 		t.Errorf("a record that cannot be encoded = %d, want 0", got)
+	}
+}
+
+// The count is never below the size of the matrix jq builds from the same
+// records, whatever characters a comment holds, and is exact for text that
+// Go and jq write alike.
+func TestMatrixOutputSizeIsNotBelowJq(t *testing.T) {
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq is not installed")
+	}
+
+	var ascii strings.Builder
+	for c := rune(0); c < 0x80; c++ {
+		ascii.WriteRune(c)
+	}
+	bodies := map[string]string{
+		"plain text":            "/fs-triage please look at this",
+		"every ASCII code":      ascii.String(),
+		"U+007F":                strings.Repeat("\x7f", 100),
+		"HTML characters":       strings.Repeat("<>&", 100),
+		"line separators":       strings.Repeat("\u2028\u2029", 100),
+		"two-byte characters":   strings.Repeat("é", 100),
+		"three-byte characters": strings.Repeat("語", 100),
+		"four-byte characters":  strings.Repeat("😀", 100),
+		"invalid UTF-8":         strings.Repeat("\xff", 100),
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]string{"body": body})
+			if err != nil {
+				t.Fatal(err)
+			}
+			records := []DispatchRecord{
+				{Agent: "triage", EventPayload: payload, StatusNumber: "7"},
+				{Agent: "code", EventPayload: payload, StatusNumber: "8"},
+			}
+			file, err := json.Marshal(records)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(jq, "-cj", "{include: .}")
+			cmd.Stdin = bytes.NewReader(file)
+			matrix, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("jq: %v", err)
+			}
+
+			got, min := matrixOutputSize(records), 2*len(matrix)
+			if got < min {
+				t.Errorf("matrixOutputSize() = %d, below the %d GitHub counts for jq's output", got, min)
+			}
+			if name == "plain text" && got != min {
+				t.Errorf("matrixOutputSize() = %d, want exactly %d for plain text", got, min)
+			}
+		})
 	}
 }
 

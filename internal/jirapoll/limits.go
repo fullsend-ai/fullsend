@@ -1,12 +1,12 @@
 package jirapoll
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"slices"
 	"time"
-	"unicode/utf16"
 )
 
 // Limits on the dispatch records one issue contributes to a cycle (ADR 0085,
@@ -25,25 +25,29 @@ const (
 // matrixEnvelopeSize is the size of a matrix output that holds no records.
 const matrixEnvelopeSize = 2 * len(`{"include":[]}`)
 
-// recordOutputSize returns the size counted for one record inside the poll
-// job's matrix output. The managed workflow builds that output with
-// jq -c '{include: .}', so the record is measured as compact JSON. GitHub
-// approximates output size from the UTF-16 encoding, so each UTF-16 code
-// unit counts as two bytes. Go writes <, > and & (and U+2028, U+2029) as
-// six-character escapes where jq writes the character itself, so for text
-// that holds them this count is above what GitHub sees, never below. A
-// record that cannot be encoded counts as empty here; writing the dispatch
-// file reports it.
+// recordOutputSize returns the size GitHub counts for one record inside the
+// poll job's matrix output. The managed workflow builds that output with
+// jq -c '{include: .}', so the record is measured as compact JSON.
+//
+// GitHub counts two bytes for each byte of an output's UTF-8 text. Its
+// documentation says only that the size is "approximated based on UTF-16
+// encoding"; the rule here was measured on github.com in November 2026,
+// where a job is rejected for outputs over 1,048,576 bytes: outputs of
+// 262,000 "é", 174,000 "語" and 131,000 "😀" are accepted and outputs a
+// thousand characters longer are rejected, as is one of 524,270 "a".
+//
+// The count is never below what GitHub sees. Go writes <, > and & (and
+// U+2028, U+2029) as six-character escapes where jq writes the character
+// itself, so text that holds them is counted high. jq writes U+007F as a
+// six-character escape where Go writes the character, so each one counts
+// for the five bytes Go did not write. A record that cannot be encoded
+// counts as empty here; writing the dispatch file reports it.
 func recordOutputSize(record DispatchRecord) int {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return 0
 	}
-	units := 0
-	for _, r := range string(data) {
-		units += utf16.RuneLen(r)
-	}
-	return 2 * units
+	return 2 * (len(data) + 5*bytes.Count(data, []byte{0x7f}))
 }
 
 // matrixOutputSize returns the size GitHub counts for the poll job's matrix
